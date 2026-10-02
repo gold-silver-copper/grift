@@ -1,0 +1,32 @@
+;;;; Assertion helpers for the grift test suite, written in grift.
+;;;; Each failed assertion raises an `assertion-failed` error, which the
+;;;; Rust harness reports along with the file.
+
+($define! %assertion-failed (string->symbol "assertion-failed"))
+
+;; (assert-equal actual expected)
+($define! assert-equal
+  ($lambda (actual expected)
+    ($if (equal? actual expected)
+         #inert
+         (raise-error %assertion-failed "values differ" (list actual expected)))))
+
+;; (assert-true x), (assert-false x)
+($define! assert-true
+  ($lambda (x) ($if (eq? x #t) #inert (raise-error %assertion-failed "expected #t" (list x)))))
+($define! assert-false
+  ($lambda (x) ($if (eq? x #f) #inert (raise-error %assertion-failed "expected #f" (list x)))))
+
+;; ($assert-error kind expr): evaluating expr must raise an error of the
+;; given kind (an unevaluated symbol).
+($define! $assert-error
+  ($vau (kind expr) env
+    ($let ((outcome
+             (with-error-handler
+               ($lambda (e) (list (error-object-kind e) (error-object-message e)))
+               ($lambda () (eval expr env) #inert))))
+      ($cond ((inert? outcome)
+              (raise-error %assertion-failed "expected an error, but none was raised"
+                           (list kind expr)))
+             ((eq? (car outcome) kind) #inert)
+             (#t (raise-error %assertion-failed "wrong error kind" (list kind outcome expr)))))))

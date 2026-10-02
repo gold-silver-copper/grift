@@ -1,0 +1,45 @@
+;;;; 90-rational.grift — exact rationals, built on an equatable
+;;;; encapsulated type. Rationals are always normalized (lowest terms,
+;;;; positive denominator), so equal? compares them correctly. They are a
+;;;; separate type with separate operations: integer arithmetic is never
+;;;; slowed down or changed by them. Operations accept integers and return
+;;;; rationals.
+
+($define! (%make-rat rational? %rat-fields) (%make-equatable-type))
+
+($define! make-rational
+  ($lambda (n d)
+    ($cond ((=? d 0) (raise-error (string->symbol "division-by-zero")
+                                  "make-rational: zero denominator" (list n d)))
+           ((%<? d 0) (make-rational (%- 0 n) (%- 0 d)))
+           (#t ($let ((g (gcd n d)))
+                 (%make-rat (list (div n g) (div d g))))))))
+
+($define! %as-rational
+  ($lambda (x)
+    ($cond ((rational? x) x)
+           ((%integer? x) (%make-rat (list x 1)))
+           (#t (%type-error "expected a rational or an integer" x)))))
+
+($define! rational-numerator ($lambda (r) (car (%rat-fields (%as-rational r)))))
+($define! rational-denominator ($lambda (r) (cadr (%rat-fields (%as-rational r)))))
+
+($define! %rational-op
+  ($lambda (f)
+    ($lambda (a b)
+      ($let (((n1 d1) (%rat-fields (%as-rational a)))
+             ((n2 d2) (%rat-fields (%as-rational b))))
+        (f n1 d1 n2 d2)))))
+
+($define! rational+ (%rational-op ($lambda (n1 d1 n2 d2) (make-rational (+ (* n1 d2) (* n2 d1)) (* d1 d2)))))
+($define! rational- (%rational-op ($lambda (n1 d1 n2 d2) (make-rational (- (* n1 d2) (* n2 d1)) (* d1 d2)))))
+($define! rational* (%rational-op ($lambda (n1 d1 n2 d2) (make-rational (* n1 n2) (* d1 d2)))))
+($define! rational/ (%rational-op ($lambda (n1 d1 n2 d2) (make-rational (* n1 d2) (* d1 n2)))))
+($define! rational=? (%rational-op ($lambda (n1 d1 n2 d2) ($and? (=? n1 n2) (=? d1 d2)))))
+($define! rational<? (%rational-op ($lambda (n1 d1 n2 d2) (<? (* n1 d2) (* n2 d1)))))
+
+($define! rational->string
+  ($lambda (r)
+    (string-append (number->string (rational-numerator r))
+                   "/"
+                   (number->string (rational-denominator r)))))

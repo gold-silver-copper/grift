@@ -1,0 +1,211 @@
+;;;; 70-contract.grift — higher-order contracts with blame, and records.
+;;;;
+;;;; After Findler & Felleisen, "Contracts for Higher-Order Functions".
+;;;; A contract is a value. Flat contracts are predicates; function
+;;;; contracts wrap the function so that every later call is checked. When a
+;;;; contract is broken, the error names the party to blame: the one that
+;;;; supplied the bad value.
+
+($define! %string-append2
+  ($lambda (a b) (list->string (append (string->list a) (string->list b)))))
+
+;; A blame records the positive party (supplies the value), the negative
+;; party (consumes it), and the name of the binding under contract.
+($define! (%make-blame blame? %blame-fields) (make-encapsulation-type))
+($define! make-blame
+  ($lambda (positive negative name) (%make-blame (list positive negative name))))
+($define! %swap-blame
+  ($lambda (b) ($let (((p n name) (%blame-fields b))) (%make-blame (list n p name)))))
+
+;; A contract: (name first-order projection). `first-order` is a cheap
+;; test used by or/c; (projection value blame) checks value and returns it,
+;; possibly wrapped.
+($define! (%make-contract contract? %contract-fields) (make-encapsulation-type))
+($define! make-contract
+  ($lambda (name first-order projection)
+    (%make-contract (list name first-order projection))))
+($define! contract-name ($lambda (c) (car (%contract-fields c))))
+($define! %first-order ($lambda (c) (cadr (%contract-fields c))))
+($define! %projection ($lambda (c) (caddr (%contract-fields c))))
+
+($define! %blame!
+  ($lambda (b c value message)
+    ($let (((positive negative name) (%blame-fields b)))
+      (raise-error %kind:contract-violation
+                   (%string-append2 (%string-append2 positive " broke the contract: ") message)
+                   (list positive (contract-name c) value name)))))
+
+;; Flat contracts from predicates.
+($define! flat-contract
+  ($lambda (name pred?)
+    ($letrec ((c (make-contract name
+                                pred?
+                                ($lambda (v b)
+                                  ($if (pred? v) v (%blame! b c v "value fails the predicate"))))))
+      c)))
+
+;; Anything usable as a contract: contracts themselves, or predicates.
+($define! %coerce
+  ($lambda (c)
+    ($cond ((contract? c) c)
+           ((%applicative? c) (flat-contract "predicate" c))
+           (#t (%type-error "not a contract" c)))))
+
+($define! %project
+  ($lambda (c v b) ((%projection c) v b)))
+
+($define! any/c (make-contract "any/c" ($lambda (v) #t) ($lambda (v b) v)))
+
+($define! none/c
+  ($letrec ((c (make-contract "none/c" ($lambda (v) #f)
+                              ($lambda (v b) (%blame! b c v "no value satisfies none/c")))))
+    c))
+
+($define! %every?
+  ($lambda (ok? xs)
+    ($cond ((eq? xs ()) #t) ((ok? (car xs)) (%every? ok? (cdr xs))) (#t #f))))
+
+;; (list-of c): a proper list whose elements satisfy c.
+($define! list-of
+  ($lambda (elem)
+    ($let ((elem (%coerce elem)))
+      ($letrec ((c (make-contract
+                     "list-of"
+                     ($lambda (v) ($and? (list? v) (%every? (%first-order elem) v)))
+                     ($lambda (v b)
+                       ($if (list? v)
+                            (%map1 ($lambda (x) (%project elem x b)) v)
+                            (%blame! b c v "expected a list"))))))
+        c))))
+
+;; (or/c c ...): the first contract whose first-order test passes is
+;; applied.
+($define! or/c
+  ($lambda cs
+    ($let ((cs (%map1 %coerce cs)))
+      ($letrec ((c (make-contract
+                     "or/c"
+                     ($lambda (v) ($letrec ((any? ($lambda (cs)
+                                                    ($cond ((eq? cs ()) #f)
+                                                           (((%first-order (car cs)) v) #t)
+                                                           (#t (any? (cdr cs)))))))
+                                    (any? cs)))
+                     ($lambda (v b)
+                       ($letrec ((try ($lambda (cs)
+                                        ($cond ((eq? cs ()) (%blame! b c v "no alternative of or/c matches"))
+                                               (((%first-order (car cs)) v) (%project (car cs) v b))
+                                               (#t (try (cdr cs)))))))
+                         (try cs))))))
+        c))))
+
+;; (and/c c ...): every contract is applied in turn.
+($define! and/c
+  ($lambda cs
+    ($let ((cs (%map1 %coerce cs)))
+      (make-contract "and/c"
+                     ($lambda (v) (%every? ($lambda (c) ((%first-order c) v)) cs))
+                     ($lambda (v b) (fold-left ($lambda (v c) (%project c v b)) v cs))))))
+
+;; (rest/c c): as the last domain of ->, every remaining argument must
+;; satisfy c.
+($define! (%make-rest rest/c? %rest-contract) (make-encapsulation-type))
+($define! rest/c ($lambda (c) (%make-rest (%coerce c))))
+
+($define! %check-arguments
+  ($lambda (c fixed rest args b)
+    ($cond (($and? (eq? fixed ()) (eq? args ())) ())
+           ((eq? fixed ())
+            ($if (inert? rest)
+                 (%blame! b c args "too many arguments")
+                 (%map1 ($lambda (x) (%project rest x b)) args)))
+           ((eq? args ()) (%blame! b c args "too few arguments"))
+           (#t (cons (%project (car fixed) (car args) b)
+                     (%check-arguments c (cdr fixed) rest (cdr args) b))))))
+
+;; (-> domain ... range): a function contract. Arguments are checked with
+;; the blame swapped (the caller supplies them); the result is checked with
+;; the original blame (the function supplies it). Calling with the wrong
+;; number of arguments blames the caller.
+($define! ->
+  ($lambda contracts
+    ($let* ((rev (reverse contracts))
+            (range (%coerce (car rev)))
+            (domains (reverse (cdr rev)))
+            (rest ($if ($and? (pair? domains) (rest/c? (car (reverse domains))))
+                       (%rest-contract (car (reverse domains)))
+                       #inert))
+            (fixed (%map1 %coerce ($if (inert? rest) domains (reverse (cdr (reverse domains)))))))
+      ($letrec ((c (make-contract
+                     "->"
+                     %applicative?
+                     ($lambda (f b)
+                       ($if (%applicative? f)
+                            ($lambda args
+                              (%project range
+                                        (apply f (%check-arguments c fixed rest args (%swap-blame b)))
+                                        b))
+                            (%blame! b c f "expected an applicative"))))))
+        c))))
+
+;; (check c v): v if it satisfies contract (or predicate) c, else a
+;; contract-violation blaming the value.
+($define! check
+  ($lambda (c v)
+    (%project (%coerce c) v (make-blame "the checked value" "check" (string->symbol "check")))))
+
+;; (contract c v positive negative name): apply a contract with explicit
+;; parties.
+($define! contract
+  ($lambda (c v positive negative name)
+    (%project (%coerce c) v (make-blame positive negative name))))
+
+;; ($define/contract! name contract-expr expr): a declaration binding name
+;; to the value of expr under the contract. The definition is blamed for
+;; bad results, callers for bad arguments.
+($define! $define/contract!
+  ($vau (name contract-expr expr) #ignore
+    (make-declaration
+      ($lambda (target)
+        ($let* ((label (symbol->string name))
+                (env (environment-bind-recursive
+                       target name
+                       (list contract contract-expr expr
+                             (%string-append2 "the definition of " label)
+                             (%string-append2 "a caller of " label)
+                             (list ($vau (x) #ignore x) name)))))
+          (%check-sigils name env)
+          env)))))
+
+;; ---------------------------------------------------------------------------
+;; Records.
+;;
+;; ($define-record-type! name (constructor field ...) predicate
+;;                       (field accessor) ...)
+;; declares a new encapsulated type. The constructor checks its arity, the
+;; accessors check the type of their argument. With (name equal) in place
+;; of name, values of the type are compared field-wise by equal?;
+;; otherwise equal? refuses to compare them.
+($define! %sym:equal (string->symbol "equal"))
+
+($define! %index-of
+  ($lambda (x xs i)
+    ($cond ((eq? xs ()) (%type-error "unknown record field" x))
+           ((eq? (car xs) x) i)
+           (#t (%index-of x (cdr xs) (+ i 1))))))
+
+($define! $define-record-type!
+  ($vau (name-spec (constructor . fields) predicate . accessors) #ignore
+    ($let* ((equatable ($and? (pair? name-spec) (eq? (cadr name-spec) %sym:equal)))
+            ((make test open) ($if equatable (%make-equatable-type) (make-encapsulation-type)))
+            (construct (wrap (eval (list $vau fields #ignore (list make (cons list fields)))
+                                   (make-environment))))
+            (getters (%map1 ($lambda ((field getter-name))
+                              ($let ((i (%index-of field fields 0)))
+                                ($lambda (r) (list-ref (open r) i))))
+                            accessors)))
+      (make-declaration
+        ($lambda (target)
+          ($let* ((names (list* constructor predicate (%map1 cadr accessors)))
+                  (env (environment-bind target names (list* construct test getters))))
+            (%check-sigils names env)
+            env))))))

@@ -1,0 +1,224 @@
+;;;; 50-control.grift — delimited control, errors and dynamic binding.
+;;;;
+;;;; Everything here is built from the four Dybvig–Peyton Jones–Sabry
+;;;; primitives: make-prompt, push-prompt, with-sub-cont, push-sub-cont.
+
+;; ---------------------------------------------------------------------------
+;; shift/reset (Danvy–Filinski), multi-prompt versions and defaults.
+
+;; (reset-at p thunk): delimit thunk with prompt p.
+($define! reset-at push-prompt)
+
+;; (shift-at p f): capture the continuation up to p as a function k that
+;; reinstates it under a fresh p, and call f with k under p.
+($define! shift-at
+  ($lambda (p f)
+    (with-sub-cont p
+      ($lambda (k)
+        (push-prompt p
+          ($lambda ()
+            (f ($lambda (v)
+                 (push-prompt p ($lambda () (push-sub-cont k ($lambda () v))))))))))))
+
+;; (control0-at p f): like shift-at, but neither f nor k runs under p.
+($define! control0-at
+  ($lambda (p f)
+    (with-sub-cont p
+      ($lambda (k)
+        (f ($lambda (v) (push-sub-cont k ($lambda () v))))))))
+
+($define! %default-prompt (make-prompt))
+($define! reset ($lambda (thunk) (reset-at %default-prompt thunk)))
+($define! shift ($lambda (f) (shift-at %default-prompt f)))
+
+;; ($reset body ...) and ($shift k body ...): the same as operatives.
+($define! %thunk
+  ($lambda (body env)
+    (wrap (eval (list* $vau () #ignore body) env))))
+
+($define! $reset
+  ($vau body env (reset (%thunk body env))))
+
+($define! $shift
+  ($vau (k . body) env
+    (shift (wrap (eval (list* $vau (list k) #ignore body) env)))))
+
+;; ---------------------------------------------------------------------------
+;; Errors.
+;;
+;; A failing primitive behaves exactly as
+;;   (with-sub-cont error-prompt ($lambda (k) (list k kind message irritants)))
+;; so whoever pushed error-prompt receives that list. with-error-handler
+;; wraps normal results in an `ok` record to tell the two apart.
+
+($define! (%make-ok %ok? %ok-value) (make-encapsulation-type))
+($define! (%make-error-object error-object? %error-object-fields)
+  (make-encapsulation-type))
+
+;; An error object holds the payload (k kind message irritants) and the
+;; function that resumes k under the handler that caught it.
+($define! %error-payload ($lambda (e) (car (%error-object-fields e))))
+($define! error-object-continuation ($lambda (e) (car (%error-payload e))))
+($define! error-object-kind ($lambda (e) (cadr (%error-payload e))))
+($define! error-object-message ($lambda (e) (caddr (%error-payload e))))
+($define! error-object-irritants ($lambda (e) (car (cdddr (%error-payload e)))))
+
+;; (with-error-handler handler thunk): call thunk; if it raises, call
+;; handler with the error object, outside the protected region, and return
+;; what the handler returns. The handler is deep: if it resumes the failed
+;; computation, errors raised there come back to the same handler.
+($define! with-error-handler
+  ($lambda (handler thunk)
+    ($letrec ((handle-result
+                ($lambda (result)
+                  ($if (%ok? result)
+                       (%ok-value result)
+                       (handler
+                         (%make-error-object
+                           (list result
+                                 ($lambda (v)
+                                   (handle-result
+                                     (push-prompt error-prompt
+                                       ($lambda ()
+                                         (push-sub-cont (car result) ($lambda () v)))))))))))))
+      (handle-result (push-prompt error-prompt ($lambda () (%make-ok (thunk))))))))
+
+;; (raise e): raise an error object again (e.g. from a handler).
+($define! raise
+  ($lambda (e)
+    (raise-error (error-object-kind e) (error-object-message e) (error-object-irritants e))))
+
+;; (error-object-resume e v): continue the computation that raised e as if
+;; the failing operation had returned v.
+($define! error-object-resume
+  ($lambda (e v) ((cadr (%error-object-fields e)) v)))
+
+;; ($guard (var clause ...) body ...): evaluate body; if it raises, bind
+;; var to the error object and evaluate the $cond-style clauses. If no
+;; clause matches, the error is raised again.
+($define! %guard-clauses
+  ($lambda (clauses env e)
+    ($cond ((eq? clauses ()) (raise e))
+           ((eval (caar clauses) env) (eval (%body (cdar clauses)) env))
+           (#t (%guard-clauses (cdr clauses) env e)))))
+
+($define! $guard
+  ($vau ((var . clauses) . body) env
+    (with-error-handler
+      ($lambda (e) (%guard-clauses clauses (environment-bind env var e) e))
+      (%thunk body env))))
+
+;; (error-kind? e kind-name): does e have the kind named by a string?
+($define! error-kind?
+  ($lambda (e name)
+    (eq? (error-object-kind e) (string->symbol name))))
+
+;; $binds? (R-1RK §6.7.2): are the symbols bound in the environment?
+($define! %binds?
+  ($lambda (s env)
+    (with-error-handler
+      ($lambda (e)
+        ($cond ((eq? (error-object-kind e) %kind:unbound-symbol) #f)
+               ((eq? (error-object-kind e) %kind:uninitialized-binding) #t)
+               (#t (raise e))))
+      ($lambda () (eval s env) #t))))
+
+($define! $binds?
+  ($vau (env-expr . symbols) env
+    ($let ((target (eval env-expr env)))
+      ($letrec ((all? ($lambda (ss)
+                        ($cond ((eq? ss ()) #t)
+                               ((%binds? (car ss) target) (all? (cdr ss)))
+                               (#t #f)))))
+        (all? symbols)))))
+
+;; ---------------------------------------------------------------------------
+;; Deep effect handlers over prompts. An effect is a prompt in disguise;
+;; performing it captures the continuation up to the handler, which may
+;; resume it any number of times. (Algebraic effects in 60-effects.grift
+;; and parameters below are both built on this.)
+
+($define! (%make-done %done? %done-value) (make-encapsulation-type))
+($define! (%make-request %request? %request-payload) (make-encapsulation-type))
+
+;; (%handle-prompt p thunk on-return on-request): run thunk under p. When
+;; the computation sends a value with (%send p v), call
+;; (on-request v resume), where (resume x) continues the computation with
+;; x under the same handler. When it finishes, call (on-return value).
+($define! %handle-prompt
+  ($lambda (p thunk on-return on-request)
+    ($letrec ((handle-result
+                ($lambda (result)
+                  ($if (%done? result)
+                       (on-return (%done-value result))
+                       ($let (((k v) (%request-payload result)))
+                         (on-request v
+                           ($lambda (x)
+                             (handle-result
+                               (push-prompt p ($lambda () (push-sub-cont k ($lambda () x))))))))))))
+      (handle-result (push-prompt p ($lambda () (%make-done (thunk))))))))
+
+($define! %send
+  ($lambda (p v)
+    (with-sub-cont p ($lambda (k) (%make-request (list k v))))))
+
+;; ---------------------------------------------------------------------------
+;; Parameters: dynamic binding derived from delimited control
+;; (Kiselyov, Shan & Sabry, "Delimited Dynamic Binding").
+;;
+;; (make-parameter v) returns an applicative p; (p) reads the innermost
+;; binding made by $parameterize, or v if there is none.
+
+($define! %parameter-key (make-prompt))
+
+($define! make-parameter
+  ($lambda (default)
+    ($let ((p (make-prompt)))
+      ($lambda args
+        ($cond ((eq? args ())
+                (with-error-handler
+                  ($lambda (e)
+                    ($if (eq? (error-object-kind e) %kind:no-prompt) default (raise e)))
+                  ($lambda () (%send p #inert))))
+               (($and? (eq? (cdr args) ()) (eq? (car args) %parameter-key)) p)
+               (#t (raise-error %kind:arity-error "a parameter takes no arguments" args)))))))
+
+;; (parameterize p v thunk): call thunk with p bound to v.
+($define! parameterize
+  ($lambda (param value thunk)
+    (%handle-prompt (param %parameter-key)
+                    thunk
+                    ($lambda (x) x)
+                    ($lambda (request resume) (resume value)))))
+
+;; ($parameterize ((p v) ...) body ...)
+($define! $parameterize
+  ($vau (bindings . body) env
+    ($if (eq? bindings ())
+         (eval (%body body) env)
+         (parameterize (eval (caar bindings) env)
+                       (eval (cadar bindings) env)
+                       ($lambda ()
+                         (eval (list* $parameterize (cdr bindings) body) env))))))
+
+;; ---------------------------------------------------------------------------
+;; Generators: lazy streams produced by a thunk that calls (yield v).
+;; A generator is a thunk returning () when exhausted or (v . next), where
+;; next is the generator for the rest. Generators are values: calling the
+;; same one twice gives the same stream.
+
+($define! %yield-prompt (make-prompt))
+($define! yield ($lambda (v) (%send %yield-prompt v)))
+
+($define! make-generator
+  ($lambda (thunk)
+    ($lambda ()
+      (%handle-prompt %yield-prompt
+                      thunk
+                      ($lambda (result) ())
+                      ($lambda (v resume) (cons v ($lambda () (resume #inert))))))))
+
+($define! generator->list
+  ($lambda (g)
+    ($let ((step (g)))
+      ($if (eq? step ()) () (cons (car step) (generator->list (cdr step)))))))

@@ -5,8 +5,20 @@ use alloc::vec::Vec;
 
 use crate::ctx::Ctx;
 use crate::error::{Fault, GResult};
-use crate::heap::{Env, Log, Object};
+use crate::heap::{Env, Log, Object, SMALL_ENV, SmallEnv};
 use crate::value::{ObjId, SymId, Value};
+
+/// Number of entries in the lookup cache (a power of two).
+pub(crate) const LOOKUP_CACHE_SIZE: usize = 4096;
+
+/// An unused lookup-cache entry: no environment has this id.
+pub(crate) const EMPTY_CACHE_ENTRY: (u32, u32, Value) = (u32::MAX, u32::MAX, Value::Nil);
+
+#[inline]
+fn cache_slot(env: ObjId, sym: SymId) -> usize {
+    let h = env.0.wrapping_mul(0x9E37_79B1) ^ sym.0.wrapping_mul(0x85EB_CA6B);
+    (h >> 4) as usize & (LOOKUP_CACHE_SIZE - 1)
+}
 
 impl Ctx {
     /// A fresh empty environment with no parent.
@@ -25,8 +37,9 @@ impl Ctx {
         parent: ObjId,
         entries: impl IntoIterator<Item = (SymId, Option<Value>)>,
     ) -> ObjId {
-        let Env { log, len } = self.heap.env(parent);
-        if self.heap.log(log).entries.len() == len as usize {
+        if let Object::Env(Env { log, len }) = *self.heap.get(parent)
+            && self.heap.log(log).entries.len() == len as usize
+        {
             let l = self.heap.log_mut(log);
             l.append(entries);
             let len = u32::try_from(l.entries.len()).expect("environment too large");
@@ -39,6 +52,35 @@ impl Ctx {
             let log = self.heap.alloc(Object::Log(l));
             self.heap.alloc(Object::Env(Env { log, len }))
         }
+    }
+
+    /// The environment of an operative call: a child of `parent` binding
+    /// `binds` and, optionally, the environment parameter to `caller`.
+    pub(crate) fn call_env(
+        &mut self,
+        parent: ObjId,
+        binds: &[(SymId, Value)],
+        eparam: Option<(SymId, ObjId)>,
+    ) -> ObjId {
+        if binds.len() <= SMALL_ENV {
+            let mut env = SmallEnv {
+                parent,
+                eparam,
+                len: binds.len() as u8,
+                syms: [SymId(0); SMALL_ENV],
+                vals: [Value::Nil; SMALL_ENV],
+            };
+            for (i, &(s, v)) in binds.iter().enumerate() {
+                env.syms[i] = s;
+                env.vals[i] = v;
+            }
+            return self.heap.alloc(Object::SmallEnv(env));
+        }
+        let caller = eparam.map(|(s, e)| (s, Some(Value::Obj(e))));
+        self.extend_fresh(
+            parent,
+            binds.iter().map(|&(s, v)| (s, Some(v))).chain(caller),
+        )
     }
 
     /// A new child of `parent` holding `entries`, always in a fresh log.
@@ -57,34 +99,89 @@ impl Ctx {
     }
 
     /// Look `sym` up in `env`.
-    pub(crate) fn lookup(&self, env: ObjId, sym: SymId) -> GResult<Value> {
-        let mut cur = env;
-        loop {
-            let Env { log, len } = self.heap.env(cur);
-            let l = self.heap.log(log);
-            if let Some(i) = l.find(sym, len) {
-                return l.entries[i].1.ok_or_else(|| {
-                    Fault::new(
-                        "uninitialized-binding",
-                        format!(
-                            "{} was referenced before its definition finished",
-                            self.syms.name(sym)
-                        ),
-                    )
-                    .with(Value::Sym(sym))
-                });
+    ///
+    /// The first frame (usually a call's own bindings) is searched
+    /// directly. Below it, results are memoized per (environment, symbol):
+    /// environments never change, so a resolved binding stays valid. The
+    /// cache is cleared at every collection, since object ids are reused.
+    pub(crate) fn lookup(&mut self, env: ObjId, sym: SymId) -> GResult<Value> {
+        let parent = match self.heap.get(env) {
+            Object::SmallEnv(e) => {
+                if let Some(v) = e.find(sym) {
+                    return Ok(v);
+                }
+                e.parent
             }
-            match l.parent {
-                Some(p) => cur = p,
-                None => {
-                    return Err(Fault::new(
-                        "unbound-symbol",
-                        format!("unbound symbol {}", self.syms.name(sym)),
-                    )
-                    .with(Value::Sym(sym)));
+            Object::Env(Env { log, len }) => {
+                let l = self.heap.log(*log);
+                if let Some(i) = l.find(sym, *len) {
+                    return l.entries[i].1.ok_or_else(|| self.uninitialized(sym));
+                }
+                match l.parent {
+                    Some(p) => p,
+                    None => return Err(self.unbound(sym)),
                 }
             }
+            other => unreachable!("expected environment, found {other:?}"),
+        };
+        let slot = cache_slot(parent, sym);
+        let (e, s, v) = self.lookup_cache[slot];
+        if e == parent.0 && s == sym.0 {
+            return Ok(v);
         }
+        let v = self.resolve(parent, sym)?;
+        self.lookup_cache[slot] = (parent.0, sym.0, v);
+        Ok(v)
+    }
+
+    /// Look `sym` up by walking the environment chain from `env`.
+    fn resolve(&self, env: ObjId, sym: SymId) -> GResult<Value> {
+        let mut cur = env;
+        loop {
+            match self.heap.get(cur) {
+                Object::SmallEnv(e) => {
+                    if let Some(v) = e.find(sym) {
+                        return Ok(v);
+                    }
+                    cur = e.parent;
+                }
+                Object::Env(Env { log, len }) => {
+                    let l = self.heap.log(*log);
+                    if let Some(i) = l.find(sym, *len) {
+                        return l.entries[i].1.ok_or_else(|| self.uninitialized(sym));
+                    }
+                    match l.parent {
+                        Some(p) => cur = p,
+                        None => return Err(self.unbound(sym)),
+                    }
+                }
+                other => unreachable!("expected environment, found {other:?}"),
+            }
+        }
+    }
+
+    /// Forget every memoized lookup.
+    pub(crate) fn clear_lookup_cache(&mut self) {
+        self.lookup_cache.fill(EMPTY_CACHE_ENTRY);
+    }
+
+    fn uninitialized(&self, sym: SymId) -> Fault {
+        Fault::new(
+            "uninitialized-binding",
+            format!(
+                "{} was referenced before its definition finished",
+                self.syms.name(sym)
+            ),
+        )
+        .with(Value::Sym(sym))
+    }
+
+    fn unbound(&self, sym: SymId) -> Fault {
+        Fault::new(
+            "unbound-symbol",
+            format!("unbound symbol {}", self.syms.name(sym)),
+        )
+        .with(Value::Sym(sym))
     }
 
     /// Validate a parameter tree and append its symbols, in matching order,

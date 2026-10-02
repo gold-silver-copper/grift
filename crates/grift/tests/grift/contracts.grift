@@ -1,0 +1,65 @@
+;;;; Higher-order contracts with blame.
+
+($define! $quote ($vau (x) #ignore x))
+
+;; Blame: the error's irritants are ($blamed-party contract value name).
+($define! $blamed
+  ($vau (expr) env
+    (with-error-handler
+      ($lambda (e)
+        ($if (error-kind? e "contract-violation")
+             (car (error-object-irritants e))
+             (raise e)))
+      ($lambda () (eval expr env) ($quote no-violation)))))
+
+($define/contract! inc (-> integer? integer?) ($lambda (x) (+ x 1)))
+(assert-equal (inc 1) 2)
+(assert-equal ($blamed (inc "a")) "a caller of inc")
+(assert-equal ($blamed (inc 1 2)) "a caller of inc")
+(assert-equal ($blamed (inc)) "a caller of inc")
+
+($define/contract! liar (-> integer? string?) ($lambda (x) x))
+(assert-equal ($blamed (liar 1)) "the definition of liar")
+
+;; Higher-order: a function argument is wrapped, and blame follows the
+;; party that supplied the bad value.
+($define/contract! twice (-> (-> integer? integer?) integer? integer?)
+  ($lambda (f x) (f (f x))))
+(assert-equal (twice ($lambda (x) (* x 2)) 3) 12)
+(assert-equal ($blamed (twice ($lambda (x) "oops") 3)) "a caller of twice")
+($define/contract! misuse (-> (-> integer? integer?) integer?)
+  ($lambda (f) (f "not an integer")))
+(assert-equal ($blamed (misuse ($lambda (x) x))) "the definition of misuse")
+
+;; Rest arguments.
+($define/contract! sum (-> (rest/c integer?) integer?) +)
+(assert-equal (sum 1 2 3) 6)
+(assert-equal (sum) 0)
+(assert-equal ($blamed (sum 1 "x")) "a caller of sum")
+
+;; list-of, or/c, and/c, any/c, none/c, flat-contract, check.
+(assert-equal (check (list-of integer?) (list 1 2 3)) (list 1 2 3))
+(assert-equal ($blamed (check (list-of integer?) (list 1 "a"))) "the checked value")
+(assert-equal ($blamed (check (list-of integer?) 5)) "the checked value")
+(assert-equal (check (or/c integer? string?) "s") "s")
+(assert-equal ($blamed (check (or/c integer? string?) #\c)) "the checked value")
+(assert-equal (check (and/c integer? positive?) 3) 3)
+(assert-equal ($blamed (check (and/c integer? positive?) -3)) "the checked value")
+(assert-equal (check any/c ($quote anything)) ($quote anything))
+(assert-equal ($blamed (check none/c 1)) "the checked value")
+($define! even/c (flat-contract "even" even?))
+(assert-equal (contract-name even/c) "even")
+(assert-equal (check even/c 4) 4)
+;; or/c over a function contract: the first-order test picks the branch.
+($define/contract! f-or-int (-> (or/c integer? (-> integer? integer?)) integer?)
+  ($lambda (v) ($if (integer? v) v (v 1))))
+(assert-equal (f-or-int 5) 5)
+(assert-equal (f-or-int ($lambda (x) (+ x 1))) 2)
+(assert-equal ($blamed (f-or-int ($lambda (x) "bad"))) "a caller of f-or-int")
+
+;; Contracts are values; predicates are flat contracts.
+(assert-true (contract? (-> integer? integer?)))
+($assert-error type-error (check 5 1))
+;; The contracted function is still an applicative.
+(assert-true (applicative? inc))
+($assert-error sigil-violation (($lambda () ($define/contract! $op any/c ($lambda (x) x)) 1)))

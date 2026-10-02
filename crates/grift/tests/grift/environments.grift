@@ -1,0 +1,60 @@
+;;;; First-class, immutable environments; declarations; modules.
+
+($define! $quote ($vau (x) #ignore x))
+
+(assert-true (environment? (get-current-environment)))
+(assert-true (environment? (make-environment) (make-kernel-standard-environment)))
+(assert-false (environment? 1))
+
+;; environment-bind returns a new child; the parent is unchanged.
+($define! e0 (make-environment))
+($define! e1 (environment-bind e0 ($quote (a b)) (list 1 2)))
+(assert-equal (eval ($quote (list a b)) (environment-bind e1 ($quote list) list)) (list 1 2))
+(assert-false ($binds? e0 a))
+(assert-true ($binds? e1 a b))
+($assert-error unbound-symbol (eval ($quote a) e0))
+($assert-error type-error (environment-bind e0 ($quote (a a)) (list 1 2)))
+($assert-error type-error (environment-bind e0 ($quote (a b)) (list 1)))
+
+;; environment-bind-recursive: letrec semantics.
+($define! e2 (environment-bind-recursive (get-current-environment) ($quote f)
+               ($quote ($lambda (n) ($if (=? n 0) 0 (f (- n 1)))))))
+(assert-equal (eval ($quote (f 10)) e2) 0)
+
+;; Declarations are first-class values; bodies and the top level apply
+;; them.
+($define! d ($define! zz 42))
+(assert-true (declaration? d))
+(assert-false ($binds? (get-current-environment) zz))
+(assert-equal (eval ($quote zz) (apply-declaration d (get-current-environment))) 42)
+($define! $my-define-twice!
+  ($vau (name value) env
+    (make-declaration
+      ($lambda (target)
+        (environment-bind target name (list value value))))))
+(assert-equal (($lambda () ($my-define-twice! (p q) 7) (list p q))) (list 7 7))
+($assert-error type-error (apply-declaration (make-declaration ($lambda (e) 5)) (get-current-environment)))
+
+;; $remote-eval, $let-redirect, $bindings->environment, $let-safe.
+(assert-equal ($remote-eval (+ 1 2) (make-kernel-standard-environment)) 3)
+(assert-equal ($remote-eval b e1) 2)
+(assert-equal ($let-redirect (make-kernel-standard-environment) ((x 5)) (* x x)) 25)
+($define! be ($bindings->environment (x 1) (y (+ 1 1))))
+(assert-equal (eval ($quote y) be) 2)
+($define! shadow-car 1)
+(assert-equal ($let-safe ((x 1)) ($binds? (get-current-environment) shadow-car)) #f)
+
+;; Modules and import.
+($define! m
+  ($module
+    ($define! secret 41)
+    ($define! answer (+ secret 1))
+    ($define! ask ($lambda () answer))))
+($import! m answer ask)
+(assert-equal (list answer (ask)) (list 42 42))
+(assert-false ($binds? (get-current-environment) secret))
+($assert-error unbound-symbol ($import! m nope))
+
+;; The ground environment is not reachable: standard environments are
+;; children of it, and nothing can enumerate or mutate it.
+(assert-equal (eval ($quote (car (list 1))) (make-kernel-standard-environment)) 1)

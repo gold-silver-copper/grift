@@ -1,0 +1,76 @@
+;;;; The type-discipline rules.
+
+($define! $quote ($vau (x) #ignore x))
+
+;; 1. No punning: () is not false, strings are not lists, chars are not
+;;    strings, no truthiness.
+($assert-error type-error ($if () 1 2))
+($assert-error type-error ($if 0 1 2))
+($assert-error type-error (car "abc"))
+($assert-error type-error (string-length #\a))
+($assert-error type-error (list->string (list "a")))
+(assert-false (equal? "a" #\a))
+
+;; 2. Primitives check arity and types.
+($assert-error arity-error (cons 1))
+($assert-error arity-error (cons 1 2 3))
+($assert-error type-error (wrap 1))
+($assert-error type-error (unwrap 5))
+($assert-error type-error (eval 1 (list)))
+($assert-error type-error (string->symbol 5))
+($assert-error range-error (integer->char -1))
+($assert-error range-error (integer->char 55296))
+($assert-error type-error (push-prompt 1 ($lambda () 1)))
+($assert-error type-error (push-prompt (make-prompt) $quote))
+
+;; 3. Purity: nothing can change a binding. Redefinition shadows.
+($define! k 1)
+($define! read-k ($lambda () k))
+($define! k 2)
+(assert-equal (read-k) 1)
+;; Re-entering a recursive initialization cannot change a binding.
+($define! saved
+  (reset ($lambda ()
+    ($letrec ((x (shift ($lambda (c) c))))
+      x))))
+(assert-equal (saved 1) 1)
+($assert-error reinitialized-binding (saved 2))
+
+;; 4. Encapsulation: values are opaque without the type's accessor.
+($define! (make-a a? open-a) (make-encapsulation-type))
+($define! (make-b b? open-b) (make-encapsulation-type))
+($define! va (make-a 5))
+(assert-true (a? va))
+(assert-false (b? va))
+(assert-equal (open-a va) 5)
+($assert-error type-error (open-b va))
+($assert-error type-error (equal? va (make-a 5)))
+(assert-false (equal? va 5))
+
+;; eq? never exposes the identity of structured data...
+($assert-error type-error (eq? (list 1) (list 1)))
+($assert-error type-error (eq? "a" "a"))
+($assert-error type-error (eq? va va))
+;; ...but answers when that identity cannot matter.
+(assert-false (eq? (list 1) ()))
+(assert-false (eq? "a" (list 1)))
+(assert-true (eq? car car))
+(assert-true (eq? ($quote s) ($quote s)))
+(assert-false (eq? (make-environment) (make-environment)))
+
+;; 5. The sigil rule, at call sites... (bindings made with a raw
+;;    declaration, which skips $define!'s own check)
+($define! $raw-define!
+  ($vau (name expr) env
+    (make-declaration ($lambda (e) (environment-bind e name (eval expr env))))))
+($raw-define! not-op $quote)
+($assert-error sigil-violation (not-op x))
+($raw-define! $plus +)
+($assert-error sigil-violation ($plus 1 2))
+(assert-equal ((car (list $quote)) y) ($quote y))
+;; ...and at definition time.
+($assert-error sigil-violation (($lambda () ($define! quote2 ($vau (x) #ignore x)) 1)))
+($assert-error sigil-violation (($lambda () ($define! $inc ($lambda (x) x)) 1)))
+;; Operatives may still be passed around as data under any name.
+(assert-equal (($lambda (f) ((wrap f) 1)) $quote) 1)
+(assert-equal (map operative? (list $if car)) (list #t #f))

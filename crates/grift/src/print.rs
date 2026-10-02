@@ -50,7 +50,7 @@ impl Ctx {
                         out.push_str(s);
                     }
                 }
-                Object::Env(_) => out.push_str("#[environment]"),
+                Object::Env(_) | Object::SmallEnv(_) => out.push_str("#[environment]"),
                 Object::Operative(_) | Object::PrimData(..) | Object::Native(_) => {
                     out.push_str("#[operative]");
                 }

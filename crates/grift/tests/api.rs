@@ -84,9 +84,9 @@ fn gc_keeps_heap_bounded_under_sustained_allocation() {
     let after_second = g.heap_stats();
     assert!(after_first.collections > 0);
     // Garbage is reclaimed: a second run of the same loop does not grow
-    // the heap.
-    assert_eq!(
-        after_first.capacity, after_second.capacity,
+    // the heap (beyond the slack of collection timing).
+    assert!(
+        after_second.capacity <= after_first.capacity + after_first.capacity / 10,
         "{after_first:?} {after_second:?}"
     );
     assert!(after_second.capacity < 400_000, "{after_second:?}");

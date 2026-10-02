@@ -65,10 +65,10 @@
 ;; is evaluated in tail position.
 ($define! (%sequence %sequence-step)
   (list
-    (wrap ($vau (forms env) #ignore
-      ($if (eq? (cdr forms) ())
-           (eval (car forms) env)
-           (%sequence-step (eval (car forms) env) (cdr forms) env))))
+    (wrap ($vau ((first . rest) env) #ignore
+      ($if (eq? rest ())
+           (eval first env)
+           (%sequence-step (eval first env) rest env))))
     (wrap ($vau (value forms env) #ignore
       (%sequence forms
                  ($if (%declaration? value) (apply-declaration value env) env))))))
@@ -76,6 +76,12 @@
 ($define! $sequence
   ($vau body env
     ($if (eq? body ()) #inert (%sequence body env))))
+
+;; (%eval-body body env): evaluate a body (a list of forms) in env, the
+;; last form in tail position. A single form is evaluated directly.
+($define! %eval-body
+  (wrap ($vau (body env) #ignore
+    ($if (eq? body ()) #inert (%sequence body env)))))
 
 ;; The expression that evaluates a body: the form itself when there is
 ;; exactly one, a $sequence otherwise.

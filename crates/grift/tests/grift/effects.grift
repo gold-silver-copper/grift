@@ -1,0 +1,71 @@
+;;;; Algebraic effects, parameters (dynamic binding) and generators.
+
+($define! $quote ($vau (x) #ignore x))
+
+;; A reader effect.
+($define! ask (make-effect))
+(assert-true (effect? ask))
+(assert-equal ($handle ask ((x) (list ($quote done) x)) ((v resume) (resume (* v 10)))
+                (+ (perform ask 1) (perform ask 2)))
+              (list ($quote done) 30))
+
+;; Handlers may resume zero times (exceptions)...
+($define! fail (make-effect))
+(assert-equal (handle fail ($lambda () (+ 1 (perform fail #inert))) ($lambda (x) x) ($lambda (v resume) 0))
+              0)
+;; ...or many times (nondeterminism).
+($define! flip (make-effect))
+(assert-equal (handle flip
+                ($lambda () (list (perform flip #inert) (perform flip #inert)))
+                ($lambda (x) (list x))
+                ($lambda (v resume) (append (resume #t) (resume #f))))
+              (list (list #t #t) (list #t #f) (list #f #t) (list #f #f)))
+
+;; State threaded through a handler, without mutation.
+($define! get (make-effect))
+($define! run-state
+  ($lambda (thunk s)
+    ((handle get thunk
+       ($lambda (x) ($lambda (s) x))
+       ($lambda (v resume) ($lambda (s) ((resume s) (+ s 1)))))
+     s)))
+(assert-equal (run-state ($lambda () (list (perform get #inert) (perform get #inert) (perform get #inert))) 10)
+              (list 10 11 12))
+
+;; Unhandled effects.
+($assert-error no-prompt (perform ask 1))
+
+;; Handlers for different effects nest independently.
+(assert-equal ($handle ask ((x) x) ((v resume) (resume 1))
+                ($handle fail ((x) x) ((v resume) 100)
+                  (+ (perform ask #inert) (perform ask #inert))))
+              2)
+
+;; Parameters.
+($define! width (make-parameter 80))
+(assert-equal (width) 80)
+(assert-equal ($parameterize ((width 100)) (width)) 100)
+(assert-equal ($parameterize ((width 1)) (list (width) ($parameterize ((width 2)) (width)) (width)))
+              (list 1 2 1))
+(assert-equal (width) 80)
+($define! depth (make-parameter 0))
+(assert-equal ($parameterize ((width 5) (depth 6)) (list (width) (depth))) (list 5 6))
+;; Closures see the dynamic binding at call time, not at creation.
+($define! show-width ($lambda () (width)))
+(assert-equal ($parameterize ((width 7)) (show-width)) 7)
+($assert-error arity-error (width 1))
+
+;; Generators: pure lazy streams.
+($define! g (make-generator ($lambda () (yield 1) (yield 2) (yield 3))))
+(assert-equal (generator->list g) (list 1 2 3))
+(assert-equal (generator->list g) (list 1 2 3))
+($define! naturals
+  (make-generator ($lambda () ($letrec ((from ($lambda (n) (yield n) (from (+ n 1))))) (from 0)))))
+($define! take
+  ($lambda (g n) ($if (=? n 0) () ($let ((step (g))) (cons (car step) (take (cdr step) (- n 1)))))))
+(assert-equal (take naturals 5) (list 0 1 2 3 4))
+;; The same position can be resumed twice.
+($define! second (cdr (naturals)))
+(assert-equal (car (second)) 1)
+(assert-equal (car (second)) 1)
+($assert-error no-prompt (yield 1))

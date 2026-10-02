@@ -61,6 +61,21 @@ const LIBRARY: &[(&str, &str)] = &[
     ("20-env.grift", include_str!("../lib/20-env.grift")),
     ("30-list.grift", include_str!("../lib/30-list.grift")),
     ("40-integer.grift", include_str!("../lib/40-integer.grift")),
+    ("50-control.grift", include_str!("../lib/50-control.grift")),
+    ("60-effects.grift", include_str!("../lib/60-effects.grift")),
+    (
+        "70-contract.grift",
+        include_str!("../lib/70-contract.grift"),
+    ),
+    ("80-string.grift", include_str!("../lib/80-string.grift")),
+    (
+        "90-rational.grift",
+        include_str!("../lib/90-rational.grift"),
+    ),
+    (
+        "99-standard.grift",
+        include_str!("../lib/99-standard.grift"),
+    ),
 ];
 
 /// A grift interpreter.

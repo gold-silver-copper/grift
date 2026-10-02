@@ -57,7 +57,7 @@ prims! {
     INTEGER_P = "integer?" => |m, a, _, _| pred(m, "integer?", a, |_| false, |v| matches!(v, Value::Int(_))),
     CHAR_P = "char?" => |m, a, _, _| pred(m, "char?", a, |_| false, |v| matches!(v, Value::Char(_))),
     STRING_P = "string?" => |m, a, _, _| pred(m, "string?", a, |o| matches!(o, Some(Object::Str(_))), |_| false),
-    ENVIRONMENT_P = "environment?" => |m, a, _, _| pred(m, "environment?", a, |o| matches!(o, Some(Object::Env(_))), |_| false),
+    ENVIRONMENT_P = "environment?" => |m, a, _, _| pred(m, "environment?", a, |o| matches!(o, Some(Object::Env(_) | Object::SmallEnv(_))), |_| false),
     OPERATIVE_P = "operative?" => |m, a, _, _| {
         let [v] = arity(m, "operative?", a)?;
         Ok(Ctl::Ret(Value::Bool(m.ctx.is_operative(v))))

@@ -49,21 +49,20 @@
          ($if (eq? more ()) #t (%chain ok? y more))
          ($sequence (%check-integers more) #f))))
 
-($define! %=?
-  ($lambda (a b)
-    ($if (%integer? a)
-         ($if (%integer? b) (eq? a b) (%type-error "expected an integer" b))
-         (%type-error "expected an integer" a))))
-($define! %<=? ($lambda (a b) (not? (%<? b a))))
+;; Two-argument comparisons from the primitive <? alone (which checks
+;; that both arguments are integers): x = y exactly when neither x < y nor
+;; y < x.
+($define! %=? ($lambda (a b) (eq? (%<? a b) (%<? b a))))
+($define! %<=? ($lambda (a b) (eq? (%<? b a) #f)))
 ($define! %>? ($lambda (a b) (%<? b a)))
-($define! %>=? ($lambda (a b) (not? (%<? a b))))
+($define! %>=? ($lambda (a b) (eq? (%<? a b) #f)))
 
 ($define! %comparison
   ($lambda (ok?)
     ($lambda (x y . more)
       ($if (eq? more ()) (ok? x y) (%chain ok? x (cons y more))))))
 
-($define! =? (%comparison %=?))
+($define! =? ($lambda (x y . more) ($if (eq? more ()) (eq? (%<? x y) (%<? y x)) (%chain %=? x (cons y more)))))
 ($define! <? ($lambda (x y . more) ($if (eq? more ()) (%<? x y) (%chain %<? x (cons y more)))))
 ($define! <=? (%comparison %<=?))
 ($define! >? (%comparison %>?))
@@ -71,8 +70,23 @@
 
 ;; Euclidean division (R-1RK §12.5.11): 0 <= (mod n d) < |d|.
 ($define! div %div)
-($define! mod ($lambda (n d) (%- n (%* d (%div n d)))))
-($define! div-and-mod ($lambda (n d) ($let ((q (%div n d))) (list q (%- n (%* d q))))))
+;; mod = n - d*(div n d), computed so that no intermediate overflows: when
+;; n < 0 the product d*q can fall below the smallest integer, so q is
+;; moved one step towards zero first and the difference corrected by d.
+;; A divisor of -1 always leaves 0 (and (div n -1) overflows for the
+;; smallest integer).
+($define! %mod
+  ($lambda (n d)
+    ($let ((q (%div n d)))
+      ($cond ((%<? -1 n) (%- n (%* d q)))
+             ((%<? 0 d) (%+ (%- n (%* d (%+ q 1))) d))
+             (#t (%- (%- n (%* d (%- q 1))) d))))))
+($define! mod
+  ($lambda (n d)
+    ($if (eq? d -1)
+         ($sequence (%check-integers (list n)) 0)
+         (%mod n d))))
+($define! div-and-mod ($lambda (n d) (list (%div n d) (mod n d))))
 
 ;; Sign predicates and friends (R-1RK §12.5.3, §12.5.10, §12.5.12).
 ($define! zero? (%n-ary-predicate ($lambda (n) (%=? n 0))))

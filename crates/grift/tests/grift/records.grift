@@ -1,0 +1,42 @@
+;;;; Records and encapsulation types.
+
+($define! $quote ($vau (x) #ignore x))
+
+($define-record-type! point (make-point x y) point? (x point-x) (y point-y))
+($define! pt (make-point 1 2))
+(assert-true (point? pt))
+(assert-false (point? (list 1 2)))
+(assert-equal (list (point-x pt) (point-y pt)) (list 1 2))
+($assert-error type-error (point-x (list 1 2)))
+($assert-error arity-error (make-point 1))
+;; Records without opt-in equality cannot be compared structurally.
+($assert-error type-error (equal? pt (make-point 1 2)))
+($assert-error type-error (eq? pt pt))
+
+;; Opt-in equality.
+($define-record-type! (vec equal) (make-vec x y) vec? (x vec-x) (y vec-y))
+(assert-true (equal? (make-vec 1 2) (make-vec 1 2)))
+(assert-false (equal? (make-vec 1 2) (make-vec 2 1)))
+(assert-true (member? (make-vec 3 4) (list (make-vec 1 2) (make-vec 3 4))))
+;; Two equatable types never compare equal.
+($define-record-type! (other equal) (make-other x y) other? (x other-x) (y other-y))
+(assert-false (equal? (make-vec 1 2) (make-other 1 2)))
+
+;; Records are distinct types; their accessors check.
+($define-record-type! wrapper (wrap-it v) wrapped? (v unwrap-it))
+($assert-error type-error (unwrap-it pt))
+
+;; Records and $match.
+($define! area
+  ($lambda (shape)
+    ($match shape
+      ((? point?) 0)
+      ((? vec? (app vec-x x) (app vec-y y)) (* x y)))))
+(assert-equal (area pt) 0)
+(assert-equal (area (make-vec 3 4)) 12)
+($assert-error match-failure (area 5))
+
+;; Raw encapsulation types.
+($define! (seal sealed? unseal) (make-encapsulation-type))
+(assert-equal (unseal (seal (list 1 2))) (list 1 2))
+(assert-false (sealed? pt))

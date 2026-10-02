@@ -41,9 +41,11 @@
 ;; length (R-1RK §6.3.1).
 ($define! %length
   ($lambda (xs acc)
-    ($cond ((eq? xs ()) acc)
-           ((%pair? xs) (%length (cdr xs) (+ acc 1)))
-           (#t (%type-error "length: not a proper list" xs)))))
+    ($if (eq? xs ())
+         acc
+         ($if (%pair? xs)
+              (%length (cdr xs) (+ acc 1))
+              (%type-error "length: not a proper list" xs)))))
 ($define! length ($lambda (xs) (%length xs 0)))
 
 ;; list-tail and list-ref (R-1RK §5.7.1, §6.3.2).
@@ -52,14 +54,19 @@
     ($cond ((eq? k 0) xs)
            ((%pair? xs) (list-tail (cdr xs) (- k 1)))
            (#t (%range-error "list-tail: list too short" xs k)))))
-($define! list-ref ($lambda (xs k) (car (list-tail xs k))))
+($define! list-ref
+  ($lambda (xs k)
+    ($let ((tail (list-tail xs k)))
+      ($if (%pair? tail) (car tail) (%range-error "list-ref: index out of range" xs k)))))
 
 ;; append (R-1RK §6.3.3): every argument but the last is copied.
 ($define! %append2
   ($lambda (a b)
-    ($cond ((eq? a ()) b)
-           ((%pair? a) (cons (car a) (%append2 (cdr a) b)))
-           (#t (%type-error "append: not a proper list" a)))))
+    ($if (eq? a ())
+         b
+         ($if (%pair? a)
+              (cons (car a) (%append2 (cdr a) b))
+              (%type-error "append: not a proper list" a)))))
 ($define! append
   ($lambda lists
     ($cond ((eq? lists ()) ())
@@ -95,9 +102,10 @@
 
 ($define! filter
   ($lambda (keep? xs)
-    ($cond ((eq? xs ()) ())
-           ((keep? (car xs)) (cons (car xs) (filter keep? (cdr xs))))
-           (#t (filter keep? (cdr xs))))))
+    ($if (eq? xs ())
+         ()
+         ($let (((x . rest) xs))
+           ($if (keep? x) (cons x (filter keep? rest)) (filter keep? rest))))))
 
 ($define! fold-left
   ($lambda (f acc xs)
@@ -122,21 +130,28 @@
     (list
       ($letrec ((equal?
                   ($lambda (a b)
-                    ($cond ((%pair? a)
-                            ($and? (%pair? b) (equal? (car a) (car b)) (equal? (cdr a) (cdr b))))
-                           ((%string? a) ($and? (%string? b) (string=? a b)))
-                           ((equatable? a)
-                            ($and? (equatable? b)
-                                   ($let ((x (unbox a)) (y (unbox b)))
-                                     ($and? (eq? (car x) (car y)) (equal? (cdr x) (cdr y))))))
-                           (($or? (%pair? b) (%string? b) (equatable? b)) #f)
-                           (#t (eq? a b))))))
+                    ($if (%pair? a)
+                         ($if (%pair? b)
+                              ($if (equal? (car a) (car b)) (equal? (cdr a) (cdr b)) #f)
+                              #f)
+                         ($if (%string? a)
+                              ($if (%string? b) (string=? a b) #f)
+                              ($if (equatable? a)
+                                   ($if (equatable? b)
+                                        ($let (((ta . fa) (unbox a)) ((tb . fb) (unbox b)))
+                                          ($if (eq? ta tb) (equal? fa fb) #f))
+                                        #f)
+                                   ($if (%pair? b)
+                                        #f
+                                        ($if (%string? b)
+                                             #f
+                                             ($if (equatable? b) #f (eq? a b))))))))))
         equal?)
       ;; A new equatable type: returns (constructor predicate accessor).
       ;; Values hold a list of fields; equal? compares them field-wise.
       ($lambda ()
         ($let* ((token (make-prompt))
-                (mine? ($lambda (v) ($and? (equatable? v) (eq? (car (unbox v)) token)))))
+                (mine? ($lambda (v) ($if (equatable? v) (eq? (car (unbox v)) token) #f))))
           (list ($lambda (fields) (box (cons token fields)))
                 mine?
                 ($lambda (v)
@@ -147,20 +162,20 @@
 ;; assoc, assq, member?, memq? (R-1RK §6.3.5–§6.3.8).
 ($define! assoc
   ($lambda (key alist)
-    ($cond ((eq? alist ()) ())
-           ((equal? key (caar alist)) (car alist))
-           (#t (assoc key (cdr alist))))))
+    ($if (eq? alist ())
+         ()
+         ($if (equal? key (caar alist)) (car alist) (assoc key (cdr alist))))))
 ($define! assq
   ($lambda (key alist)
-    ($cond ((eq? alist ()) ())
-           ((eq? key (caar alist)) (car alist))
-           (#t (assq key (cdr alist))))))
+    ($if (eq? alist ())
+         ()
+         ($if (eq? key (caar alist)) (car alist) (assq key (cdr alist))))))
 ($define! member?
   ($lambda (x xs)
-    ($cond ((eq? xs ()) #f) ((equal? x (car xs)) #t) (#t (member? x (cdr xs))))))
+    ($if (eq? xs ()) #f ($if (equal? x (car xs)) #t (member? x (cdr xs))))))
 ($define! memq?
   ($lambda (x xs)
-    ($cond ((eq? xs ()) #f) ((eq? x (car xs)) #t) (#t (memq? x (cdr xs))))))
+    ($if (eq? xs ()) #f ($if (eq? x (car xs)) #t (memq? x (cdr xs))))))
 
 ;; $match: exhaustive pattern matching. A clause is (pattern . body).
 ;; Patterns:
@@ -174,36 +189,56 @@
 ($define! %sym:? (string->symbol "?"))
 ($define! %sym:app (string->symbol "app"))
 
-($define! (%match-pattern %match-all)
+;; Bindings accumulate as a pair (symbols . values), or #f on failure.
+($define! %match-bind
+  ($lambda (sym v (syms . values)) (cons (cons sym syms) (cons v values))))
+
+;; Literals compare with eq?, except strings.
+($define! %match-literal?
+  ($lambda (pat v)
+    ($if (%string? pat)
+         ($if (%string? v) (string=? pat v) #f)
+         (eq? pat v))))
+
+($define! (%match-pattern %match-compound %match-all %match-rest)
   (list
     ($lambda (pat v env acc)
-      ($cond ((eq? pat #ignore) acc)
-             ((%symbol? pat) (cons (list pat v) acc))
-             (($and? (%pair? pat) (eq? (car pat) %sym:?))
-              ($if ((eval (cadr pat) env) v) (%match-all (cddr pat) v env acc) #f))
-             (($and? (%pair? pat) (eq? (car pat) %sym:app))
-              (%match-pattern (caddr pat) ((eval (cadr pat) env) v) env acc))
-             ((%pair? pat)
-              ($if (%pair? v)
-                   ($let ((acc (%match-pattern (car pat) (car v) env acc)))
-                     ($if (eq? acc #f) #f (%match-pattern (cdr pat) (cdr v) env acc)))
-                   #f))
-             ((equal? pat v) acc)
-             (#t #f)))
+      ($if (%symbol? pat)
+           (%match-bind pat v acc)
+           ($if (%pair? pat)
+                (%match-compound pat v env acc)
+                ($if (eq? pat #ignore)
+                     acc
+                     ($if (%match-literal? pat v) acc #f)))))
+    ($lambda ((head . tail) v env acc)
+      ($if (eq? head %sym:?)
+           ($if ((eval (car tail) env) v) (%match-all (cdr tail) v env acc) #f)
+           ($if (eq? head %sym:app)
+                (%match-pattern (cadr tail) ((eval (car tail) env) v) env acc)
+                ($if (%pair? v)
+                     (%match-rest tail (cdr v) env (%match-pattern head (car v) env acc))
+                     #f))))
     ($lambda (pats v env acc)
-      ($cond ((eq? pats ()) acc)
-             ((eq? acc #f) #f)
-             (#t (%match-all (cdr pats) v env (%match-pattern (car pats) v env acc)))))))
+      ($if (eq? pats ())
+           acc
+           ($if (eq? acc #f)
+                #f
+                (%match-all (cdr pats) v env (%match-pattern (car pats) v env acc)))))
+    ($lambda (pat v env acc)
+      ($if (eq? acc #f) #f (%match-pattern pat v env acc)))))
 
-($define! %match-clauses
-  ($lambda (v clauses env)
-    ($if (eq? clauses ())
-         (raise-error %kind:match-failure "no $match clause matches" (list v))
-         ($let ((bindings (%match-pattern (caar clauses) v env ())))
-           ($if (eq? bindings #f)
-                (%match-clauses v (cdr clauses) env)
-                (eval (%body (cdar clauses))
-                      (environment-bind env (%map1 car bindings) (%map1 cadr bindings))))))))
+($define! (%match-clauses %match-clause %match-run)
+  (list
+    ($lambda (v clauses env)
+      ($if (eq? clauses ())
+           (raise-error %kind:match-failure "no $match clause matches" (list v))
+           (%match-clause v clauses env)))
+    ($lambda (v ((pattern . body) . rest) env)
+      (%match-run (%match-pattern pattern v env (cons () ())) v body rest env))
+    ($lambda (bindings v body rest env)
+      ($if (eq? bindings #f)
+           (%match-clauses v rest env)
+           (%eval-body body (environment-bind env (car bindings) (cdr bindings)))))))
 
 ($define! $match
   ($vau (expr . clauses) env

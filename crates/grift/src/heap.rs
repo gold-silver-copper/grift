@@ -119,6 +119,39 @@ pub(crate) struct Env {
     pub(crate) len: u32,
 }
 
+/// Maximum number of parameter bindings a [`SmallEnv`] holds inline.
+pub(crate) const SMALL_ENV: usize = 3;
+
+/// The environment of an operative call, with its bindings held inline:
+/// up to [`SMALL_ENV`] parameter bindings plus the environment parameter.
+/// Most calls bind this few symbols, so a call allocates one object and a
+/// lookup in it touches a single heap slot.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SmallEnv {
+    pub(crate) parent: ObjId,
+    /// The environment parameter and the caller's environment, if bound.
+    pub(crate) eparam: Option<(SymId, ObjId)>,
+    pub(crate) len: u8,
+    pub(crate) syms: [SymId; SMALL_ENV],
+    pub(crate) vals: [Value; SMALL_ENV],
+}
+
+impl SmallEnv {
+    /// The value bound to `sym` in this frame, if any.
+    #[inline]
+    pub(crate) fn find(&self, sym: SymId) -> Option<Value> {
+        for i in 0..self.len as usize {
+            if self.syms[i] == sym {
+                return Some(self.vals[i]);
+            }
+        }
+        match self.eparam {
+            Some((s, e)) if s == sym => Some(Value::Obj(e)),
+            _ => None,
+        }
+    }
+}
+
 /// A compound operative created by `$vau`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Operative {
@@ -196,6 +229,7 @@ pub(crate) enum Object {
     Str(Box<str>),
     Log(Log),
     Env(Env),
+    SmallEnv(SmallEnv),
     Operative(Operative),
     /// An applicative wrapping the given combiner.
     Applicative(Value),
@@ -413,7 +447,10 @@ impl Heap {
         self.free = free;
         self.live = live;
         self.since_gc = 0;
-        self.threshold = MIN_THRESHOLD.max(live * 2);
+        // Collect again once the live data could have doubled, but never
+        // before the free slots are used up: a sweep costs time proportional
+        // to the whole heap, so this keeps its cost per allocation bounded.
+        self.threshold = MIN_THRESHOLD.max(live * 2).max(self.slots.len() - live);
         self.collections += 1;
     }
 }
@@ -436,8 +473,17 @@ fn trace(obj: &Object, work: &mut Vec<ObjId>) {
             push!(*a);
             push!(*b);
         }
-        // Logs and environments are traced by `Heap::collect` itself.
+        // Logs and environment views are traced by `Heap::collect` itself.
         Object::Log(_) | Object::Env(_) => {}
+        Object::SmallEnv(e) => {
+            work.push(e.parent);
+            if let Some((_, caller)) = e.eparam {
+                work.push(caller);
+            }
+            for v in &e.vals[..e.len as usize] {
+                push!(*v);
+            }
+        }
         Object::Operative(op) => {
             push!(op.ptree);
             push!(op.eparam);

@@ -5,31 +5,38 @@
 
 ;; $cond (R-1RK §5.6.1). A clause is (test . body); no clause matching
 ;; yields #inert. There is no `else`: use #t as the last test.
-($define! %cond
-  ($lambda (clauses env)
-    ($if (eq? clauses ())
-         #inert
-         ($if (eval (caar clauses) env)
-              (eval (%body (cdar clauses)) env)
-              (%cond (cdr clauses) env)))))
+($define! (%cond %cond-clause)
+  (list
+    ($lambda (clauses env)
+      ($if (eq? clauses ()) #inert (%cond-clause clauses env)))
+    ($lambda (((test . body) . rest) env)
+      ($if (eval test env)
+           (%eval-body body env)
+           (%cond rest env)))))
 
 ($define! $cond ($vau clauses env (%cond clauses env)))
 
 ;; $and? and $or? (R-1RK §6.1.4, §6.1.5): operands are evaluated left to
 ;; right until the answer is known; the last one is in tail position.
+($define! %and-operands
+  ($lambda ((first . rest) env)
+    ($if (eq? rest ())
+         (eval first env)
+         ($if (eval first env) (%and-operands rest env) #f))))
+
 ($define! %and
   ($lambda (operands env)
-    ($cond ((eq? operands ()) #t)
-           ((eq? (cdr operands) ()) (eval (car operands) env))
-           ((eval (car operands) env) (%and (cdr operands) env))
-           (#t #f))))
+    ($if (eq? operands ()) #t (%and-operands operands env))))
+
+($define! %or-operands
+  ($lambda ((first . rest) env)
+    ($if (eq? rest ())
+         (eval first env)
+         ($if (eval first env) #t (%or-operands rest env)))))
 
 ($define! %or
   ($lambda (operands env)
-    ($cond ((eq? operands ()) #f)
-           ((eq? (cdr operands) ()) (eval (car operands) env))
-           ((eval (car operands) env) #t)
-           (#t (%or (cdr operands) env)))))
+    ($if (eq? operands ()) #f (%or-operands operands env))))
 
 ($define! $and? ($vau operands env (%and operands env)))
 ($define! $or? ($vau operands env (%or operands env)))
@@ -45,30 +52,46 @@
 ($define! and? ($lambda xs (%and-values xs #t)))
 ($define! or? ($lambda xs (%or-values xs #f)))
 
-;; $let (R-1RK §5.10.1): initializers are evaluated in the outer
-;; environment; the body runs in a child binding the definiend trees.
+;; $let (R-1RK §5.10.1): initializers are evaluated, left to right, in the
+;; outer environment; the body runs in a child binding the definiend trees.
+;; One pass over the bindings builds both the list of definiends and the
+;; list of values.
 ($define! %eval-all
   ($lambda (exprs env)
     ($if (eq? exprs ()) () (cons (eval (car exprs) env) (%eval-all (cdr exprs) env)))))
 
+($define! %let-cons
+  ($lambda (ptree value (ptrees . values))
+    (cons (cons ptree ptrees) (cons value values))))
+
+($define! (%let-parts %let-step)
+  (list
+    ($lambda (bindings env)
+      ($if (eq? bindings ()) (cons () ()) (%let-step bindings env)))
+    ($lambda (((ptree expr) . rest) env)
+      (%let-cons ptree (eval expr env) (%let-parts rest env)))))
+
+($define! %let-run
+  ($lambda ((ptrees . values) body env)
+    (%eval-body body (environment-bind env ptrees values))))
+
 ($define! $let
   ($vau (bindings . body) env
-    (eval (%body body)
-          (environment-bind env
-                            (%map1 car bindings)
-                            (%eval-all (%map1 cadr bindings) env)))))
+    (%let-run (%let-parts bindings env) body env)))
 
 ;; $let* (R-1RK §6.7.4): each binding sees the previous ones.
-($define! %let*-env
-  ($lambda (bindings env)
-    ($if (eq? bindings ())
-         (environment-bind env () ())
-         (%let*-env (cdr bindings)
-                    (environment-bind env (caar bindings) (eval (cadar bindings) env))))))
+($define! (%let*-env %let*-step)
+  (list
+    ($lambda (bindings env)
+      ($if (eq? bindings ())
+           (environment-bind env () ())
+           (%let*-step bindings env)))
+    ($lambda (((ptree expr) . rest) env)
+      (%let*-env rest (environment-bind env ptree (eval expr env))))))
 
 ($define! $let*
   ($vau (bindings . body) env
-    (eval (%body body) (%let*-env bindings env))))
+    (%eval-body body (%let*-env bindings env))))
 
 ;; $letrec (R-1RK §6.7.5): all definiends are in scope in every
 ;; initializer; reading one before initialization finishes is an
@@ -121,32 +144,40 @@
 
 ;; The sigil rule at definition time: in a definiend tree, a $-prefixed
 ;; symbol must be bound to an operative and any other symbol must not be.
-($define! %dollar-symbol?
+($define! %first-is-dollar?
+  ($lambda (chars)
+    ($if (eq? chars ()) #f (eq? (car chars) #\$))))($define! %dollar-symbol?
   ($lambda (s)
-    ($let ((cs (string->list (symbol->string s))))
-      ($if (%pair? cs) (eq? (car cs) #\$) #f))))
+    (%first-is-dollar? (string->list (symbol->string s)))))
+
 
 ($define! %check-sigils
   ($lambda (definiend env)
-    ($cond ((%symbol? definiend)
-            ($if (eq? (%dollar-symbol? definiend) (%operative? (eval definiend env)))
-                 #inert
-                 (raise-error %kind:sigil-violation
-                              ($if (%dollar-symbol? definiend)
-                                   "a $-prefixed name must be bound to an operative"
-                                   "an operative must be bound to a $-prefixed name")
-                              (list definiend))))
-           ((%pair? definiend)
-            (%check-sigils (car definiend) env)
-            (%check-sigils (cdr definiend) env))
-           (#t #inert))))
+    ($if (%symbol? definiend)
+         ($if (eq? (%dollar-symbol? definiend) (%operative? (eval definiend env)))
+              #inert
+              (raise-error %kind:sigil-violation
+                           ($if (%dollar-symbol? definiend)
+                                "a $-prefixed name must be bound to an operative"
+                                "an operative must be bound to a $-prefixed name")
+                           (list definiend)))
+         ($if (%pair? definiend)
+              ($sequence (%check-sigils (car definiend) env)
+                         (%check-sigils (cdr definiend) env))
+              #inert))))
 
+($define! %checked-definition
+  ($lambda (definiend env)
+    (%check-sigils definiend env)
+    env))
+
+($define! %define-in
+  ($lambda (target definiend expr)
+    (%checked-definition definiend (environment-bind-recursive target definiend expr))))
 ;; $define! again, now checking the sigil rule once the definition is
-;; initialized.
+;; initialized. The transformer is built with the primitive $vau, since
+;; a definition is made every time a $define! form is evaluated.
 ($define! $define!
   ($vau (definiend expr) #ignore
     (make-declaration
-      ($lambda (target)
-        ($let ((env (environment-bind-recursive target definiend expr)))
-          (%check-sigils definiend env)
-          env)))))
+      (wrap ($primitive-vau (target) #ignore (%define-in target definiend expr))))))

@@ -132,6 +132,7 @@ impl Machine {
         roots.push(Value::Obj(self.prim_env));
         roots.push(Value::Obj(self.error_prompt));
         self.ctx.heap.collect(roots);
+        self.ctx.clear_lookup_cache();
     }
 
     pub(crate) fn push_frame(&mut self, kind: FrameKind) -> ObjId {
@@ -271,7 +272,7 @@ impl Machine {
 
     /// Evaluate an operand that is not a combination.
     #[inline]
-    fn eval_simple(&self, expr: Value, env: ObjId) -> GResult<Value> {
+    fn eval_simple(&mut self, expr: Value, env: ObjId) -> GResult<Value> {
         match expr {
             Value::Sym(s) => self.ctx.lookup(env, s),
             _ => Ok(expr),
@@ -344,12 +345,11 @@ impl Machine {
             self.bindbuf = binds;
             return Err(e);
         }
-        if let Value::Sym(e) = op.eparam {
-            binds.push((e, Value::Obj(env)));
-        }
-        let local = self
-            .ctx
-            .extend_fresh(op.env, binds.drain(..).map(|(s, v)| (s, Some(v))));
+        let eparam = match op.eparam {
+            Value::Sym(e) => Some((e, env)),
+            _ => None,
+        };
+        let local = self.ctx.call_env(op.env, &binds, eparam);
         self.bindbuf = binds;
         Ok(Ctl::Eval(op.body, local))
     }
@@ -450,9 +450,11 @@ impl Machine {
                     Ok(v) => Ok(Ctl::Ret(v)),
                     Err(e) => Err(self.error_to_fault(e)),
                 },
-                Object::Applicative(inner) => {
+                // An applicative under an applicative: its own layer
+                // evaluates the arguments again, as operands.
+                Object::Applicative(_) => {
                     let operands = self.ctx.list(args);
-                    Ok(Ctl::Apply(inner, operands, env))
+                    Ok(Ctl::Apply(c, operands, env))
                 }
                 _ => Err(self.not_combiner(c)),
             },

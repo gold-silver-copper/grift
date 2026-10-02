@@ -12,12 +12,25 @@ use crate::value::{ObjId, SymId, Value};
 ///
 /// Native functions receive a `&mut Ctx` to inspect their arguments and
 /// build results.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Ctx {
     pub(crate) heap: Heap,
     pub(crate) syms: Symbols,
     /// Tag for the next encapsulation type.
     pub(crate) next_tag: u32,
+    /// Memoized environment lookups; see [`Ctx::lookup`].
+    pub(crate) lookup_cache: Vec<(u32, u32, Value)>,
+}
+
+impl Default for Ctx {
+    fn default() -> Self {
+        Ctx {
+            heap: Heap::default(),
+            syms: Symbols::default(),
+            next_tag: 0,
+            lookup_cache: alloc::vec![crate::env::EMPTY_CACHE_ENTRY; crate::env::LOOKUP_CACHE_SIZE],
+        }
+    }
 }
 
 impl Ctx {
@@ -129,7 +142,7 @@ impl Ctx {
     }
 
     pub(crate) fn is_env(&self, v: Value) -> bool {
-        matches!(self.obj(v), Some(Object::Env(_)))
+        matches!(self.obj(v), Some(Object::Env(_) | Object::SmallEnv(_)))
     }
 
     pub(crate) fn is_operative(&self, v: Value) -> bool {
@@ -165,7 +178,7 @@ impl Ctx {
             Value::Obj(id) => match self.heap.get(id) {
                 Object::Pair(..) => "pair",
                 Object::Str(_) => "string",
-                Object::Env(_) => "environment",
+                Object::Env(_) | Object::SmallEnv(_) => "environment",
                 Object::Operative(_) | Object::PrimData(..) | Object::Native(_) => "operative",
                 Object::Applicative(_) => "applicative",
                 Object::Encap(..) => "encapsulation",
@@ -200,7 +213,9 @@ impl Ctx {
 
     pub(crate) fn expect_env(&self, v: Value) -> GResult<ObjId> {
         match v {
-            Value::Obj(id) if matches!(self.heap.get(id), Object::Env(_)) => Ok(id),
+            Value::Obj(id) if matches!(self.heap.get(id), Object::Env(_) | Object::SmallEnv(_)) => {
+                Ok(id)
+            }
             _ => Err(self.type_error("an environment", v)),
         }
     }
