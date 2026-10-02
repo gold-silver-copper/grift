@@ -1,0 +1,57 @@
+
+name:                elabzoo-sigma-unification
+version:             0.1.0.0
+github:              "AndrasKovacs/elaboration-zoo"
+license:             BSD3
+author:              "András Kovács"
+maintainer:          "puttamalac@gmail.com"
+copyright:           "2019 András Kovács"
+category:            Language
+
+description:         "Small implementations of elaborators for type theories, with varying complexity and feature set"
+
+default-extensions:
+- BangPatterns
+- BlockArguments
+- ConstraintKinds
+- DeriveAnyClass
+- DerivingVia
+- EmptyCase
+- FlexibleContexts
+- FlexibleInstances
+- GeneralizedNewtypeDeriving
+- LambdaCase
+- OverloadedStrings
+- PatternSynonyms
+- ScopedTypeVariables
+- StandaloneDeriving
+- MultiParamTypeClasses
+- ScopedTypeVariables
+- Strict
+- TypeApplications
+- TemplateHaskell
+- FunctionalDependencies
+- TupleSections
+- ViewPatterns
+- MagicHash
+
+ghc-options:
+- -Wall
+- -Wno-name-shadowing
+- -Wno-missing-signatures
+- -Wno-unused-do-bind
+- -Wno-unused-matches
+
+dependencies:
+- base >= 4.7 && < 5
+- containers
+- megaparsec
+- microlens-platform
+- mtl
+
+source-dirs: .
+
+executable:
+  main: Main.hs
+  ghc-options:
+  - -O
