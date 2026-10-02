@@ -32,7 +32,9 @@ impl Ctx {
             let len = u32::try_from(l.entries.len()).expect("environment too large");
             self.heap.alloc(Object::Env(Env { log, len }))
         } else {
-            let l = Log::new(Some(parent), entries.into_iter().collect());
+            let mut v = self.heap.entry_vec();
+            v.extend(entries);
+            let l = Log::new(Some(parent), v);
             let len = u32::try_from(l.entries.len()).expect("environment too large");
             let log = self.heap.alloc(Object::Log(l));
             self.heap.alloc(Object::Env(Env { log, len }))
@@ -134,10 +136,15 @@ impl Ctx {
 
     /// Match a validated parameter tree against `value`, appending the
     /// bindings (in the same order as [`Ctx::ptree_symbols`]) to `out`.
+    ///
+    /// `spine` is true when `value` is an operand list: shape mismatches
+    /// along its spine are arity errors, mismatches inside elements are
+    /// type errors.
     pub(crate) fn match_ptree(
         &self,
         mut ptree: Value,
         mut value: Value,
+        spine: bool,
         out: &mut Vec<(SymId, Value)>,
     ) -> GResult<()> {
         loop {
@@ -151,15 +158,15 @@ impl Ctx {
                     return if value == Value::Nil {
                         Ok(())
                     } else {
-                        Err(self.mismatch(ptree, value))
+                        Err(self.mismatch(ptree, value, spine))
                     };
                 }
                 _ => {
                     let (pa, pd) = self.pair(ptree).expect("validated parameter tree");
                     let Some((va, vd)) = self.pair(value) else {
-                        return Err(self.mismatch(ptree, value));
+                        return Err(self.mismatch(ptree, value, spine));
                     };
-                    self.match_ptree(pa, va, out)?;
+                    self.match_ptree(pa, va, false, out)?;
                     ptree = pd;
                     value = vd;
                 }
@@ -189,15 +196,15 @@ impl Ctx {
                         Ok(())
                     } else {
                         let rest = self.list(&args[i..]);
-                        Err(self.mismatch(ptree, rest))
+                        Err(self.mismatch(ptree, rest, true))
                     };
                 }
                 _ => {
                     let (pa, pd) = self.pair(ptree).expect("validated parameter tree");
                     if i == args.len() {
-                        return Err(self.mismatch(ptree, Value::Nil));
+                        return Err(self.mismatch(ptree, Value::Nil, true));
                     }
-                    self.match_ptree(pa, args[i], out)?;
+                    self.match_ptree(pa, args[i], false, out)?;
                     i += 1;
                     ptree = pd;
                 }
@@ -205,14 +212,10 @@ impl Ctx {
         }
     }
 
-    fn mismatch(&self, ptree: Value, value: Value) -> Fault {
+    fn mismatch(&self, ptree: Value, value: Value, spine: bool) -> Fault {
         Fault::new(
-            "arity-error",
-            format!(
-                "{} does not match parameter tree {}",
-                self.write(value),
-                self.write(ptree)
-            ),
+            if spine { "arity-error" } else { "type-error" },
+            "value does not match parameter tree",
         )
         .with(ptree)
         .with(value)

@@ -55,7 +55,13 @@ use machine::{Ctl, Machine};
 pub type NativeFn = fn(&mut Ctx, &[Value]) -> Result<Value, Error>;
 
 /// The bundled library, loaded in order into the ground environment.
-const LIBRARY: &[(&str, &str)] = &[];
+const LIBRARY: &[(&str, &str)] = &[
+    ("00-boot.grift", include_str!("../lib/00-boot.grift")),
+    ("10-control.grift", include_str!("../lib/10-control.grift")),
+    ("20-env.grift", include_str!("../lib/20-env.grift")),
+    ("30-list.grift", include_str!("../lib/30-list.grift")),
+    ("40-integer.grift", include_str!("../lib/40-integer.grift")),
+];
 
 /// A grift interpreter.
 ///
@@ -193,6 +199,12 @@ impl Grift {
     pub fn collect_garbage(&mut self) {
         self.m.ctx.heap.since_gc = usize::MAX;
         let _ = self.m.run(Ctl::Ret(Value::Inert));
+    }
+
+    /// Number of machine steps taken so far (always 0 unless the `stats`
+    /// feature is enabled).
+    pub fn steps(&self) -> u64 {
+        self.m.steps
     }
 
     /// Heap occupancy statistics.

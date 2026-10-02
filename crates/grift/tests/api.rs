@@ -39,7 +39,8 @@ fn bare_primitives() {
         "ERR type-error: expected a boolean, got integer 0"
     );
     assert!(run(&mut g, "($car 1)").starts_with("ERR unbound-symbol"));
-    assert!(run(&mut g, "(eq? (cons 1 2) 3)").starts_with("ERR type-error"));
+    assert!(run(&mut g, "(eq? (cons 1 2) (cons 1 2))").starts_with("ERR type-error"));
+    assert_eq!(run(&mut g, "(eq? (cons 1 2) 3)"), "#f");
     assert!(run(&mut g, "(+ 9223372036854775807 1)").starts_with("ERR overflow"));
 }
 

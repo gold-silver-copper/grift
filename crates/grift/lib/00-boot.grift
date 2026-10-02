@@ -1,0 +1,115 @@
+;;;; 00-boot.grift — bootstrap the language from the Rust primitives.
+;;;;
+;;;; At this point only the primitives exist: $vau (one body expression),
+;;;; wrap, unwrap, eval, cons, eq?, select, the environment and declaration
+;;;; primitives, and so on. There is no $define!, no $if, no $lambda, and no
+;;;; way to quote data except by abusing an operative:
+;;;;
+;;;;     (($vau (x) #ignore x) name)   ; evaluates to the symbol `name`
+;;;;
+;;;; Every top-level form here evaluates to a declaration, which the loader
+;;;; applies to the ground environment.
+
+;; $define! (R-1RK §4.9.1, re-derived without mutation): a definition is a
+;; declaration whose transformer binds the definiend tree recursively in a
+;; new child of the environment it is applied to.
+(make-declaration
+  (wrap ($vau (env) #ignore
+    (environment-bind env (($vau (x) #ignore x) $define!)
+      ($vau (definiend expr) #ignore
+        (make-declaration
+          (wrap ($vau (target) #ignore
+            (environment-bind-recursive target definiend expr)))))))))
+
+;; The primitive single-body $vau, kept under its own name because the
+;; library shadows $vau with a multi-body version below.
+($define! $primitive-vau $vau)
+
+;; Lists and pair accessors via parameter trees (R-1RK §5.2.1, §4.6.1).
+($define! list (wrap ($vau objects #ignore objects)))
+($define! car (wrap ($vau ((x . #ignore)) #ignore x)))
+($define! cdr (wrap ($vau ((#ignore . x)) #ignore x)))
+($define! caar (wrap ($vau (((x . #ignore) . #ignore)) #ignore x)))
+($define! cadr (wrap ($vau ((#ignore x . #ignore)) #ignore x)))
+($define! cdar (wrap ($vau (((#ignore . x) . #ignore)) #ignore x)))
+($define! cddr (wrap ($vau ((#ignore #ignore . x)) #ignore x)))
+($define! caddr (wrap ($vau ((#ignore #ignore x . #ignore)) #ignore x)))
+($define! cdddr (wrap ($vau ((#ignore #ignore #ignore . x)) #ignore x)))
+($define! cadar (wrap ($vau (((#ignore x . #ignore) . #ignore)) #ignore x)))
+($define! cddar (wrap ($vau (((#ignore #ignore . x) . #ignore)) #ignore x)))
+
+;; $if (R-1RK §4.5.2) is not primitive: `select` picks a branch strictly,
+;; and the chosen branch is evaluated in tail position.
+($define! $if
+  ($vau (test consequent alternative) env
+    (eval (select (eval test env) consequent alternative) env)))
+
+;; Unary predicates used internally; the n-ary Kernel versions come later
+;; and shadow the primitives (R-1RK predicates take any number of objects).
+($define! %null? (wrap ($vau (x) #ignore (eq? x ()))))
+($define! %pair? pair?)
+($define! %symbol? symbol?)
+($define! %integer? integer?)
+($define! %char? char?)
+($define! %string? string?)
+($define! %environment? environment?)
+($define! %operative? operative?)
+($define! %applicative? applicative?)
+($define! %declaration? declaration?)
+($define! %prompt? prompt?)
+($define! %sub-continuation? sub-continuation?)
+
+;; $sequence (R-1RK §5.1.1), declaration-aware: each non-final form is
+;; evaluated; a declaration result is applied to the current environment
+;; and the forms after it see the environment it returns. The final form
+;; is evaluated in tail position.
+($define! (%sequence %sequence-step)
+  (list
+    (wrap ($vau (forms env) #ignore
+      ($if (eq? (cdr forms) ())
+           (eval (car forms) env)
+           (%sequence-step (eval (car forms) env) (cdr forms) env))))
+    (wrap ($vau (value forms env) #ignore
+      (%sequence forms
+                 ($if (%declaration? value) (apply-declaration value env) env))))))
+
+($define! $sequence
+  ($vau body env
+    ($if (eq? body ()) #inert (%sequence body env))))
+
+;; The expression that evaluates a body: the form itself when there is
+;; exactly one, a $sequence otherwise.
+($define! %body
+  (wrap ($vau (body) #ignore
+    ($if (%pair? body)
+         ($if (eq? (cdr body) ()) (car body) (cons $sequence body))
+         (cons $sequence body)))))
+
+;; Multi-body $vau (R-1RK §4.10.3), shadowing the primitive.
+($define! $vau
+  ((wrap ($primitive-vau ($vau0) #ignore
+     ($vau0 (ptree eparam . body) env
+       (eval (cons $vau0 (cons ptree (cons eparam (cons (%body body) ()))))
+             env))))
+   $primitive-vau))
+
+;; $lambda (R-1RK §4.9.1).
+($define! $lambda
+  ($vau (ptree . body) env
+    (wrap (eval (cons $vau (cons ptree (cons #ignore body))) env))))
+
+;; apply (R-1RK §5.5.1).
+($define! apply
+  ($lambda (appv arg . opt)
+    (eval (cons (unwrap appv) arg)
+          ($if (eq? opt ()) (make-environment) (car opt)))))
+
+;; list* (R-1RK §5.2.2).
+($define! list*
+  ($lambda (first . rest)
+    ($if (eq? rest ()) first (cons first (apply list* rest)))))
+
+;; Single-list map used before the full n-ary map exists.
+($define! %map1
+  ($lambda (f xs)
+    ($if (eq? xs ()) () (cons (f (car xs)) (%map1 f (cdr xs))))))

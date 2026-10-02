@@ -1,0 +1,57 @@
+;;;; 20-env.grift — environments and modules.
+;;;;
+;;;; Environments are immutable: nothing here changes an existing
+;;;; environment. ($binds? needs error handling and lives in 50-control;
+;;;; $let-safe and make-kernel-standard-environment need the finished ground
+;;;; environment and live in 99-standard.)
+
+;; get-current-environment (R-1RK §6.7.1).
+($define! get-current-environment (wrap ($vau () e e)))
+
+;; $remote-eval (R-1RK §6.7.9).
+($define! $remote-eval
+  ($vau (expr env-expr) env
+    (eval expr (eval env-expr env))))
+
+;; $let-redirect (R-1RK §6.7.7): initializers in the calling environment,
+;; body in a child of the given one.
+($define! $let-redirect
+  ($vau (env-expr bindings . body) env
+    (eval (%body body)
+          (environment-bind (eval env-expr env)
+                            (%map1 car bindings)
+                            (%eval-all (%map1 cadr bindings) env)))))
+
+;; $bindings->environment (R-1RK §6.7.10): a fresh environment with no
+;; parent holding exactly the given bindings.
+($define! $bindings->environment
+  ($vau bindings env
+    (environment-bind (make-environment)
+                      (%map1 car bindings)
+                      (%eval-all (%map1 cadr bindings) env))))
+
+;; $module replaces Kernel's $provide!: it evaluates a body (declarations
+;; included) in a child of the current environment and returns the
+;; environment the body ends in.
+($define! %module
+  ($lambda (forms env)
+    ($if (eq? forms ())
+         env
+         (%module (cdr forms)
+                  ($let ((value (eval (car forms) env)))
+                    ($if (%declaration? value) (apply-declaration value env) env))))))
+
+($define! $module
+  ($vau body env (%module body (environment-bind env () ()))))
+
+;; $import! (R-1RK §6.8.2), as a declaration: binds the listed symbols to
+;; their values in the given environment. The environment expression is
+;; evaluated when the declaration is made.
+($define! $import!
+  ($vau (env-expr . symbols) env
+    ($let ((source (eval env-expr env)))
+      (make-declaration
+        ($lambda (target)
+          (environment-bind target
+                            symbols
+                            (%map1 ($lambda (s) (eval s source)) symbols)))))))

@@ -1,0 +1,107 @@
+;;;; 40-integer.grift — integer arithmetic (R-1RK §12, integer module).
+;;;;
+;;;; The primitives are binary and checked: overflow raises `overflow`,
+;;;; division by zero raises `division-by-zero`. This file builds Kernel's
+;;;; n-ary versions on top of them under the same names.
+
+($define! %+ +)
+($define! %- -)
+($define! %* *)
+($define! %div div)
+($define! %<? <?)
+
+($define! %check-integers
+  ($lambda (xs)
+    ($if (eq? xs ())
+         #inert
+         ($if (%integer? (car xs))
+              (%check-integers (cdr xs))
+              (%type-error "expected an integer" (car xs))))))
+
+;; + and * (R-1RK §12.5.4, §12.5.5). Arguments are destructured with
+;; parameter trees rather than car/cdr to keep the common two-argument case
+;; cheap.
+($define! %fold-integers
+  ($lambda (op acc (y . more))
+    ($if (eq? more ()) (op acc y) (%fold-integers op (op acc y) more))))
+
+($define! %n-ary-integer-op
+  ($lambda (op identity)
+    ($lambda objects
+      ($if (eq? objects ())
+           identity
+           (%fold-integers op identity objects)))))
+
+($define! + (%n-ary-integer-op %+ 0))
+($define! * (%n-ary-integer-op %* 1))
+
+;; - (R-1RK §12.5.6): at least two arguments.
+($define! -
+  ($lambda (x y . more)
+    ($if (eq? more ()) (%- x y) (%fold-integers %- (%- x y) more))))
+
+;; Comparisons (R-1RK §12.5.2): =? <? <=? >? >=? take two or more
+;; integers and test each adjacent pair. Every argument is type-checked
+;; even when the answer is already known.
+($define! %chain
+  ($lambda (ok? x (y . more))
+    ($if (ok? x y)
+         ($if (eq? more ()) #t (%chain ok? y more))
+         ($sequence (%check-integers more) #f))))
+
+($define! %=?
+  ($lambda (a b)
+    ($if (%integer? a)
+         ($if (%integer? b) (eq? a b) (%type-error "expected an integer" b))
+         (%type-error "expected an integer" a))))
+($define! %<=? ($lambda (a b) (not? (%<? b a))))
+($define! %>? ($lambda (a b) (%<? b a)))
+($define! %>=? ($lambda (a b) (not? (%<? a b))))
+
+($define! %comparison
+  ($lambda (ok?)
+    ($lambda (x y . more)
+      ($if (eq? more ()) (ok? x y) (%chain ok? x (cons y more))))))
+
+($define! =? (%comparison %=?))
+($define! <? ($lambda (x y . more) ($if (eq? more ()) (%<? x y) (%chain %<? x (cons y more)))))
+($define! <=? (%comparison %<=?))
+($define! >? (%comparison %>?))
+($define! >=? (%comparison %>=?))
+
+;; Euclidean division (R-1RK §12.5.11): 0 <= (mod n d) < |d|.
+($define! div %div)
+($define! mod ($lambda (n d) (%- n (%* d (%div n d)))))
+($define! div-and-mod ($lambda (n d) ($let ((q (%div n d))) (list q (%- n (%* d q))))))
+
+;; Sign predicates and friends (R-1RK §12.5.3, §12.5.10, §12.5.12).
+($define! zero? (%n-ary-predicate ($lambda (n) (%=? n 0))))
+($define! positive? (%n-ary-predicate ($lambda (n) (%<? 0 n))))
+($define! negative? (%n-ary-predicate ($lambda (n) (%<? n 0))))
+($define! even? (%n-ary-predicate ($lambda (n) (%=? (mod n 2) 0))))
+($define! odd? (%n-ary-predicate ($lambda (n) (%=? (mod n 2) 1))))
+
+($define! abs ($lambda (n) ($if (%<? n 0) (%- 0 n) ($sequence (%check-integers (list n)) n))))
+
+($define! %extremum
+  ($lambda (better? x xs)
+    ($cond ((eq? xs ()) x)
+           ((better? (car xs) x) (%extremum better? (car xs) (cdr xs)))
+           (#t (%extremum better? x (cdr xs))))))
+($define! max ($lambda (x . xs) (%check-integers (cons x xs)) (%extremum %>? x xs)))
+($define! min ($lambda (x . xs) (%check-integers (cons x xs)) (%extremum %<? x xs)))
+
+($define! %gcd2 ($lambda (a b) ($if (%=? b 0) (abs a) (%gcd2 b (mod a b)))))
+($define! gcd ($lambda xs (fold-left %gcd2 0 xs)))
+($define! %lcm2
+  ($lambda (a b)
+    ($if ($or? (%=? a 0) (%=? b 0)) 0 (abs (%* (%div a (%gcd2 a b)) b)))))
+($define! lcm ($lambda xs (fold-left %lcm2 1 xs)))
+
+;; expt for a non-negative integer exponent, by repeated squaring.
+($define! expt
+  ($lambda (base e)
+    ($cond ((%<? e 0) (%range-error "expt: negative exponent" e))
+           ((%=? e 0) (%check-integers (list base)) 1)
+           ((even? e) ($let ((h (expt base (%div e 2)))) (%* h h)))
+           (#t (%* base (expt base (%- e 1)))))))

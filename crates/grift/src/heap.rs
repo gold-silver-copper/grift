@@ -6,14 +6,46 @@
 //! binding changing value.
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::NativeFn;
 use crate::value::{ObjId, PrimId, SymId, Value};
 
 /// Logs with at least this many entries get a symbol index.
-const INDEX_THRESHOLD: usize = 24;
+const INDEX_THRESHOLD: usize = 16;
+
+/// Marks "no position" in a [`LogIndex`].
+const NONE: u32 = u32::MAX;
+
+/// An index over a large log: for each symbol the position of its latest
+/// entry, and for each entry the position of the previous entry for the
+/// same symbol. Finding the latest entry visible in a view walks the
+/// `prev` chain past entries the view cannot see, which is short because
+/// symbols are rarely rebound.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LogIndex {
+    last: Vec<u32>,
+    prev: Vec<u32>,
+}
+
+impl LogIndex {
+    fn push(&mut self, sym: SymId, pos: u32) {
+        let s = sym.0 as usize;
+        if s >= self.last.len() {
+            self.last.resize(s + 1, NONE);
+        }
+        self.prev.push(self.last[s]);
+        self.last[s] = pos;
+    }
+
+    fn find(&self, sym: SymId, len: u32) -> Option<usize> {
+        let mut p = *self.last.get(sym.0 as usize)?;
+        while p != NONE && p >= len {
+            p = self.prev[p as usize];
+        }
+        (p != NONE).then_some(p as usize)
+    }
+}
 
 /// An append-only log of bindings shared by a family of environments.
 ///
@@ -30,8 +62,8 @@ pub(crate) struct Log {
     /// Bindings in definition order. `None` marks a recursive binding that
     /// has not been initialized yet.
     pub(crate) entries: Vec<(SymId, Option<Value>)>,
-    /// Positions of each symbol's entries, built once the log is large.
-    pub(crate) index: Option<BTreeMap<SymId, Vec<u32>>>,
+    /// Built once the log is large.
+    pub(crate) index: Option<Box<LogIndex>>,
 }
 
 impl Log {
@@ -52,7 +84,7 @@ impl Log {
             let pos = u32::try_from(self.entries.len()).expect("environment too large");
             self.entries.push((sym, val));
             if let Some(index) = &mut self.index {
-                index.entry(sym).or_default().push(pos);
+                index.push(sym, pos);
             }
         }
         self.maybe_index();
@@ -60,20 +92,19 @@ impl Log {
 
     fn maybe_index(&mut self) {
         if self.index.is_none() && self.entries.len() >= INDEX_THRESHOLD {
-            let mut index: BTreeMap<SymId, Vec<u32>> = BTreeMap::new();
+            let mut index = LogIndex::default();
             for (pos, (sym, _)) in self.entries.iter().enumerate() {
-                index.entry(*sym).or_default().push(pos as u32);
+                index.push(*sym, pos as u32);
             }
-            self.index = Some(index);
+            self.index = Some(Box::new(index));
         }
     }
 
     /// Find the latest entry for `sym` among the first `len` entries.
+    #[inline]
     pub(crate) fn find(&self, sym: SymId, len: u32) -> Option<usize> {
         if let Some(index) = &self.index {
-            let positions = index.get(&sym)?;
-            let n = positions.partition_point(|&p| p < len);
-            return n.checked_sub(1).map(|i| positions[i] as usize);
+            return index.find(sym, len);
         }
         self.entries[..len as usize]
             .iter()
@@ -204,7 +235,12 @@ pub(crate) struct Heap {
     /// Collect once `since_gc` exceeds this.
     pub(crate) threshold: usize,
     collections: usize,
+    /// Entry vectors of collected logs, kept for reuse.
+    pool: Vec<Vec<(SymId, Option<Value>)>>,
 }
+
+/// Maximum number of entry vectors kept for reuse.
+const POOL_LIMIT: usize = 4096;
 
 /// Minimum number of allocations between collections.
 const MIN_THRESHOLD: usize = 1 << 16;
@@ -219,11 +255,18 @@ impl Default for Heap {
             since_gc: 0,
             threshold: MIN_THRESHOLD,
             collections: 0,
+            pool: Vec::new(),
         }
     }
 }
 
 impl Heap {
+    /// An empty entry vector, recycled from a collected log when possible.
+    #[inline]
+    pub(crate) fn entry_vec(&mut self) -> Vec<(SymId, Option<Value>)> {
+        self.pool.pop().unwrap_or_default()
+    }
+
     /// Allocate an object.
     pub(crate) fn alloc(&mut self, obj: Object) -> ObjId {
         self.live += 1;
@@ -313,7 +356,15 @@ impl Heap {
                 self.marks[i] = false;
                 live += 1;
             } else {
-                self.slots[i] = Object::Free(free);
+                let old = core::mem::replace(&mut self.slots[i], Object::Free(free));
+                if let Object::Log(log) = old
+                    && self.pool.len() < POOL_LIMIT
+                    && log.entries.capacity() <= 16
+                {
+                    let mut v = log.entries;
+                    v.clear();
+                    self.pool.push(v);
+                }
                 free = Some(i as u32);
             }
         }

@@ -48,6 +48,8 @@ pub(crate) struct Machine {
     argbuf: Vec<Value>,
     /// Scratch buffer for parameter-tree bindings.
     bindbuf: Vec<(SymId, Value)>,
+    /// Machine steps taken (only counted with the `stats` feature).
+    pub(crate) steps: u64,
 }
 
 impl Machine {
@@ -64,6 +66,7 @@ impl Machine {
             error_prompt,
             argbuf: Vec::new(),
             bindbuf: Vec::new(),
+            steps: 0,
         };
         m.prim_env = prims::install(&mut m);
         m
@@ -79,6 +82,10 @@ impl Machine {
         debug_assert_eq!(self.ctx.heap.frame(host).parent, None);
         let mut ctl = ctl;
         loop {
+            #[cfg(feature = "stats")]
+            {
+                self.steps += 1;
+            }
             if self.ctx.heap.since_gc >= self.ctx.heap.threshold {
                 self.collect(ctl);
             }
@@ -327,7 +334,7 @@ impl Machine {
         binds.clear();
         let r = match args {
             Some(args) => self.ctx.match_ptree_slice(op.ptree, args, &mut binds),
-            None => self.ctx.match_ptree(op.ptree, operands, &mut binds),
+            None => self.ctx.match_ptree(op.ptree, operands, true, &mut binds),
         };
         if let Err(e) = r {
             self.bindbuf = binds;

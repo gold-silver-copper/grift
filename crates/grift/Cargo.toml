@@ -8,6 +8,8 @@ description = "A minimal, pure, type-strict Lisp built on Shutt's vau calculus"
 
 [features]
 repl = ["dep:rustyline"]
+# Count machine steps (for profiling).
+stats = []
 
 [dependencies]
 rustyline = { version = "17.0.2", optional = true }

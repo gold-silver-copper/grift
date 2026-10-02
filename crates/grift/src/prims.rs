@@ -219,7 +219,7 @@ fn p_environment_bind(m: &mut Machine, args: &[Value], _: ObjId, _: Value) -> GR
     let mut syms = Vec::new();
     m.ctx.ptree_symbols(ptree, &mut syms)?;
     let mut binds = Vec::new();
-    m.ctx.match_ptree(ptree, value, &mut binds)?;
+    m.ctx.match_ptree(ptree, value, false, &mut binds)?;
     let child = m
         .ctx
         .extend(env, binds.into_iter().map(|(s, v)| (s, Some(v))));
@@ -250,7 +250,7 @@ pub(crate) fn init_recursive(
     value: Value,
 ) -> GResult<()> {
     let mut binds: Vec<(SymId, Value)> = Vec::new();
-    m.ctx.match_ptree(ptree, value, &mut binds)?;
+    m.ctx.match_ptree(ptree, value, false, &mut binds)?;
     let e = m.ctx.heap.env(env);
     let start = e.len as usize - binds.len();
     let log = m.ctx.heap.log_mut(e.log);
@@ -312,23 +312,29 @@ fn p_cons(m: &mut Machine, args: &[Value], _: ObjId, _: Value) -> GResult<Ctl> {
 }
 
 /// `eq?` is identity. Immutable structured data (pairs, strings,
-/// encapsulated values) has no identity, so `eq?` refuses it.
+/// encapsulated values) has no identity, so comparing two structured values
+/// of the same kind is an error; comparing anything else (including a
+/// structured value against a value of another kind, e.g. `(eq? x ())`)
+/// answers without exposing identity.
 fn p_eq(m: &mut Machine, args: &[Value], _: ObjId, _: Value) -> GResult<Ctl> {
     let [a, b] = arity(m, "eq?", args)?;
-    for v in [a, b] {
-        if matches!(
-            m.ctx.obj(v),
-            Some(Object::Pair(..) | Object::Str(_) | Object::Encap(..))
-        ) {
-            return Err(Fault::new(
-                "type-error",
-                format!(
-                    "eq? is not defined on {}s: immutable structured data has no identity; use equal?",
-                    m.ctx.type_name(v)
-                ),
-            )
-            .with(v));
-        }
+    let kind = |v: Value| match m.ctx.obj(v) {
+        Some(Object::Pair(..)) => 1,
+        Some(Object::Str(_)) => 2,
+        Some(Object::Encap(..)) => 3,
+        _ => 0,
+    };
+    let (ka, kb) = (kind(a), kind(b));
+    if ka != 0 && ka == kb {
+        return Err(Fault::new(
+            "type-error",
+            format!(
+                "eq? cannot compare two {}s: immutable structured data has no identity; use equal?",
+                m.ctx.type_name(a)
+            ),
+        )
+        .with(a)
+        .with(b));
     }
     Ok(Ctl::Ret(Value::Bool(a == b)))
 }
