@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "A simple minimalistic Lisp with a built-in arena allocator"
+description = "A minimal, pure, type-strict Lisp built on Shutt's vau calculus"
 
 [features]
 repl = ["dep:rustyline"]
