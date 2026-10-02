@@ -41,6 +41,21 @@ impl Ctx {
         }
     }
 
+    /// A new child of `parent` holding `entries`, always in a fresh log.
+    /// Used for operative calls, whose frames are short-lived and must not
+    /// grow a shared log.
+    pub(crate) fn extend_fresh(
+        &mut self,
+        parent: ObjId,
+        entries: impl IntoIterator<Item = (SymId, Option<Value>)>,
+    ) -> ObjId {
+        let mut v = self.heap.entry_vec();
+        v.extend(entries);
+        let len = u32::try_from(v.len()).expect("environment too large");
+        let log = self.heap.alloc(Object::Log(Log::new(Some(parent), v)));
+        self.heap.alloc(Object::Env(Env { log, len }))
+    }
+
     /// Look `sym` up in `env`.
     pub(crate) fn lookup(&self, env: ObjId, sym: SymId) -> GResult<Value> {
         let mut cur = env;

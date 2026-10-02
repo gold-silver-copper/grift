@@ -197,7 +197,7 @@ impl Grift {
 
     /// Run a full garbage collection now.
     pub fn collect_garbage(&mut self) {
-        self.m.ctx.heap.since_gc = usize::MAX;
+        self.m.force_gc = true;
         let _ = self.m.run(Ctl::Ret(Value::Inert));
     }
 

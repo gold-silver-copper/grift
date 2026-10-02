@@ -48,6 +48,8 @@ pub(crate) struct Machine {
     argbuf: Vec<Value>,
     /// Scratch buffer for parameter-tree bindings.
     bindbuf: Vec<(SymId, Value)>,
+    /// Collect at the next safe point regardless of allocation volume.
+    pub(crate) force_gc: bool,
     /// Machine steps taken (only counted with the `stats` feature).
     pub(crate) steps: u64,
 }
@@ -66,6 +68,7 @@ impl Machine {
             error_prompt,
             argbuf: Vec::new(),
             bindbuf: Vec::new(),
+            force_gc: false,
             steps: 0,
         };
         m.prim_env = prims::install(&mut m);
@@ -86,7 +89,8 @@ impl Machine {
             {
                 self.steps += 1;
             }
-            if self.ctx.heap.since_gc >= self.ctx.heap.threshold {
+            if self.ctx.heap.since_gc >= self.ctx.heap.threshold || self.force_gc {
+                self.force_gc = false;
                 self.collect(ctl);
             }
             let step = match ctl {
@@ -345,7 +349,7 @@ impl Machine {
         }
         let local = self
             .ctx
-            .extend(op.env, binds.drain(..).map(|(s, v)| (s, Some(v))));
+            .extend_fresh(op.env, binds.drain(..).map(|(s, v)| (s, Some(v))));
         self.bindbuf = binds;
         Ok(Ctl::Eval(op.body, local))
     }

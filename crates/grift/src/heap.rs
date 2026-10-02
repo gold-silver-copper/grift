@@ -90,7 +90,7 @@ impl Log {
         self.maybe_index();
     }
 
-    fn maybe_index(&mut self) {
+    pub(crate) fn maybe_index(&mut self) {
         if self.index.is_none() && self.entries.len() >= INDEX_THRESHOLD {
             let mut index = LogIndex::default();
             for (pos, (sym, _)) in self.entries.iter().enumerate() {
@@ -334,6 +334,11 @@ impl Heap {
     }
 
     /// Mark everything reachable from `roots` and free everything else.
+    ///
+    /// A log's entries are traced only up to the longest view of it that is
+    /// still live; entries beyond that can never be seen again, so they are
+    /// dropped. This reclaims bindings appended by environments that have
+    /// since become garbage.
     pub(crate) fn collect(&mut self, roots: impl IntoIterator<Item = Value>) {
         let mut work: Vec<ObjId> = Vec::new();
         for r in roots {
@@ -341,13 +346,50 @@ impl Heap {
                 work.push(id);
             }
         }
+        // For each log slot, how many of its entries have been traced.
+        let mut traced: Vec<u32> = alloc::vec![0; self.slots.len()];
         while let Some(id) = work.pop() {
             let i = id.index();
+            if let Object::Env(e) = self.slots[i] {
+                // Trace the part of the log this view can see, even if the
+                // view itself was already marked through another path.
+                let l = e.log.index();
+                if !self.marks[l] {
+                    self.marks[l] = true;
+                    if let Object::Log(log) = &self.slots[l]
+                        && let Some(p) = log.parent
+                    {
+                        work.push(p);
+                    }
+                }
+                if traced[l] < e.len {
+                    if let Object::Log(log) = &self.slots[l] {
+                        for (_, v) in &log.entries[traced[l] as usize..e.len as usize] {
+                            if let Some(Value::Obj(id)) = v {
+                                work.push(*id);
+                            }
+                        }
+                    }
+                    traced[l] = e.len;
+                }
+                self.marks[i] = true;
+                continue;
+            }
             if self.marks[i] {
                 continue;
             }
             self.marks[i] = true;
             trace(&self.slots[i], &mut work);
+        }
+        for (i, &upto) in traced.iter().enumerate() {
+            if self.marks[i]
+                && let Object::Log(log) = &mut self.slots[i]
+                && (upto as usize) < log.entries.len()
+            {
+                log.entries.truncate(upto as usize);
+                log.index = None;
+                log.maybe_index();
+            }
         }
         let mut live = 0;
         let mut free = None;
@@ -394,19 +436,8 @@ fn trace(obj: &Object, work: &mut Vec<ObjId>) {
             push!(*a);
             push!(*b);
         }
-        Object::Log(log) => {
-            if let Some(p) = log.parent {
-                work.push(p);
-            }
-            for (_, v) in &log.entries {
-                if let Some(v) = v
-                    && let Value::Obj(id) = v
-                {
-                    work.push(*id);
-                }
-            }
-        }
-        Object::Env(e) => work.push(e.log),
+        // Logs and environments are traced by `Heap::collect` itself.
+        Object::Log(_) | Object::Env(_) => {}
         Object::Operative(op) => {
             push!(op.ptree);
             push!(op.eparam);
