@@ -1,0 +1,18 @@
+;;;; Sustained allocation: the collector must keep up.
+
+($define! churn
+  ($lambda (i)
+    ($if (=? i 0)
+         #t
+         ($let ((garbage (list i i i i i i i i)))
+           (churn (- i 1))))))
+(assert-true (churn 150000))
+
+;; Deep non-tail recursion lives in heap frames, not the Rust stack.
+($define! deep ($lambda (i) ($if (=? i 0) 0 (+ 1 (deep (- i 1))))))
+(assert-equal (deep 100000) 100000)
+
+;; Captured continuations and closures survive collections.
+($define! k (reset ($lambda () (+ 1 (shift ($lambda (k) k))))))
+(churn 100000)
+(assert-equal (k 41) 42)

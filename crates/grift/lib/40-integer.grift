@@ -1,0 +1,121 @@
+;;;; 40-integer.grift — integer arithmetic (R-1RK §12, integer module).
+;;;;
+;;;; The primitives are binary and checked: overflow raises `overflow`,
+;;;; division by zero raises `division-by-zero`. This file builds Kernel's
+;;;; n-ary versions on top of them under the same names.
+
+($define! %+ +)
+($define! %- -)
+($define! %* *)
+($define! %div div)
+($define! %<? <?)
+
+($define! %check-integers
+  ($lambda (xs)
+    ($if (eq? xs ())
+         #inert
+         ($if (%integer? (car xs))
+              (%check-integers (cdr xs))
+              (%type-error "expected an integer" (car xs))))))
+
+;; + and * (R-1RK §12.5.4, §12.5.5). Arguments are destructured with
+;; parameter trees rather than car/cdr to keep the common two-argument case
+;; cheap.
+($define! %fold-integers
+  ($lambda (op acc (y . more))
+    ($if (eq? more ()) (op acc y) (%fold-integers op (op acc y) more))))
+
+($define! %n-ary-integer-op
+  ($lambda (op identity)
+    ($lambda objects
+      ($if (eq? objects ())
+           identity
+           (%fold-integers op identity objects)))))
+
+($define! + (%n-ary-integer-op %+ 0))
+($define! * (%n-ary-integer-op %* 1))
+
+;; - (R-1RK §12.5.6): at least two arguments.
+($define! -
+  ($lambda (x y . more)
+    ($if (eq? more ()) (%- x y) (%fold-integers %- (%- x y) more))))
+
+;; Comparisons (R-1RK §12.5.2): =? <? <=? >? >=? take two or more
+;; integers and test each adjacent pair. Every argument is type-checked
+;; even when the answer is already known.
+($define! %chain
+  ($lambda (ok? x (y . more))
+    ($if (ok? x y)
+         ($if (eq? more ()) #t (%chain ok? y more))
+         ($sequence (%check-integers more) #f))))
+
+;; Two-argument comparisons from the primitive <? alone (which checks
+;; that both arguments are integers): x = y exactly when neither x < y nor
+;; y < x.
+($define! %=? ($lambda (a b) (eq? (%<? a b) (%<? b a))))
+($define! %<=? ($lambda (a b) (eq? (%<? b a) #f)))
+($define! %>? ($lambda (a b) (%<? b a)))
+($define! %>=? ($lambda (a b) (eq? (%<? a b) #f)))
+
+($define! %comparison
+  ($lambda (ok?)
+    ($lambda (x y . more)
+      ($if (eq? more ()) (ok? x y) (%chain ok? x (cons y more))))))
+
+($define! =? ($lambda (x y . more) ($if (eq? more ()) (eq? (%<? x y) (%<? y x)) (%chain %=? x (cons y more)))))
+($define! <? ($lambda (x y . more) ($if (eq? more ()) (%<? x y) (%chain %<? x (cons y more)))))
+($define! <=? (%comparison %<=?))
+($define! >? (%comparison %>?))
+($define! >=? (%comparison %>=?))
+
+;; Euclidean division (R-1RK §12.5.11): 0 <= (mod n d) < |d|.
+($define! div %div)
+;; mod = n - d*(div n d), computed so that no intermediate overflows: when
+;; n < 0 the product d*q can fall below the smallest integer, so q is
+;; moved one step towards zero first and the difference corrected by d.
+;; A divisor of -1 always leaves 0 (and (div n -1) overflows for the
+;; smallest integer).
+($define! %mod
+  ($lambda (n d)
+    ($let ((q (%div n d)))
+      ($cond ((%<? -1 n) (%- n (%* d q)))
+             ((%<? 0 d) (%+ (%- n (%* d (%+ q 1))) d))
+             (#t (%- (%- n (%* d (%- q 1))) d))))))
+($define! mod
+  ($lambda (n d)
+    ($if (eq? d -1)
+         ($sequence (%check-integers (list n)) 0)
+         (%mod n d))))
+($define! div-and-mod ($lambda (n d) (list (%div n d) (mod n d))))
+
+;; Sign predicates and friends (R-1RK §12.5.3, §12.5.10, §12.5.12).
+($define! zero? (%n-ary-predicate ($lambda (n) (%=? n 0))))
+($define! positive? (%n-ary-predicate ($lambda (n) (%<? 0 n))))
+($define! negative? (%n-ary-predicate ($lambda (n) (%<? n 0))))
+($define! even? (%n-ary-predicate ($lambda (n) (%=? (mod n 2) 0))))
+($define! odd? (%n-ary-predicate ($lambda (n) (%=? (mod n 2) 1))))
+
+($define! abs ($lambda (n) ($if (%<? n 0) (%- 0 n) ($sequence (%check-integers (list n)) n))))
+
+($define! %extremum
+  ($lambda (better? x xs)
+    ($cond ((eq? xs ()) x)
+           ((better? (car xs) x) (%extremum better? (car xs) (cdr xs)))
+           (#t (%extremum better? x (cdr xs))))))
+($define! max ($lambda (x . xs) (%check-integers (cons x xs)) (%extremum %>? x xs)))
+($define! min ($lambda (x . xs) (%check-integers (cons x xs)) (%extremum %<? x xs)))
+
+($define! %gcd2 ($lambda (a b) ($if (%=? b 0) (abs a) (%gcd2 b (mod a b)))))
+($define! gcd ($lambda xs (fold-left %gcd2 0 xs)))
+($define! %lcm2
+  ($lambda (a b)
+    ($if ($or? (%=? a 0) (%=? b 0)) 0 (abs (%* (%div a (%gcd2 a b)) b)))))
+($define! lcm ($lambda xs (fold-left %lcm2 1 xs)))
+
+;; expt for a non-negative integer exponent, by repeated squaring.
+($define! expt
+  ($lambda (base e)
+    ($cond ((%<? e 0) (%range-error "expt: negative exponent" e))
+           ((%=? e 0) (%check-integers (list base)) 1)
+           ((even? e) ($let ((h (expt base (%div e 2)))) (%* h h)))
+           (#t (%* base (expt base (%- e 1)))))))

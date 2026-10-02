@@ -1,0 +1,16 @@
+;;;; Exact rationals (library module).
+
+($define! half (make-rational 1 2))
+(assert-true (rational? half))
+(assert-false (rational? 1))
+(assert-equal (rational->string (rational+ half (make-rational 1 3))) "5/6")
+(assert-equal (rational->string (rational- half 1)) "-1/2")
+(assert-equal (rational->string (rational* (make-rational 2 3) (make-rational 3 4))) "1/2")
+(assert-equal (rational->string (rational/ 1 (make-rational -2 4))) "-2/1")
+(assert-true (equal? (make-rational 2 4) half))
+(assert-true (rational=? (make-rational 3 6) half))
+(assert-true (rational<? (make-rational 1 3) half))
+(assert-equal (rational-numerator (make-rational 6 -4)) -3)
+(assert-equal (rational-denominator (make-rational 6 -4)) 2)
+($assert-error division-by-zero (make-rational 1 0))
+($assert-error type-error (rational+ half "x"))

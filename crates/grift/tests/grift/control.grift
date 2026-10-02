@@ -1,0 +1,52 @@
+;;;; $if, $cond, $and?, $or?, $let family, booleans.
+
+($define! $quote ($vau (x) #ignore x))
+
+(assert-equal ($if #t 1 2) 1)
+(assert-equal ($if #f 1 2) 2)
+($assert-error type-error ($if 0 1 2))
+($assert-error type-error ($if () 1 2))
+($assert-error arity-error ($if #t 1))
+;; Only the chosen branch is evaluated.
+(assert-equal ($if #t 1 (car 5)) 1)
+
+(assert-equal ($cond (#f 1) (#t 2)) 2)
+(assert-equal ($cond (#f 1)) #inert)
+(assert-equal ($cond ((=? 1 1) 1 2 3)) 3)
+($assert-error type-error ($cond (1 2)))
+
+(assert-equal ($and?) #t)
+(assert-equal ($and? #t #f (car 5)) #f)
+(assert-equal ($or?) #f)
+(assert-equal ($or? #f #t (car 5)) #t)
+($assert-error type-error ($and? 1 #t))
+(assert-equal (and? #t #t) #t)
+(assert-equal (and? #t #f) #f)
+(assert-equal (or? #f #f) #f)
+($assert-error type-error (and? #t 1))
+(assert-equal (not? #f) #t)
+($assert-error type-error (not? ()))
+
+(assert-equal ($let ((a 1) (b 2)) (+ a b)) 3)
+(assert-equal ($let (((a b) (list 1 2))) (list b a)) (list 2 1))
+($define! a 10)
+;; $let initializers see the outer environment.
+(assert-equal ($let ((a 1) (b a)) b) 10)
+(assert-equal ($let* ((a 1) (b (+ a 1))) (list a b)) (list 1 2))
+(assert-equal ($let* () 5) 5)
+(assert-equal ($letrec ((ev? ($lambda (n) ($if (=? n 0) #t (od? (- n 1)))))
+                        (od? ($lambda (n) ($if (=? n 0) #f (ev? (- n 1))))))
+                (list (ev? 10) (od? 7)))
+              (list #t #t))
+($assert-error uninitialized-binding ($letrec ((x (+ x 1))) x))
+(assert-equal ($letrec* ((a 1) (b ($lambda () a))) (b)) 1)
+
+;; Bindings never change: shadowing creates a new binding, old closures keep
+;; seeing the old one.
+($define! v 1)
+($define! get-v ($lambda () v))
+($define! v 2)
+(assert-equal (list v (get-v)) (list 2 1))
+
+;; There is no $set!, no set-car!, no mutable cells.
+(assert-false ($binds? (get-current-environment) $set! set-car! set-cdr!))

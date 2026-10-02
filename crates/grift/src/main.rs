@@ -1,74 +1,130 @@
-//! REPL and file-runner binary for Grift.
+//! REPL and file runner for grift (built with the `repl` feature).
 //!
-//! This target is only built when the `repl` feature is enabled. It provides a
-//! small command-line interface that either:
+//! `grift FILE...` evaluates the files in order and prints the value of the
+//! last one unless it is `#inert`. With no arguments it starts an
+//! interactive REPL; input is read until its parentheses balance.
 //!
-//! - evaluates a source file passed as the first positional argument, or
-//! - starts an interactive line-editing REPL backed by `rustyline`
+//! Two natives give programs a way to produce output: `(print v ...)` and
+//! `(newline)`. They are the only side effects in the language.
 
-use grift::Lisp;
+use grift::{Ctx, Error, Grift, Value};
 use rustyline::DefaultEditor;
+use rustyline::error::ReadlineError;
 
-/// Prompt shown for each interactive input line.
 const PROMPT: &str = "Λ> ";
-/// Arena size used by the standalone binary.
-const ARENA_SIZE: usize = 100_000;
+const CONTINUE: &str = ".. ";
 
-/// Entry point for the feature-gated Grift CLI.
-///
-/// The process constructs one interpreter instance and reuses it for the
-/// entire session so that top-level bindings persist across inputs.
+/// `(print v ...)`: display each value, separated by spaces, then a newline.
+fn print(ctx: &mut Ctx, args: &[Value]) -> Result<Value, Error> {
+    let parts: Vec<String> = args.iter().map(|&v| ctx.display(v)).collect();
+    println!("{}", parts.join(" "));
+    Ok(Value::Inert)
+}
+
+/// `(newline)`: print a newline.
+fn newline(_: &mut Ctx, args: &[Value]) -> Result<Value, Error> {
+    if !args.is_empty() {
+        return Err(Error::new("arity-error", "newline takes no arguments"));
+    }
+    println!();
+    Ok(Value::Inert)
+}
+
+fn interpreter() -> Grift {
+    let mut g = Grift::new();
+    g.register_native("print", print).expect("valid name");
+    g.register_native("newline", newline).expect("valid name");
+    g
+}
+
 fn main() {
-    let lisp: Lisp<ARENA_SIZE> = Lisp::new();
-
-    // If a file argument is given, evaluate it and exit
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 {
-        let filename = &args[1];
-        let contents = std::fs::read_to_string(filename).unwrap_or_else(|e| {
-            eprintln!("error reading {filename}: {e}");
+    let files: Vec<String> = std::env::args().skip(1).collect();
+    let mut g = interpreter();
+    if files.is_empty() {
+        repl(&mut g);
+        return;
+    }
+    let mut last = Value::Inert;
+    for file in &files {
+        let src = std::fs::read_to_string(file).unwrap_or_else(|e| {
+            eprintln!("error reading {file}: {e}");
             std::process::exit(1);
         });
-        match lisp.eval_to_index(&contents) {
-            Ok(idx) => {
-                let mut buf = String::new();
-                let _ = lisp.write_value(idx, &mut buf);
-                if !buf.is_empty() && buf != "#inert" {
-                    println!("{buf}");
-                }
-            }
+        match g.eval(&src) {
+            Ok(v) => last = v,
             Err(e) => {
-                eprintln!("error: {e:?}");
+                eprintln!("{file}: {e}");
                 std::process::exit(1);
             }
         }
-        return;
     }
+    if last != Value::Inert {
+        println!("{}", g.write(last));
+    }
+}
 
-    let mut rl = DefaultEditor::new().expect("failed to initialize editor");
+/// Net count of open parentheses outside strings and comments; positive
+/// means the input is incomplete.
+fn open_parens(src: &str) -> i64 {
+    let mut depth = 0;
+    let mut chars = src.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            ';' => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '#' if chars.peek() == Some(&'\\') => {
+                chars.next();
+                chars.next();
+            }
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    depth
+}
 
+fn repl(g: &mut Grift) {
+    let mut rl = DefaultEditor::new().expect("failed to initialize line editor");
+    let mut buffer = String::new();
     loop {
-        match rl.readline(PROMPT) {
+        let prompt = if buffer.is_empty() { PROMPT } else { CONTINUE };
+        match rl.readline(prompt) {
             Ok(line) => {
-                let line = line.trim();
-                if line.is_empty() {
+                buffer.push_str(&line);
+                buffer.push('\n');
+                if open_parens(&buffer) > 0 {
                     continue;
                 }
-                let _ = rl.add_history_entry(line);
-                match lisp.eval_to_index(line) {
-                    Ok(idx) => {
-                        let mut buf = String::new();
-                        let _ = lisp.write_value(idx, &mut buf);
-                        println!("{buf}");
-                    }
-                    Err(e) => eprintln!("error: {e:?}"),
+                let input = std::mem::take(&mut buffer);
+                if input.trim().is_empty() {
+                    continue;
+                }
+                let _ = rl.add_history_entry(input.trim());
+                match g.eval(&input) {
+                    Ok(Value::Inert) => {}
+                    Ok(v) => println!("{}", g.write(v)),
+                    Err(e) => eprintln!("error: {e}"),
                 }
             }
-            Err(
-                rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
-            ) => {
-                break;
-            }
+            Err(ReadlineError::Interrupted) => buffer.clear(),
+            Err(ReadlineError::Eof) => break,
             Err(e) => {
                 eprintln!("error: {e}");
                 break;

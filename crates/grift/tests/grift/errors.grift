@@ -1,0 +1,75 @@
+;;;; The error protocol: error-prompt, with-error-handler, $guard, resume.
+
+($define! $quote ($vau (x) #ignore x))
+
+;; Primitive errors are delivered to the innermost error prompt as
+;; (k kind message irritants).
+($define! payload (push-prompt error-prompt ($lambda () (car 5))))
+(assert-true (sub-continuation? (car payload)))
+(assert-equal (cadr payload) ($quote type-error))
+(assert-true (string? (caddr payload)))
+
+;; with-error-handler
+(assert-equal (with-error-handler ($lambda (e) (error-object-kind e)) ($lambda () (+ 1 "x")))
+              ($quote type-error))
+(assert-equal (with-error-handler ($lambda (e) 0) ($lambda () 7)) 7)
+(assert-true (error-object? (with-error-handler ($lambda (e) e) ($lambda () (error "x")))))
+(assert-equal (with-error-handler ($lambda (e) (error-object-irritants e)) ($lambda () (error "msg" 1 2)))
+              (list 1 2))
+(assert-equal (with-error-handler ($lambda (e) (error-object-message e)) ($lambda () (error "msg")))
+              "msg")
+
+;; $guard with clauses; an unmatched error is raised again.
+(assert-equal ($guard (e ((error-kind? e "user") ($quote user)) (#t ($quote other))) (error "x"))
+              ($quote user))
+(assert-equal ($guard (e ((error-kind? e "user") ($quote user)) (#t ($quote other))) (car 1))
+              ($quote other))
+(assert-equal ($guard (outer (#t (error-object-kind outer)))
+                ($guard (inner ((error-kind? inner "user") 1)) (car 1)))
+              ($quote type-error))
+
+;; Errors inside a handler go to the next handler out.
+(assert-equal ($guard (e (#t (error-object-message e)))
+                (with-error-handler ($lambda (e) (error "from handler")) ($lambda () (error "first"))))
+              "from handler")
+
+;; Nested handlers: the innermost catches.
+(assert-equal (with-error-handler ($lambda (e) ($quote outer))
+                ($lambda () (with-error-handler ($lambda (e) ($quote inner)) ($lambda () (car 1)))))
+              ($quote inner))
+
+;; Resumption: continue the failed computation with a replacement value.
+;; Handlers are deep: errors in the resumed computation come back to the
+;; same handler.
+(assert-equal (with-error-handler ($lambda (e) (error-object-resume e 10))
+                ($lambda () (+ 1 (car 5))))
+              11)
+(assert-equal (with-error-handler ($lambda (e) (error-object-resume e 1))
+                ($lambda () (+ (raise-error ($quote custom) "a" ()) (raise-error ($quote custom) "b" ()))))
+              2)
+
+;; raise re-raises an error object.
+(assert-equal ($guard (e (#t (error-object-message e)))
+                ($guard (e ((error-kind? e "nope") 0)) (error "keep")))
+              "keep")
+
+;; Every error kind the primitives use.
+($assert-error unbound-symbol undefined-thing)
+($assert-error type-error (car 1))
+($assert-error arity-error (cons 1))
+($assert-error overflow (* 9223372036854775807 2))
+($assert-error division-by-zero (div 1 0))
+($assert-error no-prompt (with-sub-cont (make-prompt) ($lambda (k) k)))
+($assert-error parse-error (read "(1 2"))
+($assert-error parse-error (read "1 2"))
+($assert-error user (error "x"))
+($assert-error uninitialized-binding ($letrec ((a a)) a))
+
+;; $binds?
+(assert-true ($binds? (get-current-environment) car cdr))
+(assert-false ($binds? (get-current-environment) car not-a-binding))
+(assert-true ($binds? (make-environment)))
+
+;; The continuation inside an error object is a sub-continuation.
+(assert-true (sub-continuation?
+               (with-error-handler error-object-continuation ($lambda () (car 1)))))

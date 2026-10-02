@@ -1,0 +1,123 @@
+;;;; 80-string.grift — characters and strings.
+;;;;
+;;;; R-1RK leaves strings and characters unspecified; names follow klisp
+;;;; and R7RS. Strings are immutable; every operation returns a new string.
+;;;; Character classification is ASCII-only.
+
+($define! %char-code char->integer)
+
+;; char=? char<? char<=? char>? char>=? : two or more chars.
+($define! %char-comparison
+  ($lambda (ok?)
+    ($lambda (a b . more)
+      ($letrec ((chain ($lambda (x ys)
+                         ($cond ((eq? ys ()) #t)
+                                ((ok? (%char-code x) (%char-code (car ys))) (chain (car ys) (cdr ys)))
+                                (#t #f)))))
+        (chain a (cons b more))))))
+
+($define! char=? (%char-comparison %=?))
+($define! char<? (%char-comparison %<?))
+($define! char<=? (%char-comparison %<=?))
+($define! char>? (%char-comparison %>?))
+($define! char>=? (%char-comparison %>=?))
+
+($define! %code-between?
+  ($lambda (c lo hi)
+    ($let ((n (%char-code c))) ($and? (%<=? lo n) (%<=? n hi)))))
+
+($define! char-upper-case? ($lambda (c) (%code-between? c 65 90)))
+($define! char-lower-case? ($lambda (c) (%code-between? c 97 122)))
+($define! char-alphabetic? ($lambda (c) ($or? (char-upper-case? c) (char-lower-case? c))))
+($define! char-numeric? ($lambda (c) (%code-between? c 48 57)))
+($define! char-whitespace?
+  ($lambda (c) (member? (%char-code c) (list 32 9 10 11 12 13))))
+($define! char-upcase
+  ($lambda (c) ($if (char-lower-case? c) (integer->char (%- (%char-code c) 32)) c)))
+($define! char-downcase
+  ($lambda (c) ($if (char-upper-case? c) (integer->char (%+ (%char-code c) 32)) c)))
+($define! digit-value
+  ($lambda (c) ($if (char-numeric? c) (%- (%char-code c) 48) (%type-error "not a digit" c))))
+
+;; Strings.
+($define! string-null? ($lambda (s) (=? (string-length s) 0)))
+
+($define! string-append
+  ($lambda strings
+    (list->string (apply append (%map1 string->list strings)))))
+
+($define! string
+  ($lambda chars (list->string chars)))
+
+($define! string-ref
+  ($lambda (s k)
+    ($if ($and? (%<=? 0 k) (%<? k (string-length s)))
+         (list-ref (string->list s) k)
+         (%range-error "string-ref: index out of range" s k))))
+
+;; (substring s start end): characters start (inclusive) to end
+;; (exclusive).
+($define! %take
+  ($lambda (xs n) ($if (=? n 0) () (cons (car xs) (%take (cdr xs) (%- n 1))))))
+($define! substring
+  ($lambda (s start end)
+    ($if ($and? (%<=? 0 start) (%<=? start end) (%<=? end (string-length s)))
+         (list->string (%take (list-tail (string->list s) start) (%- end start)))
+         (%range-error "substring: bad range" s start end))))
+
+;; Lexicographic comparison by character code.
+($define! %string-compare
+  ($lambda (a b)
+    ($cond (($and? (eq? a ()) (eq? b ())) 0)
+           ((eq? a ()) -1)
+           ((eq? b ()) 1)
+           ((%<? (%char-code (car a)) (%char-code (car b))) -1)
+           ((%<? (%char-code (car b)) (%char-code (car a))) 1)
+           (#t (%string-compare (cdr a) (cdr b))))))
+($define! %string-order
+  ($lambda (ok?)
+    ($lambda (a b) (ok? (%string-compare (string->list a) (string->list b)) 0))))
+($define! string<? (%string-order %<?))
+($define! string>? (%string-order %>?))
+($define! string<=? (%string-order %<=?))
+($define! string>=? (%string-order %>=?))
+
+($define! string-upcase ($lambda (s) (list->string (%map1 char-upcase (string->list s)))))
+($define! string-downcase ($lambda (s) (list->string (%map1 char-downcase (string->list s)))))
+
+;; (string-join strings separator)
+($define! string-join
+  ($lambda (strings sep)
+    ($cond ((eq? strings ()) "")
+           ((eq? (cdr strings) ()) (car strings))
+           (#t (string-append (car strings) sep (string-join (cdr strings) sep))))))
+
+;; number->string and string->number (decimal integers). string->number
+;; raises a parse-error for anything that is not an integer literal.
+($define! %digits
+  ($lambda (n acc)
+    ($if (%<? n 10)
+         (cons (integer->char (%+ n 48)) acc)
+         (%digits (div n 10) (cons (integer->char (%+ (mod n 10) 48)) acc)))))
+;; Digits of a negative n, computed without negating n (so the most
+;; negative integer works): the last digit of -n is (10 - n mod 10) mod 10.
+($define! %digits-negative
+  ($lambda (n acc)
+    ($let* ((d (mod (%- 10 (mod n 10)) 10))
+            (rest (div (%+ n d) 10))
+            (acc (cons (integer->char (%+ d 48)) acc)))
+      ($if (=? rest 0) acc (%digits-negative rest acc)))))
+($define! number->string
+  ($lambda (n)
+    ($if (%<? n 0)
+         (list->string (cons #\- (%digits-negative n ())))
+         (list->string (%digits n ())))))
+($define! %kind:parse-error (string->symbol "parse-error"))
+($define! string->number
+  ($lambda (s)
+    ($let ((v (with-error-handler ($lambda (e) #inert) ($lambda () (read s)))))
+      ($if (%integer? v)
+           v
+           (raise-error %kind:parse-error "string->number: not an integer literal" (list s))))))
+
+($define! symbol<? ($lambda (a b) (string<? (symbol->string a) (symbol->string b))))

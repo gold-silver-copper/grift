@@ -1,0 +1,34 @@
+
+name:                elabzoo-eval-closures-debruijn
+version:             0.1.0.0
+github:              "AndrasKovacs/elaboration-zoo"
+license:             BSD3
+author:              "András Kovács"
+maintainer:          "puttamalac@gmail.com"
+copyright:           "2019 András Kovács"
+category:            Language
+
+description:         "Small implementations of elaborators for type theories, with varying complexity and feature set"
+
+default-extensions:
+- DerivingVia
+- LambdaCase
+- Strict
+
+ghc-options:
+- -Wall
+- -Wno-name-shadowing
+- -Wno-missing-signatures
+- -Wno-unused-do-bind
+- -Wno-unused-matches
+
+dependencies:
+- base >= 4.7 && < 5
+- megaparsec
+
+source-dirs: .
+
+executable:
+  main: Main.hs
+  ghc-options:
+  - -O

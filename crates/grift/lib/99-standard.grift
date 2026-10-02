@@ -1,0 +1,17 @@
+;;;; 99-standard.grift — the standard environment. Loaded last, so the
+;;;; environment captured here is the finished ground environment.
+
+;; make-kernel-standard-environment (R-1RK §6.7.3): a fresh child of the
+;; ground environment.
+($define! make-kernel-standard-environment
+  ($let ((ground (get-current-environment)))
+    ($lambda () (environment-bind ground () ()))))
+
+;; $let-safe (R-1RK §6.7.8): like $let, but the body runs in a child of a
+;; fresh standard environment, isolated from the caller's bindings.
+($define! $let-safe
+  ($vau (bindings . body) env
+    (eval (%body body)
+          (environment-bind (make-kernel-standard-environment)
+                            (%map1 car bindings)
+                            (%eval-all (%map1 cadr bindings) env)))))

@@ -1,0 +1,100 @@
+;;;; Behaviours ported from the previous implementation's test suite
+;;;; (crates/grift/tests/lisp_tests.rs on the `pure` branch) that still
+;;;; apply to this language.
+
+($define! $quote ($vau (x) #ignore x))
+
+;; Strict evaluation: unused arguments are still evaluated; unused branches
+;; are not.
+($assert-error type-error (($lambda (x) 1) (car 5)))
+(assert-equal ($if #t 1 (car 5)) 1)
+($assert-error type-error ($let ((unused (car 5))) 1))
+
+;; Operatives are first-class values.
+(assert-true (operative? $if $define! $vau $lambda $cond $and? $or? $let))
+(assert-true (applicative? + cons list eval wrap unwrap))
+(assert-true (operative? (unwrap +)))
+(assert-true (applicative? (wrap $if)))
+(assert-equal (eval (list $if #t 1 2) (get-current-environment)) 1)
+(assert-equal ((wrap $if) #t 1 2) 1)
+(assert-equal (apply (wrap $if) (list #f 1 2)) 2)
+(assert-equal ((wrap $and?) #t #f) #f)
+(assert-equal ((unwrap +) 1 2) 3)
+(assert-equal ((wrap (unwrap +)) 1 2) 3)
+
+;; User-defined control forms.
+($define! $unless
+  ($vau (test . body) env
+    ($if (eval test env) #inert (eval (cons $sequence body) env))))
+($define! $when
+  ($vau (test . body) env
+    ($if (eval test env) (eval (cons $sequence body) env) #inert)))
+(assert-equal ($unless #f 1 2) 2)
+(assert-equal ($unless #t (car 5)) #inert)
+(assert-equal ($when #t 1 2) 2)
+;; lambda derived from $vau, as in R-1RK.
+($define! $my-lambda
+  ($vau (formals . body) env
+    (wrap (eval (list* $vau formals #ignore body) env))))
+(assert-equal (($my-lambda (x y) (* x y)) 6 7) 42)
+;; A custom $if from $vau.
+($define! $my-if
+  ($vau (test then else) env
+    ($cond ((eval test env) (eval then env)) (#t (eval else env)))))
+(assert-equal ($my-if (<? 1 2) ($quote yes) (car 5)) ($quote yes))
+
+;; Operatives receive the caller's environment.
+($define! $caller-x ($vau () e (eval ($quote x) e)))
+(assert-equal ($let ((x 5)) ($caller-x)) 5)
+
+;; Sandboxed evaluation and selective exposure.
+($define! arith-only ($bindings->environment (+ +) (* *)))
+(assert-equal (eval ($quote (+ 1 (* 2 3))) arith-only) 7)
+($assert-error unbound-symbol (eval ($quote (car (list 1))) arith-only))
+($assert-error unbound-symbol (eval ($quote ($vau (x) #ignore x)) arith-only))
+($assert-error unbound-symbol (eval ($quote car) (make-environment)))
+(assert-equal (eval 5 (make-environment)) 5)
+
+;; Definiend trees (R-1RK §4.9.1's examples).
+($define! (a . b) (list 1 2 3))
+(assert-equal (list a b) (list 1 (list 2 3)))
+($define! (#ignore second . #ignore) (list 1 2 3))
+(assert-equal second 2)
+($define! ((p q) (r)) (list (list 1 2) (list 3)))
+(assert-equal (list p q r) (list 1 2 3))
+($define! () ())
+($assert-error type-error (($lambda () ($define! () (list 1)) 1)))
+($assert-error type-error (($lambda () ($define! (x y) (list 1)) 1)))
+($assert-error type-error (($lambda () ($define! (d d) (list 1 2)) 1)))
+($assert-error type-error (($lambda () ($define! (d (e d)) (list 1 (list 2 3))) 1)))
+($define! (#ignore #ignore third) (list 1 2 3))
+(assert-equal third 3)
+($assert-error type-error ($vau (x) 5 x))
+($assert-error type-error ($vau (x) x x))
+($assert-error type-error ($vau (x . 5) #ignore x))
+
+;; Definitions shadow, they never mutate.
+($define! s 1)
+($define! f ($lambda () s))
+($define! s 2)
+(assert-equal (list s (f)) (list 2 1))
+(assert-equal (($lambda () ($define! s 3) s)) 3)
+(assert-equal s 2)
+
+;; Self-application and recursion schemes.
+($define! Y-fib ($lambda (f n) ($if (<=? n 1) n (+ (f f (- n 1)) (f f (- n 2))))))
+(assert-equal (Y-fib Y-fib 15) 610)
+($define! fact-cps
+  ($lambda (n k) ($if (=? n 0) (k 1) (fact-cps (- n 1) ($lambda (r) (k (* n r)))))))
+(assert-equal (fact-cps 10 ($lambda (x) x)) 3628800)
+($define! church->int ($lambda (n) ((n ($lambda (x) (+ x 1))) 0)))
+($define! two ($lambda (f) ($lambda (x) (f (f x)))))
+(assert-equal (church->int two) 2)
+
+;; #inert and #ignore are self-evaluating and distinct.
+(assert-equal #inert #inert)
+(assert-false (equal? #inert #ignore))
+(assert-false (symbol? #ignore))
+;; A definition used as a value is a declaration; only a body applies it.
+(assert-true (declaration? ($define! z 1)))
+($assert-error unbound-symbol z)

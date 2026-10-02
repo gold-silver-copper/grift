@@ -1,0 +1,43 @@
+;;;; Proper tail calls through library forms. Each loop runs 1,000,000
+;;;; iterations; any form that grew the continuation per iteration would
+;;;; exhaust memory long before finishing.
+
+($define! n 1000000)
+
+;; $if
+($define! loop-if ($lambda (i) ($if (=? i 0) #t (loop-if (- i 1)))))
+(assert-true (loop-if n))
+
+;; $cond
+($define! loop-cond
+  ($lambda (i acc)
+    ($cond ((=? i 0) acc)
+           (#t (loop-cond (- i 1) (+ acc 1))))))
+(assert-equal (loop-cond n 0) n)
+
+;; $let, $let*, $letrec and a body with declarations ($sequence)
+($define! loop-let
+  ($lambda (i)
+    ($let ((j (- i 1)))
+      ($let* ((k j))
+        ($define! next k)
+        ($if (<? next 0) #t (loop-let next))))))
+(assert-true (loop-let n))
+
+;; $and? / $or? (last operand in tail position)
+($define! loop-and ($lambda (i) ($and? #t ($or? #f ($if (=? i 0) #t (loop-and (- i 1)))))))
+(assert-true (loop-and n))
+
+;; $match
+($define! loop-match
+  ($lambda (i)
+    ($match i
+      (0 #t)
+      (#ignore (loop-match (- i 1))))))
+(assert-true (loop-match n))
+
+;; Mutual recursion through apply and eval.
+($define! (ping pong)
+  (list ($lambda (i) ($if (=? i 0) #t (apply pong (list (- i 1)))))
+        ($lambda (i) ($if (=? i 0) #t (eval (list ping (- i 1)) (get-current-environment))))))
+(assert-true (ping n))

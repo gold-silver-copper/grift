@@ -1,0 +1,60 @@
+;;;; Delimited control: the four primitives and the derived operators.
+
+($define! $quote ($vau (x) #ignore x))
+
+;; push-prompt with a normal return.
+($define! p (make-prompt))
+(assert-true (prompt? p))
+(assert-equal (push-prompt p ($lambda () 42)) 42)
+
+;; with-sub-cont removes the prompt: f's result is push-prompt's result.
+(assert-equal (+ 1 (push-prompt p ($lambda () (* 10 (with-sub-cont p ($lambda (k) 5)))))) 6)
+
+;; Reinstating the captured subcontinuation.
+(assert-equal
+  (push-prompt p ($lambda ()
+    (+ 1 (with-sub-cont p ($lambda (k)
+      (+ 100 (push-sub-cont k ($lambda () 10))))))))
+  111)
+
+;; Multi-shot: the same subcontinuation reinstated twice.
+($define! k1
+  (push-prompt p ($lambda () (* 2 (with-sub-cont p ($lambda (k) k))))))
+(assert-true (sub-continuation? k1))
+(assert-equal (list (push-sub-cont k1 ($lambda () 3)) (push-sub-cont k1 ($lambda () 4))) (list 6 8))
+
+;; Prompts are tagged: the innermost prompt with the right tag is chosen,
+;; other prompts in between are captured along.
+($define! q (make-prompt))
+(assert-equal
+  (push-prompt p ($lambda ()
+    (list 1 (push-prompt q ($lambda ()
+      (list 2 (with-sub-cont p ($lambda (k) ($quote escaped)))))))))
+  ($quote escaped))
+;; Same tag nested: the inner one wins.
+(assert-equal
+  (push-prompt p ($lambda ()
+    (list ($quote outer) (push-prompt p ($lambda () (with-sub-cont p ($lambda (k) ($quote inner))))))))
+  (list ($quote outer) ($quote inner)))
+
+;; No matching prompt.
+($assert-error no-prompt (with-sub-cont (make-prompt) ($lambda (k) k)))
+;; Subcontinuations are not callable.
+($assert-error type-error (k1 1))
+
+;; shift/reset
+(assert-equal (+ 1 (reset ($lambda () (* 2 (shift ($lambda (k) (k (k 5)))))))) 21)
+(assert-equal ($reset (+ 1 ($shift k (list (k 1) (k 10))))) (list 2 11))
+(assert-equal ($reset 5) 5)
+;; control0: the handler runs outside the prompt.
+(assert-equal (reset-at p ($lambda () (+ 1 (control0-at p ($lambda (k) (k (k 1))))))) 3)
+
+;; A classic: collecting all choices with shift/reset.
+($define! choose ($lambda xs (shift ($lambda (k) (apply append (map k xs))))))
+(assert-equal ($reset (list (list (choose 1 2) (choose ($quote a) ($quote b)))))
+              (list (list 1 ($quote a)) (list 1 ($quote b)) (list 2 ($quote a)) (list 2 ($quote b))))
+
+;; The multi-prompt versions of shift/reset.
+($define! tag (make-prompt))
+(assert-equal (reset-at tag ($lambda () (+ 1 (shift-at tag ($lambda (k) (k (k 10)))))))
+              12)

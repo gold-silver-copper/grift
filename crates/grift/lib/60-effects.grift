@@ -1,0 +1,30 @@
+;;;; 60-effects.grift — algebraic effect handlers.
+;;;;
+;;;; Deep handlers over multi-prompt delimited control: each effect owns a
+;;;; private prompt. (perform e v) suspends the computation up to the
+;;;; innermost handler for e and hands it v together with a function that
+;;;; resumes the computation, still under the same handler.
+
+($define! (%make-effect effect? %effect-prompt) (make-encapsulation-type))
+
+($define! make-effect ($lambda () (%make-effect (make-prompt))))
+
+;; (perform e v): perform effect e with value v. With no handler for e
+;; installed this raises a `no-prompt` error.
+($define! perform
+  ($lambda (e v) (%send (%effect-prompt e) v)))
+
+;; (handle e thunk on-return on-perform): run thunk. A (perform e v) inside
+;; it calls (on-perform v resume); the value thunk returns is passed to
+;; on-return.
+($define! handle
+  ($lambda (e thunk on-return on-perform)
+    (%handle-prompt (%effect-prompt e) thunk on-return on-perform)))
+
+;; ($handle e-expr ((x) return-body ...) ((v resume) perform-body ...) body ...)
+($define! $handle
+  ($vau (e-expr (return-ptree . return-body) (perform-ptree . perform-body) . body) env
+    (handle (eval e-expr env)
+            (%thunk body env)
+            (wrap (eval (list* $vau return-ptree #ignore return-body) env))
+            (wrap (eval (list* $vau perform-ptree #ignore perform-body) env)))))

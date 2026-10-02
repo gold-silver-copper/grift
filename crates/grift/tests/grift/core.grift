@@ -1,0 +1,74 @@
+;;;; $vau, wrap/unwrap/eval, parameter trees, $sequence.
+
+;; Kernel has no quote, but one is a one-line operative.
+($define! $quote ($vau (x) #ignore x))
+
+;; Operatives see their operands unevaluated.
+(assert-equal (($vau (x) #ignore x) (+ 1 2)) ($quote (+ 1 2)))
+(assert-equal (symbol? (($vau (x) #ignore x) foo)) #t)
+
+;; The environment parameter is the caller's environment.
+($define! x 1)
+(assert-equal (($vau () e (eval (string->symbol "x") e))) 1)
+
+;; wrap makes an applicative; unwrap gives back the operative.
+(assert-equal ((wrap $quote) (+ 1 2)) 3)
+(assert-true (operative? (unwrap list)))
+(assert-equal ((unwrap list) a b) (list ($quote a) ($quote b)))
+(assert-equal (eval (list + 1 2) (make-environment)) 3)
+($assert-error type-error (unwrap $quote))
+($assert-error type-error (wrap 5))
+($assert-error type-error (eval 1 2))
+
+;; Multiple wraps evaluate operands more than once.
+(assert-equal ((wrap (wrap $quote)) ($quote ($quote q))) ($quote q))
+
+;; Parameter trees destructure.
+(assert-equal (($lambda ((a . b) c) (list a b c)) (list 1 2 3) 4) (list 1 (list 2 3) 4))
+(assert-equal (($lambda (#ignore . rest) rest) 1 2 3) (list 2 3))
+(assert-equal (($lambda () 7)) 7)
+($assert-error arity-error (($lambda (a b) a) 1))
+($assert-error arity-error (($lambda (a) a) 1 2))
+($assert-error type-error (($lambda ((a b)) a) (list 1)))
+($assert-error type-error ($vau (a a) #ignore a))
+($assert-error type-error ($vau (a) a a))
+($assert-error type-error ($vau (1) #ignore 1))
+($define! (p (q . r)) (list 1 (list 2 3)))
+(assert-equal (list p q r) (list 1 2 (list 3)))
+
+;; $vau with several body forms, and declarations inside bodies.
+(assert-equal (($lambda (n) ($define! m (* n 2)) ($define! k (+ m 1)) (list n m k)) 5)
+              (list 5 10 11))
+(assert-equal ($sequence) #inert)
+(assert-equal ($sequence 1 2 3) 3)
+(assert-equal (($vau () #ignore)) #inert)
+
+;; car/cdr are written in grift with parameter trees.
+(assert-equal (car (cons 1 2)) 1)
+(assert-equal (cdr (cons 1 2)) 2)
+(assert-equal (cadr (list 1 2 3)) 2)
+(assert-equal (cddr (list 1 2 3)) (list 3))
+($assert-error type-error (car ()))
+($assert-error type-error (cdr 5))
+
+;; apply
+(assert-equal (apply + (list 1 2 3)) 6)
+(assert-equal (apply list (list)) ())
+(assert-equal (list* 1 2 (list 3 4)) (list 1 2 3 4))
+(assert-equal (list* 1) 1)
+
+;; Combiners only.
+($assert-error type-error (1 2 3))
+($assert-error type-error ((list 1) 2))
+
+;; Proper operand lists are required.
+($assert-error type-error (eval (cons + 1) (get-current-environment)))
+
+;; Every pair accessor composition.
+($define! tree (list (list 1 2 3) 4 5 6))
+(assert-equal (list (caar tree) (cdar tree) (cadar tree) (cddar tree))
+              (list 1 (list 2 3) 2 (list 3)))
+(assert-equal (cdddr tree) (list 6))
+;; The primitive single-body $vau is still reachable.
+(assert-equal (($primitive-vau (x) #ignore x) y) ($quote y))
+($assert-error arity-error ($primitive-vau (x) #ignore 1 2))
