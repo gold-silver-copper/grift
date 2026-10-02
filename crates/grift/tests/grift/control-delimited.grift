@@ -53,3 +53,8 @@
 ($define! choose ($lambda xs (shift ($lambda (k) (apply append (map k xs))))))
 (assert-equal ($reset (list (list (choose 1 2) (choose ($quote a) ($quote b)))))
               (list (list 1 ($quote a)) (list 1 ($quote b)) (list 2 ($quote a)) (list 2 ($quote b))))
+
+;; The multi-prompt versions of shift/reset.
+($define! tag (make-prompt))
+(assert-equal (reset-at tag ($lambda () (+ 1 (shift-at tag ($lambda (k) (k (k 10)))))))
+              12)

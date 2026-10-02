@@ -58,3 +58,10 @@
 ;; The ground environment is not reachable: standard environments are
 ;; children of it, and nothing can enumerate or mutate it.
 (assert-equal (eval ($quote (car (list 1))) (make-kernel-standard-environment)) 1)
+
+;; $import! checks the sigil rule like $define!.
+($define! $raw-define!
+  ($vau (name expr) env
+    (make-declaration ($lambda (e) (environment-bind e name (eval expr env))))))
+($define! m2 ($module ($raw-define! sneaky $if)))
+($assert-error sigil-violation (($lambda () ($import! m2 sneaky) 1)))

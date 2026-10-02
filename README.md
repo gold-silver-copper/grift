@@ -1,178 +1,124 @@
 # grift
 
-Grift is a small Kernel-inspired Lisp interpreter for constrained Rust
-environments. It implements first-class operatives (`vau`), applicatives,
-first-class environments, and tail-call optimization on top of a fixed-size
-arena with no heap allocation and no `unsafe` code.
+grift is a minimal, pure, type-strict Lisp built on John Shutt's vau
+calculus. It follows Kernel's evaluation model and names, with a much
+smaller core:
 
-The project is aimed at embedded or resource-bounded settings where a normal
-allocator-backed Lisp runtime would be a poor fit, while still preserving a
-substantial part of the vau-calculus execution model.
+- **One primitive operative.** `$vau` is the only combiner that receives
+  its operands unevaluated and is implemented in Rust. `$if`, `$define!`,
+  `$lambda`, `$let`, `$cond`, `$sequence` and every other special form are
+  written in grift itself.
+- **No mutation.** Pairs, strings and environments never change once
+  observed. Definitions are *declarations*: values that a body applies to
+  its environment to get a new child environment.
+- **Strict types.** No truthiness, no punning, typed errors from every
+  primitive, an enforced `$` sigil for operatives, opaque encapsulated
+  types, and higher-order contracts with blame.
+- **Delimited control.** Multi-prompt delimited continuations
+  (`make-prompt`, `push-prompt`, `with-sub-cont`, `push-sub-cont`) replace
+  `call/cc`. Errors, effect handlers, generators and dynamic binding are
+  library code on top of them.
 
-## Highlights
+The Rust core is 44 primitives, an evaluator, a reader/printer and a
+garbage collector. It is `#![no_std]` (it needs `alloc`), has no
+dependencies and no `unsafe` code.
 
-- `#![no_std]`, `no_alloc`, `#![forbid(unsafe_code)]`
-- Fixed-capacity arena with free-list allocation
-- Mark-and-sweep garbage collection, triggered on OOM and available explicitly
-  via `(gc-collect)`
-- Kernel-style operative/applicative model
-- First-class mutable environments with lexical parent lists
-- Tail-call optimization via a trampoline evaluator
-- Immutable pairs and `CharPair`-based string storage
-- Symbol interning
-- Checked integer arithmetic
-- Rust native-function registration through `Lisp::register_native`
-- Lazy prelude loading from `prelude.grift`
+## Example
 
-## What It Implements
+```lisp
+;; Operatives receive their operands unevaluated, plus the caller's
+;; environment. There is no quote; it is a one-liner.
+($define! $quote ($vau (x) #ignore x))
+($quote (+ 1 2))                       ; => (+ 1 2)
 
-Grift is not a Scheme clone. The language model is centered on `vau`, where an
-operative receives its operands unevaluated together with the caller's
-environment.
+;; $lambda is library code over $vau and wrap.
+($define! square ($lambda (x) (* x x)))
+(map square (list 1 2 3))              ; => (1 4 9)
 
-That gives the runtime three important properties:
+;; Definitions never mutate: redefining shadows, and closures keep the
+;; binding they saw.
+($define! n 1)
+($define! get-n ($lambda () n))
+($define! n 2)
+(list n (get-n))                       ; => (2 1)
 
-- user-defined control forms are first-class values rather than a separate macro
-  system
-- `lambda` is derived from the operative model rather than being primitive
-- environments are explicit runtime values that can be captured, passed around,
-  and selectively exposed
+;; Mutual recursion is one definition with a definiend tree.
+($define! (even?? odd??)
+  (list ($lambda (k) ($if (=? k 0) #t (odd?? (- k 1))))
+        ($lambda (k) ($if (=? k 0) #f (even?? (- k 1))))))
 
-The current builtin surface includes:
+;; Delimited control.
+($reset (+ 1 ($shift k (list (k 1) (k 10)))))   ; => (2 11)
 
-- operatives such as `quote`, `if`, `define!`, `set!`, `begin`, `cond`, `and`,
-  `or`, `let`, `vau`, and `current-environment`
-- applicatives such as arithmetic, list primitives, equality, `eval`, `wrap`,
-  `unwrap`, environment constructors, GC control, and raw read/write helpers
+;; Errors are delivered to a handler, which may resume the computation.
+(with-error-handler ($lambda (e) (error-object-resume e 41))
+                    ($lambda () (+ 1 (car 5))))  ; => 42
 
-The bundled prelude also provides derived forms such as `lambda` and `fn!`,
-loaded lazily like the rest of the prelude.
-
-`apply` and `wrap` operate uniformly over first-class callables, including
-builtin operatives such as `if`.
+;; Contracts with blame.
+($define/contract! inc (-> integer? integer?) ($lambda (x) (+ x 1)))
+(inc "a")   ; contract-violation: a caller of inc broke the contract
+```
 
 ## Rust API
 
 ```rust
-use grift::{Lisp, Value};
+use grift::{Ctx, Error, Grift, Value};
 
-let lisp: Lisp<20_000> = Lisp::new();
+let mut g = Grift::new();
+g.eval("($define! square ($lambda (x) (* x x)))").unwrap();
+let v = g.eval("(square 12)").unwrap();
+assert_eq!(g.write(v), "144");
 
-assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
-assert_eq!(lisp.eval("(car (cons 1 2))"), Ok(Value::Number(1)));
-```
-
-The const generic parameter sets the arena capacity in slots. A larger value
-gives the interpreter more space for code, data, environments, temporary
-evaluation state, and garbage-collector working room.
-
-Native Rust functions can be exposed as Lisp applicatives:
-
-```rust
-use grift::{ArenaIndex, ArenaResult, Lisp, LispOps, extract_arg};
-
-fn double(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (n, _rest): (isize, ArenaIndex) = extract_arg(lisp, args)?;
-    lisp.number(n * 2)
+// Natives are applicatives that receive evaluated arguments.
+fn double(_: &mut Ctx, args: &[Value]) -> Result<Value, Error> {
+    match args {
+        [Value::Int(n)] => Ok(Value::Int(n * 2)),
+        _ => Err(Error::new("type-error", "double expects one integer")),
+    }
 }
-
-let lisp: Lisp<20_000> = Lisp::new();
-lisp.register_native("double", double).unwrap();
-
-assert_eq!(lisp.eval("(double 21)"), Ok(grift::Value::Number(42)));
+g.register_native("double", double).unwrap();
+let v = g.eval("(double 21)").unwrap();
+assert_eq!(g.write(v), "42");
 ```
 
-## Lisp Example
+`Grift::new` loads the library. Cloning a booted interpreter is much
+cheaper than booting a new one. Values returned to the host stay valid
+until the next evaluation unless pinned with `Grift::pin`.
 
-```lisp
-;; Operatives receive operands unevaluated.
-(define! my-quote
-  (vau (x) #ignore x))
+## Running
 
-(my-quote (+ 1 2))   ; => (+ 1 2)
-
-;; lambda can be defined in terms of vau.
-(define! lambda
-  (vau (formals . body) e
-    (wrap
-      (eval (cons 'vau
-                  (cons formals
-                        (cons #ignore body)))
-            e))))
-
-(define! double
-  (lambda (x)
-    (* x 2)))
-
-(double 5)           ; => 10
-
-;; The caller environment can be captured explicitly.
-(define! my-if
-  (vau (test then else) e
-    (if (eval test e)
-        (eval then e)
-        (eval else e))))
-
-(apply if (list #t 1 2)) ; => 1
-((wrap if) #t 1 2)       ; => 1
-
-;; Tail recursion runs through the trampoline evaluator.
-(fn! fib (n a b)
-  (if (= n 0)
-      a
-      (fib (- n 1) b (+ a b))))
-
-(fib 50 0 1)         ; => 12586269025
-```
-
-## Runtime Model
-
-Every runtime value lives inside `Arena<Value, N>`. The evaluator does not rely
-on heap allocation, and the runtime keeps a small set of reserved singleton
-slots for values such as `NIL`, booleans, `#inert`, `#ignore`, the ground
-environment, the global environment, GC roots, and the symbol intern list.
-
-Current implementation details that matter:
-
-- strings are stored as linked `CharPair` chains rather than contiguous buffers
-- empty string is represented internally as `NIL`
-- user code runs in the global environment, which is a child of the builtin
-  ground environment
-- GC is currently demand-driven: the evaluator collects when allocation hits
-  `OutOfMemory`
-
-More detail is in [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md).
-
-## Build And Test
-
-```bash
-cargo build --workspace
-cargo test --workspace
-```
-
-Run the benchmark example:
-
-```bash
+```sh
+cargo run -p grift --features repl            # REPL (prompt: Λ>)
+cargo run -p grift --features repl -- a.grift # run files
+cargo test --workspace                         # Rust and grift test suites
 cargo run -p grift --example fib_bench --release
 ```
 
-Run the REPL:
+The REPL and file runner provide two natives, `print` and `newline`. They
+are the only side effects available to programs.
 
-```bash
-cargo run -p grift --features repl
-```
+## Layout
 
-## Toolchain
+- `crates/grift/src/` — the Rust core: values, heap and collector, reader,
+  printer, evaluator, primitives.
+- `crates/grift/lib/` — the library, in grift, loaded in order at startup.
+- `crates/grift/tests/grift/` — the grift-level test suite; assertion
+  helpers are written in grift (`_harness.grift`).
+- `docs/architecture/LANGUAGE_SPECIFICATION.md` — the language.
+- `docs/architecture/ARCHITECTURE.md` — the implementation.
 
-The workspace MSRV is **Rust 1.85** (edition 2024), as declared in
-`Cargo.toml`.
+## References
 
-## Further Reading
+- [05-07.pdf](05-07.pdf): the Revised⁻¹ Report on the Kernel Programming
+  Language.
+- [jshutt.pdf](jshutt.pdf): John Shutt, *Fexprs as the basis of Lisp
+  function application; or $vau: the ultimate abstraction*.
+- Dybvig, Peyton Jones & Sabry, *A Monadic Framework for Delimited
+  Continuations*.
+- Kiselyov, Shan & Sabry, *Delimited Dynamic Binding*.
+- Findler & Felleisen, *Contracts for Higher-Order Functions*.
 
-- [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md): current architecture and language notes
-- [docs/grift/index.md](docs/grift/index.md): generated API-oriented documentation
-- [05-07.pdf](05-07.pdf): Revised-1 Report on the Kernel Programming Language
-- [jshutt.pdf](jshutt.pdf): "vau: the ultimate abstraction"
+MSRV is Rust 1.85 (edition 2024).
 
 ## License
 

@@ -69,3 +69,7 @@
 (assert-true ($binds? (get-current-environment) car cdr))
 (assert-false ($binds? (get-current-environment) car not-a-binding))
 (assert-true ($binds? (make-environment)))
+
+;; The continuation inside an error object is a sub-continuation.
+(assert-true (sub-continuation?
+               (with-error-handler error-object-continuation ($lambda () (car 1)))))

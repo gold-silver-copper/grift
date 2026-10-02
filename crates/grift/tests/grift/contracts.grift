@@ -63,3 +63,17 @@
 ;; The contracted function is still an applicative.
 (assert-true (applicative? inc))
 ($assert-error sigil-violation (($lambda () ($define/contract! $op any/c ($lambda (x) x)) 1)))
+
+;; Building blocks: blames, custom contracts, explicit parties.
+($define! b (make-blame "supplier" "consumer" ($quote thing)))
+(assert-true (blame? b))
+(assert-false (blame? 1))
+($define! small/c
+  (make-contract "small" ($lambda (v) (<? v 10))
+                 ($lambda (v blame) ($if (<? v 10) v (error "too big" v)))))
+(assert-equal (check small/c 3) 3)
+(assert-equal ((contract (-> integer? integer?) ($lambda (x) x) "lib" "app" ($quote id)) 5) 5)
+(assert-equal ($blamed ((contract (-> integer? integer?) ($lambda (x) x) "lib" "app" ($quote id)) "s"))
+              "app")
+(assert-true (rest/c? (rest/c integer?)))
+(assert-false (rest/c? integer?))

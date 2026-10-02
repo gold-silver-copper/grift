@@ -2,37 +2,46 @@
 
 ## Project Overview
 
-This is a Rust workspace containing a LISP implementation (named "Grift") built on a custom arena allocator and inspired by vau calculus. Grift is designed to run on embedded and resource-constrained systems.
+grift is a minimal, pure, type-strict Lisp built on John Shutt's vau
+calculus (Kernel). The Rust crate `crates/grift` is the core: values, a
+Vec-backed heap with mark-and-sweep GC, the reader and printer, the
+evaluator and 44 primitives. Everything else is written in grift itself in
+`crates/grift/lib/*.grift`. See `docs/architecture/` for the language
+specification and the architecture.
 
 ## Critical Requirements
 
-**This is a `no_std`, `no_alloc`, `no unsafe` LISP implementation.** Only the tests and REPL may use `std`.
-
-
-### Code Guidelines
-
-1. **No heap allocation in core crates** - The crates must not use `Vec`, `String`, `Box`, or any other heap-allocated types.
-
-2. **No unsafe code** - All crates use `#![forbid(unsafe_code)]`. Do not introduce `unsafe` blocks or functions.
-
-3. **Use the arena allocator** - All dynamic data structures must use `grift_arena` for allocation. Do not use statically sized stack  buffers.
-
-4. **Core library only** - Use `core::` instead of `std::` in no_std crates (e.g., `core::cell::Cell`, `core::option::Option`).
-
-6. **REPL is the exception** - The repl handles I/O and user interaction, so it may use the standard library.
-
-
-
+1. **no_std with alloc.** The core crate uses `core::` and `alloc::` only
+   (`Vec`, `Box`, `String`, `BTreeMap` are fine). `std` is allowed only in
+   tests, examples and the REPL binary. It must build for
+   `thumbv6m-none-eabi`.
+2. **No unsafe code.** `#![forbid(unsafe_code)]`.
+3. **No dependencies in the core crate** (`rustyline` is optional, for the
+   REPL only).
+4. **Minimal core.** Do not add a Rust primitive for anything that can be
+   written in grift. `$vau` is the only primitive operative. A new
+   primitive needs a written justification.
+5. **Purity.** No value may change once a program can observe it: no
+   mutable pairs, no mutable environments, no cells. Definitions are
+   declarations that produce new environments.
+6. **Type discipline.**
+   - No truthiness and no punning; every primitive checks arity and types.
+   - Operatives must be bound to `$`-prefixed names, everything else to
+     names without `$`. Library code must obey this.
+   - `eq?` refuses to compare two structured values of the same kind.
+7. **Library order matters.** Environments are immutable, so a library
+   definition can only refer to bindings defined before it. Mutually
+   recursive helpers must be defined together, with one `$define!` over a
+   definiend tree.
+8. **MSRV 1.85.** Avoid newer syntax such as let-chains.
 
 ## Build Commands
 
 ```bash
-# Build all crates
 cargo build --workspace
-
-# Run the bench
-cargo run -p grift --example fib_bench --release
-
-# Run tests
 cargo test --workspace
+cargo clippy --workspace -- -D warnings
+cargo build --target thumbv6m-none-eabi -p grift
+cargo run -p grift --features repl
+cargo run -p grift --example fib_bench --release
 ```

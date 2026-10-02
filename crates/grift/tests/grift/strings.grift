@@ -51,3 +51,13 @@
 (assert-equal (write $if) "#[operative]")
 (assert-equal (read (write (list "q\n" #\x41 -5))) (list "q\n" #\A -5))
 ($assert-error parse-error (read "'x"))
+
+(assert-true (char<=? #\a #\a #\b))
+(assert-true (char>? #\c #\b))
+(assert-true (char>=? #\c #\c))
+(assert-true (char-upper-case? #\Q))
+(assert-true (char-lower-case? #\q))
+(assert-equal (char-downcase #\Q) #\q)
+(assert-true (string>? "b" "a"))
+(assert-true (string<=? "a" "a"))
+(assert-true (symbol<? ($quote apple) ($quote banana)))

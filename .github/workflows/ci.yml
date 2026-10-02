@@ -13,21 +13,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Verify that core crates are truly no_std and no_alloc by building against
-  # a bare-metal target that has no std or alloc support. This catches any
-  # transitive dependency that pulls in std or alloc.
+  # Verify that the core crate is truly no_std (it uses only core and
+  # alloc) by building it for a bare-metal target without std.
   no-std-check:
-    name: no_std / no_alloc verification
+    name: no_std verification
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv6m-none-eabi
-      - name: Build core crates for bare-metal target (no std, no alloc)
+      - name: Build the core crate for a bare-metal target (no std)
         run: >
           cargo build --target thumbv6m-none-eabi
-          -p grift_arena
+          -p grift
 
   # Verify the workspace builds against the Minimum Supported Rust Version.
   msrv:

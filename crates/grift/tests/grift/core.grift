@@ -63,3 +63,12 @@
 
 ;; Proper operand lists are required.
 ($assert-error type-error (eval (cons + 1) (get-current-environment)))
+
+;; Every pair accessor composition.
+($define! tree (list (list 1 2 3) 4 5 6))
+(assert-equal (list (caar tree) (cdar tree) (cadar tree) (cddar tree))
+              (list 1 (list 2 3) 2 (list 3)))
+(assert-equal (cdddr tree) (list 6))
+;; The primitive single-body $vau is still reachable.
+(assert-equal (($primitive-vau (x) #ignore x) y) ($quote y))
+($assert-error arity-error ($primitive-vau (x) #ignore 1 2))

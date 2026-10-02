@@ -52,6 +52,8 @@
     ($let ((source (eval env-expr env)))
       (make-declaration
         ($lambda (target)
-          (environment-bind target
-                            symbols
-                            (%map1 ($lambda (s) (eval s source)) symbols)))))))
+          (%checked-definition
+            symbols
+            (environment-bind target
+                              symbols
+                              (%map1 ($lambda (s) (eval s source)) symbols))))))))

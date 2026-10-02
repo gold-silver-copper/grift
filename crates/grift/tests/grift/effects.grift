@@ -69,3 +69,6 @@
 (assert-equal (car (second)) 1)
 (assert-equal (car (second)) 1)
 ($assert-error no-prompt (yield 1))
+
+;; The applicative form of $parameterize.
+(assert-equal (parameterize width 33 ($lambda () (width))) 33)

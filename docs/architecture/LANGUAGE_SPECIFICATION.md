@@ -1,1402 +1,453 @@
-# Grift Language Specification
+# The grift language
 
-This is the implementation-compatibility specification for Grift as currently
-implemented. It is written so that the language can be reimplemented in another
-host language, including C, without having to infer behavior from Rust source
-during the reimplementation.
+grift is a Lisp in the family of John Shutt's Kernel: operatives created by
+`$vau` receive their operands unevaluated together with the caller's
+environment, applicatives are wrapped operatives, and environments are
+first-class. It differs from Kernel in three deliberate ways:
 
-This is not an aspirational language design. If a behavior here is surprising,
-that means the implementation is surprising and a compatible reimplementation
-should preserve it.
+1. **The core is as small as it can be.** `$vau` is the only primitive
+   operative. Everything that can be written in grift is written in grift,
+   in the *library* (Kernel's term), including `$if` and `$define!`.
+2. **There is no mutation.** No value changes once it has been observed.
+3. **Types are strict.** No punning, no implicit conversion, typed errors,
+   an enforced sigil for operatives, and contracts with blame.
 
-Primary conformance sources:
+The Revised⁻¹ Report on Kernel (R-1RK, `05-07.pdf`) is the source of
+names, semantics and library derivations for every feature grift keeps.
+Section 11 lists every deviation.
 
-- `crates/grift/src`
-- `crates/grift/prelude.grift`
-- `crates/grift/tests/lisp_tests.rs`
+## 1. Lexical syntax
 
-## 1. Program Model
+| Datum | Syntax |
+|---|---|
+| Integer | optional sign, decimal digits: `42`, `-7`, `+3`. Must fit in 64 bits. |
+| Boolean | `#t`, `#f` (also `#true`, `#false`) |
+| Special values | `#inert`, `#ignore`, `()` |
+| Character | `#\a`, `#\λ`, `#\space`, `#\newline`, `#\tab`, `#\return`, `#\null`, `#\alarm`, `#\backspace`, `#\delete`, `#\escape`, `#\x3bb` |
+| String | `"..."` with escapes `\" \\ \n \t \r \a \b \0 \x3bb;` |
+| Symbol | any other run of non-delimiter characters, case-sensitive |
+| List | `(a b c)`, dotted `(a b . c)` |
+| Comments | `;` to end of line, `#| ... |#` (nesting), `#;` before a datum |
 
-### 1.1 Interpreter State
+Delimiters are whitespace and `( ) " ;`. There is **no quotation
+shorthand**: `'`, `` ` `` and `,` are parse errors, because grift (like
+Kernel) has no `$quote`. A one-line operative serves when symbol data is
+needed: `($define! $quote ($vau (x) #ignore x))`, or `string->symbol`.
 
-One interpreter instance has:
+Parse errors are reported as `parse-error` with the line and column.
 
-- one arena of runtime objects
-- one persistent global environment
-- one symbol intern table
-- one temporary GC-root stack
+## 2. Values
 
-Top-level definitions persist across successive `eval` calls on the same
-interpreter instance.
+| Type | Predicate | Notes |
+|---|---|---|
+| integer | `integer?` | checked 64-bit; overflow is an error |
+| boolean | `boolean?` | `#t`, `#f` |
+| null | `null?` | `()`, the empty list; not a boolean |
+| inert | `inert?` | `#inert`, the result of forms used only for effect |
+| ignore | `ignore?` | `#ignore`, the wildcard of parameter trees |
+| char | `char?` | a Unicode scalar value |
+| string | `string?` | immutable text; not a list of chars |
+| symbol | `symbol?` | interned |
+| pair | `pair?` | immutable; `cons`, `car`, `cdr` |
+| environment | `environment?` | immutable |
+| operative | `operative?` | `$vau` closures, primitive operatives |
+| applicative | `applicative?` | `(wrap combiner)` |
+| declaration | `declaration?` | see §4.3 |
+| prompt | `prompt?` | delimiter tag for delimited control |
+| sub-continuation | `sub-continuation?` | a captured, delimited piece of continuation |
+| encapsulated | per type | made by `make-encapsulation-type` |
 
-### 1.2 Input Unit
+Integers, booleans, `()`, `#inert`, `#ignore`, chars, symbols and
+primitive operatives are immediate values. Everything else lives in the
+heap.
 
-A program is zero or more expressions read from a source stream.
+## 3. Evaluation
 
-Top-level evaluation algorithm:
+`(eval expr env)`:
 
-1. parse the next expression
-2. evaluate it immediately in `GLOBAL_ENV`
-3. continue until input is exhausted
-4. return the value of the last expression
+- A **symbol** evaluates to its binding in `env`. If it has none, the
+  result is an `unbound-symbol` error. If the binding exists but its
+  recursive initialization has not finished, the result is an
+  `uninitialized-binding` error.
+- A **pair** `(head . operands)` is a combination:
+  1. If `head` is a symbol, it is looked up and the **sigil rule** (§9) is
+     checked. If `head` is a combination, it is evaluated. Any other head
+     is used as it is (this is how constructed combinations such as
+     `(eval (list $if #t 1 2) env)` work).
+  2. If the result is an **operative**, it is called with the operand tree
+     unevaluated and the current environment.
+  3. If it is an **applicative**, the operands, which must form a proper
+     list, are evaluated left to right. Its underlying combiner is then
+     applied to the list of results. If that combiner is itself an
+     applicative, the results are evaluated again, as Kernel specifies.
+  4. Anything else is a `type-error`.
+- **Anything else** evaluates to itself.
 
-If the input contains no expressions, the result is `#inert`.
+A compound operative `($vau ptree eparam body)` called with operands `o`
+from environment `e` evaluates `body` in a fresh child of its static
+environment. That child binds `ptree` against `o` and `eparam` to `e`.
 
-Example:
+**Proper tail calls.** Calling a combiner in tail position does not grow
+the continuation. The body of an operative is in tail position, as is the
+expression evaluated by a primitive `eval` that is itself in tail position.
+Library forms built this way are therefore properly tail-recursive: `$if`,
+`$cond`, `$let`, `$sequence`, `$and?`, `$or?`, `$match`, `apply`. The test
+suite runs 1,000,000-iteration loops through each of them.
 
-```lisp
-1 2 3
-```
+### 3.1 Parameter trees
 
-evaluates to `3`.
+A parameter tree is a symbol, `#ignore`, `()`, or a pair of parameter
+trees. No symbol may occur twice. Matching a tree against a value:
 
-### 1.3 Empty Program vs Empty Runtime String
+- a symbol binds the value;
+- `#ignore` matches anything;
+- `()` matches only `()`;
+- a pair matches a pair whose car and cdr match.
 
-These are distinct:
+Trees are validated when an operative is created and by `environment-bind`
+and `environment-bind-recursive`. A shape mismatch along the operand list
+of a call is an `arity-error`; a mismatch inside an operand (e.g.
+`(car 5)`) is a `type-error`. The environment parameter of `$vau` must be a
+symbol not in the tree, or `#ignore`.
 
-- empty top-level input => `#inert`
-- `(raw-read-string "")` => `()`
+## 4. Environments, declarations and purity
 
-## 2. Reader Specification
+### 4.1 The purity invariant
 
-### 2.1 Two Reader Modes
+No operation ever changes a value that has been observed. Pairs, strings,
+environments, combiners, encapsulated values and sub-continuations are
+immutable. There is no `set-car!`, no `$set!`, no mutable cell and no
+memoizing promise.
 
-Grift has two parsing entry points:
+There is exactly one internal write: initializing a recursive binding (see
+`environment-bind-recursive`). Reading such a binding before it is
+initialized raises `uninitialized-binding`. Initializing it a second time,
+for example by reinstating a sub-continuation captured during the
+initialization, raises `reinitialized-binding`. No program can therefore
+observe a binding change value.
 
-- external source text, used by ordinary `eval`
-- runtime strings, used by `raw-read-string`
+Side effects exist only in host-registered natives.
 
-They deliberately do not process input the same way for non-ASCII data.
+### 4.2 Environments
 
-### 2.2 External Source
+- `(make-environment)` returns a new empty environment with no parent.
+- `(environment-bind env ptree value)` returns a **new child** of `env`
+  binding `ptree` against `value`. `env` is unchanged.
+- `(environment-bind-recursive env ptree expr)` creates a child `E` of
+  `env` in which the symbols of `ptree` are bound but uninitialized. It
+  then evaluates `expr` in `E`, matches the result against `ptree` to
+  initialize the bindings, and returns `E`. This is `letrec`: mutual
+  recursion uses a tree, e.g. `(even? odd?)`.
+- There is no way to enumerate an environment or obtain its parent.
+  Lookup searches an environment's own bindings, then its parent's.
 
-The external reader is byte-oriented.
+### 4.3 Declarations
+
+A declaration is an opaque value wrapping an applicative
+`f : environment → environment`. It is made with `make-declaration`,
+recognized with `declaration?`, and applied with
+`(apply-declaration decl env)`, which calls `f` and checks that the result
+is an environment.
+
+A declaration has no effect on its own. Two things apply declarations:
+
+- **Bodies.** `$sequence`, and therefore the body of every `$vau`,
+  `$lambda`, `$let`, `$cond` clause, `$guard` and so on, evaluates its
+  forms left to right. When a non-final form evaluates to a declaration,
+  the body applies it to the current environment, and the forms after it
+  are evaluated in the environment it returns. The final form is evaluated
+  in tail position and its value is the value of the body.
+- **The top level.** The host evaluates source text the same way, form by
+  form. `Grift::eval`, the REPL and library loading all keep the resulting
+  environment for later input.
+
+`$define!`, `$import!`, `$define-record-type!` and `$define/contract!` are
+library operatives that return declarations. Users can write their own,
+since declarations are first-class.
 
 Consequences:
 
-- tokenization operates on bytes cast to `char`
-- line and column positions count byte steps, not Unicode scalar values
-- non-ASCII input is not guaranteed to behave like a Unicode-aware Lisp reader
-
-### 2.3 Runtime String Reader
-
-`raw-read-string` parses an existing runtime string, which is a linked chain of
-Rust `char` values. That path is character-oriented.
-
-### 2.4 Whitespace and Comments
-
-Whitespace characters are:
-
-- space
-- tab
-- carriage return
-- newline
-
-Line comments start with `;` and continue through the next newline or
-end-of-input.
-
-There are no block comments.
-
-### 2.5 Syntax Recognized by the Reader
-
-The reader directly recognizes:
-
-- proper lists: `(a b c)`
-- dotted pairs: `(a . b)`
-- quote shorthand: `'x`
-- string literals: `"hello"`
-- atoms: booleans, `#inert`, `#ignore`, integers, symbols
-
-The reader does not recognize:
-
-- quasiquote
-- unquote
-- unquote-splicing
-- vectors
-- character literals as a separate type
-- block comments
-
-### 2.6 Grammar Summary
-
-The implementation is recursive-descent. A useful summary grammar is:
-
-```text
-program    := { ws_or_comment expr }*
-expr       := list | quote | string | atom
-quote      := "'" expr
-list       := "(" list_body
-list_body  := ")"
-           | expr list_tail
-list_tail  := ")"
-           | ws_or_comment "." ws_or_comment expr ws_or_comment ")"
-           | ws_or_comment expr list_tail
-string     := '"' { string_char } '"'
-atom       := { non_delimiter }+
-```
-
-This is only an approximation because `.` is special in exactly one list
-position.
-
-### 2.7 Atom Delimiters
-
-Atom parsing stops at:
-
-- space
-- tab
-- carriage return
-- newline
-- `(`
-- `)`
-- `"`
-- `;`
-
-Notably:
-
-- `.` is not a general delimiter
-- `.` is only special when the list parser has already parsed the first list
-  element and is checking for dotted-pair syntax
-
-### 2.8 Expression Parsing Algorithm
-
-To parse one expression:
-
-1. skip whitespace and comments
-2. if input is exhausted:
-   - optional parse returns no expression
-   - required parse raises `ParseError`
-3. consume one character
-4. dispatch:
-   - `(` => parse list
-   - `'` => parse quote shorthand
-   - `"` => parse string
-   - `)` => `ParseError`
-   - anything else => parse atom
-
-### 2.9 Lists and Dotted Pairs
-
-After reading `(`:
-
-1. skip whitespace/comments
-2. if next char is `)`, return `NIL`
-3. if next char is `.`:
-   - consume it
-   - if the following char is a delimiter or end-of-input, raise `ParseError`
-   - otherwise treat the dot as part of an atom and continue parsing a normal
-     first list element
-4. otherwise parse the first element
-5. skip whitespace/comments
-6. if next char is `.`:
-   - consume it
-   - if the following char is a delimiter or end-of-input, parse a dotted pair
-   - otherwise treat the dot as the first character of another atom
-7. otherwise continue parsing the rest of the proper list
-
-Examples:
-
-- `(a b c)` => proper list
-- `(a . b)` => dotted pair
-- `(a .foo)` => list of `a` and `.foo`
-- `(.foo bar)` => list whose first element is `.foo`
-- `(. x)` => parse error
-- `(a . b c)` => parse error
-
-### 2.10 Quote Shorthand
-
-`'expr` is rewritten to `(quote expr)`.
-
-Examples:
-
-- `'x` => `(quote x)`
-- `'(1 2)` => `(quote (1 2))`
-- `'` => `ParseError`
-
-### 2.11 Atom Classification
-
-Atoms are classified in this exact order:
-
-1. `#t` or `#true` => true
-2. `#f` or `#false` => false
-3. `#inert` => inert singleton
-4. `#ignore` => ignore singleton
-5. signed base-10 integer fitting host `isize`
-6. otherwise symbol
-
-Consequences:
-
-- `+42` is a number
-- `-42` is a number
-- `+` is a symbol
-- `-` is a symbol
-- an overflowing integer literal is not a parse error; it becomes a symbol
-
-### 2.12 Strings
-
-String literals are delimited by `"`.
-
-Recognized escapes are exactly:
-
-- `\n`
-- `\t`
-- `\r`
-- `\\`
-- `\"`
-
-Behavior:
-
-- recognized escapes produce the corresponding character
-- any other backslash escape raises `InvalidArgument`
-- unterminated strings raise `ParseError`
-
-### 2.13 Reader Errors
-
-User-visible reader errors are:
-
-- `ParseError { line, col }`
-- `InvalidArgument` for unrecognized string escapes
-
-Examples of `ParseError`:
-
-- unexpected `)`
-- unterminated list
-- unterminated string
-- malformed dotted-pair syntax
-- bare `'` at end of input
-- trailing non-whitespace/comment data after `raw-read-string` parses one
-  expression
-
-### 2.14 Source Coordinates
-
-External parsing reports 1-based line and column positions.
-
-`raw-read-string` parsing reports `(0, 0)` because runtime-string parsing does
-not track coordinates.
-
-## 3. Runtime Values
-
-Grift exposes the following first-class runtime categories:
-
-| Category | Write/display form |
-| --- | --- |
-| nil | `()` |
-| booleans | `#t`, `#f` |
-| numbers | decimal integer |
-| symbols | symbol name |
-| cons pairs | list or dotted-pair syntax |
-| strings | quoted in write mode, raw in display mode |
-| compound operatives | `<operative>` |
-| applicatives | `<applicative>` |
-| builtin combiner cores | `<builtin>` |
-| environments | `<environment>` |
-| inert | `#inert` |
-| ignore | `#ignore` |
-| prelude entries | `<prelude:name>` |
-| native host functions | `<native>` |
-
-Only some categories have reader syntax.
-
-### 3.1 Nil
-
-`NIL` is:
-
-- the empty list
-- the empty string
-
-This alias is mandatory and observable:
-
-- `()` and `""` are different source forms
-- both evaluate to the same runtime object
-- `(null? "")` is true
-- `(pair? "")` is false
-- `(equal? "" ())` is true
-- write/display formatting of `""` yields `()`
-
-### 3.2 Booleans
-
-Only actual booleans participate in boolean contexts.
-
-There is no general truthiness rule.
-
-### 3.3 Numbers
-
-Numbers are signed machine integers equivalent to Rust `isize`.
-
-Behavior:
-
-- literals parse only if they fit `isize`
-- arithmetic uses checked operations
-- overflow raises `ArithmeticOverflow`
-- division truncates toward zero
-
-### 3.4 Symbols
-
-Symbols are interned by name.
-
-Consequences:
-
-- symbols with the same spelling are the same runtime object
-- environment lookup compares symbol identity
-- `eq?` on symbols is value-based through interning
-
-### 3.5 Cons Pairs
-
-Cons cells are immutable pairs.
-
-Behavior:
-
-- proper lists are cons chains ending in `NIL`
-- improper lists are cons chains whose final cdr is not `NIL`
-- there is no `set-car!`
-- there is no `set-cdr!`
-
-### 3.6 Strings
-
-Strings are linked `CharPair` chains:
-
-```text
-CharPair(ch0, CharPair(ch1, ... CharPair(chn, NIL)))
-```
-
-Important properties:
-
-- empty string is exactly `NIL`
-- there is no separate character type
-- a one-character string is one `CharPair` with `cdr = NIL`
-- well-formed strings are `CharPair` chains terminated by `NIL`
-
-Observable consequences:
-
-- `(car "hello")` returns `"h"` as a fresh one-character string
-- `(cdr "hello")` returns `"ello"`
-- `(cdr "x")` returns `()`
-- `(pair? "hello")` is true
-- `(pair? "")` is false
-
-### 3.7 Callables
-
-Grift has five callable storage forms:
-
-1. builtin combiner core
-2. compound operative created by `vau`
-3. applicative wrapper
-4. prelude entry
-5. host-native function
-
-Call behavior depends on the outer storage form:
-
-- builtin combiner core => raw operands for builtin operatives, evaluated args
-  for builtin applicatives
-- compound operative => raw operand object plus caller environment
-- applicative => evaluate operands first, then invoke wrapped value
-- prelude entry => normally reached through an applicative wrapper
-- native host function => normally reached through an applicative wrapper
-
-### 3.8 Environments
-
-Environments are first-class runtime values containing:
-
-- `bindings`: an alist of `(key . value)` pairs
-- `parents`: a proper list of parent environments
-
-Ordinary evaluation only looks up symbols, but the representation itself does
-not enforce symbol-only keys.
-
-### 3.9 Inert and Ignore
-
-`#inert` is the singleton result of side-effect-oriented forms.
-
-`#ignore` is the singleton wildcard used in formal parameter trees.
-
-Both are self-evaluating.
-
-### 3.10 Prelude and Native Values
-
-Prelude functions and host-native functions are distinct runtime categories and
-may appear as first-class values.
-
-## 4. Environments
-
-### 4.1 Predefined Environments
-
-The implementation pre-creates:
-
-- `GROUND_ENV`: builtin-only environment
-- `GLOBAL_ENV`: child of `GROUND_ENV`
-
-Builtins live in `GROUND_ENV`.
-
-Prelude bindings, host-native registrations, and ordinary top-level user
-definitions live in `GLOBAL_ENV`.
-
-### 4.2 Binding Order
-
-Environment bindings are stored newest-first.
-
-Successful `define!` prepends a binding to the current frame.
-
-### 4.3 Lookup Algorithm
-
-Lookup is normative.
-
-Single-parent path:
-
-1. search the current frame from newest to oldest
-2. if found, return the value
-3. if there is exactly one parent, continue with that parent
-4. if there are no parents, raise `UnboundVariable`
-
-Multi-parent path:
-
-1. search the current frame
-2. search parents in left-to-right depth-first order
-3. maintain a visited set of environments
-4. skip already visited environments
-5. return the first match found
-6. otherwise raise `UnboundVariable`
-
-Consequences:
-
-- lookup is depth-first, not breadth-first
-- parent order matters
-- earlier parents can shadow later direct parents through their descendants
-- cycles are tolerated during lookup
-
-### 4.4 `define!`
-
-`define!` mutates only the current frame.
-
-Behavior:
-
-- duplicate binding in the same frame => `AlreadyDefined`
-- parent bindings do not matter for duplicate detection
-- successful definition prepends a new local binding
-
-### 4.5 `set!`
-
-`set!` mutates only the explicitly supplied target environment.
-
-Behavior:
-
-- only the target frame is searched
-- parent environments are not searched
-- no new binding is created
-- missing target binding => `UnboundVariable`
-
-### 4.6 Environment Construction
-
-`make-environment` creates a fresh frame with zero or more parents.
-
-`make-empty-environment` creates a fresh frame with no parents.
-
-New environments do not copy parent bindings. They inherit only through parent
-links.
-
-Consequences:
-
-- later parent mutation is visible in children
-- child-local definitions do not write back into parents
-
-## 5. Evaluation Semantics
-
-### 5.1 Self-Evaluating Values
-
-These evaluate to themselves:
-
-- nil
-- booleans
-- numbers
-- strings
-- builtin combiner cores
-- compound operatives
-- applicatives
-- environments
-- `#inert`
-- `#ignore`
-- prelude entries
-- native functions
-
-Symbols are not self-evaluating.
-
-Cons pairs are not self-evaluating.
-
-### 5.2 Boolean Contexts
-
-These require actual booleans and raise `TypeError` otherwise:
-
-- `if`
-- `cond` tests other than `else`
-- `and`
-- `or`
-- `not`
-
-There is no Scheme-style truthiness.
-
-### 5.3 Symbol Evaluation
-
-Evaluating a symbol performs environment lookup in the current environment.
-
-### 5.4 Combination Evaluation
-
-To evaluate `(f arg1 arg2 ...)`:
-
-1. evaluate `f`
-2. dispatch on the resulting runtime value
-
-Dispatch rules:
-
-- builtin combiner core => call builtin operative path on raw operands
-- compound operative => invoke with raw operand object
-- applicative => evaluate operands left-to-right exactly once, then invoke the
-  wrapped value
-- anything else => `NotCallable`
-
-### 5.5 Applicative Evaluation Order
-
-Applicatives evaluate arguments:
-
-- strictly
-- left to right
-- exactly once
-
-### 5.6 Compound Operative Invocation
-
-Invoking a `vau`-created operative does this:
-
-1. create a child environment whose single parent is the closure's defining
-   environment
-2. match the formal parameter tree against the raw operand object
-3. if an environment parameter exists, bind it to the caller environment
-4. evaluate the body in the new environment
-
-### 5.7 Closure Capture
-
-Closures capture environment identity, not snapshots.
-
-Consequences:
-
-- closures observe later `define!` and `set!` on the captured environment
-- `(define! f (lambda ...))` supports recursion
-- sequential top-level definitions can support mutual recursion
-- named `let` recursion works for the same reason
-
-### 5.8 Tail Positions
-
-A compatible implementation should preserve tail behavior for:
-
-- user operatives
-- `if`
-- `begin`
-- `cond`
-- `and`
-- `or`
-- `let`
-
-## 6. Formal Parameter Trees
-
-Formal parameter trees are used by:
-
-- `define!`
-- `lambda`
-- `vau`
-- `fn!` indirectly
-- compound operative invocation
-
-### 6.1 Valid Shapes
-
-A valid formal parameter tree is:
-
-- a symbol
-- `#ignore`
-- `NIL`
-- a cons pair whose car and cdr are both valid parameter trees
-
-Examples:
-
-- `x`
-- `#ignore`
-- `()`
-- `(x y)`
-- `(head . tail)`
-- `((a b) c)`
-
-Invalid examples:
-
-- `42`
-- `#t`
-- `(x x)`
-- cyclic structures
-
-### 6.2 Matching Semantics
-
-Matching `ptree` against `obj`:
-
-- if `ptree` is `NIL`, `obj` must be `NIL`
-- if `ptree` is `#ignore`, do nothing
-- if `ptree` is a symbol, bind it to `obj`
-- if `ptree` is a cons pair, `obj` must be a `Cons`, then match car and cdr
-  recursively
-
-Important limitation:
-
-- pair-shaped matching requires `obj` to be a `Cons`
-- a `CharPair` string node does not count as a pair for parameter matching
-
-### 6.3 Validation Rules
-
-Validation is eager.
-
-Rejected cases:
-
-- invalid leaf type => `TypeError`
-- duplicate symbol => `InvalidArgument`
-- cyclic tree => `Cyclic`
-
-`#ignore` may appear multiple times because it is not a symbol binding.
-
-### 6.4 `vau` Environment Parameter
-
-For `vau`, `env-param` must be:
-
-- a symbol, or
-- `#ignore`
-
-Behavior:
-
-- `#ignore` means no caller-environment binding is created
-- internally that case is normalized to “no environment parameter”
-- duplication between `env-param` and a symbol in `params` raises
-  `InvalidArgument`
-
-## 7. Builtin Operatives
-
-Builtin operatives receive raw operands and the caller environment.
-
-Unless noted otherwise:
-
-- extra operands are ignored
-- missing operands typically surface as `TypeError` through list access
-
-### 7.1 `quote`
+- **Redefinition shadows.** A later `($define! x 2)` creates a new binding
+  in a new child environment. Closures created earlier keep seeing the old
+  binding, as at an ML top level.
+- **Recursive definitions.** `$define!` is recursive: the definiend is in
+  scope in its own initializer. `($define! x (+ x 1))` is therefore an
+  `uninitialized-binding` error. Use `$let` to compute from an outer `x`.
+- **Mutual recursion.** It needs one definition with a tree, or
+  `$letrec`. A closure cannot see definitions made after it was created.
+- **Definitions as values.** A definition evaluated somewhere other than
+  in a body, e.g. as an argument, is just a declaration value.
+
+## 5. The primitives
+
+The Rust core provides exactly these. `$vau` is the only operative; every
+other primitive is bound as an applicative. All of them check their arity
+and argument types.
+
+| Primitive | Meaning |
+|---|---|
+| `($vau ptree eparam body)` | compound operative; exactly one body expression |
+| `(wrap combiner)` | applicative over `combiner` (which must be a combiner) |
+| `(unwrap applicative)` | the underlying combiner |
+| `(eval expr env)` | evaluate `expr` in `env` (tail position) |
+| `(make-environment)` | empty environment, no parent |
+| `(environment-bind env ptree value)` | new child binding `ptree` |
+| `(environment-bind-recursive env ptree expr)` | new child, `letrec` semantics |
+| `(make-declaration applicative)` | a declaration |
+| `(apply-declaration decl env)` | apply a declaration; result must be an environment |
+| `(select bool x y)` | `x` if `bool` is `#t`, `y` if `#f`, else `type-error` |
+| `(cons a d)` | a pair |
+| `(eq? a b)` | identity (§9 rule 4) |
+| `(make-encapsulation-type)` | `(constructor predicate accessor)` for a new type |
+| `pair?` `symbol?` `integer?` `char?` `string?` `environment?` `operative?` `applicative?` `declaration?` `prompt?` `sub-continuation?` | unary type predicates |
+| `(make-prompt)` | a fresh prompt |
+| `(push-prompt p thunk)` | call `thunk` under a frame delimited by `p` |
+| `(with-sub-cont p f)` | capture the frames up to the innermost `p`, remove them and that prompt, and call `f` with the sub-continuation |
+| `(push-sub-cont k thunk)` | reinstate `k` on the current continuation and call `thunk` in it; may be done any number of times |
+| `error-prompt` | the prompt errors are delivered to (a value, not a combiner) |
+| `(+ a b)` `(- a b)` `(* a b)` | checked: `overflow` on overflow |
+| `(div n d)` | Euclidean quotient: `n = d·q + r`, `0 ≤ r < |d|`; `division-by-zero`, `overflow` |
+| `(<? a b)` | integer comparison |
+| `string->list` `list->string` `string->symbol` `symbol->string` `char->integer` `integer->char` | text conversions |
+| `string=?` `string-length` | performance primitives (derivable via `string->list`, but pervasive) |
+| `(read string)` | the single datum written in `string` |
+| `(write v)` `(display v)` | the external representation of `v`, as a string |
+
+`apply-declaration` cannot be derived: a declaration is opaque, and both
+library bodies and the host need to apply one.
+
+Primitive predicates take one argument; the library defines Kernel's
+n-ary versions under the same names. The binary arithmetic primitives are
+likewise shadowed by n-ary library versions.
+
+## 6. The library
+
+Loaded in order into the *ground environment*, a child of the environment
+holding the primitives. User code runs in a *standard environment*, a
+child of the finished ground environment. The primitive environment cannot
+be reached from programs.
+
+| File | Contents |
+|---|---|
+| `00-boot` | `$define!` (built directly from `make-declaration` and `environment-bind-recursive`), `$primitive-vau`, `list`, `list*`, `car`, `cdr` and compositions (via parameter trees), `$if` (over `select`), `$sequence` (declaration-aware), multi-body `$vau`, `$lambda`, `apply` |
+| `10-control` | `not?`, `$cond`, `$and?`, `$or?`, `and?`, `or?`, `$let`, `$let*`, `$letrec`, `$letrec*`, `raise-error`, `error`, `$define!` with the definition-time sigil check |
+| `20-env` | `get-current-environment`, `$remote-eval`, `$let-redirect`, `$bindings->environment`, `$module`, `$import!` |
+| `30-list` | n-ary type predicates, `null?`, `boolean?`, `inert?`, `ignore?`, `combiner?`, `list?`, `length`, `list-tail`, `list-ref`, `append`, `reverse`, `map`, `for-each`, `filter`, `fold-left`, `fold-right`, `reduce`, `equal?`, `assoc`, `assq`, `member?`, `memq?`, `$match` |
+| `40-integer` | n-ary `+ * -`, `=? <? <=? >? >=?`, `div`, `mod`, `div-and-mod`, `zero?`, `positive?`, `negative?`, `even?`, `odd?`, `abs`, `max`, `min`, `gcd`, `lcm`, `expt` |
+| `50-control` | `reset-at`, `shift-at`, `control0-at`, `reset`, `shift`, `$reset`, `$shift`; error objects, `with-error-handler`, `raise`, `error-object-resume`, `$guard`, `error-kind?`, `$binds?`; `make-parameter`, `parameterize`, `$parameterize`; `yield`, `make-generator`, `generator->list` |
+| `60-effects` | `make-effect`, `effect?`, `perform`, `handle`, `$handle` |
+| `70-contract` | `make-blame`, `make-contract`, `flat-contract`, `any/c`, `none/c`, `list-of`, `or/c`, `and/c`, `rest/c`, `->`, `check`, `contract`, `$define/contract!`, `$define-record-type!` |
+| `80-string` | char comparisons and classification (ASCII), `string-append`, `string`, `string-ref`, `substring`, string comparisons, `string-upcase`, `string-downcase`, `string-join`, `number->string`, `string->number`, `symbol<?` |
+| `90-rational` | optional exact rationals: `make-rational`, `rational?`, `rational+ - * /`, `rational=?`, `rational<?`, `rational-numerator`, `rational-denominator`, `rational->string` |
+| `99-standard` | `make-kernel-standard-environment`, `$let-safe` |
+
+Where a definition follows R-1RK, its comment cites the section.
+
+Notes on some library forms:
+
+- `$cond` clauses are `(test . body)`. There is no `else`; use `#t`. No
+  match yields `#inert`.
+- `$and?` and `$or?` evaluate operands left to right until the answer is
+  known. The last operand is in tail position and its value is returned
+  unchecked (R-1RK §6.1.4).
+- `$match` patterns:
+
+  | Pattern | Matches |
+  |---|---|
+  | `#ignore` | anything |
+  | a symbol | anything, and binds it |
+  | `(? pred pat ...)` | when `(pred v)` is `#t` and each `pat` matches `v` |
+  | `(app f pat)` | when `pat` matches `(f v)` |
+  | `(p1 . p2)` | a pair |
+  | anything else | a literal, compared with `eq?` (strings with `string=?`) |
+
+  If no clause matches, the result is a `match-failure` error.
+- `$module` replaces Kernel's `$provide!`. It evaluates a body
+  (declarations included) in a child environment and returns the
+  environment the body ends in. `($import! env-expr sym ...)` is a
+  declaration binding those symbols to their values in that environment.
+
+## 7. Delimited control
+
+grift has no `call/cc`. Its four control primitives are Dybvig, Peyton
+Jones and Sabry's multi-prompt interface (`newPrompt`, `pushPrompt`,
+`withSubCont`, `pushSubCont`):
+
+- Prompts are tagged, so independent uses do not interfere. A capture goes
+  to the innermost prompt with its tag; other prompts in between are
+  captured along.
+- `with-sub-cont` has `control0` semantics: it removes both the captured
+  frames and the prompt, and `f` runs in the continuation of the
+  `push-prompt`.
+- Sub-continuations are a distinct type. They are not callable and are
+  reinstated only with `push-sub-cont`, any number of times.
+- `with-sub-cont` with no matching prompt raises `no-prompt`.
+
+The library derives from these primitives:
+
+- `shift`/`reset`, `control0` and their multi-prompt variants;
+- **deep effect handlers** (`handle`, `perform`);
+- **generators**: pure lazy streams, each step `()` or `(value . next)`;
+- **parameters**: dynamic binding, following Kiselyov, Shan & Sabry.
+
+## 8. Errors
+
+Errors are an effect delivered through `error-prompt`. When a primitive
+fails, the machine behaves exactly as:
 
 ```lisp
-(quote expr)
+(with-sub-cont error-prompt ($lambda (k) (list k kind message irritants)))
 ```
 
-Returns the first operand unchanged.
+Here `kind` is a symbol, `message` a string, and `irritants` a list of the
+values involved. `k` lets a handler resume the failed computation.
+`raise-error` and `error` (kind `user`) use the same protocol.
 
-### 7.2 `if`
+`(with-error-handler handler thunk)` pushes `error-prompt` around `thunk`,
+wrapping a normal result in a private `ok` record so it cannot be confused
+with an error payload. If an error arrives, `handler` is called with an
+error object, outside the protected region, and its result is returned.
+
+- **Deep handlers.** `(error-object-resume e v)` continues the failed
+  computation as if the failing operation had returned `v`, under the same
+  handler.
+- **Errors inside a handler** propagate outward.
+- **`$guard`.** `($guard (var clause ...) body ...)` binds `var` to the
+  error object and tries `$cond`-style clauses. If no clause matches, the
+  error is raised again with `raise`.
+- **Uncaught errors.** When there is no handler, the host's own error
+  prompt receives the error and `Grift::eval` returns
+  `Err(Error { kind, message, irritants })`.
+
+Error objects provide `error-object-kind`, `error-object-message`,
+`error-object-irritants` and `error-object-continuation`.
+
+### Error kinds
+
+| Kind | Raised by |
+|---|---|
+| `type-error` | a value of the wrong type; `$if` on a non-boolean; a mismatch inside an operand |
+| `arity-error` | wrong number of operands; lists of different lengths in `map` |
+| `range-error` | `list-ref`, `string-ref`, `substring`, `integer->char`, `expt` out of range |
+| `overflow` | integer overflow |
+| `division-by-zero` | `div`, `mod`, `make-rational` |
+| `unbound-symbol` | a symbol with no binding |
+| `uninitialized-binding` | reading a recursive binding before its initializer finished |
+| `reinitialized-binding` | initializing a recursive binding twice (via a reinstated sub-continuation) |
+| `sigil-violation` | the sigil rule (§9 rule 5) |
+| `no-prompt` | `with-sub-cont`, `perform` or `yield` with no matching prompt |
+| `match-failure` | no `$match` clause matches |
+| `contract-violation` | a broken contract; irritants are `(blamed-party contract-name value binding-name)` |
+| `parse-error` | the reader, `read`, `string->number` |
+| `user` | `error` |
+
+## 9. Type discipline
+
+These rules are normative.
+
+1. **No punning or implicit conversion.**
+   - `()` is not false, and there is no truthiness.
+   - `select`, `$if`, `$cond`, `$and?`, `$or?`, `not?`, `and?` and `or?`
+     require booleans (except the tail operand of `$and?`/`$or?`, §6).
+   - Strings are not lists and chars are not one-character strings.
+   - Integers never change type: overflow is an error, not promotion.
+2. **Primitives check everything.** Every primitive checks its arity and
+   argument types and raises a typed error. `wrap` requires a combiner,
+   `unwrap` an applicative, `eval` an environment.
+3. **Purity.** See §4.1.
+4. **Abstraction and identity.**
+   - User-defined types come only from `make-encapsulation-type`. A value
+     of such a type is opaque to anyone without its predicate and
+     accessor, and the accessor raises `type-error` on any other value.
+   - `eq?` compares identity. Immutable structured data (pairs, strings,
+     encapsulated values) has no meaningful identity, so comparing two
+     structured values of the same kind is a `type-error`; use `equal?`.
+     Comparing values of different kinds answers normally, e.g.
+     `(eq? x ())` is how `null?` is defined.
+   - `equal?` compares pairs and strings structurally and everything else
+     with `eq?`. Two encapsulated values compare structurally only if
+     their type opted in (records declared with `(name equal)`).
+     Otherwise `equal?` raises `type-error` rather than look through an
+     abstraction barrier.
+5. **The sigil rule.**
+   - **At call sites:** when a combination's head is a symbol, a symbol
+     starting with `$` must evaluate to an operative, and any other symbol
+     to a non-operative. Violations raise `sigil-violation`, so a call
+     site always tells the truth about whether operands are evaluated.
+   - **At definition time:** `$define!` (and the library's other defining
+     forms) enforce the same rule for every symbol they bind.
+   - **Not enforced** for heads that are not symbols, or for formal
+     parameters: operatives may be passed around as data under any name.
+     Natives are applicatives, so their names may not start with `$`.
+6. **Higher-order contracts with blame** (Findler & Felleisen).
+   - Contracts are first-class values (`contract?`). Predicates act as
+     flat contracts.
+   - `(-> dom ... range)` makes a function contract. A trailing
+     `(rest/c c)` domain covers any remaining arguments.
+   - Applying a function contract returns a new applicative that checks
+     every call:
+     - arguments are checked with the blame swapped (the caller supplied
+       them);
+     - the result is checked with the original blame (the function
+       supplied it);
+     - a wrong argument count blames the caller.
+   - Function arguments are wrapped in turn, so blame follows the party
+     that actually supplied a bad value.
+   - Combinators: `list-of`, `or/c` (chooses by first-order test), `and/c`,
+     `any/c`, `none/c`, `flat-contract`, `make-contract`.
+   - Applying contracts: `check`, `contract`, and `$define/contract!`
+     (blames "the definition of f" or "a caller of f").
+7. **Exhaustive matching.** A `$match` with no matching clause raises
+   `match-failure`.
+
+## 10. Records
 
 ```lisp
-(if test then [else])
+($define-record-type! point (make-point x y) point? (x point-x) (y point-y))
+($define-record-type! (vec equal) (make-vec x y) vec? (x vec-x) (y vec-y))
 ```
 
-Behavior:
-
-1. evaluate `test`
-2. require a boolean
-3. if true, evaluate `then`
-4. if false:
-   - evaluate `else` if present
-   - otherwise return `NIL`
-
-Only the selected branch is evaluated.
-
-### 7.3 `define!`
-
-```lisp
-(define! definiend expression)
-```
-
-Behavior:
-
-1. validate `definiend` as a formal parameter tree
-2. evaluate `expression` in the current environment
-3. match the result against `definiend` in the current frame
-4. return `#inert`
-
-Important points:
-
-- this is destructuring definition
-- `(define! (f x) value)` destructures a value; it does not define a function
-- same-frame redefinition raises `AlreadyDefined`
-
-### 7.4 `fn!`
-
-```lisp
-(fn! name params body...)
-```
-
-Behavior:
-
-- equivalent to `(define! name (lambda params (begin body...)))`
-- `name` must be a symbol
-- `params` are validated via `lambda`
-- zero body expressions are allowed; such a function returns `NIL`
-- same-frame redefinition raises `AlreadyDefined`
-- returns `#inert`
-
-### 7.5 `set!`
-
-```lisp
-(set! env-expr symbol value-expr)
-```
-
-Behavior:
-
-1. evaluate `env-expr`
-2. require that result to be an environment
-3. require `symbol` to be a symbol literal
-4. evaluate `value-expr` in the current dynamic environment
-5. mutate the existing local binding of `symbol` in the target environment
-6. return `#inert`
-
-Differences from Scheme:
-
-- no `(set! x value)` shorthand
-- explicit target environment
-- no parent walk for mutation
-- no binding creation
-
-### 7.6 `lambda`
-
-```lisp
-(lambda params body...)
-```
-
-Behavior:
-
-- validate `params`
-- capture the current environment
-- wrap an underlying operative in an applicative
-- zero body expressions are allowed and yield `NIL`
-
-### 7.7 `begin`
-
-```lisp
-(begin expr...)
-```
-
-Behavior:
-
-- evaluate operands left-to-right
-- return the last result
-- `(begin)` returns `NIL`
-
-### 7.8 `cond`
-
-```lisp
-(cond (test expr...) ...)
-```
-
-Behavior:
-
-- inspect clauses left-to-right
-- first clause element is the test
-- a symbol named `else` matches immediately
-- otherwise evaluate the test and require a boolean
-- matching clause body is evaluated as if wrapped in `begin`
-- matching clause with no body returns `NIL`
-- if no clause matches, return `NIL`
-
-`else` is recognized by symbol name only and does not need to be last.
-
-### 7.9 `and`
-
-```lisp
-(and expr...)
-```
-
-Behavior:
-
-- zero operands => `#t`
-- evaluate operands left-to-right
-- every evaluated operand must be boolean
-- stop at first `#f`
-- return `#f` if any operand is false
-- return `#t` if all operands are true
-
-Unlike Scheme, `and` never returns an arbitrary non-boolean truthy value.
-
-### 7.10 `or`
-
-```lisp
-(or expr...)
-```
-
-Behavior:
-
-- zero operands => `#f`
-- evaluate operands left-to-right
-- every evaluated operand must be boolean
-- stop at first `#t`
-- return `#t` if any operand is true
-- return `#f` if all operands are false
-
-Unlike Scheme, `or` never returns an arbitrary non-boolean truthy value.
-
-### 7.11 `let`
-
-Regular form:
-
-```lisp
-(let ((name init) ...) body...)
-```
-
-Behavior:
-
-1. create a child environment of the current environment
-2. require each binding to be exactly `(symbol init)`
-3. evaluate each init in the outer environment, not the child
-4. define each symbol in the child
-5. evaluate the body in the child
-
-This is simultaneous binding, not `let*`.
-
-Named form:
-
-```lisp
-(let name ((param init) ...) body...)
-```
-
-Behavior:
-
-1. evaluate all init expressions in the outer environment
-2. create a child environment
-3. define `name` in that child as a recursive function
-4. invoke that function using the already evaluated init values
-
-Important detail:
-
-- named-let init values are not re-evaluated during helper invocation
-- zero body expressions are allowed and yield `NIL`
-
-### 7.12 `vau`
-
-```lisp
-(vau params env-param body...)
-```
-
-Behavior:
-
-- validate `params`
-- require `env-param` to be a symbol or `#ignore`
-- reject overlap between `params` symbols and `env-param`
-- capture the current environment
-- if multiple body expressions are present, wrap them in `begin`
-- zero body expressions yield `NIL`
-- return a compound operative
-
-### 7.13 `current-environment`
-
-```lisp
-(current-environment)
-```
-
-Returns the caller's current environment and ignores any operands.
-
-## 8. Builtin Applicatives
-
-Builtin applicatives receive already evaluated arguments.
-
-Unless noted otherwise:
-
-- extra operands are ignored
-- missing operands usually surface as `TypeError`
-
-### 8.1 `cons`
-
-```lisp
-(cons a b)
-```
-
-Normal behavior:
-
-- return `(a . b)`
-
-Special string behavior:
-
-- if `a` is a one-character string
-- and `b` is a well-formed string chain
-- return a new `CharPair` node instead of a `Cons`
-
-Consequences:
-
-- `(cons (car "h") "ello")` => `"hello"`
-- `(cons (car "h") ())` => `"h"`
-- `(cons (car "a") 42)` => `TypeError`
-
-### 8.2 Arithmetic
-
-`(+ ...)`
-
-- zero args => `0`
-- variadic checked addition
-
-`(- a b ...)`
-
-- zero args => `ArityError`
-- one arg => checked negation
-- more args => left-fold checked subtraction
-
-`(* ...)`
-
-- zero args => `1`
-- variadic checked multiplication
-
-`(/ a b)`
-
-- divides first argument by second
-- truncates toward zero
-- division by zero => `DivisionByZero`
-- extra operands are ignored
-
-### 8.3 Numeric Comparisons
-
-`=` `<` `>` `<=` `>=`
-
-Behavior:
-
-- use the first two arguments
-- require numbers
-- ignore extras
-- return a boolean
-
-These are not chain comparisons.
-
-### 8.4 `car` and `cdr`
-
-`car`:
-
-- on `Cons`, return the cons cell's car
-- on non-empty strings, return a fresh one-character string
-- otherwise `TypeError`
-
-`cdr`:
-
-- on `Cons`, return the cons cell's cdr
-- on non-empty strings, return the tail string
-- otherwise `TypeError`
-
-### 8.5 `list`
-
-```lisp
-(list ...)
-```
-
-Returns the evaluated argument list exactly as received. It does not copy the
-list.
-
-### 8.6 Type Predicates
-
-These predicates are variadic and return true iff every argument matches:
-
-- `null?`
-- `pair?`
-- `number?`
-- `symbol?`
-- `boolean?`
-- `inert?`
-- `ignore?`
-- `operative?`
-- `applicative?`
-- `environment?`
-
-Zero-argument behavior:
-
-- all of the above return `#t`
-
-Membership rules:
-
-- `null?` => only `NIL`
-- `pair?` => `Cons` and non-empty `CharPair` strings
-- `operative?` => builtin combiner cores, compound operatives, and operative prelude bindings
-- `applicative?` => `Applicative` only
-- `environment?` => `Environment` only
-
-Notably:
-
-- operative prelude bindings such as `lambda` and `fn!` are `operative?`
-- native host functions are not `operative?`
-- wrapped operatives are `applicative?`
-
-### 8.7 `not`
-
-```lisp
-(not boolean)
-```
-
-Reads only the first argument, requires a boolean, and returns its negation.
-
-### 8.8 `eq?`
-
-`eq?` is defined as:
-
-1. if the two objects are the same runtime object, return true
-2. if both objects are strings, compare string content
-3. otherwise, if both objects are immutable value-like objects, compare their
-   stored value
-4. otherwise return false
-
-Immutable value-like categories for `eq?` are:
-
-- nil
-- booleans
-- numbers
-- symbols
-- strings
-- `#inert`
-- `#ignore`
-- prelude entries
-- native host functions
-
-Identity-based categories for `eq?` are:
-
-- cons pairs
-- environments
-- compound operatives
-- applicatives
-- builtin combiner cores
-
-### 8.9 `equal?`
-
-`equal?` extends `eq?`:
-
-1. if `eq?` is true, return true
-2. if both values are cons cells, compare car and cdr recursively
-3. if both values are strings, compare string content
-4. if both values are environments and not `eq?`, return false
-5. otherwise return false
-
-Consequences:
-
-- cons cells compare structurally
-- strings compare by content
-- environments are identity-only
-
-### 8.10 `eval`
-
-```lisp
-(eval expr [env])
-```
-
-Behavior:
-
-- no explicit environment => evaluate in `GLOBAL_ENV`
-- explicit environment => must be an environment
-- `expr` is evaluated as the existing runtime object; it is not reparsed
-
-### 8.11 `wrap`
-
-```lisp
-(wrap combiner)
-```
-
-Returns an applicative wrapping the first argument.
-
-It does not validate callability. Wrapping a non-callable succeeds and only
-fails later when the resulting applicative is invoked.
-
-### 8.12 `unwrap`
-
-```lisp
-(unwrap applicative)
-```
-
-Returns the immediate wrapped value.
-
-Non-applicatives raise `TypeError`.
-
-### 8.13 `make-environment`
-
-```lisp
-(make-environment env ...)
-```
-
-Behavior:
-
-- every argument must be an environment
-- returns a fresh environment whose parent list is a copy of the argument list
-- the new environment starts with no local bindings
-
-The copy prevents later list-object mutation from changing the parent list, but
-it does not clone parent environments.
-
-### 8.14 `make-empty-environment`
-
-```lisp
-(make-empty-environment)
-```
-
-Creates a fresh environment with no parents.
-
-Any argument at all => `ArityError`.
-
-### 8.15 `gc-collect`
-
-```lisp
-(gc-collect)
-```
-
-Forces a collection cycle, ignores operands, and returns the number of
-collected objects as a number.
-
-### 8.16 `error`
-
-```lisp
-(error msg)
-```
-
-Always raises `InvalidArgument`. The message is currently ignored.
-
-### 8.17 `apply`
-
-```lisp
-(apply combiner arg-list [env])
-```
-
-Behavior:
-
-- no explicit environment => use `GLOBAL_ENV`
-- explicit environment => must be an environment
-- `arg-list` is passed directly as the operand object
-- `apply` does not evaluate the elements of `arg-list`
-
-This is critical:
-
-- if `combiner` is operative, `arg-list` is the raw operand object
-- if `combiner` is applicative, `arg-list` is treated as already evaluated
-  arguments
-
-So `apply` is not Scheme-style “evaluate the list elements for me”.
-
-### 8.18 `raw-read-string`
-
-```lisp
-(raw-read-string string)
-```
-
-Behavior:
-
-- argument must be a well-formed runtime string
-- empty string => `NIL`
-- parse zero or one expression
-- reject trailing non-whitespace/comment input
-- if one expression is parsed, return that runtime object directly
-
-### 8.19 `raw-display-to-string`
-
-```lisp
-(raw-display-to-string object)
-```
-
-Behavior:
-
-- validate reachable strings and symbol names
-- format using display semantics
-- return a runtime string
-
-### 8.20 `raw-write-to-string`
-
-```lisp
-(raw-write-to-string object)
-```
-
-Behavior:
-
-- validate reachable strings and symbol names
-- format using write semantics
-- return a runtime string
-
-## 9. Formatting Semantics
-
-Grift has two formatting modes:
-
-- write mode
-- display mode
-
-### 9.1 Common Rules
-
-Formatting produces:
-
-- nil => `()`
-- booleans => `#t`, `#f`
-- numbers => decimal text
-- symbols => raw symbol name
-- proper lists => list notation
-- improper lists => dotted notation
-- `#inert`
-- `#ignore`
-- prelude => `<prelude:name>`
-- opaque runtime values => placeholder forms
-
-Opaque placeholder forms:
-
-- compound operative => `<operative>`
-- applicative => `<applicative>`
-- builtin combiner core => `<builtin>`
-- environment => `<environment>`
-- native function => `<native>`
-
-### 9.2 Write Mode
-
-Write mode prints strings with quotes and escapes.
-
-Escapes are exactly:
-
-- `"` => `\"`
-- `\` => `\\`
-- newline => `\n`
-- tab => `\t`
-- carriage return => `\r`
-
-### 9.3 Display Mode
-
-Display mode prints strings without surrounding quotes or escapes.
-
-### 9.4 Empty String Formatting
-
-Because empty string and nil are the same runtime object:
-
-- write mode prints `""` as `()`
-- display mode also prints it as `()`
-
-### 9.5 Formatting Validation
-
-Formatting validates that:
-
-- symbols point to well-formed string chains
-- strings are well-formed string chains
-- recursively reachable list content is formattable
-
-Malformed reachable string structure causes formatting failure in host APIs and
-`TypeError` in raw string helpers.
-
-## 10. Prelude
-
-The bundled prelude initializes these global bindings:
-
-- lazy operative bindings such as `lambda` and `fn!`
-- lazy prelude functions such as `map`, `filter`, `length`, and `append`
-
-### 10.1 `map`
-
-```lisp
-(fn! map (f lst)
-  (if (null? lst) ()
-    (cons (f (car lst)) (map f (cdr lst)))))
-```
-
-### 10.2 `filter`
-
-```lisp
-(fn! filter (pred lst)
-  (if (null? lst) ()
-    (if (pred (car lst))
-      (cons (car lst) (filter pred (cdr lst)))
-      (filter pred (cdr lst)))))
-```
-
-### 10.3 `length`
-
-```lisp
-(fn! length (lst)
-  (if (null? lst) 0 (+ 1 (length (cdr lst)))))
-```
-
-### 10.4 `append`
-
-```lisp
-(fn! append (a b)
-  (if (null? a) b
-    (cons (car a) (append (cdr a) b))))
-```
-
-### 10.5 Invocation Model
-
-Prelude bindings are not cached closures.
-
-For every call:
-
-1. retrieve the stored static lambda source text
-2. parse it again
-3. evaluate it again in `GLOBAL_ENV`
-4. unwrap the resulting applicative to the inner operative
-5. invoke that operative
-
-Prelude calls therefore reparse and reevaluate on every invocation.
-
-## 11. Errors
-
-Observable error variants:
-
-- `OutOfMemory`
-- `InvalidArgument`
-- `ArityError`
-- `Cyclic`
-- `TypeError`
-- `ParseError { line, col }`
-- `ArithmeticOverflow`
-- `DivisionByZero`
-- `UnboundVariable`
-- `NotCallable`
-- `AlreadyDefined`
-
-Typical triggers:
-
-| Error | Typical causes |
-| --- | --- |
-| `ParseError` | malformed syntax, trailing input in `raw-read-string` |
-| `InvalidArgument` | bad string escape, duplicate parameter symbol, `(error ...)` |
-| `ArityError` | `(-)`, `(make-empty-environment 1)` |
-| `Cyclic` | cyclic formal parameter tree |
-| `TypeError` | wrong value kind, non-boolean boolean context, malformed string chain |
-| `ArithmeticOverflow` | checked integer overflow |
-| `DivisionByZero` | division by zero |
-| `UnboundVariable` | missing symbol lookup or `set!` target |
-| `NotCallable` | applying a non-combiner |
-| `AlreadyDefined` | same-frame redefinition |
-
-## 12. Observable Quirks
-
-These behaviors are surprising but normative:
-
-- empty string is the same runtime object as nil
-- strings count as pairs for `pair?`, `car`, and `cdr`, but not for formal
-  parameter tree matching
-- `eq?` on strings is content-based
-- external source parsing is byte-oriented, while `raw-read-string` is
-  character-oriented
-- `error` ignores its message
-- `wrap` accepts non-callables
-- `apply` does not evaluate the supplied argument list
-- prelude calls reparse their source every time
-
-## 13. Reimplementation Checklist
-
-A compatible implementation should preserve at least these properties:
-
-1. empty top-level input yields `#inert`
-2. empty `raw-read-string` yields `()`
-3. empty string is the same runtime object as nil
-4. only booleans are accepted in boolean contexts
-5. symbols are interned
-6. strings are linked character chains with pair-like `car`/`cdr`
-7. `define!` destructures via formal parameter trees
-8. `set!` requires an explicit environment and mutates only that frame
-9. multi-parent environment lookup is left-to-right depth-first
-10. applicatives evaluate operands exactly once, left-to-right
-11. `apply` does not evaluate the supplied argument list
-12. `eval` defaults to the global environment
-13. regular `let` evaluates initializers in the outer environment
-14. named `let` does not re-evaluate initializer values during invocation
-15. closures capture live environment objects
-16. string-building `cons` requires a well-formed string tail
-17. `eq?` is value-based for strings and immutable scalars, identity-based for
-    pairs and environments
-18. `equal?` is structural for cons cells and strings, but not for distinct
-    environments
-19. write/display formatting of the empty string matches nil formatting
-20. prelude functions `map`, `filter`, `length`, and `append` exist
-21. prelude calls reparse and reevaluate on every invocation
-
-If this document and the implementation disagree, the code in `crates/grift/src`
-and the behavior covered by `crates/grift/tests/lisp_tests.rs` are authoritative.
+This declares a new encapsulated type, with:
+
+- a constructor that checks its arity;
+- a predicate;
+- accessors that check their argument's type.
+
+The `(name equal)` form opts the type into structural `equal?`.
+
+## 11. Deviations from R-1RK
+
+| R-1RK | grift | Why |
+|---|---|---|
+| `$if`, `$define!`, `$sequence` (primitive operatives) | library operatives over `select`, declarations and `$vau` | one primitive operative |
+| `$vau` with several body forms | primitive takes one; library `$vau` adds `$sequence` | minimal core |
+| mutable pairs: `set-car!`, `set-cdr!`, `copy-es-immutable`, `encycle!`, `append!` | removed | no mutation |
+| cyclic lists, `get-list-metrics`, cycle-aware list operations | removed (cycles cannot be built) | follows from immutability |
+| `$define!` mutates the current environment | returns a declaration; bodies and the top level thread environments | no mutation |
+| `$set!` | removed | no mutation |
+| `$provide!` | replaced by `$module` | no mutation |
+| `make-environment` with any number of parents | no parents; children come from `environment-bind` | minimal core, immutability |
+| `call/cc`, `extend-continuation`, `guard-continuation`, `continuation->applicative`, `root-continuation`, `error-continuation`, `$let/cc`, `apply-continuation` | multi-prompt delimited control; errors via `error-prompt` | delimited control composes and subsumes them |
+| keyed dynamic variables | library parameters over delimited control | derivable |
+| keyed static variables | removed | not needed without mutation |
+| promises: `$lazy`, `force`, `memoize` | removed; use thunks or generators | memoization is mutation |
+| numeric tower: rationals, inexact reals, infinities, bounds, robustness | checked 64-bit integers; rationals as an optional library type | strictness, minimal core |
+| integers of unbounded size | 64-bit, overflow is an error | integers never change type |
+| ports | none; host natives provide I/O | effects belong to the host |
+| `equal?`, `boolean?`, `null?`, `inert?`, `ignore?` (primitive) | library | derivable |
+| `eq?` defined on all objects | refuses to compare two structured values of the same kind | immutable data has no identity |
+| `$and?`/`$or?`, `$cond` and `$if` accept any test value | require booleans | strict booleans |
+| no sigil enforcement | sigil rule enforced at call sites and definitions | call sites tell the truth |
+| strings and characters (unspecified in R-1RK) | immutable strings, chars, names from klisp/R7RS | — |
+| `error` (unspecified in R-1RK) | `error`, `raise-error`, error objects as in klisp | — |
+
+There is no `$quote`, as in Kernel.
+
+## 12. The host interface
+
+`Grift::new()` loads the library. `eval(src)` folds the forms of `src` as
+described in §4.3 and returns the value of the last form that is not a
+declaration, or `#inert`. Natives registered with `register_native` are
+bound, as applicatives, in a new child of the top-level environment. They
+receive evaluated arguments; an error they return is delivered through the
+error protocol like a primitive's.
