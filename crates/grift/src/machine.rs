@@ -172,10 +172,10 @@ impl Machine {
         let mut cur = self.k;
         while let Some(f) = cur {
             let frame = self.ctx.heap.frame(f);
-            if let FrameKind::Prompt { prompt: p, host } = frame.kind
-                && p == prompt
-            {
-                return Some((f, host));
+            if let FrameKind::Prompt { prompt: p, host } = frame.kind {
+                if p == prompt {
+                    return Some((f, host));
+                }
             }
             cur = frame.parent;
         }

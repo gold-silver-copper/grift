@@ -390,10 +390,11 @@ impl Heap {
                 let l = e.log.index();
                 if !self.marks[l] {
                     self.marks[l] = true;
-                    if let Object::Log(log) = &self.slots[l]
-                        && let Some(p) = log.parent
+                    if let Object::Log(Log {
+                        parent: Some(p), ..
+                    }) = &self.slots[l]
                     {
-                        work.push(p);
+                        work.push(*p);
                     }
                 }
                 if traced[l] < e.len {
@@ -416,13 +417,15 @@ impl Heap {
             trace(&self.slots[i], &mut work);
         }
         for (i, &upto) in traced.iter().enumerate() {
-            if self.marks[i]
-                && let Object::Log(log) = &mut self.slots[i]
-                && (upto as usize) < log.entries.len()
-            {
-                log.entries.truncate(upto as usize);
-                log.index = None;
-                log.maybe_index();
+            if !self.marks[i] {
+                continue;
+            }
+            if let Object::Log(log) = &mut self.slots[i] {
+                if (upto as usize) < log.entries.len() {
+                    log.entries.truncate(upto as usize);
+                    log.index = None;
+                    log.maybe_index();
+                }
             }
         }
         let mut live = 0;
@@ -433,13 +436,12 @@ impl Heap {
                 live += 1;
             } else {
                 let old = core::mem::replace(&mut self.slots[i], Object::Free(free));
-                if let Object::Log(log) = old
-                    && self.pool.len() < POOL_LIMIT
-                    && log.entries.capacity() <= 16
-                {
-                    let mut v = log.entries;
-                    v.clear();
-                    self.pool.push(v);
+                if let Object::Log(log) = old {
+                    if self.pool.len() < POOL_LIMIT && log.entries.capacity() <= 16 {
+                        let mut v = log.entries;
+                        v.clear();
+                        self.pool.push(v);
+                    }
                 }
                 free = Some(i as u32);
             }

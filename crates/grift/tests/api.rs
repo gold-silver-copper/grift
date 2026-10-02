@@ -180,3 +180,63 @@ fn cloning_a_booted_interpreter_is_independent() {
     assert_eq!(run(&mut a, "x"), "1");
     assert_eq!(run(&mut b, "x"), "2");
 }
+
+#[test]
+fn reader_and_printer() {
+    let mut g = Grift::new();
+    let src =
+        r#"(($vau x #ignore x) (a b . c) () #t #f #inert #ignore -12 "s\"\n" #\a #\space #\x3bb)"#;
+    assert_eq!(
+        run(&mut g, src),
+        r#"((a b . c) () #t #f #inert #ignore -12 "s\"\n" #\a #\space #\λ)"#
+    );
+    assert_eq!(
+        run(
+            &mut g,
+            "; comment\n #| block #| nested |# |# 1 #;(skipped datum) 2"
+        ),
+        "2"
+    );
+    let v = g.eval(r#""raw\ttext""#).unwrap();
+    assert_eq!(g.display(v), "raw\ttext");
+    assert_eq!(g.write(v), r#""raw\ttext""#);
+}
+
+#[test]
+fn parse_errors_carry_positions() {
+    let mut g = Grift::new();
+    let e = g.eval("(1 2\n  (3").unwrap_err();
+    assert_eq!(e.kind, "parse-error");
+    assert!(e.message.starts_with("line 2, column 5"), "{}", e.message);
+    for bad in [
+        "'x",
+        "`x",
+        ",x",
+        ")",
+        "#q",
+        "(. a)",
+        "99999999999999999999",
+        "\"abc",
+        "#\\nope",
+    ] {
+        assert_eq!(g.eval(bad).unwrap_err().kind, "parse-error", "{bad}");
+    }
+    let e = g.eval("'x").unwrap_err();
+    assert!(e.message.contains("no quote"), "{}", e.message);
+}
+
+#[test]
+fn errors_reaching_the_host_are_decoded() {
+    let mut g = Grift::new();
+    let e = g.eval(r#"(error "boom" 1 "two")"#).unwrap_err();
+    assert_eq!(e.kind, "user");
+    assert_eq!(e.message, "boom");
+    assert_eq!(e.irritants, vec!["1".to_string(), "\"two\"".to_string()]);
+    let e = g.eval("(car 1)").unwrap_err();
+    assert_eq!(e.kind, "type-error");
+    let e = g
+        .eval("(with-sub-cont error-prompt ($lambda (k) 42))")
+        .unwrap_err();
+    assert_eq!(e.kind, "raise");
+    assert_eq!(e.irritants, vec!["42".to_string()]);
+}

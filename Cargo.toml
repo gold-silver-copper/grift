@@ -12,3 +12,10 @@ version = "2.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
+
+# grift is an interpreter, and its test suite runs hundreds of millions of
+# machine steps (the tail-call tests loop 1,000,000 times through each
+# library form), which takes minutes without optimization. This is about
+# speed only: the evaluator never recurses on the Rust stack.
+[profile.dev.package.grift]
+opt-level = 2

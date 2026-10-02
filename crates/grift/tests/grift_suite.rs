@@ -52,4 +52,5 @@ grift_tests! {
     strings => "strings.grift",
     rationals => "rationals.grift",
     gc => "gc.grift",
+    ported => "ported.grift",
 }

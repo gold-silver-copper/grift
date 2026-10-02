@@ -37,9 +37,13 @@ impl Ctx {
         parent: ObjId,
         entries: impl IntoIterator<Item = (SymId, Option<Value>)>,
     ) -> ObjId {
-        if let Object::Env(Env { log, len }) = *self.heap.get(parent)
-            && self.heap.log(log).entries.len() == len as usize
-        {
+        let tip = match *self.heap.get(parent) {
+            Object::Env(Env { log, len }) if self.heap.log(log).entries.len() == len as usize => {
+                Some(log)
+            }
+            _ => None,
+        };
+        if let Some(log) = tip {
             let l = self.heap.log_mut(log);
             l.append(entries);
             let len = u32::try_from(l.entries.len()).expect("environment too large");

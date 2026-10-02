@@ -214,9 +214,11 @@ impl Reader {
             if let Some((_, c)) = CHAR_NAMES.iter().find(|(n, _)| *n == name) {
                 return Ok(Value::Char(*c));
             }
-            if let Some(hex) = name.strip_prefix('x')
-                && let Some(c) = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32)
-            {
+            let hex = name
+                .strip_prefix('x')
+                .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                .and_then(char::from_u32);
+            if let Some(c) = hex {
                 return Ok(Value::Char(c));
             }
             return Err(self.error(&format!("unknown character name #\\{name}")));
