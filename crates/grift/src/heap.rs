@@ -132,14 +132,9 @@ pub(crate) struct Frame {
 /// What a frame does with the value returned to it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum FrameKind {
-    /// The head of a combination is being evaluated; apply the result to
-    /// `operands`. `head` is the head expression, used for the sigil check
-    /// when it is a symbol.
-    Combine {
-        head: Value,
-        operands: Value,
-        env: Value,
-    },
+    /// The head of a combination (itself a combination) is being
+    /// evaluated; apply the result to `operands`.
+    Combine { operands: Value, env: ObjId },
     /// Operands of an applicative are being evaluated, left to right.
     /// `acc` holds the values so far in reverse order; `rest` holds the
     /// operands still to evaluate; `comb` is the unwrapped combiner.
@@ -147,7 +142,7 @@ pub(crate) enum FrameKind {
         comb: Value,
         rest: Value,
         acc: Value,
-        env: Value,
+        env: ObjId,
     },
     /// The initializer of `environment-bind-recursive` is being evaluated.
     InitRec { env: ObjId, ptree: Value },
@@ -380,14 +375,9 @@ fn trace(obj: &Object, work: &mut Vec<ObjId>) {
                 work.push(p);
             }
             match f.kind {
-                FrameKind::Combine {
-                    head,
-                    operands,
-                    env,
-                } => {
-                    push!(head);
+                FrameKind::Combine { operands, env } => {
                     push!(operands);
-                    push!(env);
+                    work.push(env);
                 }
                 FrameKind::Args {
                     comb,
@@ -398,7 +388,7 @@ fn trace(obj: &Object, work: &mut Vec<ObjId>) {
                     push!(comb);
                     push!(rest);
                     push!(acc);
-                    push!(env);
+                    work.push(env);
                 }
                 FrameKind::InitRec { env, ptree } => {
                     work.push(env);
