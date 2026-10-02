@@ -240,3 +240,32 @@ fn errors_reaching_the_host_are_decoded() {
     assert_eq!(e.kind, "raise");
     assert_eq!(e.irritants, vec!["42".to_string()]);
 }
+
+#[test]
+fn every_library_binding_obeys_the_sigil_rule() {
+    // Collect the symbols defined at the top level of every library file.
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/lib")).unwrap() {
+        let src = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+        for line in src.lines() {
+            for prefix in ["($define! ", "($define/contract! "] {
+                if let Some(rest) = line.strip_prefix(prefix) {
+                    let names_part = if let Some(tree) = rest.strip_prefix('(') {
+                        &tree[..tree.find(')').unwrap()]
+                    } else {
+                        rest.split_whitespace().next().unwrap()
+                    };
+                    names.extend(names_part.split_whitespace().map(str::to_owned));
+                }
+            }
+        }
+    }
+    assert!(names.len() > 200, "{}", names.len());
+    let mut g = Grift::new();
+    for name in names.iter().filter(|n| *n != "." && *n != "#ignore") {
+        let probe = format!("(operative? (($vau () e (eval (string->symbol \"{name}\") e))))");
+        let is_operative = run(&mut g, &probe);
+        let expected = if name.starts_with('$') { "#t" } else { "#f" };
+        assert_eq!(is_operative, expected, "{name}");
+    }
+}
