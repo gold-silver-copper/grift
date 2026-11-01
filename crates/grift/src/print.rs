@@ -13,7 +13,7 @@ enum Item {
     Text(&'static str),
 }
 
-impl Grift {
+impl<T> Grift<T> {
     /// Writes `v` as grift would read it back, where it can be read back. Combiners show their
     /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive car]]`.
     pub fn write(&self, v: Value, out: &mut dyn Write) -> fmt::Result {
@@ -80,6 +80,8 @@ impl Grift {
                                     '"' => out.write_str("\\\"")?,
                                     '\\' => out.write_str("\\\\")?,
                                     '\n' => out.write_str("\\n")?,
+                                    '\t' => out.write_str("\\t")?,
+                                    c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
                                     c => out.write_char(c)?,
                                 }
                             }

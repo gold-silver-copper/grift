@@ -13,6 +13,7 @@ mod tests;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use heap::{Heap, Obj};
 
 pub use eval::Prim;
@@ -24,8 +25,8 @@ const LIBRARY: &str = include_str!("library.grift");
 /// A grift value. Immediate values are plain data; the rest refer to the heap of the [`Grift`]
 /// that made them.
 ///
-/// A value returned to the host stays valid until the next call to [`Grift::eval`]; the
-/// collector may then reclaim it. Every heap reference carries its slot's generation, so using
+/// A value returned to the host stays valid until the next call to [`Grift::eval`] or
+/// [`Grift::call`]; the collector may then reclaim it. Every heap reference carries its slot's generation, so using
 /// a reclaimed value is the error `stale-value`, never another object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
@@ -67,16 +68,20 @@ pub struct Symbol(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Host(u32);
 
-/// A host function. It receives the evaluated arguments.
-pub type HostFn = fn(&mut Grift, &[Value]) -> Result<Value, Error>;
+/// A host function. It receives the interpreter, the host's state (the one passed to
+/// [`Grift::eval`] or [`Grift::call`]) and the evaluated arguments.
+pub type HostFn<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>;
 
-/// What went wrong: a symbol naming the error, and the values involved.
+/// What went wrong: a symbol naming the error, the values involved, and where.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     /// The error code, such as `type-error` or a code a program passed to `error`.
     pub code: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
+    /// The innermost combination of the program that was being evaluated, if any. The
+    /// library's own code is skipped, so `($if 1 2 3)` fails at `($if 1 2 3)`.
+    pub at: Option<Value>,
 }
 
 /// Symbols every [`Grift`] interns first, in this order, so the core can name them as constants.
@@ -92,6 +97,7 @@ pub(crate) enum K {
     OutOfMemory,
     ParseError,
     StaleValue,
+    Interrupted,
     Null,
     Boolean,
     Inert,
@@ -105,7 +111,7 @@ pub(crate) enum K {
     Applicative,
 }
 
-const K_NAMES: [&str; 21] = [
+const K_NAMES: [&str; 22] = [
     "unbound-symbol",
     "type-error",
     "arity-error",
@@ -116,6 +122,7 @@ const K_NAMES: [&str; 21] = [
     "out-of-memory",
     "parse-error",
     "stale-value",
+    "interrupted",
     "null",
     "boolean",
     "inert",
@@ -137,7 +144,7 @@ impl From<K> for Symbol {
 
 impl Error {
     /// An error with a copy of `values`; if even that copy can't be allocated, `out-of-memory`.
-    pub(crate) fn new(code: K, values: &[Value]) -> Error {
+    pub(crate) fn new(code: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut v = Vec::new();
         if v.try_reserve_exact(values.len()).is_err() {
             return Error::oom();
@@ -146,6 +153,7 @@ impl Error {
         Error {
             code: code.into(),
             values: v,
+            at: None,
         }
     }
 
@@ -153,6 +161,7 @@ impl Error {
         Error {
             code: K::OutOfMemory.into(),
             values: Vec::new(),
+            at: None,
         }
     }
 }
@@ -165,21 +174,24 @@ pub(crate) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), Error> {
 }
 
 /// An interpreter: a heap, the ground environment holding the primitives and the library, and
-/// the top-level environment, a child of the ground, where programs define things.
-pub struct Grift {
+/// the top-level environment, a child of the ground, where programs define things. `T` is the
+/// host's state, which the host lends to each [`Grift::eval`] and [`Grift::call`] and which
+/// they pass on to host functions.
+pub struct Grift<T = ()> {
     heap: Heap,
     names: Vec<Box<str>>,
     /// Symbol ids sorted by name, for interning.
     sorted: Vec<u32>,
-    hosts: Vec<(Symbol, HostFn)>,
+    hosts: Vec<(Symbol, HostFn<T>)>,
     ground: Ref,
     top: Ref,
     machine: eval::Machine,
+    interrupt: Option<&'static AtomicBool>,
 }
 
-impl Grift {
+impl<T> Grift<T> {
     /// Builds the ground environment, evaluates the library in it and makes an empty top level.
-    pub fn new() -> Result<Grift, Error> {
+    pub fn new() -> Result<Grift<T>, Error> {
         let mut heap = Heap::default();
         let ground = heap.alloc(Obj::Env(None, Vec::new()))?;
         let top = heap.alloc(Obj::Env(Some(ground), Vec::new()))?;
@@ -191,6 +203,7 @@ impl Grift {
             ground,
             top,
             machine: eval::Machine::default(),
+            interrupt: None,
         };
         for name in K_NAMES {
             g.symbol(name)?;
@@ -203,19 +216,23 @@ impl Grift {
             };
             g.bind_symbol(ground, s, v)?;
         }
-        g.eval_in(LIBRARY, ground)?;
+        let forms = g.read(LIBRARY)?;
+        g.eval_forms(None, forms, ground)?;
+        // Everything in the heap now is the library's; errors skip its code.
+        g.heap.seal_library();
         Ok(g)
     }
 
     /// Reads every form in `src`, then evaluates them in order in the top-level environment.
     /// Returns the last form's value (`#inert` for no forms). Nothing is evaluated if `src`
-    /// doesn't read.
-    pub fn eval(&mut self, src: &str) -> Result<Value, Error> {
-        self.eval_in(src, self.top)
+    /// doesn't read. Host functions get `state`.
+    pub fn eval(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
+        let forms = self.read(src)?;
+        self.eval_forms(Some(state), forms, self.top)
     }
 
     /// Binds `name` in the top-level environment to an applicative calling `f`.
-    pub fn define(&mut self, name: &str, f: HostFn) -> Result<(), Error> {
+    pub fn define(&mut self, name: &str, f: HostFn<T>) -> Result<(), Error> {
         let s = self.symbol(name)?;
         let id = u32::try_from(self.hosts.len()).map_err(|_| Error::oom())?;
         push(&mut self.hosts, (s, f))?;
@@ -248,6 +265,53 @@ impl Grift {
                 self.sorted.insert(i, id);
                 Ok(Symbol(id))
             }
+        }
+    }
+
+    /// After this, evaluation stops with the error `interrupted` at the next step once `flag`
+    /// is set, and clears it. The host sets it from another thread or a signal handler.
+    pub fn set_interrupt_flag(&mut self, flag: &'static AtomicBool) {
+        self.interrupt = Some(flag);
+    }
+
+    /// Whether the interrupt flag was set; clears it.
+    pub(crate) fn interrupted(&self) -> bool {
+        // Load and store, not swap: thumbv6m has no atomic read-modify-write.
+        let set = self.interrupt.is_some_and(|f| f.load(Ordering::Relaxed));
+        if let Some(f) = self.interrupt.filter(|_| set) {
+            f.store(false, Ordering::Relaxed);
+        }
+        set
+    }
+
+    /// An error with code `code` and a copy of `values`, for a host function to return.
+    pub fn error(&mut self, code: &str, values: &[Value]) -> Error {
+        match self.symbol(code) {
+            Ok(code) => Error::new(code, values),
+            Err(e) => e,
+        }
+    }
+
+    /// A new string holding a copy of `s`.
+    pub fn make_string(&mut self, s: &str) -> Result<Value, Error> {
+        let mut boxed = String::new();
+        boxed.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+        boxed.push_str(s);
+        Ok(Value::Str(
+            self.heap.alloc(Obj::Str(boxed.into_boxed_str()))?,
+        ))
+    }
+
+    /// The new pair `(a . d)`.
+    pub fn cons(&mut self, a: Value, d: Value) -> Result<Value, Error> {
+        Ok(Value::Pair(self.heap.alloc(Obj::Pair(a, d))?))
+    }
+
+    /// The car and cdr of a pair; `None` for anything else.
+    pub fn uncons(&self, v: Value) -> Option<(Value, Value)> {
+        match v {
+            Value::Pair(r) => self.pair(r).ok(),
+            _ => None,
         }
     }
 

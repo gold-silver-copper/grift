@@ -35,17 +35,30 @@
            (next (eval (car body) env) (cdr body) env))))))
    (wrap ($vau (#ignore rest env) #ignore (eval (cons $sequence rest) env)))))
 
-; $lambda (5.3.2). A body of one expression is kept as is, so printing the combiner shows it.
+; $lambda (5.3.2). A body of one expression is kept as is; several become ($sequence ...) with
+; the symbol, as if written so, so printing the combiner shows the body as written.
 ($define! $lambda
   ($vau (formals . body) env
     (wrap (eval (list $vau formals #ignore
                   ($if ($if (eq? body ()) #f (eq? (cdr body) ()))
                     (car body)
-                    (cons $sequence body)))
+                    (cons ($quote $sequence) body)))
                 env))))
+
+; get-current-environment (6.7.2).
+($define! get-current-environment (wrap ($vau () e e)))
 
 ; not? (6.1.1).
 ($define! not? ($lambda (x) (select x #f #t)))
+
+; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value. R-1RK has no strings;
+; string? is named as its other predicates are.
+($define! null? ($lambda (x) (eq? x ())))
+($define! pair? ($lambda (x) (eq? (type-of x) ($quote pair))))
+($define! symbol? ($lambda (x) (eq? (type-of x) ($quote symbol))))
+($define! string? ($lambda (x) (eq? (type-of x) ($quote string))))
+($define! integer? ($lambda (x) (eq? (type-of x) ($quote integer))))
+($define! environment? ($lambda (x) (eq? (type-of x) ($quote environment))))
 
 ; $and? and $or? (6.1.4, 6.1.5): left to right, the last operand as a tail call.
 ($define! $and?
@@ -63,6 +76,10 @@
 ; =? (12.5.2), of two integers: neither is less than the other.
 ($define! =? ($lambda (a b) ($and? (not? (<? a b)) (not? (<? b a)))))
 
+; min and max (12.5.13), of two integers.
+($define! min ($lambda (a b) ($if (<? b a) b a)))
+($define! max ($lambda (a b) ($if (<? a b) b a)))
+
 ; apply (5.5.1), its two-operand form: the underlying combiner sees a new empty environment.
 ($define! apply
   ($lambda (applicative args)
@@ -75,12 +92,19 @@
       ()
       (cons (apply f (list (car xs))) (map f (cdr xs))))))
 
-; $let (5.10.1). Each binding is a list of a formals tree and an expression.
+; $let (5.10.1). Each binding is a list of a formals tree and an expression. The code it
+; builds starts with combiner values, so an error in it is reported at the $let.
 ($define! $let
   ($vau (clauses . body) env
-    (eval (cons (cons $lambda (cons (map car clauses) body))
-                (map ($lambda ((#ignore expression)) expression) clauses))
-          env)))
+    (apply (eval (cons $lambda (cons (map car clauses) body)) env)
+           (map ($lambda ((#ignore expression)) (eval expression env)) clauses))))
+
+; for-each (6.9.1), over one list: f on each element in turn, for its effect.
+($define! for-each
+  ($lambda (f xs)
+    ($if (eq? xs ())
+      #inert
+      ($sequence (apply f (list (car xs))) (for-each f (cdr xs))))))
 
 ; $cond (5.6.1). With no true test the result is #inert, as in Kernel.
 ($define! $cond
@@ -91,6 +115,31 @@
         ($if (eval test env)
           (eval (cons $sequence body) env)
           (eval (cons $cond (cdr clauses)) env))))))
+
+; $when (not in Kernel): the body if the test is true, else #inert. $if needs both branches.
+($define! $when
+  ($vau (test . body) env
+    ($if (eval test env) (eval (cons $sequence body) env) #inert)))
+
+; $let* (6.7.4): each binding sees the ones before it.
+($define! $let*
+  ($vau (clauses . body) env
+    (eval ($if (eq? clauses ())
+            (cons $let (cons () body))
+            (list $let (list (car clauses)) (cons $let* (cons (cdr clauses) body))))
+          env)))
+
+; $set! (6.8.1): matches formals to the value in the environment `target` evaluates to, as
+; $define! does in the current one.
+($define! $set!
+  ($vau (target formals value) env
+    (bind! (eval target env) formals (eval value env))))
+
+; $unwind-protect (not in Kernel): the body's value, after the cleanup forms have run. They run
+; also when an error leaves the body; the error then goes on to the host unchanged.
+($define! $unwind-protect
+  ($vau (body . cleanup) env
+    (eval-protected body env (cons $sequence cleanup))))
 
 ; length (6.3.1), of a proper list, counting in a loop.
 ($define! length
@@ -107,13 +156,35 @@
            ((eq? (cdr lists) ()) (car lists))
            (#t (append2 (car lists) (apply append (cdr lists)))))))
 
+; reverse (not in Kernel): a list's elements in the opposite order.
+($define! reverse
+  ($lambda (xs)
+    ($define! onto ($lambda (xs acc) ($if (eq? xs ()) acc (onto (cdr xs) (cons (car xs) acc)))))
+    (onto xs ())))
+
 ; equal? (6.6.1): pairs compare by structure, everything else with eq?.
 ($define! equal?
   ($lambda (a b)
-    ($if ($and? (eq? (type-of a) ($quote pair)) (eq? (type-of b) ($quote pair)))
+    ($if ($and? (pair? a) (pair? b))
       ($and? (equal? (car a) (car b)) (equal? (cdr a) (cdr b)))
       (eq? a b))))
 
-; Not in Kernel: the ground environment by name, so (bindings ground-environment) lists the
-; primitives and this library.
-($define! ground-environment (($vau () env env)))
+; assoc (6.3.6): the first pair in alist whose car is equal? to x, or () if there is none.
+($define! assoc
+  ($lambda (x alist)
+    ($cond ((eq? alist ()) ())
+           ((equal? x (car (car alist))) (car alist))
+           (#t (assoc x (cdr alist))))))
+
+; member? (6.3.7): whether x is equal? to an element of xs.
+($define! member?
+  ($lambda (x xs)
+    ($cond ((eq? xs ()) #f)
+           ((equal? x (car xs)) #t)
+           (#t (member? x (cdr xs))))))
+
+; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
+; list them. The ground itself stays out of reach, so no program can change what the library
+; uses. Bound first, so that the list names itself.
+($define! ground-names ())
+($define! ground-names (bindings (get-current-environment)))

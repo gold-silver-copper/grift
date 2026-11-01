@@ -1,12 +1,14 @@
 //! The evaluator: an explicit machine loop over a frame stack, and the Rust primitives.
 //!
-//! The machine's state is its frame stack, its argument stack and the current [`Mode`]. The
-//! collector runs only at the top of the loop, with exactly that state (plus the ground and
-//! top-level environments) as its roots. Between two safe points Rust code may hold values in
-//! locals freely: nothing is freed until the next safe point, and by then every local is gone.
+//! The machine's state is its frame stack, its argument stack, the errors waiting for a
+//! cleanup to finish, where it is in the program and the current [`Mode`]. The collector runs
+//! only at the top of the loop, with exactly that state (plus the ground and top-level
+//! environments) as its roots. Between two safe points Rust code may hold values in locals
+//! freely: nothing is freed until the next safe point, and by then every local is gone. The
+//! same safe point checks the host's interrupt flag.
 
 use crate::heap::{Obj, Op};
-use crate::{Error, Grift, K, Ref, Symbol, Value, push};
+use crate::{Error, Grift, Host, K, Ref, Symbol, Value, push};
 use alloc::vec::Vec;
 
 /// The Rust primitives. All but `$vau` are bound wrapped, as applicatives.
@@ -29,12 +31,14 @@ pub enum Prim {
     Sub,
     Mul,
     Div,
+    Mod,
     Less,
     Error,
+    EvalProtected,
 }
 
 impl Prim {
-    pub(crate) const ALL: [Prim; 19] = [
+    pub(crate) const ALL: [Prim; 21] = [
         Prim::Vau,
         Prim::Wrap,
         Prim::Unwrap,
@@ -52,8 +56,10 @@ impl Prim {
         Prim::Sub,
         Prim::Mul,
         Prim::Div,
+        Prim::Mod,
         Prim::Less,
         Prim::Error,
+        Prim::EvalProtected,
     ];
 
     /// The name the primitive is bound to in the ground environment.
@@ -76,8 +82,10 @@ impl Prim {
             Prim::Sub => "-",
             Prim::Mul => "*",
             Prim::Div => "div",
+            Prim::Mod => "mod",
             Prim::Less => "<?",
             Prim::Error => "error",
+            Prim::EvalProtected => "eval-protected",
         }
     }
 
@@ -89,7 +97,7 @@ impl Prim {
                 (1, 1)
             }
             Prim::Error => (1, usize::MAX),
-            Prim::Vau | Prim::Bind | Prim::Select => (3, 3),
+            Prim::Vau | Prim::Bind | Prim::Select | Prim::EvalProtected => (3, 3),
             _ => (2, 2),
         }
     }
@@ -102,15 +110,20 @@ pub(crate) enum Mode {
     Eval(Value, Ref),
     /// Deliver a value to the top frame.
     Return(Value),
+    /// Call a host function with the arguments on the argument stack from `base`.
+    Host(Host, usize),
 }
 
-/// A continuation frame: what to do with the value being returned.
+/// A continuation frame: what to do with the value being returned. `at` is the combination
+/// of the program the frame belongs to ([`Ref::NONE`] for none), where an error is reported.
 #[derive(Clone, Copy)]
 enum Frame {
-    /// Evaluate the remaining top-level forms of one `eval_in` call.
-    Top { rest: Value, env: Ref },
+    /// Evaluate the remaining forms of one `eval` call; with none left, pass the value on.
+    /// `outer` is the location of the evaluation this one runs inside (a host function's
+    /// call), kept here so the collector sees it until it is restored.
+    Top { rest: Value, env: Ref, outer: Ref },
     /// The value is the combiner of a combination with these operands.
-    Combine { operands: Value, env: Ref },
+    Combine { operands: Value, env: Ref, at: Ref },
     /// The value is an argument of `comb`; arguments so far are on the argument stack from
     /// `base`.
     Args {
@@ -118,107 +131,320 @@ enum Frame {
         env: Ref,
         rest: Value,
         base: usize,
+        at: Ref,
     },
+    /// When the evaluation above ends, by a value or an error, evaluate `cleanup` in `env`;
+    /// `args` is the argument stack's height to go back to.
+    Cleanup {
+        cleanup: Value,
+        env: Ref,
+        args: usize,
+        at: Ref,
+    },
+    /// The cleanup above ran after this value: deliver it.
+    Deliver(Value),
+    /// The cleanup above ran after an error, the last one waiting: raise it again.
+    Raise,
 }
 
 impl Frame {
-    fn values(self) -> [Value; 3] {
+    fn values(self) -> [Value; 4] {
+        let nil = Value::Nil;
         match self {
-            Frame::Top { rest, env } => [rest, Value::Env(env), Value::Nil],
-            Frame::Combine { operands, env } => [operands, Value::Env(env), Value::Nil],
+            Frame::Top { rest, env, outer } => [rest, Value::Env(env), Value::Pair(outer), nil],
+            Frame::Combine { operands, env, at } => {
+                [operands, Value::Env(env), Value::Pair(at), nil]
+            }
             Frame::Args {
-                comb, env, rest, ..
-            } => [comb, Value::Env(env), rest],
+                comb,
+                env,
+                rest,
+                at,
+                ..
+            } => [comb, Value::Env(env), rest, Value::Pair(at)],
+            Frame::Cleanup {
+                cleanup, env, at, ..
+            } => [cleanup, Value::Env(env), Value::Pair(at), nil],
+            Frame::Deliver(v) => [v, nil, nil, nil],
+            Frame::Raise => [nil; 4],
         }
     }
 }
 
-#[derive(Default)]
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     args: Vec<Value>,
+    /// Errors waiting for a cleanup to finish, one per `Raise` frame.
+    raised: Vec<Error>,
+    /// The innermost combination of the program being evaluated, or [`Ref::NONE`]. A `Ref`,
+    /// not a `Value`: this is written and read at every step.
+    here: Ref,
     /// Scratch for matching formals trees.
     work: Vec<(Value, Value)>,
+}
+
+impl Default for Machine {
+    fn default() -> Machine {
+        Machine {
+            frames: Vec::new(),
+            args: Vec::new(),
+            raised: Vec::new(),
+            here: Ref::NONE,
+            work: Vec::new(),
+        }
+    }
 }
 
 fn type_error(p: Prim, v: Value) -> Error {
     Error::new(K::TypeError, &[Value::Prim(p), v])
 }
 
+#[inline]
 fn boolean(b: bool) -> Value {
     if b { Value::True } else { Value::False }
 }
 
-impl Grift {
-    /// Reads `src`, then evaluates its forms in `env`. Reentrant: a host function may call
+impl<T> Grift<T> {
+    /// Evaluates the list `forms` in `env`, in order. Reentrant: a host function may call
     /// `eval`, which runs on top of the current frames and leaves them as it found them.
-    pub(crate) fn eval_in(&mut self, src: &str, env: Ref) -> Result<Value, Error> {
-        let forms = self.read(src)?;
-        let (frames, args) = (self.machine.frames.len(), self.machine.args.len());
-        let result = push(&mut self.machine.frames, Frame::Top { rest: forms, env })
-            .and_then(|()| self.run(Mode::Return(Value::Inert)));
-        if result.is_err() {
-            self.machine.frames.truncate(frames);
-            self.machine.args.truncate(args);
+    pub(crate) fn eval_forms(
+        &mut self,
+        state: Option<&mut T>,
+        forms: Value,
+        env: Ref,
+    ) -> Result<Value, Error> {
+        let outer = self.machine.here;
+        let top = Frame::Top {
+            rest: forms,
+            env,
+            outer,
+        };
+        self.start(state, &[top], Mode::Return(Value::Inert))
+    }
+
+    /// Calls combiner `f` with `args` as Kernel's `apply` does: an applicative's underlying
+    /// combiner gets the arguments as its operands, in a new empty environment; an operative
+    /// gets them as they are. Host functions get `state`.
+    pub fn call(&mut self, state: &mut T, f: Value, args: &[Value]) -> Result<Value, Error> {
+        let f = match f {
+            Value::App(r) => self.app(r)?,
+            _ => f,
+        };
+        let mut operands = Value::Nil;
+        for &a in args.iter().rev() {
+            operands = self.cons(a, operands)?;
         }
+        let env = self.heap.alloc(Obj::Env(None, Vec::new()))?;
+        let frames = [
+            Frame::Top {
+                rest: Value::Nil,
+                env,
+                outer: self.machine.here,
+            },
+            Frame::Combine {
+                operands,
+                env,
+                at: Ref::NONE,
+            },
+        ];
+        self.start(Some(state), &frames, Mode::Return(f))
+    }
+
+    /// Runs the machine on top of the current frames from `mode`, with `frames` pushed, until
+    /// they are all gone; then everything is as it was, whatever the outcome.
+    fn start(
+        &mut self,
+        state: Option<&mut T>,
+        frames: &[Frame],
+        mode: Mode,
+    ) -> Result<Value, Error> {
+        let m = &mut self.machine;
+        let (floor, args, raised, here) = (m.frames.len(), m.args.len(), m.raised.len(), m.here);
+        let result = frames
+            .iter()
+            .try_for_each(|&f| push(&mut self.machine.frames, f))
+            .and_then(|()| self.run(state, mode, floor));
+        let m = &mut self.machine;
+        m.frames.truncate(floor);
+        m.args.truncate(args);
+        m.raised.truncate(raised);
+        m.here = here;
         result
     }
 
-    fn run(&mut self, mut mode: Mode) -> Result<Value, Error> {
+    fn run(
+        &mut self,
+        mut state: Option<&mut T>,
+        mut mode: Mode,
+        floor: usize,
+    ) -> Result<Value, Error> {
         loop {
-            // The safe point: the machine's state is all there is.
-            if self.heap.due() {
-                self.collect(mode)?;
+            if let Mode::Return(v) = mode
+                && self.machine.frames.len() <= floor
+            {
+                return Ok(v);
             }
-            mode = match mode {
-                Mode::Eval(Value::Sym(s), env) => Mode::Return(self.lookup(env, s)?),
-                Mode::Eval(Value::Pair(r), env) => {
-                    let (combiner, operands) = self.pair(r)?;
-                    push(&mut self.machine.frames, Frame::Combine { operands, env })?;
-                    Mode::Eval(combiner, env)
-                }
-                Mode::Eval(x, _) => Mode::Return(x),
-                Mode::Return(v) => match self.machine.frames.pop() {
-                    None => return Ok(v),
-                    Some(Frame::Top {
-                        rest: Value::Pair(r),
-                        env,
-                    }) => {
-                        let (form, rest) = self.pair(r)?;
-                        push(&mut self.machine.frames, Frame::Top { rest, env })?;
-                        Mode::Eval(form, env)
-                    }
-                    Some(Frame::Top { .. }) => return Ok(v),
-                    Some(Frame::Combine { operands, env }) => self.combine(v, operands, env)?,
-                    Some(Frame::Args {
-                        comb,
-                        env,
-                        rest,
-                        base,
-                    }) => {
-                        push(&mut self.machine.args, v)?;
-                        self.next_arg(comb, env, rest, base)?
-                    }
-                },
+            let next = self.safe_point(mode).and_then(|()| match mode {
+                Mode::Host(h, base) => self.host(state.as_deref_mut(), h, base),
+                _ => self.step(mode),
+            });
+            mode = match next {
+                Ok(mode) => mode,
+                Err(e) => self.unwind(e, floor)?,
             };
         }
+    }
+
+    /// The safe point: the machine's state is all there is, so the collector may run, and
+    /// stopping here leaves nothing half done.
+    #[inline(always)]
+    fn safe_point(&mut self, mode: Mode) -> Result<(), Error> {
+        if self.interrupted() {
+            return Err(Error::new(K::Interrupted, &[]));
+        }
+        if self.heap.due() {
+            self.collect(mode)?;
+        }
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn step(&mut self, mode: Mode) -> Result<Mode, Error> {
+        Ok(match mode {
+            Mode::Eval(Value::Sym(s), env) => Mode::Return(self.lookup(env, s)?),
+            Mode::Eval(Value::Pair(r), env) => {
+                let (combiner, operands, library) = match self.heap.get_code(r)? {
+                    (Obj::Pair(a, d), library) => (*a, *d, library),
+                    _ => return Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
+                };
+                // A combination is the program's unless it is the library's code, or code built
+                // around a combiner value (as the library builds it), not written.
+                if !library && !is_combiner(combiner) {
+                    self.machine.here = r;
+                }
+                let at = self.machine.here;
+                push(
+                    &mut self.machine.frames,
+                    Frame::Combine { operands, env, at },
+                )?;
+                Mode::Eval(combiner, env)
+            }
+            Mode::Eval(x, _) => Mode::Return(x),
+            Mode::Return(v) => match self.machine.frames.pop() {
+                None => Mode::Return(v),
+                Some(Frame::Top {
+                    rest: Value::Pair(r),
+                    env,
+                    outer,
+                }) => {
+                    let (form, rest) = self.pair(r)?;
+                    push(&mut self.machine.frames, Frame::Top { rest, env, outer })?;
+                    self.machine.here = Ref::NONE;
+                    Mode::Eval(form, env)
+                }
+                Some(Frame::Top { .. }) => Mode::Return(v),
+                Some(Frame::Combine { operands, env, at }) => {
+                    self.machine.here = at;
+                    self.combine(v, operands, env)?
+                }
+                Some(Frame::Args {
+                    comb,
+                    env,
+                    rest,
+                    base,
+                    at,
+                }) => {
+                    self.machine.here = at;
+                    push(&mut self.machine.args, v)?;
+                    self.next_arg(comb, env, rest, base)?
+                }
+                Some(Frame::Cleanup {
+                    cleanup, env, at, ..
+                }) => {
+                    self.machine.here = at;
+                    push(&mut self.machine.frames, Frame::Deliver(v))?;
+                    Mode::Eval(cleanup, env)
+                }
+                Some(Frame::Deliver(v)) => Mode::Return(v),
+                Some(Frame::Raise) => {
+                    // The error already says where it happened, or that it can't: not here.
+                    self.machine.here = Ref::NONE;
+                    return Err(self.machine.raised.pop().unwrap_or_else(Error::oom));
+                }
+            },
+            Mode::Host(..) => return Err(Error::new(K::NotACombiner, &[])),
+        })
+    }
+
+    /// An error stops the evaluation at `here`. Frames above `floor` are dropped down to the
+    /// innermost cleanup, which then runs, the error waiting until it is done; with none, the
+    /// error goes to the caller. An error in a cleanup replaces the one waiting.
+    fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
+        if e.at.is_none() && self.machine.here != Ref::NONE {
+            e.at = Some(Value::Pair(self.machine.here));
+        }
+        while self.machine.frames.len() > floor {
+            match self.machine.frames.pop() {
+                Some(Frame::Cleanup {
+                    cleanup,
+                    env,
+                    args,
+                    at,
+                }) => {
+                    self.machine.args.truncate(args);
+                    self.machine.here = at;
+                    push(&mut self.machine.raised, e)?;
+                    push(&mut self.machine.frames, Frame::Raise)?;
+                    return Ok(Mode::Eval(cleanup, env));
+                }
+                Some(Frame::Raise) => drop(self.machine.raised.pop()),
+                _ => {}
+            }
+        }
+        Err(e)
     }
 
     fn collect(&mut self, mode: Mode) -> Result<(), Error> {
         let current = match mode {
             Mode::Eval(x, env) => [x, Value::Env(env)],
             Mode::Return(v) => [v, Value::Nil],
+            Mode::Host(..) => [Value::Nil, Value::Nil],
         };
         let m = &self.machine;
+        let raised = m
+            .raised
+            .iter()
+            .flat_map(|e| e.values.iter().copied().chain(e.at));
         let roots = m
             .frames
             .iter()
             .flat_map(|f| f.values())
-            .chain(m.args.iter().copied());
-        let roots = roots
-            .chain(current)
-            .chain([Value::Env(self.ground), Value::Env(self.top)]);
+            .chain(m.args.iter().copied())
+            .chain(raised);
+        let roots = roots.chain(current).chain([
+            Value::Pair(m.here),
+            Value::Env(self.ground),
+            Value::Env(self.top),
+        ]);
         self.heap.collect(roots)
+    }
+
+    /// Calls host function `h` with the arguments on the argument stack from `base`, popping
+    /// them. Only the library runs with no state, and it calls no host function.
+    fn host(&mut self, state: Option<&mut T>, h: Host, base: usize) -> Result<Mode, Error> {
+        let f = self.hosts.get(h.0 as usize).map(|&(_, f)| f);
+        let (Some(f), Some(state)) = (f, state) else {
+            return Err(Error::new(K::NotACombiner, &[Value::Host(h)]));
+        };
+        // The arguments stay on the argument stack, rooted, while the host runs.
+        let given = self.machine.args.get(base..).unwrap_or_default();
+        let mut args = Vec::new();
+        args.try_reserve_exact(given.len())
+            .map_err(|_| Error::oom())?;
+        args.extend_from_slice(given);
+        let v = f(self, state, &args);
+        self.machine.args.truncate(base);
+        Ok(Mode::Return(v?))
     }
 
     /// Combines a combiner with unevaluated operands.
@@ -233,7 +459,7 @@ impl Grift {
                 }
                 self.next_arg(inner, env, operands, self.machine.args.len())
             }
-            Value::Op(r) => self.call(r, operands, env),
+            Value::Op(r) => self.call_compound(r, operands, env),
             Value::Prim(_) | Value::Host(_) => {
                 let base = self.machine.args.len();
                 let mut rest = operands;
@@ -256,6 +482,7 @@ impl Grift {
         match rest {
             Value::Pair(r) => {
                 let (x, rest) = self.pair(r)?;
+                let at = self.machine.here;
                 push(
                     &mut self.machine.frames,
                     Frame::Args {
@@ -263,6 +490,7 @@ impl Grift {
                         env,
                         rest,
                         base,
+                        at,
                     },
                 )?;
                 Ok(Mode::Eval(x, env))
@@ -280,19 +508,7 @@ impl Grift {
                 self.machine.args.truncate(base);
                 mode
             }
-            Value::Host(h) => {
-                let f = self.hosts.get(h.0 as usize).map(|&(_, f)| f);
-                let f = f.ok_or_else(|| Error::new(K::NotACombiner, &[comb]))?;
-                // The arguments stay on the argument stack, rooted, while the host runs.
-                let given = self.machine.args.get(base..).unwrap_or_default();
-                let mut args = Vec::new();
-                args.try_reserve_exact(given.len())
-                    .map_err(|_| Error::oom())?;
-                args.extend_from_slice(given);
-                let v = f(self, &args);
-                self.machine.args.truncate(base);
-                Ok(Mode::Return(v?))
-            }
+            Value::Host(h) => Ok(Mode::Host(h, base)),
             _ => {
                 let mut list = Value::Nil;
                 while self.machine.args.len() > base {
@@ -306,7 +522,7 @@ impl Grift {
 
     /// Calls a compound operative: a child of its static environment, with the formals bound
     /// to the operands and the environment formal to the caller's environment.
-    fn call(&mut self, r: Ref, operands: Value, env: Ref) -> Result<Mode, Error> {
+    fn call_compound(&mut self, r: Ref, operands: Value, env: Ref) -> Result<Mode, Error> {
         let op = match self.heap.get(r)? {
             Obj::Op(op) => *op,
             _ => return Err(Error::new(K::StaleValue, &[Value::Op(r)])),
@@ -332,6 +548,7 @@ impl Grift {
             return Err(Error {
                 code: K::ArityError.into(),
                 values,
+                at: None,
             });
         }
         let n = given.len();
@@ -401,7 +618,9 @@ impl Grift {
                 _ => return Err(type_error(p, x)),
             },
             Prim::TypeOf => Value::Sym(type_of(x).into()),
-            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Less => arith(p, x, y)?,
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod | Prim::Less => {
+                arith(p, x, y)?
+            }
             Prim::Error => {
                 let Value::Sym(code) = x else {
                     return Err(type_error(p, x));
@@ -412,8 +631,26 @@ impl Grift {
                     .try_reserve_exact(rest.len())
                     .map_err(|_| Error::oom())?;
                 values.extend_from_slice(rest);
-                return Err(Error { code, values });
+                return Err(Error {
+                    code,
+                    values,
+                    at: None,
+                });
             }
+            Prim::EvalProtected => match y {
+                Value::Env(e) => {
+                    let (args, at) = (base, self.machine.here);
+                    let cleanup = Frame::Cleanup {
+                        cleanup: z,
+                        env: e,
+                        args,
+                        at,
+                    };
+                    push(&mut self.machine.frames, cleanup)?;
+                    return Ok(Mode::Eval(x, e));
+                }
+                _ => return Err(type_error(p, y)),
+            },
         };
         Ok(Mode::Return(v))
     }
@@ -522,10 +759,6 @@ impl Grift {
         }
     }
 
-    pub(crate) fn cons(&mut self, a: Value, d: Value) -> Result<Value, Error> {
-        Ok(Value::Pair(self.heap.alloc(Obj::Pair(a, d))?))
-    }
-
     pub(crate) fn pair(&self, r: Ref) -> Result<(Value, Value), Error> {
         match self.heap.get(r)? {
             Obj::Pair(a, d) => Ok((*a, *d)),
@@ -539,6 +772,14 @@ impl Grift {
             _ => Err(Error::new(K::StaleValue, &[Value::App(r)])),
         }
     }
+}
+
+#[inline]
+fn is_combiner(v: Value) -> bool {
+    matches!(
+        v,
+        Value::Op(_) | Value::App(_) | Value::Prim(_) | Value::Host(_)
+    )
 }
 
 fn type_of(v: Value) -> K {
@@ -557,7 +798,9 @@ fn type_of(v: Value) -> K {
     }
 }
 
-/// Checked integer arithmetic. `div` rounds toward negative infinity.
+/// Checked integer arithmetic. `div` rounds toward negative infinity; `mod` is what it leaves,
+/// and never overflows: `(mod -9223372036854775808 -1)` is 0.
+#[inline]
 fn arith(p: Prim, x: Value, y: Value) -> Result<Value, Error> {
     let (Value::Int(a), Value::Int(b)) = (x, y) else {
         return Err(type_error(
@@ -569,10 +812,15 @@ fn arith(p: Prim, x: Value, y: Value) -> Result<Value, Error> {
         Prim::Add => a.checked_add(b),
         Prim::Sub => a.checked_sub(b),
         Prim::Mul => a.checked_mul(b),
-        Prim::Div if b == 0 => return Err(Error::new(K::DivisionByZero, &[x, y])),
+        Prim::Div | Prim::Mod if b == 0 => return Err(Error::new(K::DivisionByZero, &[x, y])),
         Prim::Div => a.checked_div(b).and_then(|q| match a.checked_rem(b) {
             Some(r) if r != 0 && (r < 0) != (b < 0) => q.checked_sub(1),
             _ => Some(q),
+        }),
+        // A remainder with the sign of b: r and b then have opposite signs, so r + b fits.
+        Prim::Mod => Some(match a.wrapping_rem(b) {
+            r if r != 0 && (r < 0) != (b < 0) => r + b,
+            r => r,
         }),
         _ => return Ok(boolean(a < b)),
     };

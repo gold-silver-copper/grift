@@ -35,6 +35,8 @@ pub(crate) enum Obj {
 struct Slot {
     generation: u32,
     marked: bool,
+    /// Live when the library had been loaded: its code, and the code it built.
+    library: bool,
     obj: Obj,
 }
 
@@ -71,7 +73,16 @@ fn reference(v: Value) -> Option<Ref> {
     }
 }
 
+impl Ref {
+    /// No object: a reference no slot has.
+    pub(crate) const NONE: Ref = Ref {
+        idx: NONE,
+        generation: 0,
+    };
+}
+
 impl Heap {
+    #[inline]
     pub fn alloc(&mut self, obj: Obj) -> Result<Ref, Error> {
         self.since_gc = self.since_gc.saturating_add(1);
         let idx = self.free;
@@ -94,24 +105,45 @@ impl Heap {
             Slot {
                 generation: 0,
                 marked: false,
+                library: false,
                 obj,
             },
         )?;
         Ok(Ref { idx, generation: 0 })
     }
 
+    /// Marks every object now in the heap as the library's. A slot loses the mark when it is
+    /// freed.
+    pub fn seal_library(&mut self) {
+        for s in &mut self.slots {
+            s.library = !matches!(s.obj, Obj::Free(_));
+        }
+    }
+
+    /// The object, and whether it is the library's: its code, or code it built while it was
+    /// loaded.
+    #[inline]
+    pub fn get_code(&self, r: Ref) -> Result<(&Obj, bool), Error> {
+        self.slot(r)
+            .map(|s| (&s.obj, s.library))
+            .ok_or_else(|| Error::new(K::StaleValue, &[]))
+    }
+
+    #[inline]
     fn slot(&self, r: Ref) -> Option<&Slot> {
         self.slots
             .get(r.idx as usize)
             .filter(|s| s.generation == r.generation)
     }
 
+    #[inline]
     pub fn get(&self, r: Ref) -> Result<&Obj, Error> {
         self.slot(r)
             .map(|s| &s.obj)
             .ok_or_else(|| Error::new(K::StaleValue, &[]))
     }
 
+    #[inline]
     pub fn get_mut(&mut self, r: Ref) -> Result<&mut Obj, Error> {
         match self.slots.get_mut(r.idx as usize) {
             Some(s) if s.generation == r.generation => Ok(&mut s.obj),
@@ -120,6 +152,7 @@ impl Heap {
     }
 
     /// Whether a collection is due. The machine asks only at its safe point.
+    #[inline]
     pub fn due(&self) -> bool {
         self.since_gc >= self.live.max(GC_MIN)
     }
@@ -142,6 +175,7 @@ impl Heap {
                 self.live += 1;
             } else if !matches!(s.obj, Obj::Free(_)) {
                 s.obj = Obj::Free(self.free);
+                s.library = false;
                 s.generation = s.generation.wrapping_add(1);
                 self.free = idx;
             }

@@ -24,20 +24,17 @@ const PROGRAM: [&str; 5] = [
     "(area 6 7)",
     "($define! area ($lambda (w h) (board-scale (* w h))))",
     "(area 6 7)",
-    "(bindings (($vau () e e)))",
+    "(bindings (get-current-environment))",
 ];
 
 /// The host function: what the board would do with a measurement, here scaling it by 1000.
-fn board_scale(g: &mut Grift, args: &[Value]) -> Result<Value, Error> {
+fn board_scale(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     match args {
-        [Value::Int(n)] => n.checked_mul(1000).map(Value::Int).ok_or(Error {
-            code: g.symbol("overflow")?,
-            values: args.to_vec(),
-        }),
-        _ => Err(Error {
-            code: g.symbol("type-error")?,
-            values: args.to_vec(),
-        }),
+        [Value::Int(n)] => n
+            .checked_mul(1000)
+            .map(Value::Int)
+            .ok_or_else(|| g.error("overflow", args)),
+        _ => Err(g.error("type-error", args)),
     }
 }
 
@@ -46,7 +43,7 @@ fn run() -> Result<(), Error> {
     g.define("board-scale", board_scale)?;
     for src in PROGRAM {
         let mut line = String::new();
-        let shown = match g.eval(src) {
+        let shown = match g.eval(&mut (), src) {
             Ok(v) => g.write(v, &mut line),
             Err(e) => {
                 line.push_str("error ");
