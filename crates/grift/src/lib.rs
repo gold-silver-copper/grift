@@ -7,7 +7,7 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-use heap::{Heap, Obj};
+use heap::{Binds, Heap, Obj};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use eval::Prim;
@@ -55,7 +55,7 @@ pub enum Value {
 }
 
 /// An interned symbol of one [`Grift`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(u32);
 
 /// A registered host function.
@@ -198,8 +198,8 @@ impl<T> Grift<T> {
     /// Builds the ground environment, evaluates the library in it and makes an empty top level.
     pub fn new() -> Result<Grift<T>, Error> {
         let mut heap = Heap::default();
-        let ground = heap.alloc(Obj::Env(None, Vec::new()))?;
-        let top = heap.alloc(Obj::Env(Some(ground), Vec::new()))?;
+        let ground = heap.alloc(Obj::Env(None, Binds::default()))?;
+        let top = heap.alloc(Obj::Env(Some(ground), Binds::default()))?;
         let mut g = Grift {
             heap,
             names: Vec::new(),
@@ -284,6 +284,11 @@ impl<T> Grift<T> {
         // A load first: the flag is read at every step and set almost never.
         self.interrupt
             .is_some_and(|f| f.load(Ordering::Relaxed) && f.swap(false, Ordering::Relaxed))
+    }
+
+    /// The name of symbol `s`.
+    pub(crate) fn name(&self, s: Symbol) -> &str {
+        self.names.get(s.0 as usize).map_or("", |n| n)
     }
 
     /// An error with code `code` and a copy of `values`, for a host function to return.

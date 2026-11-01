@@ -50,13 +50,13 @@ ground-names                                ; every primitive and library name
 ```
 
 The Rust primitives are `$vau wrap unwrap eval eval-protected make-environment bind! bindings
-cons car cdr eq? select type-of + - * div mod <? error guard raise string-length string-byte substring
-string-append code-point->string symbol->string string->symbol number->string`. The library adds
-`$define! $quote list $if $sequence $lambda get-current-environment not? null? pair? symbol?
-string? integer? environment? $and? $or? =? min max apply map $let $let* for-each $cond $when
-$set! $unwind-protect length append reverse equal? assoc member? $binds? ground-names`. Integers
-are checked `i64`s. There is no quote shorthand, no mutation of pairs and no continuations; `guard`
-catches an error, but never the host's interrupt.
+cons car cdr eq? select type-of + - * div mod <? error guard raise string-length string-byte
+substring string-append code-point->string symbol->string string->symbol number->string`. The
+library adds `$define! $quote list $if $sequence $lambda get-current-environment not? null? pair?
+symbol? string? integer? environment? $and? $or? =? min max apply map for-each $cond $when $let
+$let* $unwind-protect $set! length append reverse equal? assoc member? $binds? ground-names`.
+Integers are checked `i64`s. There is no quote shorthand, no mutation of pairs and no
+continuations; `guard` catches an error, but never the host's interrupt.
 [`docs/LANGUAGE.md`](docs/LANGUAGE.md) has the details: each combiner, the error codes, and where
 grift differs from the Revised⁻¹ Report on Kernel ([05-07.pdf](05-07.pdf)).
 
@@ -220,7 +220,7 @@ g.set_interrupt_flag(&STOP); // another thread: STOP.store(true, Relaxed)
 ## Inside
 
 One crate, about 1,650 lines of Rust: values and a heap that is a growable `Vec` of slots
-(`heap.rs`), a mark-and-sweep collector, a reader and a printer (`read.rs`, `print.rs`), and the
+(`heap.rs`), environments that are hash maps from symbols to values, a mark-and-sweep collector, a reader and a printer (`read.rs`, `print.rs`), and the
 evaluator (`eval.rs`): an explicit machine loop over a frame stack, so no Rust recursion grows
 with a program's nesting, and `eval` in tail position is a proper tail call. The collector runs
 only at the top of the machine loop, where the machine's frames, argument stack, errors waiting

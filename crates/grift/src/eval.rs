@@ -7,7 +7,7 @@
 //! freely: nothing is freed until the next safe point, and by then every local is gone. The
 //! same safe point checks the host's interrupt flag.
 
-use crate::heap::{Obj, Op};
+use crate::heap::{Binds, Obj, Op};
 use crate::{Error, Grift, Host, K, Ref, Symbol, Value, boxed, push};
 use std::fmt::Write;
 
@@ -237,7 +237,7 @@ impl<T> Grift<T> {
             _ => f,
         };
         let operands = self.list(args)?;
-        let env = self.heap.alloc(Obj::Env(None, Vec::new()))?;
+        let env = self.heap.alloc(Obj::Env(None, Binds::default()))?;
         let frames = [
             Frame::Top {
                 rest: Value::Nil,
@@ -596,7 +596,7 @@ impl<T> Grift<T> {
             Obj::Op(op) => *op,
             _ => return Err(Error::new(K::StaleValue, &[Value::Op(r)])),
         };
-        let local = self.heap.alloc(Obj::Env(Some(op.env), Vec::new()))?;
+        let local = self.heap.alloc(Obj::Env(Some(op.env), Binds::default()))?;
         self.match_tree(local, op.formals, operands)?;
         if let Value::Sym(s) = op.eformal {
             self.bind_symbol(local, s, Value::Env(env))?;
@@ -655,7 +655,7 @@ impl<T> Grift<T> {
                     _ if n == 0 => None,
                     _ => return Err(type_error(p, x)),
                 };
-                Value::Env(self.heap.alloc(Obj::Env(parent, Vec::new()))?)
+                Value::Env(self.heap.alloc(Obj::Env(parent, Binds::default()))?)
             }
             Prim::Bind => match x {
                 Value::Env(e) => {
@@ -778,7 +778,7 @@ impl<T> Grift<T> {
             }
             Prim::SymbolToString => match x {
                 Value::Sym(s) => {
-                    let name = boxed(self.names.get(s.0 as usize).map_or("", |n| n))?;
+                    let name = boxed(self.name(s))?;
                     Value::Str(self.heap.alloc(Obj::Str(name))?)
                 }
                 _ => return Err(type_error(p, x)),
@@ -914,10 +914,8 @@ impl<T> Grift<T> {
         let Obj::Env(_, binds) = self.heap.get_mut(env)? else {
             return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
         };
-        match binds.iter_mut().find(|(k, _)| *k == s) {
-            Some(b) => b.1 = v,
-            None => push(binds, (s, v))?,
-        }
+        binds.try_reserve(1).map_err(|_| Error::oom())?;
+        binds.insert(s, v);
         Ok(())
     }
 
@@ -926,31 +924,26 @@ impl<T> Grift<T> {
             let Obj::Env(parent, binds) = self.heap.get(env)? else {
                 return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
             };
-            if let Some(&(_, v)) = binds.iter().find(|(k, _)| *k == s) {
+            if let Some(&v) = binds.get(&s) {
                 return Ok(v);
             }
             env = parent.ok_or_else(|| Error::new(K::UnboundSymbol, &[Value::Sym(s)]))?;
         }
     }
 
-    /// The symbols bound in `env` itself, in definition order.
+    /// The symbols bound in `env` itself, sorted by name.
     fn bindings(&mut self, env: Ref) -> Result<Value, Error> {
-        let mut list = Value::Nil;
-        let mut i = usize::MAX;
-        loop {
-            let Obj::Env(_, binds) = self.heap.get(env)? else {
-                return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
-            };
-            i = i.min(binds.len());
-            let Some(prev) = i.checked_sub(1) else {
-                return Ok(list);
-            };
-            let Some(&(s, _)) = binds.get(prev) else {
-                return Ok(list);
-            };
-            i = prev;
-            list = self.cons(Value::Sym(s), list)?;
-        }
+        let Obj::Env(_, binds) = self.heap.get(env)? else {
+            return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
+        };
+        let mut names = Vec::new();
+        names
+            .try_reserve_exact(binds.len())
+            .map_err(|_| Error::oom())?;
+        names.extend(binds.keys().copied());
+        names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));
+        let names = names.into_iter().map(Value::Sym).collect::<Vec<_>>();
+        self.list(&names)
     }
 
     pub(crate) fn pair(&self, r: Ref) -> Result<(Value, Value), Error> {

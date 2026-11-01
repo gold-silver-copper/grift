@@ -2,6 +2,8 @@
 //! sweep.
 
 use crate::{Error, K, Symbol, Value, push};
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,10 +26,34 @@ pub(crate) enum Obj {
     Free(u32),
     Pair(Value, Value),
     Str(Box<str>),
-    /// An optional parent and the bindings in definition order.
-    Env(Option<Ref>, Vec<(Symbol, Value)>),
+    /// An optional parent and the bindings.
+    Env(Option<Ref>, Binds),
     Op(Op),
     App(Value),
+}
+
+/// An environment's bindings.
+pub(crate) type Binds = HashMap<Symbol, Value, BuildHasherDefault<SymbolHasher>>;
+
+/// Hashes a symbol by its id, a small integer: one multiplication spreads it over the bits the
+/// table looks at.
+#[derive(Default)]
+pub(crate) struct SymbolHasher(u64);
+
+impl Hasher for SymbolHasher {
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.0 = u64::from(n);
+    }
 }
 
 struct Slot {
@@ -221,7 +247,7 @@ impl Heap {
                         if let Some(p) = parent {
                             child(Value::Env(*p))?;
                         }
-                        for (_, v) in binds {
+                        for v in binds.values() {
                             child(*v)?;
                         }
                     }

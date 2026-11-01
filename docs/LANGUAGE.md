@@ -48,7 +48,7 @@ All are applicatives except `$vau`.
 | `(eval-protected x env cleanup)` | Evaluates `x` in `env`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving. Not a tail call. |
 | `(make-environment)`, `(make-environment parent)` | A new empty environment, with no parent or one (4.8.4). |
 | `(bind! env formals value)` | Matches the tree `formals` to `value` and binds its symbols in `env` itself, replacing bindings there. Returns `#inert`. The matching of `$define!` (4.9.1) as an applicative. |
-| `(bindings env)` | The symbols bound in `env` itself, in definition order. |
+| `(bindings env)` | The symbols bound in `env` itself, sorted by name. |
 | `(cons a d)`, `(car p)`, `(cdr p)` | Pairs (4.6.3, 5.4.1). |
 | `(eq? a b)` | Identity; integers, symbols and strings compare by value (4.2.1). |
 | `(select b x y)` | `x` if `b` is `#t`, `y` if `#f`; a `type-error` otherwise. |

@@ -208,3 +208,9 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
   or constants, no per-form cases in the machine, no duplicate code path that exists only for
   speed. The in-place operand evaluation G-31 first had is gone, and so is `$sequence`'s
   separate case for a body of one form.
+- **G-34. Every environment is a hash map** (replaces G-30). An environment's bindings are a
+  `std::collections::HashMap<Symbol, Value>` whatever its size: one representation, no threshold,
+  nothing beside it, grown with `try_reserve`, hashed by the symbol's id with one multiplication
+  (no dependency). `bindings` and `ground-names` list names sorted by name, so output stays
+  deterministic without keeping definition order. Its cost or gain against the previous
+  representation (a list scanned in order) is measured once and reported, not a reason to revert.
