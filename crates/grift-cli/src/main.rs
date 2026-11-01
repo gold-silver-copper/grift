@@ -33,11 +33,17 @@ impl<W: Write> fmt::Write for Sink<W> {
     }
 }
 
+/// An error with a copy of `values`; `out-of-memory` if the copy can't be allocated.
 fn error(g: &mut Grift, code: &str, values: &[Value]) -> Result<Value, Error> {
-    Err(Error {
-        code: g.symbol(code)?,
-        values: values.to_vec(),
-    })
+    let mut copy = Vec::new();
+    let code = match copy.try_reserve_exact(values.len()) {
+        Ok(()) => {
+            copy.extend_from_slice(values);
+            g.symbol(code)?
+        }
+        Err(_) => g.symbol("out-of-memory")?,
+    };
+    Err(Error { code, values: copy })
 }
 
 /// Writes the values to stdout, strings without quotes when `raw`, then `end`, and flushes.
