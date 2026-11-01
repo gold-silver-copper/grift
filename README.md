@@ -1,178 +1,123 @@
 # grift
 
-Grift is a small Kernel-inspired Lisp interpreter for constrained Rust
-environments. It implements first-class operatives (`vau`), applicatives,
-first-class environments, and tail-call optimization on top of a fixed-size
-arena with no heap allocation and no `unsafe` code.
+grift is a tiny Lisp in the style of John Shutt's Kernel, built on fexprs. Its one special
+primitive is `$vau`, which makes an operative: a combiner that receives its operands unevaluated,
+together with the caller's environment. `$if`, `$define!`, `$lambda`, `$let`, `$cond` and the rest
+are written in grift itself, in [`library.grift`](crates/grift/src/library.grift).
 
-The project is aimed at embedded or resource-bounded settings where a normal
-allocator-backed Lisp runtime would be a poor fit, while still preserving a
-substantial part of the vau-calculus execution model.
+It is made to be embedded in a Rust program (the host), down to bare-metal devices:
 
-## Highlights
+- the core crate is `#![no_std]` with `alloc`, has no dependencies and no `unsafe` code, and
+  builds for `thumbv6m-none-eabi` (Cortex-M0);
+- it uses the memory the allocator gives it and sets no limits of its own; when the allocator
+  refuses, evaluation returns an `out-of-memory` error instead of aborting;
+- it reaches the outside world only through functions the host registers;
+- every error goes to the host as a code (a symbol) and the values involved.
 
-- `#![no_std]`, `no_alloc`, `#![forbid(unsafe_code)]`
-- Fixed-capacity arena with free-list allocation
-- Mark-and-sweep garbage collection, triggered on OOM and available explicitly
-  via `(gc-collect)`
-- Kernel-style operative/applicative model
-- First-class mutable environments with lexical parent lists
-- Tail-call optimization via a trampoline evaluator
-- Immutable pairs and `CharPair`-based string storage
-- Symbol interning
-- Checked integer arithmetic
-- Rust native-function registration through `Lisp::register_native`
-- Lazy prelude loading from `prelude.grift`
-
-## What It Implements
-
-Grift is not a Scheme clone. The language model is centered on `vau`, where an
-operative receives its operands unevaluated together with the caller's
-environment.
-
-That gives the runtime three important properties:
-
-- user-defined control forms are first-class values rather than a separate macro
-  system
-- `lambda` is derived from the operative model rather than being primitive
-- environments are explicit runtime values that can be captured, passed around,
-  and selectively exposed
-
-The current builtin surface includes:
-
-- operatives such as `quote`, `if`, `define!`, `set!`, `begin`, `cond`, `and`,
-  `or`, `let`, `vau`, and `current-environment`
-- applicatives such as arithmetic, list primitives, equality, `eval`, `wrap`,
-  `unwrap`, environment constructors, GC control, and raw read/write helpers
-
-The bundled prelude also provides derived forms such as `lambda` and `fn!`,
-loaded lazily like the rest of the prelude.
-
-`apply` and `wrap` operate uniformly over first-class callables, including
-builtin operatives such as `if`.
-
-## Rust API
-
-```rust
-use grift::{Lisp, Value};
-
-let lisp: Lisp<20_000> = Lisp::new();
-
-assert_eq!(lisp.eval("(+ 1 2)"), Ok(Value::Number(3)));
-assert_eq!(lisp.eval("(car (cons 1 2))"), Ok(Value::Number(1)));
-```
-
-The const generic parameter sets the arena capacity in slots. A larger value
-gives the interpreter more space for code, data, environments, temporary
-evaluation state, and garbage-collector working room.
-
-Native Rust functions can be exposed as Lisp applicatives:
-
-```rust
-use grift::{ArenaIndex, ArenaResult, Lisp, LispOps, extract_arg};
-
-fn double(lisp: &dyn LispOps, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-    let (n, _rest): (isize, ArenaIndex) = extract_arg(lisp, args)?;
-    lisp.number(n * 2)
-}
-
-let lisp: Lisp<20_000> = Lisp::new();
-lisp.register_native("double", double).unwrap();
-
-assert_eq!(lisp.eval("(double 21)"), Ok(grift::Value::Number(42)));
-```
-
-## Lisp Example
+## The language on one screen
 
 ```lisp
-;; Operatives receive operands unevaluated.
-(define! my-quote
-  (vau (x) #ignore x))
+; Values: () #t #f #inert #ignore, integers, symbols, pairs, "strings",
+; environments, operatives, applicatives, host functions.
 
-(my-quote (+ 1 2))   ; => (+ 1 2)
+($define! $quote ($vau (x) #ignore x))      ; operands arrive unevaluated
+($quote (+ 1 2))                            ; => (+ 1 2)
 
-;; lambda can be defined in terms of vau.
-(define! lambda
-  (vau (formals . body) e
-    (wrap
-      (eval (cons 'vau
-                  (cons formals
-                        (cons #ignore body)))
-            e))))
+($define! square ($lambda (x) (* x x)))     ; $lambda = wrap of a $vau
+(map square (list 1 2 3))                   ; => (1 4 9)
+square                                      ; => #[applicative #[operative (x) #ignore (* x x)]]
 
-(define! double
-  (lambda (x)
-    (* x 2)))
+($define! square ($lambda (x) (+ x x)))     ; environments are mutable: redefine freely
+(square 5)                                  ; => 10
 
-(double 5)           ; => 10
+($let ((x 2) ((y z) (list 3 4))) (+ x (* y z)))    ; formals are trees => 14
+($cond ((<? 1 0) "no") (#t "yes"))                 ; => "yes"
+($if (eq? 1 1) "same" "different")                 ; $if needs both branches
 
-;; The caller environment can be captured explicitly.
-(define! my-if
-  (vau (test then else) e
-    (if (eval test e)
-        (eval then e)
-        (eval else e))))
-
-(apply if (list #t 1 2)) ; => 1
-((wrap if) #t 1 2)       ; => 1
-
-;; Tail recursion runs through the trampoline evaluator.
-(fn! fib (n a b)
-  (if (= n 0)
-      a
-      (fib (- n 1) b (+ a b))))
-
-(fib 50 0 1)         ; => 12586269025
+(eval ($quote (+ 1 2)) (make-environment ground-environment))   ; eval needs an environment
+(bindings (($vau () e e)))                  ; the names defined at top level
+(bindings ground-environment)               ; every primitive and library name
+(error ($quote my-code) 1 2)                ; stops evaluation; the host gets my-code (1 2)
 ```
 
-## Runtime Model
+The Rust primitives are `$vau wrap unwrap eval make-environment bind! bindings cons car cdr eq?
+select type-of + - * div <? error`. The library adds `$define! $quote list $if $sequence $lambda
+not? $and? $or? =? apply map $let $cond length append equal? ground-environment`. Integers are
+checked `i64`s. There is no quote shorthand, no mutation of pairs, no continuations and no way to
+catch an error inside grift. [`docs/LANGUAGE.md`](docs/LANGUAGE.md) has the details: each
+combiner, the error codes, and where grift differs from the Revised⁻¹ Report on Kernel
+([05-07.pdf](05-07.pdf)).
 
-Every runtime value lives inside `Arena<Value, N>`. The evaluator does not rely
-on heap allocation, and the runtime keeps a small set of reserved singleton
-slots for values such as `NIL`, booleans, `#inert`, `#ignore`, the ground
-environment, the global environment, GC roots, and the symbol intern list.
+## The runner
 
-Current implementation details that matter:
-
-- strings are stored as linked `CharPair` chains rather than contiguous buffers
-- empty string is represented internally as `NIL`
-- user code runs in the global environment, which is a child of the builtin
-  ground environment
-- GC is currently demand-driven: the evaluator collects when allocation hits
-  `OutOfMemory`
-
-More detail is in [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md).
-
-## Build And Test
-
-```bash
-cargo build --workspace
-cargo test --workspace
+```sh
+cargo run --release -- prog.grift more.grift   # runs files in order, in one environment
+cargo run --release < prog.grift               # runs stdin
+rlwrap cargo run --release                     # interactive: prints each result
 ```
 
-Run the benchmark example:
+`grift FILE...` runs the files; with no files it reads stdin, and when stdin is a terminal it
+evaluates each complete input and prints its result. It defines two host functions, `display`
+and `newline`. Data goes to stdout, errors to stderr as `SOURCE: CODE VALUE...`. It exits with 0,
+1 on a grift error or a failed write (`output-error`), 2 on a usage error or unreadable input; a
+closed pipe on stdout ends it quietly. Unfinished input at the end is a `parse-error`. It
+has no line editor: `rlwrap grift` gives one. Limits belong to the OS: `timeout 10 grift prog`
+for time, `prlimit --as=…` or `ulimit -v` for memory.
 
-```bash
-cargo run -p grift --example fib_bench --release
+## Embedding
+
+```rust
+use grift::{Error, Grift, Value};
+
+fn twice(g: &mut Grift, args: &[Value]) -> Result<Value, Error> {
+    match args {
+        [Value::Int(n)] => n.checked_mul(2).map(Value::Int).ok_or(Error {
+            code: g.symbol("overflow")?,
+            values: args.to_vec(),
+        }),
+        _ => Err(Error { code: g.symbol("type-error")?, values: args.to_vec() }),
+    }
+}
+
+fn main() -> Result<(), Error> {
+    let mut g = Grift::new()?; // the ground environment and the library
+    g.define("twice", twice)?; // a host function, in the top-level environment
+    g.eval("($define! f ($lambda (x) (twice (+ x 1))))")?;
+    assert_eq!(g.eval("(f 20)")?, Value::Int(42)); // every form; the last one's value
+    let mut s = String::new();
+    let f = g.eval("f")?;
+    assert!(g.write(f, &mut s).is_ok()); // into any core::fmt::Write
+    assert_eq!(s, "#[applicative #[operative (x) #ignore (twice (+ x 1))]]");
+    Ok(())
+}
 ```
 
-Run the REPL:
+- `Grift::new() -> Result<Grift, Error>`, `eval(&mut self, &str) -> Result<Value, Error>`,
+  `write(&self, Value, &mut dyn fmt::Write)`, `define(&mut self, &str, HostFn)`,
+  `symbol(&mut self, &str) -> Result<Symbol, Error>`, `string(&self, Value) -> Option<&str>`.
+- `HostFn` is `fn(&mut Grift, &[Value]) -> Result<Value, Error>`; it gets evaluated arguments and
+  may call `eval` itself.
+- `Error { code: Symbol, values: Vec<Value> }`.
+- **A returned `Value` stays valid until the next `eval`**, which may collect it. Each heap
+  reference carries its slot's generation, so a stale value is refused (`stale-value`, or
+  `#[stale]` when written) rather than read as some other object. To keep a value, bind it in
+  the environment.
 
-```bash
-cargo run -p grift --features repl
-```
+`examples/chip` runs grift on a Cortex-M board image under QEMU (`scripts/qemu.sh`, which needs
+`qemu-system-arm`): it installs an allocator, registers one host function and prints over
+semihosting.
 
-## Toolchain
+## Inside
 
-The workspace MSRV is **Rust 1.85** (edition 2024), as declared in
-`Cargo.toml`.
+One crate, about 1,200 lines of Rust: values and a heap that is a growable `Vec` of slots
+(`heap.rs`), a mark-and-sweep collector, a reader and a printer (`read.rs`, `print.rs`), and the
+evaluator (`eval.rs`): an explicit machine loop over a frame stack, so no Rust recursion grows
+with a program's nesting, and `eval` in tail position is a proper tail call. The collector runs
+only at the top of the machine loop, where the machine's frames, argument stack and current
+expression are all the state there is; they are its roots, so nothing is rooted by hand.
 
-## Further Reading
-
-- [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md): current architecture and language notes
-- [docs/grift/index.md](docs/grift/index.md): generated API-oriented documentation
-- [05-07.pdf](05-07.pdf): Revised-1 Report on the Kernel Programming Language
-- [jshutt.pdf](jshutt.pdf): "vau: the ultimate abstraction"
+[`DECISIONS.md`](DECISIONS.md) records the decisions behind this design. `jshutt.pdf` is Shutt's
+thesis, *Fexprs as the basis of Lisp function application*.
 
 ## License
 

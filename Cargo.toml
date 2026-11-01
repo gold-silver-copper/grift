@@ -1,19 +1,9 @@
 [workspace]
-resolver = "2"
-members = [
-    "crates/grift",
-]
-exclude = ["grift-docs"]
+resolver = "3"
+members = ["crates/grift", "crates/grift-cli"]
+exclude = ["examples/chip"]
 
 [workspace.package]
-version = "1.5.0"
+version = "2.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.85"
-
-# Use basic optimizations in dev/test builds to prevent stack overflows
-# caused by deep recursion in the Scheme evaluator. Without optimizations,
-# debug builds use significantly more stack space per frame, leading to
-# stack overflow in tests that pass fine in release mode.
-[profile.dev]
-opt-level = 1

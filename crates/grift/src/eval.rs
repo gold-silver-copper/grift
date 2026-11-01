@@ -1,1220 +1,581 @@
-//! Strict Lisp evaluator with Kernel-style operative/applicative semantics.
+//! The evaluator: an explicit machine loop over a frame stack, and the Rust primitives.
 //!
-//! Evaluates arena-allocated S-expressions in an environment using
-//! call-by-value evaluation with tail-call optimization (TCO).
-//!
-//! Following Shutt's vau calculus (Kernel language), the combiner system
-//! is unified: the **operative** is the sole primitive, and the
-//! **applicative** is a derived wrapper that evaluates arguments before
-//! delegating to the wrapped combiner.
-//!
-//! ## Tail-Call Optimization
-//!
-//! The evaluator uses a *trampoline* loop: each iteration calls
-//! [`eval_step`](Lisp::eval_step), which either returns a final value
-//! (`Ok(Some(v))`), signals a tail call by mutating `expr`/`env` and
-//! returning `Ok(None)`, or propagates an error. This allows unbounded
-//! tail recursion without growing the Rust call stack.
-//!
-//! ## GC Integration
-//!
-//! Garbage collection is **demand-driven**: it is triggered only when an
-//! allocation returns [`ArenaError::OutOfMemory`]. On OOM the evaluator
-//! restores the GC root stack, runs a collection cycle, and retries.
-//! If the collection frees no memory, the OOM error propagates.
-//!
-//! ## Builtin Registration
-//!
-//! All builtins are declared in a single `define_builtins!` invocation
-//! which generates:
-//! - `BuiltinId` constants (a shared `u8` namespace)
-//! - `init_builtins` — binds each builtin in the ground environment
-//! - `apply_operative_builtin` / `apply_builtin_pure` — dispatch tables
+//! The machine's state is its frame stack, its argument stack and the current [`Mode`]. The
+//! collector runs only at the top of the loop, with exactly that state (plus the ground and
+//! top-level environments) as its roots. Between two safe points Rust code may hold values in
+//! locals freely: nothing is freed until the next safe point, and by then every local is gone.
 
-use crate::arena::{ArenaError, ArenaIndex, ArenaResult, GcStats};
+use crate::heap::{Obj, Op};
+use crate::{Error, Grift, K, Ref, Symbol, Value, push};
+use alloc::vec::Vec;
 
-use crate::lisp::{ArenaWriter, Lisp};
-use crate::parse::SliceSource;
-use crate::value::{BuiltinId, Value};
+/// The Rust primitives. All but `$vau` are bound wrapped, as applicatives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prim {
+    Vau,
+    Wrap,
+    Unwrap,
+    Eval,
+    MakeEnvironment,
+    Bind,
+    Bindings,
+    Cons,
+    Car,
+    Cdr,
+    Eq,
+    Select,
+    TypeOf,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Less,
+    Error,
+}
 
-/// Convert a fallible block into a `TailAction`: `Ok(())` → `Continue`,
-/// `Err(e)` → `Return(Err(e))`.  Wraps the body in an IIFE so `?` and
-/// early `return` work naturally inside operatives.
-macro_rules! tail_continue {
-    ($body:expr) => {
-        match (|| -> ArenaResult<()> { $body })() {
-            Ok(()) => TailAction::Continue,
-            Err(e) => TailAction::Return(Err(e)),
+impl Prim {
+    pub(crate) const ALL: [Prim; 19] = [
+        Prim::Vau,
+        Prim::Wrap,
+        Prim::Unwrap,
+        Prim::Eval,
+        Prim::MakeEnvironment,
+        Prim::Bind,
+        Prim::Bindings,
+        Prim::Cons,
+        Prim::Car,
+        Prim::Cdr,
+        Prim::Eq,
+        Prim::Select,
+        Prim::TypeOf,
+        Prim::Add,
+        Prim::Sub,
+        Prim::Mul,
+        Prim::Div,
+        Prim::Less,
+        Prim::Error,
+    ];
+
+    /// The name the primitive is bound to in the ground environment.
+    pub fn name(self) -> &'static str {
+        match self {
+            Prim::Vau => "$vau",
+            Prim::Wrap => "wrap",
+            Prim::Unwrap => "unwrap",
+            Prim::Eval => "eval",
+            Prim::MakeEnvironment => "make-environment",
+            Prim::Bind => "bind!",
+            Prim::Bindings => "bindings",
+            Prim::Cons => "cons",
+            Prim::Car => "car",
+            Prim::Cdr => "cdr",
+            Prim::Eq => "eq?",
+            Prim::Select => "select",
+            Prim::TypeOf => "type-of",
+            Prim::Add => "+",
+            Prim::Sub => "-",
+            Prim::Mul => "*",
+            Prim::Div => "div",
+            Prim::Less => "<?",
+            Prim::Error => "error",
         }
-    };
-}
-
-/// Wrap a fallible closure result as `TailAction::Return` (non-tail position).
-macro_rules! non_tail {
-    ($body:expr) => {
-        TailAction::Return((|| $body)())
-    };
-}
-
-/// Generate a variadic type-predicate builtin method.
-/// `(pred? . objects)` returns `#t` iff every object matches the pattern.
-macro_rules! type_predicate {
-    ($name:ident, $pat:pat) => {
-        #[doc = "Return `#t` iff every evaluated argument matches the expected"]
-        #[doc = "runtime pattern for this predicate; otherwise return `#f`."]
-        fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let mut cur = args;
-            while !cur.is_nil() {
-                let val = self.car(cur)?;
-                if !matches!(self.get(val)?, $pat) {
-                    return Ok(ArenaIndex::FALSE);
-                }
-                cur = self.cdr(cur)?;
-            }
-            Ok(ArenaIndex::TRUE)
-        }
-    };
-}
-
-/// Fold a variadic argument list over a checked arithmetic operation,
-/// starting from `$init`.
-macro_rules! fold_numbers {
-    ($self:ident, $args:ident, $init:expr, $op:ident) => {{
-        let mut acc: isize = $init;
-        let mut cur = $args;
-        while !cur.is_nil() {
-            let n = $self.get($self.car(cur)?)?.as_number()?;
-            acc = acc.$op(n).ok_or(ArenaError::ArithmeticOverflow)?;
-            cur = $self.cdr(cur)?;
-        }
-        $self.number(acc)
-    }};
-}
-
-/// Generate a numeric comparison builtin method.
-macro_rules! cmp_builtin {
-    ($name:ident, $op:tt) => {
-        #[doc = "Compare two evaluated numeric arguments and return a boolean"]
-        #[doc = "singleton representing the result."]
-        fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let a = self.get(self.car(args)?)?.as_number()?;
-            let b = self.get(self.cadr(args)?)?.as_number()?;
-            Ok(ArenaIndex::from_bool(a $op b))
-        }
-    };
-}
-
-/// Generate a pair-accessor builtin (`car` or `cdr`).
-macro_rules! pair_builtin {
-    ($name:ident, $accessor:ident) => {
-        #[doc = "Apply the corresponding pair/string accessor to the first"]
-        #[doc = "evaluated argument."]
-        fn $name(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-            let pair = self.car_char(args)?;
-            self.$accessor(pair)
-        }
-    };
-}
-
-/// TCO control flow for operatives.
-enum TailAction {
-    /// Return this value immediately (non-tail position result).
-    Return(ArenaResult<ArenaIndex>),
-    /// expr and env have been updated; re-enter the eval loop.
-    Continue,
-}
-
-// ============================================================================
-// Unified builtin registration
-// ============================================================================
-
-/// Generate all builtin infrastructure from a single declarative table:
-/// BuiltinId constants, `init_builtins` registration, and dispatch methods.
-macro_rules! define_builtins {
-    (
-        operatives { $( $op_name:literal => $op_id:ident => $op_method:ident, )* }
-        applicatives { $( $bi_name:literal => $bi_id:ident => $bi_method:ident, )* }
-    ) => {
-        // — ID constants (single shared u8 space) —
-        define_builtins!(@ids 0u8; $($op_id,)* $($bi_id,)*);
-
-        impl<const N: usize> Lisp<N> {
-            /// Register all builtins in the ground environment.
-            pub(crate) fn init_builtins(&self) {
-                $( self.bind_builtin($op_name, $op_id, false); )*
-                $( self.bind_builtin($bi_name, $bi_id, true); )*
-            }
-
-            /// True if this builtin id names an operative builtin.
-            #[allow(non_upper_case_globals)]
-            fn is_operative_builtin(&self, id: BuiltinId) -> bool {
-                matches!(id, $( $op_id )|*)
-            }
-
-            /// Dispatch an operative builtin (receives unevaluated args + caller env).
-            #[allow(non_upper_case_globals)]
-            fn apply_operative_builtin(
-                &self,
-                id: BuiltinId,
-                args: ArenaIndex,
-                expr: &mut ArenaIndex,
-                env: &mut ArenaIndex,
-            ) -> TailAction {
-                match id {
-                    $( $op_id => self.$op_method(args, expr, env), )*
-                    _ => TailAction::Return(Err(ArenaError::NotCallable)),
-                }
-            }
-
-            /// Dispatch an applicative builtin (receives already-evaluated args).
-            #[allow(non_upper_case_globals)]
-            fn apply_builtin_pure(
-                &self,
-                id: BuiltinId,
-                args: ArenaIndex,
-            ) -> ArenaResult<ArenaIndex> {
-                match id {
-                    $( $bi_id => self.$bi_method(args), )*
-                    _ => Err(ArenaError::NotCallable),
-                }
-            }
-        }
-    };
-    // Recursive ID assignment
-    (@ids $id:expr; ) => {};
-    (@ids $id:expr; $head:ident, $($rest:ident,)*) => {
-        #[allow(non_upper_case_globals)]
-        const $head: BuiltinId = BuiltinId($id);
-        define_builtins!(@ids $id + 1u8; $($rest,)*);
-    };
-}
-
-define_builtins! {
-    operatives {
-        "if"     => op_if     => op_if,
-        "define!" => op_define => op_define,
-        "set!"   => op_set    => op_set,
-        "begin"  => op_begin  => op_begin,
-        "cond"   => op_cond   => op_cond,
-        "and"    => op_and    => op_and,
-        "or"     => op_or     => op_or,
-        "let"    => op_let    => op_let,
-        "vau"    => op_vau    => op_vau,
     }
-    applicatives {
-        "cons"   => bi_cons   => builtin_cons,
-        "+"      => bi_add    => builtin_add,
-        "-"      => bi_sub    => builtin_sub,
-        "*"      => bi_mul    => builtin_mul,
-        "/"      => bi_div    => builtin_div,
-        "="      => bi_eq     => builtin_eq,
-        "<"      => bi_lt     => builtin_lt,
-        ">"      => bi_gt     => builtin_gt,
-        "<="     => bi_le     => builtin_le,
-        ">="     => bi_ge     => builtin_ge,
-        "car"    => bi_car    => builtin_car,
-        "cdr"    => bi_cdr    => builtin_cdr,
-        "pair?"  => bi_pairp  => builtin_pairp,
-        "number?" => bi_numberp => builtin_numberp,
-        "symbol?" => bi_symbolp => builtin_symbolp,
-        "eq?"    => bi_eqp    => builtin_eqp,
-        "equal?" => bi_equalp => builtin_equalp,
-        "eval"   => bi_eval   => builtin_eval,
-        "wrap"   => bi_wrap   => builtin_wrap,
-        "unwrap" => bi_unwrap => builtin_unwrap,
-        "operative?" => bi_operativep => builtin_operativep,
-        "applicative?" => bi_applicativep => builtin_applicativep,
-        "make-environment" => bi_make_env => builtin_make_env,
-        "environment?" => bi_environmentp => builtin_environmentp,
-        "gc-collect" => bi_gc_collect => builtin_gc_collect,
-        "error"    => bi_error    => builtin_error,
-        "apply"    => bi_apply    => builtin_apply,
-        "raw-read-string"   => bi_raw_read_string   => builtin_raw_read_string,
-        "raw-display-to-string" => bi_raw_display_to_string => builtin_raw_display_to_string,
-        "raw-write-to-string"   => bi_raw_write_to_string   => builtin_raw_write_to_string,
 
+    /// The fewest and most operands.
+    fn arity(self) -> (usize, usize) {
+        match self {
+            Prim::MakeEnvironment => (0, 1),
+            Prim::Wrap | Prim::Unwrap | Prim::Bindings | Prim::Car | Prim::Cdr | Prim::TypeOf => {
+                (1, 1)
+            }
+            Prim::Error => (1, usize::MAX),
+            Prim::Vau | Prim::Bind | Prim::Select => (3, 3),
+            _ => (2, 2),
+        }
     }
 }
 
-impl<const N: usize> Lisp<N> {
-    /// Bind a builtin in the ground environment. If `wrap` is true, wraps it as an applicative.
-    fn bind_builtin(&self, name: &str, id: BuiltinId, wrap: bool) {
-        let Ok(sym) = self.symbol(name) else {
-            return;
-        };
-        let Ok(mut val) = self.arena.alloc(id.into()) else {
-            return;
-        };
-        if wrap {
-            let Ok(wrapped) = self.wrap(val) else {
-                return;
+/// What the machine does next.
+#[derive(Clone, Copy)]
+pub(crate) enum Mode {
+    /// Evaluate an expression in an environment.
+    Eval(Value, Ref),
+    /// Deliver a value to the top frame.
+    Return(Value),
+}
+
+/// A continuation frame: what to do with the value being returned.
+#[derive(Clone, Copy)]
+enum Frame {
+    /// Evaluate the remaining top-level forms of one `eval_in` call.
+    Top { rest: Value, env: Ref },
+    /// The value is the combiner of a combination with these operands.
+    Combine { operands: Value, env: Ref },
+    /// The value is an argument of `comb`; arguments so far are on the argument stack from
+    /// `base`.
+    Args {
+        comb: Value,
+        env: Ref,
+        rest: Value,
+        base: usize,
+    },
+}
+
+impl Frame {
+    fn values(self) -> [Value; 3] {
+        match self {
+            Frame::Top { rest, env } => [rest, Value::Env(env), Value::Nil],
+            Frame::Combine { operands, env } => [operands, Value::Env(env), Value::Nil],
+            Frame::Args {
+                comb, env, rest, ..
+            } => [comb, Value::Env(env), rest],
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct Machine {
+    frames: Vec<Frame>,
+    args: Vec<Value>,
+    /// Scratch for matching formals trees.
+    work: Vec<(Value, Value)>,
+}
+
+fn type_error(p: Prim, v: Value) -> Error {
+    Error::new(K::TypeError, &[Value::Prim(p), v])
+}
+
+fn boolean(b: bool) -> Value {
+    if b { Value::True } else { Value::False }
+}
+
+impl Grift {
+    /// Reads `src`, then evaluates its forms in `env`. Reentrant: a host function may call
+    /// `eval`, which runs on top of the current frames and leaves them as it found them.
+    pub(crate) fn eval_in(&mut self, src: &str, env: Ref) -> Result<Value, Error> {
+        let forms = self.read(src)?;
+        let (frames, args) = (self.machine.frames.len(), self.machine.args.len());
+        let result = push(&mut self.machine.frames, Frame::Top { rest: forms, env })
+            .and_then(|()| self.run(Mode::Return(Value::Inert)));
+        if result.is_err() {
+            self.machine.frames.truncate(frames);
+            self.machine.args.truncate(args);
+        }
+        result
+    }
+
+    fn run(&mut self, mut mode: Mode) -> Result<Value, Error> {
+        loop {
+            // The safe point: the machine's state is all there is.
+            if self.heap.due() {
+                self.collect(mode)?;
+            }
+            mode = match mode {
+                Mode::Eval(Value::Sym(s), env) => Mode::Return(self.lookup(env, s)?),
+                Mode::Eval(Value::Pair(r), env) => {
+                    let (combiner, operands) = self.pair(r)?;
+                    push(&mut self.machine.frames, Frame::Combine { operands, env })?;
+                    Mode::Eval(combiner, env)
+                }
+                Mode::Eval(x, _) => Mode::Return(x),
+                Mode::Return(v) => match self.machine.frames.pop() {
+                    None => return Ok(v),
+                    Some(Frame::Top {
+                        rest: Value::Pair(r),
+                        env,
+                    }) => {
+                        let (form, rest) = self.pair(r)?;
+                        push(&mut self.machine.frames, Frame::Top { rest, env })?;
+                        Mode::Eval(form, env)
+                    }
+                    Some(Frame::Top { .. }) => return Ok(v),
+                    Some(Frame::Combine { operands, env }) => self.combine(v, operands, env)?,
+                    Some(Frame::Args {
+                        comb,
+                        env,
+                        rest,
+                        base,
+                    }) => {
+                        push(&mut self.machine.args, v)?;
+                        self.next_arg(comb, env, rest, base)?
+                    }
+                },
             };
-            val = wrapped;
-        }
-        let _ = self.env_define(ArenaIndex::GROUND_ENV, sym, val);
-    }
-
-    // — GC root stack management (stored at ArenaIndex::GC_ROOTS) —
-
-    /// Read the current head of the GC root stack.
-    #[inline]
-    fn gc_roots_head(&self) -> ArenaIndex {
-        match self.arena.get(ArenaIndex::GC_ROOTS) {
-            Ok(Value::Cons { car, .. }) => car,
-            _ => ArenaIndex::NIL,
         }
     }
 
-    /// Set the head of the GC root stack.
-    #[inline]
-    fn set_gc_roots_head(&self, head: ArenaIndex) {
-        let _ = self.arena.set(
-            ArenaIndex::GC_ROOTS,
-            Value::Cons {
-                car: head,
-                cdr: ArenaIndex::NIL,
+    fn collect(&mut self, mode: Mode) -> Result<(), Error> {
+        let current = match mode {
+            Mode::Eval(x, env) => [x, Value::Env(env)],
+            Mode::Return(v) => [v, Value::Nil],
+        };
+        let m = &self.machine;
+        let roots = m
+            .frames
+            .iter()
+            .flat_map(|f| f.values())
+            .chain(m.args.iter().copied());
+        let roots = roots
+            .chain(current)
+            .chain([Value::Env(self.ground), Value::Env(self.top)]);
+        self.heap.collect(roots)
+    }
+
+    /// Combines a combiner with unevaluated operands.
+    fn combine(&mut self, f: Value, operands: Value, env: Ref) -> Result<Mode, Error> {
+        match f {
+            Value::App(r) => {
+                let mut inner = self.app(r)?;
+                // With no operands, every layer of wrapping evaluates nothing: peel them here
+                // rather than recursing once per layer.
+                while let (Value::App(r), Value::Nil) = (inner, operands) {
+                    inner = self.app(r)?;
+                }
+                self.next_arg(inner, env, operands, self.machine.args.len())
+            }
+            Value::Op(r) => self.call(r, operands, env),
+            Value::Prim(_) | Value::Host(_) => {
+                let base = self.machine.args.len();
+                let mut rest = operands;
+                while let Value::Pair(r) = rest {
+                    let (x, next) = self.pair(r)?;
+                    push(&mut self.machine.args, x)?;
+                    rest = next;
+                }
+                if rest != Value::Nil {
+                    return Err(Error::new(K::TypeError, &[f, operands]));
+                }
+                self.apply(f, env, base)
+            }
+            _ => Err(Error::new(K::NotACombiner, &[f])),
+        }
+    }
+
+    /// Evaluates the next operand of an applicative, or applies its combiner once none is left.
+    fn next_arg(&mut self, comb: Value, env: Ref, rest: Value, base: usize) -> Result<Mode, Error> {
+        match rest {
+            Value::Pair(r) => {
+                let (x, rest) = self.pair(r)?;
+                push(
+                    &mut self.machine.frames,
+                    Frame::Args {
+                        comb,
+                        env,
+                        rest,
+                        base,
+                    },
+                )?;
+                Ok(Mode::Eval(x, env))
+            }
+            Value::Nil => self.apply(comb, env, base),
+            _ => Err(Error::new(K::TypeError, &[comb, rest])),
+        }
+    }
+
+    /// Applies a combiner to the arguments on the argument stack from `base`, popping them.
+    fn apply(&mut self, comb: Value, env: Ref, base: usize) -> Result<Mode, Error> {
+        match comb {
+            Value::Prim(p) => {
+                let mode = self.prim(p, env, base);
+                self.machine.args.truncate(base);
+                mode
+            }
+            Value::Host(h) => {
+                let f = self.hosts.get(h.0 as usize).map(|&(_, f)| f);
+                let f = f.ok_or_else(|| Error::new(K::NotACombiner, &[comb]))?;
+                // The arguments stay on the argument stack, rooted, while the host runs.
+                let given = self.machine.args.get(base..).unwrap_or_default();
+                let mut args = Vec::new();
+                args.try_reserve_exact(given.len())
+                    .map_err(|_| Error::oom())?;
+                args.extend_from_slice(given);
+                let v = f(self, &args);
+                self.machine.args.truncate(base);
+                Ok(Mode::Return(v?))
+            }
+            _ => {
+                let mut list = Value::Nil;
+                while self.machine.args.len() > base {
+                    let x = self.machine.args.pop().unwrap_or(Value::Nil);
+                    list = self.cons(x, list)?;
+                }
+                self.combine(comb, list, env)
+            }
+        }
+    }
+
+    /// Calls a compound operative: a child of its static environment, with the formals bound
+    /// to the operands and the environment formal to the caller's environment.
+    fn call(&mut self, r: Ref, operands: Value, env: Ref) -> Result<Mode, Error> {
+        let op = match self.heap.get(r)? {
+            Obj::Op(op) => *op,
+            _ => return Err(Error::new(K::StaleValue, &[Value::Op(r)])),
+        };
+        let local = self.heap.alloc(Obj::Env(Some(op.env), Vec::new()))?;
+        self.match_tree(local, op.formals, operands)?;
+        if let Value::Sym(s) = op.eformal {
+            self.bind_symbol(local, s, Value::Env(env))?;
+        }
+        Ok(Mode::Eval(op.body, local))
+    }
+
+    fn prim(&mut self, p: Prim, env: Ref, base: usize) -> Result<Mode, Error> {
+        let given = self.machine.args.get(base..).unwrap_or_default();
+        let (lo, hi) = p.arity();
+        if given.len() < lo || given.len() > hi {
+            let mut values = Vec::new();
+            values
+                .try_reserve_exact(given.len() + 1)
+                .map_err(|_| Error::oom())?;
+            values.push(Value::Prim(p));
+            values.extend_from_slice(given);
+            return Err(Error {
+                code: K::ArityError.into(),
+                values,
+            });
+        }
+        let n = given.len();
+        let mut a = [Value::Nil; 3];
+        a.iter_mut().zip(given).for_each(|(d, s)| *d = *s);
+        let [x, y, z] = a;
+        let v = match p {
+            Prim::Vau => {
+                self.check_formals(x, y)?;
+                let op = Op {
+                    formals: x,
+                    eformal: y,
+                    body: z,
+                    env,
+                };
+                Value::Op(self.heap.alloc(Obj::Op(op))?)
+            }
+            Prim::Wrap => match x {
+                Value::Op(_) | Value::App(_) | Value::Prim(_) | Value::Host(_) => {
+                    Value::App(self.heap.alloc(Obj::App(x))?)
+                }
+                _ => return Err(type_error(p, x)),
             },
-        );
+            Prim::Unwrap => match x {
+                Value::App(r) => self.app(r)?,
+                _ => return Err(type_error(p, x)),
+            },
+            Prim::Eval => match y {
+                Value::Env(e) => return Ok(Mode::Eval(x, e)),
+                _ => return Err(type_error(p, y)),
+            },
+            Prim::MakeEnvironment => {
+                let parent = match x {
+                    Value::Env(e) if n == 1 => Some(e),
+                    _ if n == 0 => None,
+                    _ => return Err(type_error(p, x)),
+                };
+                Value::Env(self.heap.alloc(Obj::Env(parent, Vec::new()))?)
+            }
+            Prim::Bind => match x {
+                Value::Env(e) => {
+                    self.check_formals(y, Value::Ignore)?;
+                    self.match_tree(e, y, z)?;
+                    Value::Inert
+                }
+                _ => return Err(type_error(p, x)),
+            },
+            Prim::Bindings => match x {
+                Value::Env(e) => self.bindings(e)?,
+                _ => return Err(type_error(p, x)),
+            },
+            Prim::Cons => self.cons(x, y)?,
+            Prim::Car | Prim::Cdr => match x {
+                Value::Pair(r) => {
+                    let (a, d) = self.pair(r)?;
+                    if p == Prim::Car { a } else { d }
+                }
+                _ => return Err(type_error(p, x)),
+            },
+            Prim::Eq => boolean(match (x, y) {
+                (Value::Str(_), Value::Str(_)) => self.string(x) == self.string(y),
+                _ => x == y,
+            }),
+            Prim::Select => match x {
+                Value::True => y,
+                Value::False => z,
+                _ => return Err(type_error(p, x)),
+            },
+            Prim::TypeOf => Value::Sym(type_of(x).into()),
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Less => arith(p, x, y)?,
+            Prim::Error => {
+                let Value::Sym(code) = x else {
+                    return Err(type_error(p, x));
+                };
+                let mut values = Vec::new();
+                let rest = self.machine.args.get(base + 1..).unwrap_or_default();
+                values
+                    .try_reserve_exact(rest.len())
+                    .map_err(|_| Error::oom())?;
+                values.extend_from_slice(rest);
+                return Err(Error { code, values });
+            }
+        };
+        Ok(Mode::Return(v))
     }
 
-    /// Push a value onto the GC root stack so it survives collection.
-    #[inline]
-    fn push_root(&self, idx: ArenaIndex) -> ArenaResult<()> {
-        let old_head = self.gc_roots_head();
-        let new_node = self.cons(idx, old_head)?;
-        self.set_gc_roots_head(new_node);
+    /// Checks a formals tree: symbols, `#ignore`, `()` and pairs, no symbol twice, and an
+    /// environment formal that is `#ignore` or a symbol not in the tree.
+    fn check_formals(&mut self, formals: Value, eformal: Value) -> Result<(), Error> {
+        let bad = |v: Value| Error::new(K::BadFormals, &[v]);
+        let mut seen: Vec<Symbol> = Vec::new();
+        let mut todo = Vec::new();
+        push(&mut todo, formals)?;
+        while let Some(t) = todo.pop() {
+            match t {
+                Value::Sym(s) if seen.contains(&s) => return Err(bad(formals)),
+                Value::Sym(s) => push(&mut seen, s)?,
+                Value::Ignore | Value::Nil => {}
+                Value::Pair(r) => {
+                    let (a, d) = self.pair(r)?;
+                    push(&mut todo, d)?;
+                    push(&mut todo, a)?;
+                }
+                _ => return Err(bad(formals)),
+            }
+        }
+        match eformal {
+            Value::Sym(s) if !seen.contains(&s) => Ok(()),
+            Value::Ignore => Ok(()),
+            _ => Err(bad(eformal)),
+        }
+    }
+
+    /// Matches a checked formals tree to a value, binding its symbols in `env`.
+    fn match_tree(&mut self, env: Ref, formals: Value, value: Value) -> Result<(), Error> {
+        let mut work = core::mem::take(&mut self.machine.work);
+        work.clear();
+        let result = self.match_with(&mut work, env, formals, value);
+        self.machine.work = work;
+        result
+    }
+
+    fn match_with(
+        &mut self,
+        work: &mut Vec<(Value, Value)>,
+        env: Ref,
+        formals: Value,
+        value: Value,
+    ) -> Result<(), Error> {
+        let mismatch = || Error::new(K::ArityError, &[formals, value]);
+        push(work, (formals, value))?;
+        while let Some((t, v)) = work.pop() {
+            match (t, v) {
+                (Value::Sym(s), _) => self.bind_symbol(env, s, v)?,
+                (Value::Ignore, _) | (Value::Nil, Value::Nil) => {}
+                (Value::Pair(t), Value::Pair(v)) => {
+                    let ((ta, td), (va, vd)) = (self.pair(t)?, self.pair(v)?);
+                    push(work, (td, vd))?;
+                    push(work, (ta, va))?;
+                }
+                _ => return Err(mismatch()),
+            }
+        }
         Ok(())
     }
 
-    /// Pop `n` values from the GC root stack.
-    #[inline]
-    fn pop_roots(&self, n: usize) {
-        for _ in 0..n {
-            let head = self.gc_roots_head();
-            debug_assert!(!head.is_nil(), "GC root stack underflow");
-            match self.cdr(head) {
-                Ok(rest) => self.set_gc_roots_head(rest),
-                Err(_) => break,
-            }
+    /// Binds `s` in `env` itself, replacing an existing binding there.
+    pub(crate) fn bind_symbol(&mut self, env: Ref, s: Symbol, v: Value) -> Result<(), Error> {
+        let Obj::Env(_, binds) = self.heap.get_mut(env)? else {
+            return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
+        };
+        match binds.iter_mut().find(|(k, _)| *k == s) {
+            Some(b) => b.1 = v,
+            None => push(binds, (s, v))?,
         }
+        Ok(())
     }
 
-    /// Trigger garbage collection using all known live roots. Used for OOM collections.
-    #[cold]
-    fn eval_collect_garbage(&self, expr: ArenaIndex, env: ArenaIndex) -> GcStats {
-        self.collect_with_roots(&[expr, env])
-    }
-
-    /// Trigger garbage collection unconditionally.
-    ///
-    /// This is used by the `gc-collect` builtin, which should force a
-    /// collection cycle even when the evaluator is not currently handling OOM.
-    #[cold]
-    fn eval_collect_garbage_unconditional(&self) -> GcStats {
-        self.collect_with_roots(&[])
-    }
-
-    /// Evaluate an expression in an environment (with TCO).
-    ///
-    /// Kernel-style dispatch: three combiner types —
-    /// `Operative` (compound fexpr), `Applicative` (wrapper that evals args),
-    /// and `Builtin` (primitive operative).
-    ///
-    /// Garbage collection is triggered only on allocation failure (OOM):
-    /// when any operation returns `OutOfMemory`, the evaluator restores
-    /// the GC root stack, collects garbage, and retries.
-    pub(crate) fn eval_expr(
-        &self,
-        mut expr: ArenaIndex,
-        mut env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
+    fn lookup(&self, mut env: Ref, s: Symbol) -> Result<Value, Error> {
         loop {
-            let saved_gc_roots = self.gc_roots_head();
-            match self.eval_step(&mut expr, &mut env) {
-                Ok(Some(result)) => return Ok(result),
-                Ok(None) => continue,
-                Err(ArenaError::OutOfMemory) => {
-                    self.set_gc_roots_head(saved_gc_roots);
-                    let stats = self.eval_collect_garbage(expr, env);
-                    if !stats.did_collect() {
-                        return Err(ArenaError::OutOfMemory);
-                    }
-                    continue;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    /// One step of the eval trampoline. Returns:
-    /// - `Ok(Some(value))` — evaluation complete, return this value.
-    /// - `Ok(None)` — TCO: `expr`/`env` have been updated, re-enter the loop.
-    /// - `Err(e)` — error (including OOM).
-    fn eval_step(
-        &self,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> Result<Option<ArenaIndex>, ArenaError> {
-        match self.get(*expr)? {
-            Value::Symbol(_) => Ok(Some(self.env_lookup(*env, *expr)?)),
-
-            Value::Cons { car, cdr } => {
-                self.push_root(cdr)?;
-                self.push_root(*env)?;
-
-                let func_val = self.eval_expr(car, *env)?;
-
-                match self.get(func_val)? {
-                    Value::Builtin(id) => {
-                        let action = self.apply_operative_builtin(id, cdr, expr, env);
-                        self.pop_roots(2);
-                        match action {
-                            TailAction::Return(val) => val.map(Some),
-                            TailAction::Continue => Ok(None),
-                        }
-                    }
-
-                    Value::Operative { .. } => {
-                        let (body, op_env) = self.invoke_operative(func_val, cdr, *env)?;
-                        self.pop_roots(2);
-                        *env = op_env;
-                        *expr = body;
-                        Ok(None)
-                    }
-
-                    Value::Prelude(prelude) => {
-                        let real = self.eval_prelude_source(prelude)?;
-                        let (body, op_env) = self.invoke_operative(real, cdr, *env)?;
-                        self.pop_roots(2);
-                        *env = op_env;
-                        *expr = body;
-                        Ok(None)
-                    }
-
-                    Value::Applicative(inner) => {
-                        let evaled_args = self.eval_args(cdr, *env)?;
-                        self.push_root(evaled_args)?;
-
-                        match self.get(inner)? {
-                            Value::Operative { .. } => {
-                                self.pop_roots(3);
-                                let (body, op_env) =
-                                    self.invoke_operative(inner, evaled_args, *env)?;
-                                *env = op_env;
-                                *expr = body;
-                                Ok(None)
-                            }
-                            Value::Builtin(id) => {
-                                self.pop_roots(3);
-                                Ok(Some(self.apply_builtin_value(id, evaled_args, *env)?))
-                            }
-                            Value::Applicative(_) => {
-                                self.pop_roots(3);
-                                Ok(Some(self.apply_combiner(inner, evaled_args, *env)?))
-                            }
-                            Value::Prelude(prelude) => {
-                                let real = self.eval_prelude_source(prelude)?;
-                                self.pop_roots(3);
-                                let (body, op_env) =
-                                    self.invoke_operative(real, evaled_args, *env)?;
-                                *env = op_env;
-                                *expr = body;
-                                Ok(None)
-                            }
-                            Value::Native(f) => {
-                                self.pop_roots(3);
-                                Ok(Some(self.call_native(f, evaled_args)?))
-                            }
-                            _ => {
-                                self.pop_roots(3);
-                                Err(ArenaError::NotCallable)
-                            }
-                        }
-                    }
-
-                    _ => {
-                        self.pop_roots(2);
-                        Err(ArenaError::NotCallable)
-                    }
-                }
-            }
-
-            _ => Ok(Some(*expr)), // self-evaluating: literals, closures, builtins,
-        }
-    }
-
-    /// Drive a builtin tail action to a concrete result.
-    fn resolve_tail_action(
-        &self,
-        action: TailAction,
-        expr: ArenaIndex,
-        env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        match action {
-            TailAction::Return(result) => result,
-            TailAction::Continue => self.eval_expr(expr, env),
-        }
-    }
-
-    /// Invoke a builtin using the calling convention implied by its id.
-    fn apply_builtin_value(
-        &self,
-        id: BuiltinId,
-        args: ArenaIndex,
-        caller_env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        if self.is_operative_builtin(id) {
-            let mut expr = ArenaIndex::NIL;
-            let mut env = caller_env;
-            let action = self.apply_operative_builtin(id, args, &mut expr, &mut env);
-            self.resolve_tail_action(action, expr, env)
-        } else {
-            self.apply_builtin_pure(id, args)
-        }
-    }
-
-    /// Apply a combiner to an operand object.
-    ///
-    /// Applicatives expect `evaled_args` to contain evaluated arguments.
-    /// Operatives receive it unchanged as their raw operand object.
-    fn apply_combiner(
-        &self,
-        combiner: ArenaIndex,
-        evaled_args: ArenaIndex,
-        caller_env: ArenaIndex,
-    ) -> ArenaResult<ArenaIndex> {
-        match self.get(combiner)? {
-            Value::Operative { .. } => {
-                let (body, op_env) = self.invoke_operative(combiner, evaled_args, caller_env)?;
-                self.eval_expr(body, op_env)
-            }
-            Value::Builtin(id) => self.apply_builtin_value(id, evaled_args, caller_env),
-            Value::Native(f) => self.call_native(f, evaled_args),
-            Value::Applicative(inner) => self.apply_combiner(inner, evaled_args, caller_env),
-            Value::Prelude(prelude) => {
-                self.push_root(evaled_args)?;
-                self.push_root(caller_env)?;
-                let real = self.eval_prelude_source(prelude)?;
-                self.pop_roots(2);
-                let (body, op_env) = self.invoke_operative(real, evaled_args, caller_env)?;
-                self.eval_expr(body, op_env)
-            }
-            _ => Err(ArenaError::NotCallable),
-        }
-    }
-
-    /// Common operative invocation: destructure, bind params, optionally bind caller env.
-    /// Returns `(body, operative_env)` for tail-call or direct eval.
-    #[inline]
-    fn invoke_operative(
-        &self,
-        func: ArenaIndex,
-        args: ArenaIndex,
-        caller_env: ArenaIndex,
-    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
-        let (params, env_param, body, closed_env) = self.vau_parts(func)?;
-        let op_env = self.make_child_env(closed_env)?;
-        self.match_ptree(params, args, op_env)?;
-        if !env_param.is_nil() {
-            self.env_define(op_env, env_param, caller_env)?;
-        }
-        Ok((body, op_env))
-    }
-
-    /// Parse and realize a lazy prelude binding directly from its defining form.
-    fn eval_prelude_source(&self, prelude: crate::prelude::Prelude) -> ArenaResult<ArenaIndex> {
-        let mut src = SliceSource::new(prelude.source());
-        let source_expr = self
-            .parse_complete_expr(&mut src)?
-            .ok_or_else(|| ArenaError::ParseError { line: 1, col: 1 })?;
-        let Value::Cons {
-            car: head,
-            cdr: rest,
-        } = self.get(source_expr)?
-        else {
-            return Err(ArenaError::TypeError);
-        };
-
-        if self.symbol_name_eq(head, "fn!") {
-            let after_name = self.cdr(rest)?;
-            let params = self.car(after_name)?;
-            let body = self.wrap_begin(self.cdr(after_name)?)?;
-            self.unwrap_applicative(self.lambda(params, body, ArenaIndex::GLOBAL_ENV)?)
-        } else if self.symbol_name_eq(head, "define!") {
-            let rhs = self.cadr(rest)?;
-            self.realize_prelude_combiner(rhs)
-        } else {
-            Err(ArenaError::TypeError)
-        }
-    }
-
-    fn realize_prelude_combiner(&self, expr: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let Value::Cons {
-            car: head,
-            cdr: rest,
-        } = self.get(expr)?
-        else {
-            return Err(ArenaError::TypeError);
-        };
-
-        if self.symbol_name_eq(head, "vau") {
-            let params = self.car(rest)?;
-            let after_env = self.cdr(rest)?;
-            let env_param = self.car(after_env)?;
-            let body = self.wrap_begin(self.cdr(after_env)?)?;
-            self.vau(params, env_param, body, ArenaIndex::GLOBAL_ENV)
-        } else if self.symbol_name_eq(head, "lambda") {
-            let params = self.car(rest)?;
-            let body = self.wrap_begin(self.cdr(rest)?)?;
-            self.unwrap_applicative(self.lambda(params, body, ArenaIndex::GLOBAL_ENV)?)
-        } else {
-            Err(ArenaError::TypeError)
-        }
-    }
-
-    /// Recursively match a formal parameter tree `ptree` against a value `obj`
-    /// in environment `env`, binding each symbol in `ptree` to the
-    /// corresponding part of `obj`.
-    ///
-    /// Per the Kernel spec (§4.9.1):
-    /// - If ptree is a symbol, bind it to obj.
-    /// - If ptree is `#ignore`, do nothing.
-    /// - If ptree is nil, obj must be nil (else error).
-    /// - If ptree is a pair, obj must be a pair; match car/cdr recursively.
-    fn match_ptree(&self, ptree: ArenaIndex, obj: ArenaIndex, env: ArenaIndex) -> ArenaResult<()> {
-        if ptree.is_nil() {
-            if obj.is_nil() {
-                return Ok(());
-            }
-            return Err(ArenaError::TypeError);
-        }
-        match self.get(ptree)? {
-            Value::Ignore => Ok(()),
-            Value::Symbol(_) => self.env_define(env, ptree, obj),
-            Value::Cons {
-                car: ptree_car,
-                cdr: ptree_cdr,
-            } => {
-                let (obj_car, obj_cdr) = self.get(obj)?.as_cons()?;
-                self.match_ptree(ptree_car, obj_car, env)?;
-                self.match_ptree(ptree_cdr, obj_cdr, env)
-            }
-            _ => Err(ArenaError::TypeError),
-        }
-    }
-
-    /// Evaluate all arguments in a list (iterative with in-place reversal).
-    fn eval_args(&self, args: ArenaIndex, env: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Build result in reverse order to avoid O(n) Rust stack depth.
-        let mut cur = args;
-        let mut reversed = ArenaIndex::NIL;
-        while !cur.is_nil() {
-            let head_expr = self.car(cur)?;
-            self.push_root(reversed)?;
-            self.push_root(env)?;
-            self.push_root(cur)?;
-            let head_val = self.eval_expr(head_expr, env)?;
-            self.pop_roots(3);
-            reversed = self.cons(head_val, reversed)?;
-            cur = self.cdr(cur)?;
-        }
-        // Reverse in place — all cons cells are freshly allocated by us.
-        self.reverse_chain(reversed)
-    }
-
-    // ================================================================
-    // Operative builtin implementations (receive unevaluated args)
-    // ================================================================
-
-    /// `(if test then else)` — test is strict, branches are tail positions.
-    fn op_if(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        tail_continue!({
-            let test_expr = self.car(args)?;
-            let rest = self.cdr(args)?;
-            let test_val = self.eval_expr(test_expr, *env)?;
-            *expr = if self.get(test_val)?.as_bool()? {
-                self.car(rest)?
-            } else {
-                let else_rest = self.cdr(rest)?;
-                if else_rest.is_nil() {
-                    ArenaIndex::NIL
-                } else {
-                    self.car(else_rest)?
-                }
+            let Obj::Env(parent, binds) = self.heap.get(env)? else {
+                return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
             };
-            Ok(())
-        })
-    }
-
-    /// `(define! definiend expression)` — Kernel §4.9.1.
-    ///
-    /// Evaluates `expression` in the dynamic environment and matches `definiend`
-    /// (a formal parameter tree) to the result, binding symbols in the dynamic
-    /// environment.  Returns `#inert`.
-    ///
-    /// It is an error to define a variable that already has a binding in the
-    /// current environment frame. Use `set!` to update an existing binding.
-    ///
-    /// User code never receives a direct handle to the ground environment, so
-    /// this operative only mutates the current dynamic frame.
-    fn op_define(
-        &self,
-        args: ArenaIndex,
-        _expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        non_tail!({
-            // Protect the ground environment from mutation.
-            debug_assert!(*env != ArenaIndex::GROUND_ENV, "define! in ground env");
-
-            let definiend = self.car(args)?;
-
-            // Regular define! with ptree matching
-            self.validate_ptree(definiend)?;
-            let val_expr = self.cadr(args)?;
-            let val = self.eval_expr(val_expr, *env)?;
-            self.match_ptree(definiend, val, *env)?;
-            Ok(ArenaIndex::INERT)
-        })
-    }
-
-    /// `(set! exp1 formals exp2)` — Kernel §6.8.1.
-    ///
-    /// Evaluates `exp1` and `exp2` in the dynamic environment; call the
-    /// results `env` and `obj`.  If `env` is not an environment, an error
-    /// is signaled.  Then the operative updates an existing binding of
-    /// `formals` (a single symbol) in environment `env`.  The symbol must
-    /// already exist in `env`'s own frame — parents are not walked, and a
-    /// new binding is never created.  Returns `#inert`.
-    fn op_set(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        non_tail!({
-            let env_expr = self.car(args)?;
-            let rest = self.cdr(args)?;
-            let definiend = self.car(rest)?;
-            let val_expr = self.cadr(rest)?;
-
-            let target_env = self.eval_expr(env_expr, *env)?;
-            // Validate target is an environment.
-            if !matches!(self.get(target_env)?, Value::Environment { .. }) {
-                return Err(ArenaError::TypeError);
+            if let Some(&(_, v)) = binds.iter().find(|(k, _)| *k == s) {
+                return Ok(v);
             }
-
-            debug_assert!(target_env != ArenaIndex::GROUND_ENV, "set! in ground env");
-
-            let val = self.eval_expr(val_expr, *env)?;
-            // set! only supports a single symbol formal.
-            if !matches!(self.get(definiend)?, Value::Symbol(_)) {
-                return Err(ArenaError::TypeError);
-            }
-            self.env_set(target_env, definiend, val)?;
-            Ok(ArenaIndex::INERT)
-        })
-    }
-
-    /// `(begin expr1 expr2 ...)` — all but last are non-tail, last is tail.
-    fn op_begin(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-    ) -> TailAction {
-        tail_continue!({
-            let mut cur = args;
-            while !cur.is_nil() {
-                let next = self.cdr(cur)?;
-                if next.is_nil() {
-                    *expr = self.car(cur)?;
-                    return Ok(());
-                }
-                let e = self.car(cur)?;
-                self.eval_expr(e, *env)?;
-                cur = next;
-            }
-            *expr = ArenaIndex::NIL;
-            Ok(())
-        })
-    }
-
-    /// `(cond (test expr...) ...)` — tests are strict, last body expr is tail.
-    fn op_cond(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        tail_continue!({
-            let mut cur = args;
-            while !cur.is_nil() {
-                let clause = self.car(cur)?;
-                let test = self.car(clause)?;
-                let body = self.cdr(clause)?;
-
-                let matched = self.symbol_name_eq(test, "else") || {
-                    let test_val = self.eval_expr(test, *env)?;
-                    self.get(test_val)?.as_bool()?
-                };
-
-                if matched {
-                    *expr = self.wrap_begin(body)?;
-                    return Ok(());
-                }
-                cur = self.cdr(cur)?;
-            }
-            *expr = ArenaIndex::NIL;
-            Ok(())
-        })
-    }
-
-    /// `(and expr...)` — strict on tests, last is tail.
-    fn op_and(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        self.eval_short_circuit(args, expr, env, true)
-    }
-
-    /// `(or expr...)` — strict on tests, last is tail.
-    fn op_or(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        self.eval_short_circuit(args, expr, env, false)
-    }
-
-    /// Shared `and`/`or` implementation.
-    fn eval_short_circuit(
-        &self,
-        args: ArenaIndex,
-        expr: &mut ArenaIndex,
-        env: &mut ArenaIndex,
-        continue_while_truthy: bool,
-    ) -> TailAction {
-        tail_continue!({
-            if args.is_nil() {
-                *expr = ArenaIndex::from_bool(continue_while_truthy);
-                return Ok(());
-            }
-
-            let mut cur = args;
-            while !cur.is_nil() {
-                let next = self.cdr(cur)?;
-                let e = self.car(cur)?;
-                let val = self.eval_expr(e, *env)?;
-                let b = self.get(val)?.as_bool()?;
-                if b != continue_while_truthy {
-                    *expr = val;
-                    return Ok(());
-                }
-                cur = next;
-            }
-            *expr = ArenaIndex::from_bool(continue_while_truthy);
-            Ok(())
-        })
-    }
-
-    /// `(let ((name val) ...) body...)` — bindings are strict, body is tail.
-    ///
-    /// Named let: `(let name ((param init) ...) body...)` desugars to a
-    /// recursive function `name` with params bound to evaluated inits.
-    fn op_let(&self, args: ArenaIndex, expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        tail_continue!({
-            let first = self.car(args)?;
-
-            if matches!(self.get(first)?, Value::Symbol(_)) {
-                // Named let
-                let name = first;
-                let rest = self.cdr(args)?;
-                let bindings = self.car(rest)?;
-                let body_list = self.cdr(rest)?;
-
-                let params = self.map_list(bindings, Self::car)?;
-                let inits = self.map_list(bindings, Self::cadr)?;
-
-                let local_env = self.make_child_env(*env)?;
-
-                self.push_root(local_env)?;
-
-                // Evaluate init values in the OUTER env
-                let evaled_inits = self.eval_args(inits, *env)?;
-                self.push_root(evaled_inits)?;
-
-                // Create the recursive function in the local env
-                let body = self.wrap_begin(body_list)?;
-                let func = self.lambda(params, body, local_env)?;
-                self.env_define(local_env, name, func)?;
-
-                // Invoke the operative directly with pre-evaluated init values,
-                // bypassing the normal eval loop.  The previous approach built
-                // `(name val1 val2 …)` and fed it back through `eval_expr`,
-                // which would re-evaluate the already-evaluated values.  That
-                // is harmless for self-evaluating types (numbers, booleans) but
-                // breaks when an init value is a list—`eval` would interpret
-                // the list as a function call, producing a NotCallable error.
-                let inner = self.unwrap_applicative(func)?;
-                let (body_expr, op_env) = self.invoke_operative(inner, evaled_inits, local_env)?;
-                self.pop_roots(2);
-                *env = op_env;
-                *expr = body_expr;
-                Ok(())
-            } else {
-                // Regular let
-                let bindings = first;
-                let body_list = self.cdr(args)?;
-
-                let local_env = self.make_child_env(*env)?;
-                self.push_root(local_env)?;
-                let mut cur = bindings;
-                while !cur.is_nil() {
-                    let binding = self.car(cur)?;
-                    let (name, val_expr) = self.regular_let_binding_parts(binding)?;
-                    let val = self.eval_expr(val_expr, *env)?;
-                    self.env_define(local_env, name, val)?;
-                    cur = self.cdr(cur)?;
-                }
-                self.pop_roots(1);
-
-                *env = local_env;
-                *expr = self.wrap_begin(body_list)?;
-                Ok(())
-            }
-        })
-    }
-
-    /// `(vau params env-param body)` — create a fexpr (operative).
-    ///
-    /// Per the Kernel spec (§4.10.3):
-    /// - `params` must be a valid formal parameter tree.
-    /// - `env-param` must be either a symbol or `#ignore`.
-    /// - If `env-param` is a symbol that also occurs in `params`, an error
-    ///   is signaled.
-    fn op_vau(&self, args: ArenaIndex, _expr: &mut ArenaIndex, env: &mut ArenaIndex) -> TailAction {
-        non_tail!({
-            let params = self.car(args)?;
-            let env_param = self.cadr(args)?;
-            let body_list = self.cdr(self.cdr(args)?)?;
-            let body = self.wrap_begin(body_list)?;
-            self.vau(params, env_param, body, *env)
-        })
-    }
-
-    // ================================================================
-    // Utility methods
-    // ================================================================
-
-    /// Wrap a list of expressions in a `begin` form if there are multiple,
-    /// or return the single expression if there's only one.
-    #[inline]
-    fn wrap_begin(&self, exprs: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if exprs.is_nil() {
-            return Ok(ArenaIndex::NIL);
-        }
-        let rest = self.cdr(exprs)?;
-        if rest.is_nil() {
-            return self.car(exprs);
-        }
-        let begin_sym = self.symbol("begin")?;
-        self.cons(begin_sym, exprs)
-    }
-
-    /// Map a function over a cons-list, building a new list of results.
-    fn map_list(
-        &self,
-        list: ArenaIndex,
-        f: impl Fn(&Self, ArenaIndex) -> ArenaResult<ArenaIndex>,
-    ) -> ArenaResult<ArenaIndex> {
-        let mut cur = list;
-        let mut reversed = ArenaIndex::NIL;
-        while !cur.is_nil() {
-            let head = self.car(cur)?;
-            let val = f(self, head)?;
-            reversed = self.cons(val, reversed)?;
-            cur = self.cdr(cur)?;
-        }
-        self.reverse_chain(reversed)
-    }
-
-    /// Require that `idx` names an environment and return it unchanged.
-    #[inline]
-    fn require_environment(&self, idx: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if matches!(self.get(idx)?, Value::Environment { .. }) {
-            Ok(idx)
-        } else {
-            Err(ArenaError::TypeError)
+            env = parent.ok_or_else(|| Error::new(K::UnboundSymbol, &[Value::Sym(s)]))?;
         }
     }
 
-    /// Parse one regular-let binding of the form `(symbol init)`.
-    #[inline]
-    fn regular_let_binding_parts(
-        &self,
-        binding: ArenaIndex,
-    ) -> ArenaResult<(ArenaIndex, ArenaIndex)> {
-        let name = self.car(binding)?;
-        if !matches!(self.get(name)?, Value::Symbol(_)) {
-            return Err(ArenaError::TypeError);
-        }
-        let rest = self.cdr(binding)?;
-        let init = self.car(rest)?;
-        if !self.cdr(rest)?.is_nil() {
-            return Err(ArenaError::TypeError);
-        }
-        Ok((name, init))
-    }
-
-    // ================================================================
-    // Applicative builtin implementations (operate on evaluated args)
-    // ================================================================
-
-    /// `(cons a b)` — cons cell construction.
-    /// When `a` is a single-character string (CharPair with cdr=NIL),
-    /// produces a CharPair node instead, so `(cons (car "h") "ello")` → `"hello"`.
-    fn builtin_cons(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car_char(args)?;
-        let b = self.cadr_char(args)?;
-        if let Value::CharPair { ch, cdr } = self.get(a)?
-            && cdr.is_nil()
-        {
-            self.validate_char_chain(b)?;
-            return self.arena.alloc(Value::CharPair { ch, cdr: b });
-        }
-        self.cons(a, b)
-    }
-
-    /// `(+ ...)` — variadic addition.
-    fn builtin_add(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        fold_numbers!(self, args, 0, checked_add)
-    }
-
-    /// `(- a b ...)` — subtraction. With one arg, negates.
-    fn builtin_sub(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        if args.is_nil() {
-            return Err(ArenaError::ArityError);
-        }
-        let first = self.get(self.car(args)?)?.as_number()?;
-        let rest = self.cdr(args)?;
-        if rest.is_nil() {
-            return self.number(first.checked_neg().ok_or(ArenaError::ArithmeticOverflow)?);
-        }
-        fold_numbers!(self, rest, first, checked_sub)
-    }
-
-    /// `(* ...)` — variadic multiplication.
-    fn builtin_mul(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        fold_numbers!(self, args, 1, checked_mul)
-    }
-
-    /// `(/ a b)` — integer division.
-    fn builtin_div(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.get(self.car(args)?)?.as_number()?;
-        let b = self.get(self.cadr(args)?)?.as_number()?;
-        if b == 0 {
-            return Err(ArenaError::DivisionByZero);
-        }
-        self.number(a / b)
-    }
-
-    cmp_builtin!(builtin_eq, ==);
-    cmp_builtin!(builtin_lt, <);
-    cmp_builtin!(builtin_gt, >);
-    cmp_builtin!(builtin_le, <=);
-    cmp_builtin!(builtin_ge, >=);
-
-    // — Pair / list built-ins —
-
-    pair_builtin!(builtin_car, car_char);
-    pair_builtin!(builtin_cdr, cdr_char);
-
-    // — Type predicate built-ins —
-
-    type_predicate!(builtin_pairp, Value::Cons { .. } | Value::CharPair { .. });
-    type_predicate!(builtin_numberp, Value::Number(_));
-    type_predicate!(builtin_symbolp, Value::Symbol(_));
-
-    /// `(eq? object1 object2)` — eq?-style equality predicate (§4.2.1).
-    ///
-    /// Returns `#t` iff the two objects are the same arena object, or if they
-    /// are immutable/string kinds that compare equal by value.
-    fn builtin_eqp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car(args)?;
-        let b = self.cadr(args)?;
-        Ok(ArenaIndex::from_bool(self.is_eq(a, b)?))
-    }
-
-    /// `(equal? object1 object2)` — structural equality predicate (§4.3.1).
-    ///
-    /// Returns `#t` iff the two objects compare equal structurally.
-    /// `equal?` extends `eq?`; every `eq?` match is also an `equal?` match.
-    fn builtin_equalp(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let a = self.car(args)?;
-        let b = self.cadr(args)?;
-        Ok(ArenaIndex::from_bool(self.is_equal(a, b)?))
-    }
-
-    /// Core `eq?` logic: identity comparison.
-    fn is_eq(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
-        // Same arena slot ⇒ same object.
-        if a == b {
-            return Ok(true);
-        }
-        let (va, vb) = (self.get(a)?, self.get(b)?);
-        if matches!((va, vb), (Value::CharPair { .. }, Value::CharPair { .. })) {
-            return self.strings_equal(a, b);
-        }
-        // Immutable encapsulated types: eq? is value-based.
-        // Mutable/constructed types (pairs, environments, operatives,
-        // applicatives): eq? is arena identity only (checked above).
-        Ok(va.is_immutable() && va == vb)
-    }
-
-    /// Core `equal?` logic: structural equality.
-    fn is_equal(&self, a: ArenaIndex, b: ArenaIndex) -> ArenaResult<bool> {
-        // eq? ⇒ equal? (Rule 2).
-        if self.is_eq(a, b)? {
-            return Ok(true);
-        }
-        let va = self.get(a)?;
-        let vb = self.get(b)?;
-        match (va, vb) {
-            // Pairs: structural comparison of car and cdr.
-            (Value::Cons { car: a1, cdr: a2 }, Value::Cons { car: b1, cdr: b2 }) => {
-                Ok(self.is_equal(a1, b1)? && self.is_equal(a2, b2)?)
-            }
-            // Strings: compare character-by-character.
-            (Value::CharPair { .. }, Value::CharPair { .. }) => self.strings_equal(a, b),
-            // Environments: eq? only (identity-based).
-            // Different environments are never equal? unless eq?.
-            (Value::Environment { .. }, Value::Environment { .. }) => Ok(false),
-            // Different types or non-matching values.
-            _ => Ok(false),
-        }
-    }
-
-    // — Kernel combiners —
-
-    /// `(eval expr env)` — evaluate expression in given environment.
-    fn builtin_eval(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let expr_val = self.car(args)?;
-        let rest = self.cdr(args)?;
-        let env_val = if rest.is_nil() {
-            ArenaIndex::GLOBAL_ENV
-        } else {
-            self.require_environment(self.car(rest)?)?
-        };
-        self.eval_expr(expr_val, env_val)
-    }
-
-    /// `(wrap combiner)` — wrap a combiner into an applicative.
-    fn builtin_wrap(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let combiner = self.car(args)?;
-        self.wrap(combiner)
-    }
-
-    /// `(unwrap applicative)` — extract the underlying combiner.
-    fn builtin_unwrap(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let app = self.car(args)?;
-        self.unwrap_applicative(app)
-    }
-
-    fn builtin_operativep(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let mut cur = args;
-        while !cur.is_nil() {
-            let val = self.car(cur)?;
-            let is_operative = match self.get(val)? {
-                Value::Operative { .. } | Value::Builtin(_) => true,
-                Value::Prelude(prelude) => prelude.is_operative(),
-                _ => false,
+    /// The symbols bound in `env` itself, in definition order.
+    fn bindings(&mut self, env: Ref) -> Result<Value, Error> {
+        let mut list = Value::Nil;
+        let mut i = usize::MAX;
+        loop {
+            let Obj::Env(_, binds) = self.heap.get(env)? else {
+                return Err(Error::new(K::StaleValue, &[Value::Env(env)]));
             };
-            if !is_operative {
-                return Ok(ArenaIndex::FALSE);
-            }
-            cur = self.cdr(cur)?;
+            i = i.min(binds.len());
+            let Some(prev) = i.checked_sub(1) else {
+                return Ok(list);
+            };
+            let Some(&(s, _)) = binds.get(prev) else {
+                return Ok(list);
+            };
+            i = prev;
+            list = self.cons(Value::Sym(s), list)?;
         }
-        Ok(ArenaIndex::TRUE)
     }
 
-    type_predicate!(builtin_applicativep, Value::Applicative(_));
+    pub(crate) fn cons(&mut self, a: Value, d: Value) -> Result<Value, Error> {
+        Ok(Value::Pair(self.heap.alloc(Obj::Pair(a, d))?))
+    }
 
-    /// `(make-environment . environments)` — create a new environment with
-    /// zero or more parent environments (Kernel §4.8.4).
-    ///
-    /// The parents list is copied so that subsequent mutation of the
-    /// argument list does not affect the constructed environment.
-    fn builtin_make_env(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        // Validate all arguments are environments.
-        let mut cur = args;
-        while !cur.is_nil() {
-            let v = self.car(cur)?;
-            if !matches!(self.get(v)?, Value::Environment { .. }) {
-                return Err(ArenaError::TypeError);
-            }
-            cur = self.cdr(cur)?;
+    pub(crate) fn pair(&self, r: Ref) -> Result<(Value, Value), Error> {
+        match self.heap.get(r)? {
+            Obj::Pair(a, d) => Ok((*a, *d)),
+            _ => Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
         }
-        // Copy the parents list so it's independent of the original.
-        let parents = self.copy_list(args)?;
-        self.make_env(parents)
     }
 
-    type_predicate!(builtin_environmentp, Value::Environment { .. });
-
-    // ================================================================
-    // GC control builtins
-    // ================================================================
-
-    /// `(gc-collect)` — manually trigger garbage collection.
-    /// Returns the number of objects collected. Always runs unconditionally
-    /// (ignores the gc-enabled flag), since the user explicitly requested it.
-    fn builtin_gc_collect(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let stats = self.eval_collect_garbage_unconditional();
-        self.number(stats.collected as isize)
-    }
-
-    /// Copy a cons-list into fresh cons cells (iterative).
-    fn copy_list(&self, list: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.map_list(list, |_, h| Ok(h))
-    }
-
-    /// `(raw-read-string str)` — parse one s-expression from a string.
-    /// Returns the parsed value or NIL if the string is empty.
-    fn builtin_raw_read_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let str_idx = self.car(args)?;
-        if str_idx.is_nil() {
-            return Ok(ArenaIndex::NIL);
+    pub(crate) fn app(&self, r: Ref) -> Result<Value, Error> {
+        match self.heap.get(r)? {
+            Obj::App(c) => Ok(*c),
+            _ => Err(Error::new(K::StaleValue, &[Value::App(r)])),
         }
-        self.validate_char_chain(str_idx)?;
-        let mut src = crate::parse::ChainSource::new(&self.arena, str_idx);
-        Ok(self
-            .parse_complete_expr(&mut src)?
-            .unwrap_or(ArenaIndex::NIL))
     }
+}
 
-    /// Format a value to an arena CharPair chain. Shared by
-    /// `raw-display-to-string` and `raw-write-to-string`.
-    fn fmt_to_string(&self, args: ArenaIndex, display: bool) -> ArenaResult<ArenaIndex> {
-        let val = self.car(args)?;
-        self.validate_value_for_format(val)?;
-        let mut w = ArenaWriter::new(self);
-        let _ = self.fmt_value(val, &mut w, display);
-        w.finish()
+fn type_of(v: Value) -> K {
+    match v {
+        Value::Nil => K::Null,
+        Value::True | Value::False => K::Boolean,
+        Value::Inert => K::Inert,
+        Value::Ignore => K::Ignore,
+        Value::Int(_) => K::Integer,
+        Value::Sym(_) => K::Symbol,
+        Value::Pair(_) => K::Pair,
+        Value::Str(_) => K::String,
+        Value::Env(_) => K::Environment,
+        Value::Op(_) | Value::Prim(_) | Value::Host(_) => K::Operative,
+        Value::App(_) => K::Applicative,
     }
+}
 
-    /// `(raw-display-to-string obj)` — display a value to a string (CharPair chain).
-    fn builtin_raw_display_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.fmt_to_string(args, true)
-    }
-
-    /// `(raw-write-to-string obj)` — write a value to a string (CharPair chain).
-    fn builtin_raw_write_to_string(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        self.fmt_to_string(args, false)
-    }
-
-    /// `(error msg)` — currently signal `InvalidArgument` unconditionally.
-    ///
-    /// The argument is accepted for future compatibility but is not yet
-    /// threaded into a richer error payload.
-    fn builtin_error(&self, _args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        Err(ArenaError::InvalidArgument)
-    }
-
-    /// `(apply combiner args)` — apply a combiner to a list of arguments.
-    fn builtin_apply(&self, args: ArenaIndex) -> ArenaResult<ArenaIndex> {
-        let combiner = self.car(args)?;
-        let rest1 = self.cdr(args)?;
-        let arg_list = self.car(rest1)?;
-        let rest2 = self.cdr(rest1)?;
-        let env = if rest2.is_nil() {
-            ArenaIndex::GLOBAL_ENV
-        } else {
-            self.require_environment(self.car(rest2)?)?
-        };
-        self.apply_combiner(combiner, arg_list, env)
-    }
+/// Checked integer arithmetic. `div` rounds toward negative infinity.
+fn arith(p: Prim, x: Value, y: Value) -> Result<Value, Error> {
+    let (Value::Int(a), Value::Int(b)) = (x, y) else {
+        return Err(type_error(
+            p,
+            if matches!(x, Value::Int(_)) { y } else { x },
+        ));
+    };
+    let r = match p {
+        Prim::Add => a.checked_add(b),
+        Prim::Sub => a.checked_sub(b),
+        Prim::Mul => a.checked_mul(b),
+        Prim::Div if b == 0 => return Err(Error::new(K::DivisionByZero, &[x, y])),
+        Prim::Div => a.checked_div(b).and_then(|q| match a.checked_rem(b) {
+            Some(r) if r != 0 && (r < 0) != (b < 0) => q.checked_sub(1),
+            _ => Some(q),
+        }),
+        _ => return Ok(boolean(a < b)),
+    };
+    r.map(Value::Int)
+        .ok_or_else(|| Error::new(K::Overflow, &[Value::Prim(p), x, y]))
 }

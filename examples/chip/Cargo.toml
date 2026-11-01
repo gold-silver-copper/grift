@@ -1,0 +1,21 @@
+[package]
+name = "grift-chip"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "grift on a Cortex-M board (QEMU mps2-an385), printing over semihosting"
+
+# Its own workspace: it builds only for the chip target.
+[workspace]
+
+[dependencies]
+grift = { path = "../../crates/grift" }
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+cortex-m-semihosting = "0.6.0"
+embedded-alloc = "0.7.0"
+panic-halt = "1.0.0"
+
+[profile.release]
+opt-level = "s"
