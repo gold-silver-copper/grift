@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "An Emacs-style editor written in grift; the host only moves bytes and files"
 
-# Its own workspace, like examples/chip: run it from this directory.
+# Its own workspace: run it from this directory.
 [workspace]
 
 [dependencies]
