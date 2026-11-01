@@ -33,19 +33,6 @@ impl<W: Write> fmt::Write for Sink<W> {
     }
 }
 
-/// An error with a copy of `values`; `out-of-memory` if the copy can't be allocated.
-fn error(g: &mut Grift, code: &str, values: &[Value]) -> Result<Value, Error> {
-    let mut copy = Vec::new();
-    let code = match copy.try_reserve_exact(values.len()) {
-        Ok(()) => {
-            copy.extend_from_slice(values);
-            g.symbol(code)?
-        }
-        Err(_) => g.symbol("out-of-memory")?,
-    };
-    Err(Error { code, values: copy })
-}
-
 /// Writes the values to stdout, strings without quotes when `raw`, then `end`, and flushes.
 fn put(g: &mut Grift, values: &[Value], raw: bool, end: &str) -> Result<Value, Error> {
     let mut out = Sink {
@@ -67,28 +54,29 @@ fn put(g: &mut Grift, values: &[Value], raw: bool, end: &str) -> Result<Value, E
         (Ok(()), _) => Ok(Value::Inert),
         (Err(_), Some(e)) if e.kind() == io::ErrorKind::BrokenPipe => {
             CLOSED.store(true, Ordering::Relaxed);
-            error(g, "stdout-closed", &[])
+            Err(g.error("stdout-closed", &[]))
         }
-        (Err(_), Some(_)) => error(g, "output-error", values),
+        (Err(_), Some(_)) => Err(g.error("output-error", values)),
         // The printer stops only when its own stack can't grow.
-        (Err(_), None) => error(g, "out-of-memory", &[]),
+        (Err(_), None) => Err(g.error("out-of-memory", &[])),
     }
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
-fn display(g: &mut Grift, args: &[Value]) -> Result<Value, Error> {
+fn display(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     put(g, args, true, "")
 }
 
 /// `(newline)`.
-fn newline(g: &mut Grift, args: &[Value]) -> Result<Value, Error> {
+fn newline(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     match args {
         [] => put(g, args, true, "\n"),
-        _ => error(g, "arity-error", args),
+        _ => Err(g.error("arity-error", args)),
     }
 }
 
-/// Prints an error to stderr as its code followed by its values, unless stdout closed.
+/// Prints an error to stderr as its code followed by its values and where it happened, unless
+/// stdout closed.
 fn report(g: &Grift, source: &str, e: &Error) -> ExitCode {
     if CLOSED.load(Ordering::Relaxed) {
         return ExitCode::SUCCESS;
@@ -102,6 +90,10 @@ fn report(g: &Grift, source: &str, e: &Error) -> ExitCode {
     for &v in &e.values {
         let _ = fmt::Write::write_str(&mut err, " ");
         let _ = g.write(v, &mut err);
+    }
+    if let Some(at) = e.at {
+        let _ = fmt::Write::write_str(&mut err, " in ");
+        let _ = g.write(at, &mut err);
     }
     let _ = fmt::Write::write_str(&mut err, "\n");
     ExitCode::FAILURE
@@ -136,7 +128,7 @@ fn interactive(g: &mut Grift) -> ExitCode {
             continue;
         }
         pending = None;
-        match g.eval(&src) {
+        match g.eval(&mut (), &src) {
             Err(e) if unfinished(g, &src, &e) => {
                 pending = Some(e);
                 eprint!("  ");
@@ -206,7 +198,7 @@ fn main() -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        if let Err(e) = g.eval(&text) {
+        if let Err(e) = g.eval(&mut (), &text) {
             return report(&g, &name, &e);
         }
     }

@@ -50,6 +50,8 @@ pub(crate) struct Heap {
     since_gc: usize,
     live: usize,
     marks: Vec<Ref>,
+    /// The slots allocated before the library was evaluated: its source text, as read.
+    library: u32,
 }
 
 impl Default for Heap {
@@ -60,6 +62,7 @@ impl Default for Heap {
             since_gc: 0,
             live: 0,
             marks: Vec::new(),
+            library: 0,
         }
     }
 }
@@ -71,7 +74,16 @@ fn reference(v: Value) -> Option<Ref> {
     }
 }
 
+impl Ref {
+    /// No object: a reference no slot has.
+    pub(crate) const NONE: Ref = Ref {
+        idx: NONE,
+        generation: 0,
+    };
+}
+
 impl Heap {
+    #[inline]
     pub fn alloc(&mut self, obj: Obj) -> Result<Ref, Error> {
         self.since_gc = self.since_gc.saturating_add(1);
         let idx = self.free;
@@ -100,18 +112,33 @@ impl Heap {
         Ok(Ref { idx, generation: 0 })
     }
 
+    /// Marks everything allocated so far as the library's. Nothing has been collected yet, so
+    /// those slots are generation 0, and a slot reused later has a higher generation.
+    pub fn seal_library(&mut self) {
+        self.library = u32::try_from(self.slots.len()).unwrap_or(NONE);
+    }
+
+    /// Whether `r` is part of the library's source.
+    #[inline]
+    pub fn in_library(&self, r: Ref) -> bool {
+        r.generation == 0 && r.idx < self.library
+    }
+
+    #[inline]
     fn slot(&self, r: Ref) -> Option<&Slot> {
         self.slots
             .get(r.idx as usize)
             .filter(|s| s.generation == r.generation)
     }
 
+    #[inline]
     pub fn get(&self, r: Ref) -> Result<&Obj, Error> {
         self.slot(r)
             .map(|s| &s.obj)
             .ok_or_else(|| Error::new(K::StaleValue, &[]))
     }
 
+    #[inline]
     pub fn get_mut(&mut self, r: Ref) -> Result<&mut Obj, Error> {
         match self.slots.get_mut(r.idx as usize) {
             Some(s) if s.generation == r.generation => Ok(&mut s.obj),
@@ -120,6 +147,7 @@ impl Heap {
     }
 
     /// Whether a collection is due. The machine asks only at its safe point.
+    #[inline]
     pub fn due(&self) -> bool {
         self.since_gc >= self.live.max(GC_MIN)
     }

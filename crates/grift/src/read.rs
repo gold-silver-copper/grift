@@ -70,10 +70,10 @@ fn delimiter(c: char) -> bool {
     c.is_whitespace() || matches!(c, '(' | ')' | '"' | ';')
 }
 
-impl Grift {
-    /// Reads every form in `src` into a list. A `parse-error` carries the line and column
-    /// where reading failed; an unfinished form fails at the end of the text.
-    pub(crate) fn read(&mut self, src: &str) -> Result<Value, Error> {
+impl<T> Grift<T> {
+    /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries the
+    /// line and column where reading failed; an unfinished form fails at the end of the text.
+    pub fn read(&mut self, src: &str) -> Result<Value, Error> {
         let mut cur = Cursor {
             src,
             chars: src.char_indices().peekable(),
@@ -179,7 +179,8 @@ impl Grift {
         Some(Ok(v))
     }
 
-    /// A string after its opening quote, with the escapes `\\`, `\"` and `\n`.
+    /// A string after its opening quote, with the escapes `\\`, `\"`, `\n`, `\t` and `\xHEX;`
+    /// (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor) -> Result<Value, Error> {
         let mut s = String::new();
         let fail =
@@ -191,6 +192,18 @@ impl Grift {
                     Some((_, '\\')) => '\\',
                     Some((_, '"')) => '"',
                     Some((_, 'n')) => '\n',
+                    Some((_, 't')) => '\t',
+                    Some((at, 'x')) => {
+                        while cur.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
+                            cur.next();
+                        }
+                        let hex = cur.src.get(at + 1..cur.end()).unwrap_or_default();
+                        let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+                        match (cur.next(), c) {
+                            (Some((_, ';')), Some(c)) => c,
+                            _ => return Err(fail(cur)),
+                        }
+                    }
                     _ => return Err(fail(cur)),
                 },
                 Some((_, c)) => c,
@@ -199,12 +212,6 @@ impl Grift {
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);
         }
-        // An exact copy, so boxing it never reallocates.
-        let mut boxed = String::new();
-        boxed.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
-        boxed.push_str(&s);
-        Ok(Value::Str(
-            self.heap.alloc(Obj::Str(boxed.into_boxed_str()))?,
-        ))
+        self.make_string(&s)
     }
 }
