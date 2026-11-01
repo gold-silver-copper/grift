@@ -46,9 +46,9 @@ ground-names                                ; every primitive and library name
 ```
 
 The Rust primitives are `$vau wrap unwrap eval eval-protected make-environment bind! bindings
-cons car cdr eq? select type-of + - * div <? error`. The library adds `$define! $quote list $if
+cons car cdr eq? select type-of + - * div mod <? error`. The library adds `$define! $quote list $if
 $sequence $lambda get-current-environment not? null? pair? symbol? string? integer? environment?
-$and? $or? =? mod min max apply map for-each $let $cond $when $let* $set! $unwind-protect length
+$and? $or? =? min max apply map for-each $let $cond $when $let* $set! $unwind-protect length
 append reverse equal? assoc member? ground-names`. Integers are checked `i64`s. There is no quote
 shorthand, no mutation of pairs, no continuations and no way to catch an error inside grift.
 [`docs/LANGUAGE.md`](docs/LANGUAGE.md) has the details: each combiner, the error codes, and where

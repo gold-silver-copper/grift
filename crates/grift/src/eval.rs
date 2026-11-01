@@ -31,13 +31,14 @@ pub enum Prim {
     Sub,
     Mul,
     Div,
+    Mod,
     Less,
     Error,
     EvalProtected,
 }
 
 impl Prim {
-    pub(crate) const ALL: [Prim; 20] = [
+    pub(crate) const ALL: [Prim; 21] = [
         Prim::Vau,
         Prim::Wrap,
         Prim::Unwrap,
@@ -55,6 +56,7 @@ impl Prim {
         Prim::Sub,
         Prim::Mul,
         Prim::Div,
+        Prim::Mod,
         Prim::Less,
         Prim::Error,
         Prim::EvalProtected,
@@ -80,6 +82,7 @@ impl Prim {
             Prim::Sub => "-",
             Prim::Mul => "*",
             Prim::Div => "div",
+            Prim::Mod => "mod",
             Prim::Less => "<?",
             Prim::Error => "error",
             Prim::EvalProtected => "eval-protected",
@@ -116,7 +119,9 @@ pub(crate) enum Mode {
 #[derive(Clone, Copy)]
 enum Frame {
     /// Evaluate the remaining forms of one `eval` call; with none left, pass the value on.
-    Top { rest: Value, env: Ref },
+    /// `outer` is the location of the evaluation this one runs inside (a host function's
+    /// call), kept here so the collector sees it until it is restored.
+    Top { rest: Value, env: Ref, outer: Ref },
     /// The value is the combiner of a combination with these operands.
     Combine { operands: Value, env: Ref, at: Ref },
     /// The value is an argument of `comb`; arguments so far are on the argument stack from
@@ -146,7 +151,7 @@ impl Frame {
     fn values(self) -> [Value; 4] {
         let nil = Value::Nil;
         match self {
-            Frame::Top { rest, env } => [rest, Value::Env(env), nil, nil],
+            Frame::Top { rest, env, outer } => [rest, Value::Env(env), Value::Pair(outer), nil],
             Frame::Combine { operands, env, at } => {
                 [operands, Value::Env(env), Value::Pair(at), nil]
             }
@@ -208,7 +213,12 @@ impl<T> Grift<T> {
         forms: Value,
         env: Ref,
     ) -> Result<Value, Error> {
-        let top = Frame::Top { rest: forms, env };
+        let outer = self.machine.here;
+        let top = Frame::Top {
+            rest: forms,
+            env,
+            outer,
+        };
         self.start(state, &[top], Mode::Return(Value::Inert))
     }
 
@@ -229,6 +239,7 @@ impl<T> Grift<T> {
             Frame::Top {
                 rest: Value::Nil,
                 env,
+                outer: self.machine.here,
             },
             Frame::Combine {
                 operands,
@@ -302,10 +313,13 @@ impl<T> Grift<T> {
         Ok(match mode {
             Mode::Eval(Value::Sym(s), env) => Mode::Return(self.lookup(env, s)?),
             Mode::Eval(Value::Pair(r), env) => {
-                let (combiner, operands) = self.pair(r)?;
-                // A combination is the program's unless it is the library's source, or code
-                // built around a combiner value (as the library builds it), not written.
-                if !self.heap.in_library(r) && !is_combiner(combiner) {
+                let (combiner, operands, library) = match self.heap.get_code(r)? {
+                    (Obj::Pair(a, d), library) => (*a, *d, library),
+                    _ => return Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
+                };
+                // A combination is the program's unless it is the library's code, or code built
+                // around a combiner value (as the library builds it), not written.
+                if !library && !is_combiner(combiner) {
                     self.machine.here = r;
                 }
                 let at = self.machine.here;
@@ -321,9 +335,10 @@ impl<T> Grift<T> {
                 Some(Frame::Top {
                     rest: Value::Pair(r),
                     env,
+                    outer,
                 }) => {
                     let (form, rest) = self.pair(r)?;
-                    push(&mut self.machine.frames, Frame::Top { rest, env })?;
+                    push(&mut self.machine.frames, Frame::Top { rest, env, outer })?;
                     self.machine.here = Ref::NONE;
                     Mode::Eval(form, env)
                 }
@@ -352,6 +367,8 @@ impl<T> Grift<T> {
                 }
                 Some(Frame::Deliver(v)) => Mode::Return(v),
                 Some(Frame::Raise) => {
+                    // The error already says where it happened, or that it can't: not here.
+                    self.machine.here = Ref::NONE;
                     return Err(self.machine.raised.pop().unwrap_or_else(Error::oom));
                 }
             },
@@ -601,7 +618,9 @@ impl<T> Grift<T> {
                 _ => return Err(type_error(p, x)),
             },
             Prim::TypeOf => Value::Sym(type_of(x).into()),
-            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Less => arith(p, x, y)?,
+            Prim::Add | Prim::Sub | Prim::Mul | Prim::Div | Prim::Mod | Prim::Less => {
+                arith(p, x, y)?
+            }
             Prim::Error => {
                 let Value::Sym(code) = x else {
                     return Err(type_error(p, x));
@@ -779,7 +798,8 @@ fn type_of(v: Value) -> K {
     }
 }
 
-/// Checked integer arithmetic. `div` rounds toward negative infinity.
+/// Checked integer arithmetic. `div` rounds toward negative infinity; `mod` is what it leaves,
+/// and never overflows: `(mod -9223372036854775808 -1)` is 0.
 #[inline]
 fn arith(p: Prim, x: Value, y: Value) -> Result<Value, Error> {
     let (Value::Int(a), Value::Int(b)) = (x, y) else {
@@ -792,10 +812,15 @@ fn arith(p: Prim, x: Value, y: Value) -> Result<Value, Error> {
         Prim::Add => a.checked_add(b),
         Prim::Sub => a.checked_sub(b),
         Prim::Mul => a.checked_mul(b),
-        Prim::Div if b == 0 => return Err(Error::new(K::DivisionByZero, &[x, y])),
+        Prim::Div | Prim::Mod if b == 0 => return Err(Error::new(K::DivisionByZero, &[x, y])),
         Prim::Div => a.checked_div(b).and_then(|q| match a.checked_rem(b) {
             Some(r) if r != 0 && (r < 0) != (b < 0) => q.checked_sub(1),
             _ => Some(q),
+        }),
+        // A remainder with the sign of b: r and b then have opposite signs, so r + b fits.
+        Prim::Mod => Some(match a.wrapping_rem(b) {
+            r if r != 0 && (r < 0) != (b < 0) => r + b,
+            r => r,
         }),
         _ => return Ok(boolean(a < b)),
     };

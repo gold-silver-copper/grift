@@ -76,9 +76,6 @@
 ; =? (12.5.2), of two integers: neither is less than the other.
 ($define! =? ($lambda (a b) ($and? (not? (<? a b)) (not? (<? b a)))))
 
-; mod (12.5.8), what div leaves: (+ (* b (div a b)) (mod a b)) is a.
-($define! mod ($lambda (a b) (- a (* b (div a b)))))
-
 ; min and max (12.5.13), of two integers.
 ($define! min ($lambda (a b) ($if (<? b a) b a)))
 ($define! max ($lambda (a b) ($if (<? a b) b a)))

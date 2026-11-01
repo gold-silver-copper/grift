@@ -52,7 +52,7 @@ All are applicatives except `$vau`.
 | `(eq? a b)` | Identity; integers, symbols and strings compare by value (4.2.1). |
 | `(select b x y)` | `x` if `b` is `#t`, `y` if `#f`; a `type-error` otherwise. |
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
-| `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity (12.5.8). |
+| `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: `(+ (* b (div a b)) (mod a b))` is `a` (12.5.8). `mod` fits wherever its result does. |
 | `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
@@ -69,7 +69,6 @@ All are applicatives except `$vau`.
 | `(not? b)`, `($and? x ...)`, `($or? x ...)` | Booleans; `$and?` and `$or?` stop early and evaluate the last operand as a tail call (6.1). |
 | `(null? x)`, `(pair? x)`, `(symbol? x)`, `(string? x)`, `(integer? x)`, `(environment? x)` | Type predicates of one value (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
 | `(=? a b)`, `(min a b)`, `(max a b)` | Integer equality, the smaller, the larger (12.5.2, 12.5.13). |
-| `(mod a b)` | What `div` leaves: `(+ (* b (div a b)) (mod a b))` is `a`, so it has `b`'s sign (12.5.8). |
 | `(apply a args)` | Calls applicative `a`'s combiner on the list `args`, in a new empty environment (5.5.1). |
 | `(map a list)`, `(for-each a list)` | The list of `a` applied to each element; `a` on each in turn, giving `#inert` (5.9.1, 6.9.1). |
 | `($let ((formals expression) ...) body ...)` | Binds in a new environment, then evaluates the body (5.10.1). |

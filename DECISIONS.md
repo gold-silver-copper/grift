@@ -88,10 +88,18 @@ Evidence: three Emacs-style editors built on grift on 2026-11-01, with friction 
   so an explicit root API would be safer. All six changed their vote after reading that a
   binding already does this.
 - **G-22. Errors say where.** `Error` has `at: Option<Value>`: the innermost combination of the
-  program being evaluated when the error happened. The library's own code is skipped (its
-  source pairs are the heap's first slots, generation 0), and so is code built around a combiner
-  value (as the library builds it), so `($if 1 2 3)` fails `in ($if 1 2 3)`, not inside `$if`.
-  The machine keeps the location as a heap `Ref` in a register and in each frame.
+  program being evaluated when the error happened. The library's own code is skipped (every
+  heap slot live once the library has loaded is marked as the library's, and loses the mark when
+  freed), and so is code built around a combiner value (as the library builds it), so
+  `($if 1 2 3)` fails `in ($if 1 2 3)`, not inside `$if`. The machine keeps the location as a
+  heap `Ref` in a register and in each frame; a nested `eval` keeps the outer one in its first
+  frame, so the collector sees it.
+- **G-24. `mod` is a primitive, beside `div`.** The task asked for `mod` derived from `div` in
+  the library, `(- a (* b (div a b)))`. Review found it overflows where its result fits:
+  `(mod -9223372036854775808 3)` is 1, but `(* b (div a b))` is below the smallest `i64`; and
+  `(mod -9223372036854775808 -1)` is 0 while `div` there overflows. A derivation that avoids
+  both needs two special cases; the primitive is three lines of `arith` and exact everywhere.
+  Cost: one more primitive (21).
 - **G-23. Host state is lent, not owned.** `Grift<T>`: the host passes `&mut T` to each `eval`
   and `call`, and host functions get it as a separate argument beside `&mut Grift<T>`, so the
   borrow checker sees both borrows. No globals, no `RefCell`, nothing `'static`; `T` may itself

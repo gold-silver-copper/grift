@@ -129,6 +129,9 @@ fn library_basics() {
             // mod is what div leaves, for every sign.
             "(equal? (map ($lambda ((a b)) (=? a (+ (* b (div a b)) (mod a b)))) \
                        ($quote ((7 2) (-7 2) (7 -2) (-7 -2)))) (list #t #t #t #t))",
+            // ... and fits wherever its result does.
+            "(equal? (list (mod -9223372036854775808 3) (mod 9223372036854775807 -2) \
+                           (mod -9223372036854775808 -1)) ($quote (1 -1 0)))",
             "($sequence ($define! seen ()) ($define! here (get-current-environment)) \
              (for-each ($lambda (x) ($set! here seen (cons x seen))) (list 1 2 3)) \
              (equal? seen ($quote (3 2 1))))",
@@ -298,12 +301,27 @@ fn errors_name_the_program_combination() {
         ("($let (((a b) (list 1))) a)", "($let (((a b) (list 1))) a)"),
         ("($cond ((car 1) 2))", "(car 1)"),
         ("(+ 1 (foo))", "(foo)"),
+        ("(length 1)", "(length 1)"),
+        ("(reverse 1)", "(reverse 1)"),
         ("(error ($quote mine))", "(error ($quote mine))"),
     ] {
         let e = g.eval(&mut (), src).unwrap_err();
         assert_eq!(e.at.map(|v| show(&g, v)).as_deref(), Some(at), "{src}");
     }
     assert_eq!(g.eval(&mut (), "(car").unwrap_err().at, None);
+    // A host function's location survives collections in an evaluation it runs.
+    g.eval(
+        &mut (),
+        "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))",
+    )
+    .unwrap();
+    g.define("fail-after-churn", |g, state, _| {
+        g.eval(state, "(churn 20000)")?;
+        Err(g.error("mine", &[]))
+    })
+    .unwrap();
+    let e = g.eval(&mut (), "(fail-after-churn)").unwrap_err();
+    assert_eq!(show(&g, e.at.unwrap()), "(fail-after-churn)");
 }
 
 #[test]
@@ -513,6 +531,21 @@ fn cleanup_runs_and_the_error_goes_on() {
         .unwrap_err();
     assert_eq!(show(&g, e.values[0]), "#[primitive cdr]");
     assert_eq!(g.eval(&mut (), "(car log)"), Ok(Value::Int(5)));
+    // A cleanup that succeeds doesn't lend the error its own location.
+    let (protect, env) = (
+        g.eval(&mut (), "eval-protected").unwrap(),
+        g.eval(&mut (), "(get-current-environment)").unwrap(),
+    );
+    let missing = Value::Sym(g.symbol("missing").unwrap());
+    let forms = g.read("(list 1)").unwrap();
+    let cleanup = g.uncons(forms).unwrap().0;
+    let e = g
+        .call(&mut (), protect, &[missing, env, cleanup])
+        .unwrap_err();
+    assert_eq!(
+        (code(&mut g, &e), e.at),
+        (String::from("unbound-symbol"), None)
+    );
     // The waiting error's values survive collections in the cleanup.
     g.eval(&mut (), "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))")
         .unwrap();

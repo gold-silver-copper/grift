@@ -217,9 +217,9 @@ impl<T> Grift<T> {
             g.bind_symbol(ground, s, v)?;
         }
         let forms = g.read(LIBRARY)?;
-        // The library's source is the only code the heap holds yet; errors skip it.
-        g.heap.seal_library();
         g.eval_forms(None, forms, ground)?;
+        // Everything in the heap now is the library's; errors skip its code.
+        g.heap.seal_library();
         Ok(g)
     }
 
