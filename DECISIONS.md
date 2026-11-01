@@ -104,3 +104,9 @@ Evidence: three Emacs-style editors built on grift on 2026-11-01, with friction 
   and `call`, and host functions get it as a separate argument beside `&mut Grift<T>`, so the
   borrow checker sees both borrows. No globals, no `RefCell`, nothing `'static`; `T` may itself
   borrow. `Grift` with no parameter is `Grift<()>`.
+
+## Owner decision, 2026-11-01
+
+- **G-25. No chip example.** The owner doesn't use it: `examples/chip` and `scripts/qemu.sh` are
+  gone, and G-16 no longer applies. The core stays `no_std` + `alloc` (G-2), and CI still builds
+  it for `thumbv6m-none-eabi` so it stays that way.

@@ -140,9 +140,7 @@ fn main() -> Result<(), Error> {
   environment. A value a host function makes stays valid until it returns: allocation never
   collects.
 
-`examples/chip` runs grift on a Cortex-M board image under QEMU (`scripts/qemu.sh`, which needs
-`qemu-system-arm`): it installs an allocator, registers one host function and prints over
-semihosting. `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves
+`examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves
 bytes and files, and C-g interrupts a runaway command.
 
 ### Host API changes on 2026-11-01, before and after
