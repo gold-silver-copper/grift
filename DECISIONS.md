@@ -130,7 +130,10 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
     unwinding has to stop somewhere, and only the machine can stop it.
   - Its handler is called as a tail call; a non-combiner `thunk` or `handler` is a `type-error`
     raised at once, not caught by the guard being made.
-  - `(raise e)` raises a caught error again as it was, locations included. Added after the
+  - `(raise e)` raises a caught error again as it was: the same code, values and locations, and
+    none of its own (not its own call). Like any error, it then gains the combinations it passes
+    on its way out (G-29): those around the guard, out to the top-level form, and, if the raise
+    isn't in tail position in the handler, the handler's combinations around it. Added after the
     eval-direct port: a handler that passed an error on with `(apply error ...)` gave it the
     handler's location, so an evaluator's own bug no longer said where it happened, and the
     library's `$binds?` had the same loss. It keeps G-22's rule that re-raising keeps the
