@@ -5,10 +5,10 @@ primitive is `$vau`, which makes an operative: a combiner that receives its oper
 together with the caller's environment. `$if`, `$define!`, `$lambda`, `$let`, `$cond` and the rest
 are written in grift itself, in [`library.grift`](crates/grift/src/library.grift).
 
-It is made to be embedded in a Rust program (the host), down to bare-metal devices:
+It is made to be embedded in a Rust program (the host):
 
-- the core crate is `#![no_std]` with `alloc`, has no dependencies and no `unsafe` code, and
-  builds for `thumbv6m-none-eabi` (Cortex-M0);
+- the core crate has no dependencies and no `unsafe` code; it does no I/O, starts no threads and
+  keeps no global state: the host owns all of that;
 - it uses the memory the allocator gives it and sets no limits of its own; when the allocator
   refuses, evaluation returns an `out-of-memory` error instead of aborting;
 - it reaches the outside world only through functions the host registers;
@@ -42,15 +42,21 @@ square                                      ; => #[applicative #[operative (x) #
 ground-names                                ; every primitive and library name
 "tab\tescape\x1b;[0m"                       ; escapes \\ \" \n \t and \xHEX;
 ($unwind-protect (car 1) ($set! here n 0))  ; the cleanup runs, then the error goes on
+(guard ($lambda () (car 1))                 ; an error leaving the thunk is the handler's
+       ($lambda (e) ($remote-eval code e))) ;   e binds code, values, at => type-error
+($binds? here n car nope)                   ; => #f: nope isn't bound
+(string-append "x=" (number->string 42))    ; => "x=42"; offsets count bytes
 (error ($quote my-code) 1 2)                ; stops evaluation; the host gets my-code (1 2)
 ```
 
 The Rust primitives are `$vau wrap unwrap eval eval-protected make-environment bind! bindings
-cons car cdr eq? select type-of + - * div mod <? error`. The library adds `$define! $quote list $if
-$sequence $lambda get-current-environment not? null? pair? symbol? string? integer? environment?
-$and? $or? =? min max apply map for-each $let $cond $when $let* $set! $unwind-protect length
-append reverse equal? assoc member? ground-names`. Integers are checked `i64`s. There is no quote
-shorthand, no mutation of pairs, no continuations and no way to catch an error inside grift.
+cons car cdr eq? select type-of + - * div mod <? error guard raise string-length string-byte
+substring string-append code-point->string symbol->string string->symbol number->string`. The
+library adds `$define! $quote list $if $sequence $lambda get-current-environment not? null? pair?
+symbol? string? integer? environment? $and? $or? =? min max apply map for-each $cond $when $let
+$let* $unwind-protect $set! length append reverse equal? assoc member? $binds? ground-names`.
+Integers are checked `i64`s. There is no quote shorthand, no mutation of pairs and no
+continuations; `guard` catches an error, but never the host's interrupt.
 [`docs/LANGUAGE.md`](docs/LANGUAGE.md) has the details: each combiner, the error codes, and where
 grift differs from the Revised⁻¹ Report on Kernel ([05-07.pdf](05-07.pdf)).
 
@@ -107,8 +113,8 @@ fn main() -> Result<(), Error> {
     assert_eq!(s, "((f 1) (car 1))");
     let e = g.eval(&mut board, "(f ($quote x))").unwrap_err();
     let mut at = String::new();
-    assert!(g.write(e.at.unwrap_or(Value::Nil), &mut at).is_ok());
-    assert_eq!(at, "(+ x 1)"); // where it happened, in the program
+    assert!(e.at.iter().try_for_each(|&v| g.write(v, &mut at)).is_ok());
+    assert_eq!(at, "(+ x 1)(twice (+ x 1))(f ($quote x))"); // innermost first
     Ok(())
 }
 ```
@@ -127,13 +133,16 @@ fn main() -> Result<(), Error> {
   &[Value]) -> Error`; `set_interrupt_flag(&mut self, &'static AtomicBool)`.
 - `HostFn<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `eval` or `call` itself.
-- `Error { code: Symbol, values: Vec<Value>, at: Option<Value> }`. `at` is the innermost
-  combination of the program that was being evaluated; the library's own code is skipped, so
-  `($if 1 2 3)` fails at `($if 1 2 3)`, not inside `$if`.
+- `Error { code: Symbol, values: Vec<Value>, at: Vec<Value> }`. `at` lists the combinations of
+  the program that were being evaluated, innermost first, each once, out to the top-level form;
+  the library's own code is skipped, so `($if 1 2 3)` fails at `($if 1 2 3)`, not inside `$if`. A
+  call in tail position has finished, so it isn't listed; the list is never longer than the
+  frames the error passed.
 - **Interrupting.** After `g.set_interrupt_flag(&STOP)` with `static STOP: AtomicBool`, setting
   `STOP` from another thread or a signal handler stops the evaluation at its next step with the
   error `interrupted` (cleanups run) and clears the flag. grift sets no limit of its own; this is
-  how the host applies one. It only loads and stores the flag, so it works on `thumbv6m`.
+  how the host applies one. A `'static` flag, because a signal handler can reach only a
+  `static`; from a thread, a `static` serves as well.
 - **A returned `Value` stays valid until the next `eval` or `call`**, which may collect it. Each
   heap reference carries its slot's generation, so a stale value is refused (`stale-value`, or
   `#[stale]` when written) rather than read as some other object. To keep a value, bind it in an
@@ -143,7 +152,28 @@ fn main() -> Result<(), Error> {
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves
 bytes and files, and C-g interrupts a runaway command.
 
-### Host API changes on 2026-11-01, before and after
+### Host API changes, before and after
+
+Where an error happened (2026-11-01, second round): every program combination around it, not
+just the innermost.
+
+```rust,ignore
+// before
+if let Some(at) = e.at { g.write(at, &mut out)?; }
+// after: innermost first, out to the top-level form
+for &at in &e.at { g.write(at, &mut out)?; }
+let innermost = e.at.first();
+```
+
+The runner prints the innermost on the error's line and each one around it on a line of its own:
+
+```text
+stdin: not-int a in (error ($quote not-int) x)
+  from (+ 1 (check x))
+  from (run ($quote a))
+```
+
+From the first round, 2026-11-01:
 
 Host state, without a global:
 
@@ -189,8 +219,8 @@ g.set_interrupt_flag(&STOP); // another thread: STOP.store(true, Relaxed)
 
 ## Inside
 
-One crate, about 1,400 lines of Rust: values and a heap that is a growable `Vec` of slots
-(`heap.rs`), a mark-and-sweep collector, a reader and a printer (`read.rs`, `print.rs`), and the
+One crate, about 1,650 lines of Rust: values and a heap that is a growable `Vec` of slots
+(`heap.rs`), environments that are hash maps from symbols to values, a mark-and-sweep collector, a reader and a printer (`read.rs`, `print.rs`), and the
 evaluator (`eval.rs`): an explicit machine loop over a frame stack, so no Rust recursion grows
 with a program's nesting, and `eval` in tail position is a proper tail call. The collector runs
 only at the top of the machine loop, where the machine's frames, argument stack, errors waiting

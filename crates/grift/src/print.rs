@@ -3,8 +3,7 @@
 
 use crate::heap::Obj;
 use crate::{Grift, Value};
-use alloc::vec::Vec;
-use core::fmt::{self, Write};
+use std::fmt::{self, Write};
 
 enum Item {
     Value(Value),
@@ -55,7 +54,7 @@ impl<T> Grift<T> {
                 Value::Inert => out.write_str("#inert")?,
                 Value::Ignore => out.write_str("#ignore")?,
                 Value::Int(n) => write!(out, "{n}")?,
-                Value::Sym(s) => out.write_str(self.names.get(s.0 as usize).map_or("", |n| n))?,
+                Value::Sym(s) => out.write_str(self.name(s))?,
                 Value::Env(_) => out.write_str("#[environment]")?,
                 Value::Prim(p) => write!(out, "#[primitive {}]", p.name())?,
                 Value::Host(h) => {

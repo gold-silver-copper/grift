@@ -2,10 +2,8 @@
 
 use crate::heap::Obj;
 use crate::{Error, Grift, K, Value, push};
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::iter::Peekable;
-use core::str::CharIndices;
+use std::iter::Peekable;
+use std::str::CharIndices;
 
 /// A list being read: its first pair, its last pair, and where a dotted tail stands.
 struct List {

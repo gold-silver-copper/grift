@@ -3,7 +3,7 @@ name = "grift"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "A tiny Kernel-style Lisp built on fexprs, for embedding in Rust (no_std + alloc)"
+description = "A tiny Kernel-style Lisp built on fexprs, for embedding in Rust"
 
 [lints.rust]
 unsafe_code = "forbid"

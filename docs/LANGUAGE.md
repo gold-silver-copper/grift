@@ -12,8 +12,9 @@ are R-1RK's.
   receives the operands unevaluated, with the caller's environment. An **applicative** evaluates
   the operands left to right and passes the list of results to the combiner it wraps.
 - Everything else evaluates to itself, `()` included.
-- A compound operative's body, and `eval`, are evaluated as tail calls: a loop through `$if`,
-  `$sequence`, `$cond`, `$let`, `$let*`, `$when` or `$lambda` bodies runs in constant space.
+- A compound operative's body, `eval`, and a `guard`'s handler are evaluated as tail calls: a
+  loop through `$if`, `$sequence`, `$cond`, `$let`, `$let*`, `$when` or `$lambda` bodies runs in
+  constant space.
 - There are no limits on time, depth or memory besides those of the allocator and the OS, and
   the host's: it can interrupt an evaluation (`interrupted`).
 
@@ -44,16 +45,24 @@ All are applicatives except `$vau`.
 | `($vau formals eformal body)` | An operative closing over the current environment (4.10.3). `formals` is a tree of symbols, `#ignore`, `()` and pairs, with no symbol twice; `eformal` is a symbol not in it, or `#ignore`. Checked when the operative is made (`bad-formals`). A call binds them in a new child of that environment and evaluates `body` as a tail call. |
 | `(wrap c)`, `(unwrap a)` | The applicative around combiner `c`; the combiner inside applicative `a` (4.10.4–5). |
 | `(eval x env)` | Evaluates `x` in `env`, as a tail call (4.8.3). |
-| `(eval-protected x env cleanup)` | Evaluates `x` in `env`; when that ends, with a value or an error, evaluates `cleanup` in `env`, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving. Not a tail call. |
+| `(eval-protected x env cleanup)` | Evaluates `x` in `env`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving, unless that one is `interrupted` or `out-of-memory`, which go on. Not a tail call. |
 | `(make-environment)`, `(make-environment parent)` | A new empty environment, with no parent or one (4.8.4). |
 | `(bind! env formals value)` | Matches the tree `formals` to `value` and binds its symbols in `env` itself, replacing bindings there. Returns `#inert`. The matching of `$define!` (4.9.1) as an applicative. |
-| `(bindings env)` | The symbols bound in `env` itself, in definition order. |
+| `(bindings env)` | The symbols bound in `env` itself, sorted by name. |
 | `(cons a d)`, `(car p)`, `(cdr p)` | Pairs (4.6.3, 5.4.1). |
 | `(eq? a b)` | Identity; integers, symbols and strings compare by value (4.2.1). |
 | `(select b x y)` | `x` if `b` is `#t`, `y` if `#f`; a `type-error` otherwise. |
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
 | `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: in exact arithmetic `b × (div a b) + (mod a b)` is `a` (12.5.8). `mod` fits wherever its result does, even where evaluating that identity would overflow. |
-| `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values. |
+| `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values, unless a `guard` catches it. |
+| `(guard thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as a new environment, with no parent, binding `code`, `values` (the list of the error's values) and `at` (the list of where it happened, see Errors); its value is `guard`'s, as a tail call. `interrupted` and `out-of-memory` are never caught. |
+| `(raise e)` | Raises again the error a guard caught, given the environment its handler got: the same code, values and locations, with none for the `raise` itself; like any error, it then gains the combinations it passes on its way out. So a handler can pass on an error it doesn't want and it still says where it happened. |
+| `(string-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
+| `(substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
+| `(string-append s ...)` | The strings joined. |
+| `(code-point->string n)` | The string of the one character whose Unicode code point is `n`; a `range-error` for a surrogate or past `#x10FFFF`. |
+| `(symbol->string sym)`, `(string->symbol s)` | A symbol's name; the symbol named `s`, interned. |
+| `(number->string n)` | Integer `n` in decimal. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
 
@@ -66,6 +75,7 @@ All are applicatives except `$vau`.
 | `($sequence x ...)` | Each in turn; the last one's value, `#inert` for none (5.1.1). |
 | `($lambda formals body ...)` | `(wrap ($vau formals #ignore body))`; several body forms become `($sequence form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
 | `(get-current-environment)` | The environment it is called in (6.7.2). |
+| `($remote-eval o e)` | Evaluates `o`, as a tail call, in the environment `e` evaluates to (6.7.9); `($remote-eval code e)` reads a field of a record such as a caught error. |
 | `(not? b)`, `($and? x ...)`, `($or? x ...)` | Booleans; `$and?` and `$or?` stop early and evaluate the last operand as a tail call (6.1). |
 | `(null? x)`, `(pair? x)`, `(symbol? x)`, `(string? x)`, `(integer? x)`, `(environment? x)` | Type predicates of one value (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
 | `(=? a b)`, `(min a b)`, `(max a b)` | Integer equality, the smaller, the larger (12.5.2, 12.5.13). |
@@ -76,7 +86,8 @@ All are applicatives except `$vau`.
 | `($cond (test body ...) ...)` | The body of the first true test; `#inert` if none is true (5.6.1). |
 | `($when test body ...)` | The body if `test` is true, else `#inert`; `$if` needs both branches. |
 | `($set! env formals value)` | Matches `formals` to `value` in the environment `env` evaluates to, as `$define!` does in the current one (6.8.1). `$define!` inside a function binds locally; this changes a binding where it lives. |
-| `($unwind-protect body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on to the host unchanged. Nothing is caught. |
+| `($unwind-protect body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on unchanged, to a `guard` or the host. The cleanup can't stop the error; `guard` can. |
+| `($binds? env symbol ...)` | Whether each symbol is bound in the environment `env` evaluates to, or one of its ancestors (6.7.1). The symbols aren't evaluated. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Structural equality of pairs, `eq?` otherwise (6.6.1). |
 | `(assoc x alist)`, `(member? x list)` | The first pair whose car is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
@@ -88,10 +99,53 @@ The ground environment itself is out of reach, so no program can change it.
 
 ## Errors
 
-Every error stops evaluation and goes to the host as a code, the values involved, and where it
-happened: the innermost combination of the program being evaluated (the library's own code
-and code built around a combiner value are skipped). Cleanups (`$unwind-protect`) run on the
-way out; nothing is caught.
+Every error stops evaluation and goes to the innermost `guard` around it, or to the host, as a
+code, the values involved, and where it happened: the combinations of the program being
+evaluated, innermost first, each once, out to the top-level form (the library's own code and
+code built around a combiner value are skipped). A combination in tail position has finished
+when the next one starts, so it isn't listed. Cleanups (`$unwind-protect`) run on the way out.
+
+```lisp
+($define! check ($lambda (x) ($if (integer? x) x (error ($quote not-int) x))))
+($define! run ($lambda (x) (+ 1 (check x))))
+(run ($quote a))   ; not-int a in (error ($quote not-int) x)
+                   ;   from (+ 1 (check x))
+                   ;   from (run ($quote a))
+```
+
+**Cleanup and catching.** `$unwind-protect` runs cleanup as an error passes and lets it go on:
+the body's work is undone or recorded, and the error still stops the program. `guard` stops it:
+after the cleanups inside have run, its handler gets the error as a value and decides what
+happens next, for a program that must go on after a mistake (an interpreter after a guest's
+error, a batch after one bad input, a test of an error case):
+
+The handler gets the error as a record, an environment of its own binding `code`, `values` and
+`at`; `$remote-eval` reads one:
+
+```lisp
+(guard ($lambda () (run ($quote a)))
+       ($lambda (e) (list ($remote-eval code e) ($remote-eval values e))))   ; => (not-int (a))
+(guard ($lambda () (car 1))
+       ($lambda (e) ($if (eq? ($remote-eval code e) ($quote type-error)) 0 (raise e))))   ; => 0
+```
+
+**What can be caught.** Errors about the program can: the primitives', the library's, a host
+function's, and the program's own `error`. Limits set by the host or the machine can't:
+`interrupted` (the host's) and `out-of-memory` (the allocator's) go on through every guard to
+the host, running cleanups on the way, so a `guard` in a loop can't swallow C-g; an error in one
+of those cleanups doesn't replace them. Whether an error is a limit goes by its code: a program
+that raises `interrupted` itself, or a host function that reports `out-of-memory`, isn't caught
+either.
+
+**Early exit** is a `guard` and an error code of the program's own; there is no separate escape:
+
+```lisp
+($define! first-even
+  ($lambda (xs)
+    (guard ($lambda () (for-each ($lambda (x) ($when (eq? (mod x 2) 0) (error ($quote found) x))) xs) #f)
+           ($lambda (e) ($if (eq? ($remote-eval code e) ($quote found)) (car ($remote-eval values e)) (raise e))))))
+(first-even (list 1 3 4 5))   ; => 4
+```
 
 | Code | When | Values |
 |---|---|---|
@@ -106,6 +160,7 @@ way out; nothing is caught.
 | `parse-error` | the text doesn't read; unfinished text fails at its end | line and column |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `interrupted` | the host set its interrupt flag | none |
+| `range-error` | a string offset off a character boundary or out of range; a code point that isn't one | the primitive and the operands |
 | any symbol | a program called `error` | the values given |
 
 ## Deviations from R-1RK, and why
@@ -113,16 +168,20 @@ way out; nothing is caught.
 - **One special primitive.** `$if`, `$define!` and `$sequence` are primitive in Kernel; here they
   are library code over `$vau`, `select`, `bind!` and `eval`. Everything that can be grift code
   is grift code.
-- **No continuations, no error handlers, no `$let/cc`.** Errors go to the host; grift can't catch
-  them. Limits and recovery belong to the host. `$unwind-protect` (not in Kernel) runs cleanup
-  as an error passes, the exit half of Kernel's guarded continuations.
+- **No continuations, no `$let/cc`.** Kernel catches errors with guarded continuations; grift
+  has `guard`, which calls a handler with the error as a value and can't re-enter anything, and
+  `$unwind-protect` (not in Kernel), which runs cleanup as an error passes, the exit half of
+  Kernel's guards. `$binds?` is derived from `guard` as R-1RK derives it from its error
+  continuation.
 - **Integers only:** no numeric tower, no rationals or reals, no characters, vectors, ports or
   promises. Overflow is an error, not a bignum.
 - **Binary arithmetic and comparison.** `+`, `*`, `<?`, `=?`, `min` and `max` take two
   operands; Kernel's take any number. The type predicates take one value; Kernel's any number.
 - **`div` floors.** R-1RK defines it for real arguments; for integers it is the floor of the
   quotient, so `(div -7 2)` is `-4`.
-- **Strings are immutable atoms,** and `eq?` compares them by content, like integers.
+- **Strings are immutable,** and `eq?` compares them by content, like integers. R-1RK has no
+  strings; grift's offsets count bytes of UTF-8, so `string-byte` is O(1), and there is no
+  character type: a code point is an integer.
 - **`apply` has one form,** `(apply a args)`, with a new empty environment: Kernel's default,
   made the only form so nothing is optional. `map` and `for-each` take one list.
 - **`make-environment` takes at most one parent.**
@@ -131,7 +190,7 @@ way out; nothing is caught.
 - **`ground-names`** lists the ground environment's names; the ground itself stays out of reach,
   as in Kernel.
 - **New, not in Kernel:** `$when` (one-armed `$if`), `reverse`, `$unwind-protect` and
-  `eval-protected`, `string?` (R-1RK has no strings).
+  `eval-protected`, `guard`, `string?` and the string primitives (R-1RK has no strings).
 - **`$lambda` keeps the symbol `$sequence`** in a body of several forms, so the body prints as
   written. It is looked up where the body runs, like any other name in it.
 - **Printing a combiner shows its parameters and body.**

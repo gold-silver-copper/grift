@@ -2,8 +2,8 @@
 //! sweep.
 
 use crate::{Error, K, Symbol, Value, push};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,10 +26,34 @@ pub(crate) enum Obj {
     Free(u32),
     Pair(Value, Value),
     Str(Box<str>),
-    /// An optional parent and the bindings in definition order.
-    Env(Option<Ref>, Vec<(Symbol, Value)>),
+    /// An optional parent and the bindings.
+    Env(Option<Ref>, Binds),
     Op(Op),
     App(Value),
+}
+
+/// An environment's bindings.
+pub(crate) type Binds = HashMap<Symbol, Value, BuildHasherDefault<SymbolHasher>>;
+
+/// Hashes a symbol by its id, a small integer: one multiplication spreads it over the bits the
+/// table looks at.
+#[derive(Default)]
+pub(crate) struct SymbolHasher(u64);
+
+impl Hasher for SymbolHasher {
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(b);
+        }
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.0 = u64::from(n);
+    }
 }
 
 struct Slot {
@@ -52,6 +76,9 @@ pub(crate) struct Heap {
     since_gc: usize,
     live: usize,
     marks: Vec<Ref>,
+    /// Operatives made, for tests of what a form costs.
+    #[cfg(test)]
+    pub operatives: usize,
 }
 
 impl Default for Heap {
@@ -62,6 +89,8 @@ impl Default for Heap {
             since_gc: 0,
             live: 0,
             marks: Vec::new(),
+            #[cfg(test)]
+            operatives: 0,
         }
     }
 }
@@ -85,6 +114,10 @@ impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Obj) -> Result<Ref, Error> {
         self.since_gc = self.since_gc.saturating_add(1);
+        #[cfg(test)]
+        {
+            self.operatives += usize::from(matches!(obj, Obj::Op(_)));
+        }
         let idx = self.free;
         if let Some(slot) = self.slots.get_mut(idx as usize)
             && let Obj::Free(next) = slot.obj
@@ -160,7 +193,7 @@ impl Heap {
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
     /// nothing is freed and the error is `out-of-memory`.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>) -> Result<(), Error> {
-        let mut marks = core::mem::take(&mut self.marks);
+        let mut marks = std::mem::take(&mut self.marks);
         marks.clear();
         let marked = self.mark(roots, &mut marks);
         self.marks = marks;
@@ -214,7 +247,7 @@ impl Heap {
                         if let Some(p) = parent {
                             child(Value::Env(*p))?;
                         }
-                        for (_, v) in binds {
+                        for v in binds.values() {
                             child(*v)?;
                         }
                     }

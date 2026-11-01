@@ -1,7 +1,4 @@
 #![doc = include_str!("../../../README.md")]
-#![no_std]
-
-extern crate alloc;
 
 mod eval;
 mod heap;
@@ -10,11 +7,8 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
-use heap::{Heap, Obj};
+use heap::{Binds, Heap, Obj};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use eval::Prim;
 pub use heap::Ref;
@@ -61,7 +55,7 @@ pub enum Value {
 }
 
 /// An interned symbol of one [`Grift`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(u32);
 
 /// A registered host function.
@@ -79,9 +73,10 @@ pub struct Error {
     pub code: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
-    /// The innermost combination of the program that was being evaluated, if any. The
-    /// library's own code is skipped, so `($if 1 2 3)` fails at `($if 1 2 3)`.
-    pub at: Option<Value>,
+    /// Where: the combinations of the program that were being evaluated, innermost first, each
+    /// once, ending with the top-level form. The library's own code is skipped, so `($if 1 2 3)`
+    /// fails at `($if 1 2 3)`; a call in tail position has finished, so it isn't listed.
+    pub at: Vec<Value>,
 }
 
 /// Symbols every [`Grift`] interns first, in this order, so the core can name them as constants.
@@ -98,6 +93,7 @@ pub(crate) enum K {
     ParseError,
     StaleValue,
     Interrupted,
+    RangeError,
     Null,
     Boolean,
     Inert,
@@ -109,9 +105,12 @@ pub(crate) enum K {
     Environment,
     Operative,
     Applicative,
+    Code,
+    Values,
+    At,
 }
 
-const K_NAMES: [&str; 22] = [
+const K_NAMES: [&str; 26] = [
     "unbound-symbol",
     "type-error",
     "arity-error",
@@ -123,6 +122,7 @@ const K_NAMES: [&str; 22] = [
     "parse-error",
     "stale-value",
     "interrupted",
+    "range-error",
     "null",
     "boolean",
     "inert",
@@ -134,6 +134,9 @@ const K_NAMES: [&str; 22] = [
     "environment",
     "operative",
     "applicative",
+    "code",
+    "values",
+    "at",
 ];
 
 impl From<K> for Symbol {
@@ -153,7 +156,7 @@ impl Error {
         Error {
             code: code.into(),
             values: v,
-            at: None,
+            at: Vec::new(),
         }
     }
 
@@ -161,9 +164,17 @@ impl Error {
         Error {
             code: K::OutOfMemory.into(),
             values: Vec::new(),
-            at: None,
+            at: Vec::new(),
         }
     }
+}
+
+/// A copy of `s`, reporting `out-of-memory` instead of aborting.
+pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
+    let mut b = String::new();
+    b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+    b.push_str(s);
+    Ok(b.into_boxed_str())
 }
 
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
@@ -193,8 +204,8 @@ impl<T> Grift<T> {
     /// Builds the ground environment, evaluates the library in it and makes an empty top level.
     pub fn new() -> Result<Grift<T>, Error> {
         let mut heap = Heap::default();
-        let ground = heap.alloc(Obj::Env(None, Vec::new()))?;
-        let top = heap.alloc(Obj::Env(Some(ground), Vec::new()))?;
+        let ground = heap.alloc(Obj::Env(None, Binds::default()))?;
+        let top = heap.alloc(Obj::Env(Some(ground), Binds::default()))?;
         let mut g = Grift {
             heap,
             names: Vec::new(),
@@ -208,7 +219,7 @@ impl<T> Grift<T> {
         for name in K_NAMES {
             g.symbol(name)?;
         }
-        for p in Prim::ALL {
+        for &p in Prim::ALL {
             let s = g.symbol(p.name())?;
             let v = match p {
                 Prim::Vau => Value::Prim(p),
@@ -247,7 +258,7 @@ impl<T> Grift<T> {
             names
                 .get(i as usize)
                 .map(|n| (**n).cmp(name))
-                .unwrap_or(core::cmp::Ordering::Less)
+                .unwrap_or(std::cmp::Ordering::Less)
         });
         match at {
             Ok(i) => self
@@ -276,12 +287,14 @@ impl<T> Grift<T> {
 
     /// Whether the interrupt flag was set; clears it.
     pub(crate) fn interrupted(&self) -> bool {
-        // Load and store, not swap: thumbv6m has no atomic read-modify-write.
-        let set = self.interrupt.is_some_and(|f| f.load(Ordering::Relaxed));
-        if let Some(f) = self.interrupt.filter(|_| set) {
-            f.store(false, Ordering::Relaxed);
-        }
-        set
+        // A load first: the flag is read at every step and set almost never.
+        self.interrupt
+            .is_some_and(|f| f.load(Ordering::Relaxed) && f.swap(false, Ordering::Relaxed))
+    }
+
+    /// The name of symbol `s`.
+    pub(crate) fn name(&self, s: Symbol) -> &str {
+        self.names.get(s.0 as usize).map_or("", |n| n)
     }
 
     /// An error with code `code` and a copy of `values`, for a host function to return.
@@ -294,12 +307,8 @@ impl<T> Grift<T> {
 
     /// A new string holding a copy of `s`.
     pub fn make_string(&mut self, s: &str) -> Result<Value, Error> {
-        let mut boxed = String::new();
-        boxed.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
-        boxed.push_str(s);
-        Ok(Value::Str(
-            self.heap.alloc(Obj::Str(boxed.into_boxed_str()))?,
-        ))
+        let s = boxed(s)?;
+        Ok(Value::Str(self.heap.alloc(Obj::Str(s))?))
     }
 
     /// The new pair `(a . d)`.
