@@ -52,7 +52,7 @@ All are applicatives except `$vau`.
 | `(eq? a b)` | Identity; integers, symbols and strings compare by value (4.2.1). |
 | `(select b x y)` | `x` if `b` is `#t`, `y` if `#f`; a `type-error` otherwise. |
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
-| `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: `(+ (* b (div a b)) (mod a b))` is `a` (12.5.8). `mod` fits wherever its result does. |
+| `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: in exact arithmetic `b × (div a b) + (mod a b)` is `a` (12.5.8). `mod` fits wherever its result does, even where evaluating that identity would overflow. |
 | `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
