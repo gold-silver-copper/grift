@@ -29,3 +29,6 @@ jobs:
       - name: Chip example
         working-directory: examples/chip
         run: cargo build --release --locked
+      - name: Editor example
+        working-directory: examples/emacs
+        run: cargo clippy --all-targets --locked -- -D warnings

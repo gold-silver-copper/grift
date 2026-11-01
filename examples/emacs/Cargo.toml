@@ -1,0 +1,30 @@
+[package]
+name = "grift-emacs"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "An Emacs-style editor written in grift; the host only moves bytes and files"
+
+# Its own workspace, like examples/chip: run it from this directory.
+[workspace]
+
+[dependencies]
+grift = { path = "../../crates/grift" }
+# use-dev-tty: crossterm reads the tty with poll(2); its default reader stalls on a burst of keys.
+crossterm = { version = "0.29.0", default-features = false, features = ["use-dev-tty"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"
+
+# The interpreter runs the whole editor: optimize it even in `cargo run`, or loading a 2,000-line
+# file takes 2.4 s instead of 0.3 s.
+[profile.dev.package.grift]
+opt-level = 3
