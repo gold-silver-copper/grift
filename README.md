@@ -5,10 +5,10 @@ primitive is `$vau`, which makes an operative: a combiner that receives its oper
 together with the caller's environment. `$if`, `$define!`, `$lambda`, `$let`, `$cond` and the rest
 are written in grift itself, in [`library.grift`](crates/grift/src/library.grift).
 
-It is made to be embedded in a Rust program (the host), down to bare-metal devices:
+It is made to be embedded in a Rust program (the host):
 
-- the core crate is `#![no_std]` with `alloc`, has no dependencies and no `unsafe` code, and
-  builds for `thumbv6m-none-eabi` (Cortex-M0);
+- the core crate has no dependencies and no `unsafe` code; it does no I/O, starts no threads and
+  keeps no global state: the host owns all of that;
 - it uses the memory the allocator gives it and sets no limits of its own; when the allocator
   refuses, evaluation returns an `out-of-memory` error instead of aborting;
 - it reaches the outside world only through functions the host registers;
@@ -141,7 +141,8 @@ fn main() -> Result<(), Error> {
 - **Interrupting.** After `g.set_interrupt_flag(&STOP)` with `static STOP: AtomicBool`, setting
   `STOP` from another thread or a signal handler stops the evaluation at its next step with the
   error `interrupted` (cleanups run) and clears the flag. grift sets no limit of its own; this is
-  how the host applies one. It only loads and stores the flag, so it works on `thumbv6m`.
+  how the host applies one. A `'static` flag, because a signal handler can reach only a
+  `static`; from a thread, a `static` serves as well.
 - **A returned `Value` stays valid until the next `eval` or `call`**, which may collect it. Each
   heap reference carries its slot's generation, so a stale value is refused (`stale-value`, or
   `#[stale]` when written) rather than read as some other object. To keep a value, bind it in an

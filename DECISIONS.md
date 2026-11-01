@@ -190,3 +190,18 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
     symbol, where it is, without a step of its own: the same lookup at the same moment, so the
     same meaning and error locations, and about 3.5 times fewer steps for every form, `$if`
     included. Nothing is cached between evaluations.
+
+## Owner decisions, 2026-11-01, during the work on G-26 to G-31
+
+- **G-32. The core may use `std`, still with zero dependencies** (amends G-2's `no_std` + `alloc`
+  and G-25's Cortex-M0 build, which is gone from CI and the README). Still: `forbid(unsafe_code)`,
+  no panics, no I/O, no threads, no global state (the host owns those), and out of memory is
+  refused, never an abort: every growing collection goes through `try_reserve`. Made alone,
+  within it:
+  - The interrupt flag stays a `&'static AtomicBool`: a signal handler, the usual way to turn
+    C-g or SIGINT into a stop, can reach only a `static`, so an `Arc` would still need one;
+    from a thread a `static` serves as well. With `std` the machine now clears it with a swap
+    after a plain load (the load keeps the per-step check free of a locked instruction).
+  - `Error` doesn't implement `Display` or `std::error::Error`: its code is a `Symbol`, an index
+    whose name lives in the interpreter, so a `Display` of the error alone could print only
+    numbers. Hosts write it with `Grift::write`, as the runner does.

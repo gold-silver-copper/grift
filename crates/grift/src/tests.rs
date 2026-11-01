@@ -5,12 +5,8 @@
     clippy::indexing_slicing
 )]
 
-extern crate std;
-
 use crate::{Error, Grift, Value};
-use alloc::format;
-use alloc::string::String;
-use core::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn grift() -> Grift {
     Grift::new().expect("the library loads")
@@ -547,7 +543,7 @@ fn cleanup_runs_and_the_error_goes_on() {
         .unwrap_err();
     assert_eq!(
         (code(&mut g, &e), e.at),
-        (String::from("unbound-symbol"), alloc::vec![])
+        (String::from("unbound-symbol"), vec![])
     );
     // The waiting error's values survive collections in the cleanup.
     g.eval(&mut (), "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))")
@@ -751,7 +747,7 @@ fn errors_name_each_program_combination_around_them() {
         ("(car 1)", "(car 1)"),
     ] {
         let e = g.eval(&mut (), src).unwrap_err();
-        let at: alloc::vec::Vec<String> = e.at.iter().map(|&v| show(&g, v)).collect();
+        let at: Vec<String> = e.at.iter().map(|&v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }

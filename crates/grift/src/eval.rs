@@ -9,8 +9,7 @@
 
 use crate::heap::{Obj, Op};
 use crate::{Error, Grift, Host, K, Ref, Symbol, Value, boxed, push};
-use alloc::vec::Vec;
-use core::fmt::Write;
+use std::fmt::Write;
 
 /// Declares the primitives: each one's variant, its name in the ground environment, and the
 /// fewest and most operands it takes.
@@ -788,7 +787,7 @@ impl<T> Grift<T> {
             }
             Prim::StringAppend => {
                 let given = self.machine.args.get(base..).unwrap_or_default();
-                let mut s = alloc::string::String::new();
+                let mut s = String::new();
                 for &v in given {
                     let t = self.text(p, v)?;
                     s.try_reserve(t.len()).map_err(|_| Error::oom())?;
@@ -814,7 +813,7 @@ impl<T> Grift<T> {
                 Value::Sym(self.symbol(&name)?)
             }
             Prim::NumberToString => {
-                let mut s = alloc::string::String::new();
+                let mut s = String::new();
                 s.try_reserve(20).map_err(|_| Error::oom())?;
                 // An i64 has at most 20 characters, so this never grows the string.
                 write!(s, "{}", int_of(p, x)?).map_err(|_| Error::oom())?;
@@ -904,7 +903,7 @@ impl<T> Grift<T> {
 
     /// Matches a checked formals tree to a value, binding its symbols in `env`.
     fn match_tree(&mut self, env: Ref, formals: Value, value: Value) -> Result<(), Error> {
-        let mut work = core::mem::take(&mut self.machine.work);
+        let mut work = std::mem::take(&mut self.machine.work);
         work.clear();
         let result = self.match_with(&mut work, env, formals, value);
         self.machine.work = work;

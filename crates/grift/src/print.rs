@@ -3,8 +3,7 @@
 
 use crate::heap::Obj;
 use crate::{Grift, Value};
-use alloc::vec::Vec;
-use core::fmt::{self, Write};
+use std::fmt::{self, Write};
 
 enum Item {
     Value(Value),

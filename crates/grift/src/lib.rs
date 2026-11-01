@@ -1,7 +1,4 @@
 #![doc = include_str!("../../../README.md")]
-#![no_std]
-
-extern crate alloc;
 
 mod eval;
 mod heap;
@@ -10,11 +7,8 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
 use heap::{Heap, Obj};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use eval::Prim;
 pub use heap::Ref;
@@ -258,7 +252,7 @@ impl<T> Grift<T> {
             names
                 .get(i as usize)
                 .map(|n| (**n).cmp(name))
-                .unwrap_or(core::cmp::Ordering::Less)
+                .unwrap_or(std::cmp::Ordering::Less)
         });
         match at {
             Ok(i) => self
@@ -287,12 +281,9 @@ impl<T> Grift<T> {
 
     /// Whether the interrupt flag was set; clears it.
     pub(crate) fn interrupted(&self) -> bool {
-        // Load and store, not swap: thumbv6m has no atomic read-modify-write.
-        let set = self.interrupt.is_some_and(|f| f.load(Ordering::Relaxed));
-        if let Some(f) = self.interrupt.filter(|_| set) {
-            f.store(false, Ordering::Relaxed);
-        }
-        set
+        // A load first: the flag is read at every step and set almost never.
+        self.interrupt
+            .is_some_and(|f| f.load(Ordering::Relaxed) && f.swap(false, Ordering::Relaxed))
     }
 
     /// An error with code `code` and a copy of `values`, for a host function to return.

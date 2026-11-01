@@ -2,8 +2,6 @@
 //! sweep.
 
 use crate::{Error, K, Symbol, Value, push};
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,7 +167,7 @@ impl Heap {
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
     /// nothing is freed and the error is `out-of-memory`.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>) -> Result<(), Error> {
-        let mut marks = core::mem::take(&mut self.marks);
+        let mut marks = std::mem::take(&mut self.marks);
         marks.clear();
         let marked = self.mark(roots, &mut marks);
         self.marks = marks;
