@@ -423,13 +423,12 @@ impl<T> Grift<T> {
                     push(&mut self.machine.frames, Frame::Raise)?;
                     return self.call_thunk(cleanup, env, at);
                 }
-                // The host's limits hold: an interrupt or the allocator's refusal isn't caught.
                 Frame::Guard {
                     handler,
                     env,
                     args,
                     at,
-                } if e.code != K::Interrupted.into() && e.code != K::OutOfMemory.into() => {
+                } if !limit(e.code) => {
                     self.machine.args.truncate(args);
                     self.machine.here = at;
                     match self.catch(&e, handler, env, args, at) {
@@ -437,7 +436,11 @@ impl<T> Grift<T> {
                         Err(oom) => e = oom,
                     }
                 }
-                Frame::Raise => drop(self.machine.raised.pop()),
+                // The cleanup's error replaces the one waiting, unless that one is a limit.
+                Frame::Raise => match self.machine.raised.pop() {
+                    Some(waiting) if limit(waiting.code) && !limit(e.code) => e = waiting,
+                    _ => {}
+                },
                 frame => locate(&mut e, frame.at()),
             }
         }
@@ -741,7 +744,12 @@ impl<T> Grift<T> {
                 push(&mut self.machine.frames, guard)?;
                 return self.call_thunk(x, env, at);
             }
-            Prim::Raise => return Err(self.caught(x)?),
+            Prim::Raise => {
+                let e = self.caught(x)?;
+                // As it was: the raise itself isn't one of its locations.
+                self.machine.here = Ref::NONE;
+                return Err(e);
+            }
             Prim::StringLength => {
                 Value::Int(i64::try_from(self.text(p, x)?.len()).unwrap_or(i64::MAX))
             }
@@ -768,11 +776,15 @@ impl<T> Grift<T> {
             }
             Prim::StringAppend => {
                 let given = self.machine.args.get(base..).unwrap_or_default();
-                let mut s = String::new();
+                let mut len = 0usize;
                 for &v in given {
-                    let t = self.text(p, v)?;
-                    s.try_reserve(t.len()).map_err(|_| Error::oom())?;
-                    s.push_str(t);
+                    len = len.saturating_add(self.text(p, v)?.len());
+                }
+                // Exactly the length, so boxing it never reallocates.
+                let mut s = String::new();
+                s.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                for &v in given {
+                    s.push_str(self.text(p, v)?);
                 }
                 Value::Str(self.heap.alloc(Obj::Str(s.into_boxed_str()))?)
             }
@@ -798,7 +810,7 @@ impl<T> Grift<T> {
                 s.try_reserve(20).map_err(|_| Error::oom())?;
                 // An i64 has at most 20 characters, so this never grows the string.
                 write!(s, "{}", int_of(p, x)?).map_err(|_| Error::oom())?;
-                Value::Str(self.heap.alloc(Obj::Str(s.into_boxed_str()))?)
+                Value::Str(self.heap.alloc(Obj::Str(boxed(&s)?))?)
             }
         };
         Ok(Mode::Return(v))
@@ -951,8 +963,10 @@ impl<T> Grift<T> {
             .map_err(|_| Error::oom())?;
         names.extend(binds.keys().copied());
         names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));
-        let names = names.into_iter().map(Value::Sym).collect::<Vec<_>>();
-        self.list(&names)
+        names
+            .iter()
+            .rev()
+            .try_fold(Value::Nil, |l, &s| self.cons(Value::Sym(s), l))
     }
 
     pub(crate) fn pair(&self, r: Ref) -> Result<(Value, Value), Error> {
@@ -968,6 +982,11 @@ impl<T> Grift<T> {
             _ => Err(Error::new(K::StaleValue, &[Value::App(r)])),
         }
     }
+}
+
+/// Whether an error is a limit set by the host or the machine, which no guard catches.
+fn limit(code: Symbol) -> bool {
+    code == K::Interrupted.into() || code == K::OutOfMemory.into()
 }
 
 /// Adds program combination `r` to the error's locations, unless it is there already. With no

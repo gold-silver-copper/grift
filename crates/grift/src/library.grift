@@ -125,6 +125,8 @@
            ($if (eval (car (car clauses)) env)
              (run (cdr (car clauses)) env)
              (first-true (cdr clauses) env)))))
+     ; A binding's expression; a binding that isn't (formals expression) is an arity-error.
+     ($define! expression-of ($lambda ((#ignore expression)) expression))
      ; local, after matching formals to value in it.
      ($define! bound ($lambda (local formals value) ($sequence (bind! local formals value) local)))
      ; $let evaluates every expression in the caller's environment, then matches all the formals
@@ -135,7 +137,7 @@
            (bound local formals values)
            (bound-all (cdr bindings) env local
              (cons (car (car bindings)) formals)
-             (cons (eval (car (cdr (car bindings))) env) values)))))
+             (cons (eval (expression-of (car bindings)) env) values)))))
      ; $let* matches each binding in a new child of the environment before it, so each sees the
      ; ones before it.
      ($define! nested
@@ -144,7 +146,7 @@
            (run body (make-environment env))
            (nested (cdr bindings) body
              (bound (make-environment env) (car (car bindings))
-               (eval (car (cdr (car bindings))) env))))))
+               (eval (expression-of (car bindings)) env))))))
      (list
        ; $cond: the body of the first true test; #inert if none is true, as in Kernel.
        ($vau clauses env (first-true clauses env))
@@ -214,13 +216,17 @@
          ($if (eq? symbols ())
            #t
            ($sequence
-             ($if (symbol? (car symbols)) (eval (car symbols) e) (error ($quote type-error) (car symbols)))
+             ($if (symbol? (car symbols))
+               (eval (car symbols) e)
+               (error ($quote type-error) ($quote $binds?) (car symbols)))
              (look-up e (cdr symbols))))))
      ($define! unbound
        ($lambda (e) ($if (eq? ($remote-eval code e) ($quote unbound-symbol)) #f (raise e))))
      ($vau (e . symbols) env
        ($let ((e (eval e env)))
-         (guard (wrap ($vau () #ignore (look-up e symbols))) unbound))))))
+         ($if (environment? e)
+           (guard (wrap ($vau () #ignore (look-up e symbols))) unbound)
+           (error ($quote type-error) ($quote $binds?) e)))))))
 
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
 ; list them. The ground itself stays out of reach, so no program can change what the library

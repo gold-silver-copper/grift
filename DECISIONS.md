@@ -219,7 +219,11 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
     `($remote-eval code e)`; `raise` takes the same record.
   - Errors about the program can be caught, a host function's included; limits set by the host
     or the machine, `interrupted` and `out-of-memory`, are never caught by `guard` and always
-    reach the host. Both are tested.
+    reach the host. Both are tested. Made alone, after review: an error in a cleanup still
+    replaces the one leaving (G-18), except a limit, which goes on, so a failing cleanup can't
+    turn C-g into an error a guard catches; and a limit is known by its code, so a program's own
+    `(error ($quote interrupted))` isn't caught either (the host can't tell it from a real one;
+    accepted, since only the program loses by it).
   - Early exit is `guard` plus an error code of the program's own; there is no escape primitive.
   - **Why no continuations.** Generators and backtracking are closures or lazy streams: the
     three logic engines met every-solution search, `not`, first-solution-only and infinite

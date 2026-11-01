@@ -45,7 +45,7 @@ All are applicatives except `$vau`.
 | `($vau formals eformal body)` | An operative closing over the current environment (4.10.3). `formals` is a tree of symbols, `#ignore`, `()` and pairs, with no symbol twice; `eformal` is a symbol not in it, or `#ignore`. Checked when the operative is made (`bad-formals`). A call binds them in a new child of that environment and evaluates `body` as a tail call. |
 | `(wrap c)`, `(unwrap a)` | The applicative around combiner `c`; the combiner inside applicative `a` (4.10.4–5). |
 | `(eval x env)` | Evaluates `x` in `env`, as a tail call (4.8.3). |
-| `(eval-protected x env cleanup)` | Evaluates `x` in `env`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving. Not a tail call. |
+| `(eval-protected x env cleanup)` | Evaluates `x` in `env`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving, unless that one is `interrupted` or `out-of-memory`, which go on. Not a tail call. |
 | `(make-environment)`, `(make-environment parent)` | A new empty environment, with no parent or one (4.8.4). |
 | `(bind! env formals value)` | Matches the tree `formals` to `value` and binds its symbols in `env` itself, replacing bindings there. Returns `#inert`. The matching of `$define!` (4.9.1) as an applicative. |
 | `(bindings env)` | The symbols bound in `env` itself, sorted by name. |
@@ -56,7 +56,7 @@ All are applicatives except `$vau`.
 | `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: in exact arithmetic `b × (div a b) + (mod a b)` is `a` (12.5.8). `mod` fits wherever its result does, even where evaluating that identity would overflow. |
 | `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values, unless a `guard` catches it. |
 | `(guard thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as a new environment, with no parent, binding `code`, `values` (the list of the error's values) and `at` (the list of where it happened, see Errors); its value is `guard`'s, as a tail call. `interrupted` and `out-of-memory` are never caught. |
-| `(raise e)` | Raises again the error a guard caught, given the environment its handler got: the same code, values and locations, so a handler can pass on an error it doesn't want. |
+| `(raise e)` | Raises again the error a guard caught, given the environment its handler got: the same code, values and locations (the `raise` adds none of its own), so a handler can pass on an error it doesn't want. |
 | `(string-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
 | `(substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
 | `(string-append s ...)` | The strings joined. |
@@ -132,7 +132,10 @@ The handler gets the error as a record, an environment of its own binding `code`
 **What can be caught.** Errors about the program can: the primitives', the library's, a host
 function's, and the program's own `error`. Limits set by the host or the machine can't:
 `interrupted` (the host's) and `out-of-memory` (the allocator's) go on through every guard to
-the host, running cleanups on the way, so a `guard` in a loop can't swallow C-g.
+the host, running cleanups on the way, so a `guard` in a loop can't swallow C-g; an error in one
+of those cleanups doesn't replace them. Whether an error is a limit goes by its code: a program
+that raises `interrupted` itself, or a host function that reports `out-of-memory`, isn't caught
+either.
 
 **Early exit** is a `guard` and an error code of the program's own; there is no separate escape:
 

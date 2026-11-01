@@ -607,6 +607,7 @@ fn library_forms_build_no_code() {
             "(($lambda (#ignore #ignore x) x) 1 2 n)",
         ),
         ("($and? #t (eq? n 3))", "($if #t (eq? n 3) #f)"),
+        ("($or? #f (eq? n 3))", "($if #f #t (eq? n 3))"),
         ("($set! e n 3)", "(bind! e ($quote n) 3)"),
     ] {
         let ((steps, made), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
@@ -657,6 +658,8 @@ fn guard_catches_errors_as_values() {
         &mut g,
         &[
             ("(guard 1 car)", "type-error"),
+            ("($let ((x 1 2)) x)", "arity-error"),
+            ("($let* ((x 1 2)) x)", "arity-error"),
             (
                 "(guard ($lambda () (car 1)) ($lambda (e) (apply error (cons ($quote again) ($remote-eval values e)))))",
                 "again",
@@ -674,6 +677,15 @@ fn guard_catches_errors_as_values() {
         .unwrap_err();
     assert_eq!(code(&mut g, &e), "not-int");
     assert_eq!(show(&g, e.at[0]), "(error ($quote not-int) x 2)");
+    // ... the raise itself not among them.
+    let at = g
+        .eval(
+            &mut (),
+            "(guard ($lambda () (guard ($lambda () (car 1)) ($lambda (e) (raise e)))) \
+                    ($lambda (e) ($remote-eval at e)))",
+        )
+        .unwrap();
+    assert_eq!(show(&g, at), "((car 1))");
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -713,7 +725,14 @@ fn guard_catches_errors_about_the_program_and_never_the_limits() {
         .eval(&mut (), "(guard ($lambda () (fail)) ($lambda (#ignore) 0))")
         .unwrap_err();
     assert_eq!(code(&mut g, &e), "out-of-memory");
-
+    // A cleanup that fails while a limit passes doesn't turn it into an error a guard catches.
+    let e = g
+        .eval(
+            &mut (),
+            "(guard ($lambda () ($unwind-protect (stop) (car 1))) ($lambda (#ignore) 0))",
+        )
+        .unwrap_err();
+    assert_eq!(code(&mut g, &e), "interrupted");
     // ... even through a guard in a loop that would catch anything.
     let e = g
         .eval(
@@ -746,6 +765,7 @@ fn binds_tells_bound_from_unbound() {
         &[
             ("($binds? e (car 1))", "type-error"),
             ("($binds? 1 x)", "type-error"),
+            ("($binds? 1)", "type-error"),
         ],
     );
 }
