@@ -55,8 +55,8 @@ All are applicatives except `$vau`.
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
 | `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: in exact arithmetic `b × (div a b) + (mod a b)` is `a` (12.5.8). `mod` fits wherever its result does, even where evaluating that identity would overflow. |
 | `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values, unless a `guard` catches it. |
-| `(guard thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as the list `(code values at)` and its value is `guard`'s, as a tail call. `values` is the list of the error's values and `at` the list of where it happened (see Errors). `interrupted` and `out-of-memory` are never caught. |
-| `(raise e)` | Raises again the error a guard caught, given the `(code values at)` its handler got: the same code, values and locations, so a handler can pass on an error it doesn't want. |
+| `(guard thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as a new environment, with no parent, binding `code`, `values` (the list of the error's values) and `at` (the list of where it happened, see Errors); its value is `guard`'s, as a tail call. `interrupted` and `out-of-memory` are never caught. |
+| `(raise e)` | Raises again the error a guard caught, given the environment its handler got: the same code, values and locations, so a handler can pass on an error it doesn't want. |
 | `(string-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
 | `(substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
 | `(string-append s ...)` | The strings joined. |
@@ -75,6 +75,7 @@ All are applicatives except `$vau`.
 | `($sequence x ...)` | Each in turn; the last one's value, `#inert` for none (5.1.1). |
 | `($lambda formals body ...)` | `(wrap ($vau formals #ignore body))`; several body forms become `($sequence form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
 | `(get-current-environment)` | The environment it is called in (6.7.2). |
+| `($remote-eval o e)` | Evaluates `o`, as a tail call, in the environment `e` evaluates to (6.7.9); `($remote-eval code e)` reads a field of a record such as a caught error. |
 | `(not? b)`, `($and? x ...)`, `($or? x ...)` | Booleans; `$and?` and `$or?` stop early and evaluate the last operand as a tail call (6.1). |
 | `(null? x)`, `(pair? x)`, `(symbol? x)`, `(string? x)`, `(integer? x)`, `(environment? x)` | Type predicates of one value (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
 | `(=? a b)`, `(min a b)`, `(max a b)` | Integer equality, the smaller, the larger (12.5.2, 12.5.13). |
@@ -118,14 +119,30 @@ after the cleanups inside have run, its handler gets the error as a value and de
 happens next, for a program that must go on after a mistake (an interpreter after a guest's
 error, a batch after one bad input, a test of an error case):
 
+The handler gets the error as a record, an environment of its own binding `code`, `values` and
+`at`; `$remote-eval` reads one:
+
 ```lisp
 (guard ($lambda () (run ($quote a)))
-       ($lambda ((code values at)) (list code values)))   ; => (not-int (a))
+       ($lambda (e) (list ($remote-eval code e) ($remote-eval values e))))   ; => (not-int (a))
+(guard ($lambda () (car 1))
+       ($lambda (e) ($if (eq? ($remote-eval code e) ($quote type-error)) 0 (raise e))))   ; => 0
 ```
 
-`interrupted` (the host's limit) and `out-of-memory` (the allocator's) are never caught: they go
-on through every guard to the host, running cleanups on the way, so a `guard` in a loop can't
-swallow C-g.
+**What can be caught.** Errors about the program can: the primitives', the library's, a host
+function's, and the program's own `error`. Limits set by the host or the machine can't:
+`interrupted` (the host's) and `out-of-memory` (the allocator's) go on through every guard to
+the host, running cleanups on the way, so a `guard` in a loop can't swallow C-g.
+
+**Early exit** is a `guard` and an error code of the program's own; there is no separate escape:
+
+```lisp
+($define! first-even
+  ($lambda (xs)
+    (guard ($lambda () (for-each ($lambda (x) ($when (eq? (mod x 2) 0) (error ($quote found) x))) xs) #f)
+           ($lambda (e) ($if (eq? ($remote-eval code e) ($quote found)) (car ($remote-eval values e)) (raise e))))))
+(first-even (list 1 3 4 5))   ; => 4
+```
 
 | Code | When | Values |
 |---|---|---|

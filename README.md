@@ -43,7 +43,7 @@ ground-names                                ; every primitive and library name
 "tab\tescape\x1b;[0m"                       ; escapes \\ \" \n \t and \xHEX;
 ($unwind-protect (car 1) ($set! here n 0))  ; the cleanup runs, then the error goes on
 (guard ($lambda () (car 1))                 ; an error leaving the thunk is the handler's
-       ($lambda ((code values at)) code))   ;   (code values at) => type-error
+       ($lambda (e) ($remote-eval code e))) ;   e binds code, values, at => type-error
 ($binds? here n car nope)                   ; => #f: nope isn't bound
 (string-append "x=" (number->string 42))    ; => "x=42"; offsets count bytes
 (error ($quote my-code) 1 2)                ; stops evaluation; the host gets my-code (1 2)

@@ -46,6 +46,10 @@
 ; get-current-environment (6.7.2).
 ($define! get-current-environment (wrap ($vau () e e)))
 
+; $remote-eval (6.7.9): evaluates o, as a tail call, in the environment e evaluates to. It
+; reads a record, such as the error a guard's handler gets: ($remote-eval code e).
+($define! $remote-eval ($vau (o e) env (eval o (eval e env))))
+
 ; not? (6.1.1).
 ($define! not? ($lambda (x) (select x #f #t)))
 
@@ -213,7 +217,7 @@
              ($if (symbol? (car symbols)) (eval (car symbols) e) (error ($quote type-error) (car symbols)))
              (look-up e (cdr symbols))))))
      ($define! unbound
-       ($lambda (e) ($if (eq? (car e) ($quote unbound-symbol)) #f (raise e))))
+       ($lambda (e) ($if (eq? ($remote-eval code e) ($quote unbound-symbol)) #f (raise e))))
      ($vau (e . symbols) env
        ($let ((e (eval e env)))
          (guard (wrap ($vau () #ignore (look-up e symbols))) unbound))))))

@@ -631,18 +631,23 @@ fn guard_catches_errors_as_values() {
     holds(
         &mut g,
         &[
-            // A value passes through; an error becomes the handler's (code values at).
+            // A value passes through; an error becomes an environment binding code, values, at.
             "(eq? (guard ($lambda () 5) car) 5)",
-            "(equal? (guard ($lambda () (+ 1 (check ($quote a)))) ($lambda ((code values #ignore)) (list code values))) \
+            "(equal? (guard ($lambda () (+ 1 (check ($quote a)))) \
+                            ($lambda (e) (list ($remote-eval code e) ($remote-eval values e)))) \
              ($quote (not-int (a 2))))",
-            "(equal? (guard ($lambda () (car 1)) ($lambda ((#ignore #ignore at)) at)) ($quote ((car 1))))",
+            "(equal? (guard ($lambda () (car 1)) ($lambda (e) ($remote-eval at e))) ($quote ((car 1))))",
+            "(equal? (guard ($lambda () (car 1)) ($lambda (e) (bindings e))) ($quote (at code values)))",
+            // Early exit is a guard and the program's own error code.
+            "(eq? (guard ($lambda () (for-each ($lambda (x) ($when (eq? x 3) (error ($quote found) x))) (list 1 2 3 4)) #f) \
+                         ($lambda (e) (car ($remote-eval values e)))) 3)",
             // Cleanups inside run first, innermost first; the handler's value is guard's.
             "(eq? (guard ($lambda () ($unwind-protect ($unwind-protect (car 1) (note 1)) (note 2))) \
                          ($lambda (#ignore) (note 3) 7)) 7)",
             "(equal? log ($quote (3 2 1)))",
             // Guards nest; an error in a handler goes to the guard around it.
             "(eq? (guard ($lambda () (guard ($lambda () (car 1)) ($lambda (#ignore) (cdr 1)))) \
-                         ($lambda ((code (p . #ignore) #ignore)) (eq? p (unwrap cdr)))) #t)",
+                         ($lambda (e) (eq? (car ($remote-eval values e)) (unwrap cdr)))) #t)",
             // A guard in a loop runs in constant space.
             "($sequence ($define! loop ($lambda (n) ($if (eq? n 0) #t ($sequence (guard ($lambda () (car n)) list) (loop (- n 1)))))) \
              (loop 20000))",
@@ -653,10 +658,11 @@ fn guard_catches_errors_as_values() {
         &[
             ("(guard 1 car)", "type-error"),
             (
-                "(guard ($lambda () (car 1)) ($lambda (e) (apply error (cons ($quote again) (car (cdr e))))))",
+                "(guard ($lambda () (car 1)) ($lambda (e) (apply error (cons ($quote again) ($remote-eval values e)))))",
                 "again",
             ),
             ("(raise ($quote (code (1))))", "type-error"),
+            ("(raise (make-environment))", "type-error"),
         ],
     );
     // raise passes a caught error on as it was, where it happened included.
@@ -680,12 +686,35 @@ fn stop(_: &mut Grift, _: &mut (), _: &[Value]) -> Result<Value, Error> {
     Ok(Value::Inert)
 }
 
+/// A host function that fails as the program's mistake, or reports that memory ran out.
+fn fail(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
+    match args {
+        [] => Err(g.error("out-of-memory", &[])),
+        _ => Err(g.error("bad-input", args)),
+    }
+}
+
 #[test]
-fn guard_never_catches_an_interrupt() {
+fn guard_catches_errors_about_the_program_and_never_the_limits() {
     let mut g = grift();
     g.set_interrupt_flag(&STOP);
     g.define("stop", stop).unwrap();
-    // The host's limit holds through a guard that would catch anything, even in a loop.
+    g.define("fail", fail).unwrap();
+    // An error about the program, a host function's included, is caught.
+    let caught = g
+        .eval(
+            &mut (),
+            "(guard ($lambda () (fail 7)) ($lambda (e) ($remote-eval code e)))",
+        )
+        .unwrap();
+    assert_eq!(show(&g, caught), "bad-input");
+    // The allocator's limit and the host's go through every guard to the host.
+    let e = g
+        .eval(&mut (), "(guard ($lambda () (fail)) ($lambda (#ignore) 0))")
+        .unwrap_err();
+    assert_eq!(code(&mut g, &e), "out-of-memory");
+
+    // ... even through a guard in a loop that would catch anything.
     let e = g
         .eval(
             &mut (),

@@ -105,9 +105,12 @@ pub(crate) enum K {
     Environment,
     Operative,
     Applicative,
+    Code,
+    Values,
+    At,
 }
 
-const K_NAMES: [&str; 23] = [
+const K_NAMES: [&str; 26] = [
     "unbound-symbol",
     "type-error",
     "arity-error",
@@ -131,6 +134,9 @@ const K_NAMES: [&str; 23] = [
     "environment",
     "operative",
     "applicative",
+    "code",
+    "values",
+    "at",
 ];
 
 impl From<K> for Symbol {

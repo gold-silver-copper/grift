@@ -120,9 +120,7 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
   if an error leaves it, the cleanups inside run first, then `handler` is called with the error
   as a value and its result is `guard`'s. Errors still go to the host when nothing catches them.
   No continuations of any kind. Made alone, within it:
-  - The error value is the list `(code values at)`: `values` the list of the error's values, `at`
-    the list of where it happened (G-29). A formals tree takes it apart:
-    `($lambda ((code values at)) ...)`. No new type (G-9).
+  - The error value was first the list `(code values at)`; G-35 made it an environment.
   - `interrupted` is never caught (G-17: the host's limit must hold, and a guard in a loop must
     not swallow C-g). **`out-of-memory` is never caught either:** it is the allocator's limit, the
     same kind of limit as the host's interrupt (G-5); a handler would need memory to run, so
@@ -214,3 +212,18 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
   (no dependency). `bindings` and `ground-names` list names sorted by name, so output stays
   deterministic without keeping definition order. Its cost or gain against the previous
   representation (a list scanned in order) is measured once and reported, not a reason to revert.
+- **G-35. What a caught error is, and what can't be caught** (refines G-26).
+  - A `guard`'s handler gets the error as an environment, a record (records are environments),
+    with no parent, binding `code`, `values` (a list) and `at` (a list, G-29); a fresh one per
+    caught error. `$remote-eval` (R-1RK 6.7.9, added to the library) reads a field:
+    `($remote-eval code e)`; `raise` takes the same record.
+  - Errors about the program can be caught, a host function's included; limits set by the host
+    or the machine, `interrupted` and `out-of-memory`, are never caught by `guard` and always
+    reach the host. Both are tested.
+  - Early exit is `guard` plus an error code of the program's own; there is no escape primitive.
+  - **Why no continuations.** Generators and backtracking are closures or lazy streams: the
+    three logic engines met every-solution search, `not`, first-solution-only and infinite
+    relations without them. A language built on grift that wants `call/cc` writes its evaluator
+    in continuation-passing style: eval-callcc did it in 5 lines, in flat memory, thanks to
+    proper tail calls. And continuations would cost the meaning of cleanup (`$unwind-protect`
+    could be left and re-entered) and of interruption, and the simplicity of the machine.

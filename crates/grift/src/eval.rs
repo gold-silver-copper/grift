@@ -444,7 +444,8 @@ impl<T> Grift<T> {
         Err(e)
     }
 
-    /// Calls a guard's handler with the error as the value `(code values at)`.
+    /// Calls a guard's handler with the error as a new environment binding `code`, `values` and
+    /// `at`.
     fn catch(
         &mut self,
         e: &Error,
@@ -454,7 +455,12 @@ impl<T> Grift<T> {
         at: Ref,
     ) -> Result<Mode, Error> {
         let (values, chain) = (self.list(&e.values)?, self.list(&e.at)?);
-        let v = self.list(&[Value::Sym(e.code), values, chain])?;
+        let mut fields = Binds::default();
+        fields.try_reserve(3).map_err(|_| Error::oom())?;
+        fields.insert(K::Code.into(), Value::Sym(e.code));
+        fields.insert(K::Values.into(), values);
+        fields.insert(K::At.into(), chain);
+        let v = Value::Env(self.heap.alloc(Obj::Env(None, fields))?);
         let comb = match handler {
             Value::App(r) => self.app(r)?,
             h => h,
@@ -808,17 +814,20 @@ impl<T> Grift<T> {
         Ok(Mode::Return(f))
     }
 
-    /// The error a guard caught, from the list `(code values at)` its handler got, as it was.
+    /// The error a guard caught, from the environment its handler got, as it was.
     fn caught(&self, e: Value) -> Result<Error, Error> {
         let bad = || type_error(Prim::Raise, e);
-        let mut parts = [Value::Nil; 3];
-        let mut rest = e;
-        for part in &mut parts {
-            (*part, rest) = self.uncons(rest).ok_or_else(bad)?;
-        }
-        let ([Value::Sym(code), values, at], Value::Nil) = (parts, rest) else {
+        let Value::Env(r) = e else {
             return Err(bad());
         };
+        let Obj::Env(_, fields) = self.heap.get(r)? else {
+            return Err(bad());
+        };
+        let field = |k: K| fields.get(&k.into()).copied().ok_or_else(bad);
+        let Value::Sym(code) = field(K::Code)? else {
+            return Err(bad());
+        };
+        let (values, at) = (field(K::Values)?, field(K::At)?);
         let (values, at) = (self.items(values, bad)?, self.items(at, bad)?);
         Ok(Error { code, values, at })
     }
