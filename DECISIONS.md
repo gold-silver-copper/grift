@@ -170,8 +170,8 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
   guest fib 20) of the run. A sorted index for environments past 16 bindings made both slower
   (logic-stack 5.2-5.6 s to 6.5-6.6 s; eval-direct 4.8-4.9 s to 5.1-5.3 s): the time goes into
   walking chains of small environments, not scanning large ones. The ledger has the numbers.
-- **G-31. Library forms build no code on each use, and the machine evaluates simple operands in
-  place** (tally need 1; the owner's update of 2026-11-01: grift stays a pure fexpr Lisp).
+- **G-31. Library forms build no code on each use** (tally need 1; the owner's update of
+  2026-11-01: grift stays a pure fexpr Lisp).
   `$sequence`, `$cond`, `$when`, `$let`, `$let*`, `$and?`, `$or?` and `$unwind-protect` stay plain
   operatives that walk their operands with `car` and `cdr` and call `eval` only on the operands
   they were given, in the caller's environment or one they made, as R-1RK's derivations do. Their
@@ -186,10 +186,8 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
   - So that `$unwind-protect` needn't build `($sequence cleanup ...)`, `eval-protected` takes its
     cleanup as a combiner it calls with no arguments, as `guard` takes its thunk (amends G-18's
     primitive; `$unwind-protect` is unchanged for programs).
-  - The machine evaluates an operand that is a symbol or a constant, and a combiner that is a
-    symbol, where it is, without a step of its own: the same lookup at the same moment, so the
-    same meaning and error locations, and about 3.5 times fewer steps for every form, `$if`
-    included. Nothing is cached between evaluations.
+  - A first version also had the machine evaluate symbol and constant operands in place, without
+    a step of their own (3.5 times fewer steps); G-33 removed it.
 
 ## Owner decisions, 2026-11-01, during the work on G-26 to G-31
 
@@ -205,3 +203,8 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
   - `Error` doesn't implement `Display` or `std::error::Error`: its code is a `Symbol`, an index
     whose name lives in the interpreter, so a `Display` of the error alone could print only
     numbers. Hosts write it with `Grift::write`, as the runner does.
+- **G-33. The evaluator has one path per kind of form.** Speed comes from simpler library code
+  and better representations, never from fast paths: no shortcut for operands that are symbols
+  or constants, no per-form cases in the machine, no duplicate code path that exists only for
+  speed. The in-place operand evaluation G-31 first had is gone, and so is `$sequence`'s
+  separate case for a body of one form.

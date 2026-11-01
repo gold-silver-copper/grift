@@ -27,10 +27,7 @@
 ; gets itself as an operand too.
 ($define! $sequence
   ((wrap ($vau (next) #ignore
-     ($vau body env
-       ($if (eq? body ())
-         #inert
-         ($if (eq? (cdr body) ()) (eval (car body) env) (next #inert next body env))))))
+     ($vau body env ($if (eq? body ()) #inert (next #inert next body env)))))
    (wrap ($vau (#ignore next body env) #ignore
      ($if (eq? (cdr body) ())
        (eval (car body) env)

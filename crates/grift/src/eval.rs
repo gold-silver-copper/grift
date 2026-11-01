@@ -330,10 +330,6 @@ impl<T> Grift<T> {
                 if !library && !is_combiner(combiner) {
                     self.machine.here = r;
                 }
-                // A combiner that needs no evaluation of its own is combined at once.
-                if let Some(f) = self.at_once(combiner, env)? {
-                    return self.combine(f, operands, env);
-                }
                 let at = self.machine.here;
                 push(
                     &mut self.machine.frames,
@@ -551,17 +547,7 @@ impl<T> Grift<T> {
     }
 
     /// Evaluates the next operand of an applicative, or applies its combiner once none is left.
-    /// Operands that are symbols or constants are evaluated here, without a step of their own.
     fn next_arg(&mut self, comb: Value, env: Ref, rest: Value, base: usize) -> Result<Mode, Error> {
-        let mut rest = rest;
-        while let Value::Pair(r) = rest {
-            let (x, next) = self.pair(r)?;
-            match self.at_once(x, env)? {
-                Some(v) => push(&mut self.machine.args, v)?,
-                None => break,
-            }
-            rest = next;
-        }
         match rest {
             Value::Pair(r) => {
                 let (x, rest) = self.pair(r)?;
@@ -580,17 +566,6 @@ impl<T> Grift<T> {
             }
             Value::Nil => self.apply(comb, env, base),
             _ => Err(Error::new(K::TypeError, &[comb, rest])),
-        }
-    }
-
-    /// The value of `x` in `env` if it is a symbol or evaluates to itself; `None` for a
-    /// combination.
-    #[inline(always)]
-    fn at_once(&self, x: Value, env: Ref) -> Result<Option<Value>, Error> {
-        match x {
-            Value::Pair(_) => Ok(None),
-            Value::Sym(s) => self.lookup(env, s).map(Some),
-            x => Ok(Some(x)),
         }
     }
 
