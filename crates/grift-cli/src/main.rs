@@ -94,6 +94,11 @@ fn interactive(g: &mut Grift) -> ExitCode {
         };
         src.push_str(&line);
         src.push('\n');
+        if src.trim().is_empty() {
+            src.clear();
+            eprint!("> ");
+            continue;
+        }
         match g.eval(&src) {
             Err(e) if unfinished(g, &src, &e) => {
                 eprint!("  ");

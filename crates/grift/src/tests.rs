@@ -293,4 +293,9 @@ fn stale_values_are_refused() {
     g.eval("(churn 10000)").unwrap();
     assert_eq!(show(&g, old), "#[stale]");
     assert_eq!(g.string(old), None);
+    let Value::Pair(r) = old else {
+        panic!("a pair")
+    };
+    let e = g.pair(r).unwrap_err();
+    assert_eq!(code(&mut g, &e), "stale-value");
 }

@@ -11,7 +11,6 @@ use alloc::vec::Vec;
 
 /// The Rust primitives. All but `$vau` are bound wrapped, as applicatives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(missing_docs)]
 pub enum Prim {
     Vau,
     Wrap,
