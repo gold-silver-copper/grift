@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [pure]
   pull_request:
-    branches: [main]
+    branches: [pure]
 
 permissions:
   contents: read
@@ -13,63 +13,19 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Verify that core crates are truly no_std and no_alloc by building against
-  # a bare-metal target that has no std or alloc support. This catches any
-  # transitive dependency that pulls in std or alloc.
-  no-std-check:
-    name: no_std / no_alloc verification
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
+          components: rustfmt, clippy
           targets: thumbv6m-none-eabi
-      - name: Build core crates for bare-metal target (no std, no alloc)
-        run: >
-          cargo build --target thumbv6m-none-eabi
-          -p grift_arena
-
-  # Verify the workspace builds against the Minimum Supported Rust Version.
-  msrv:
-    name: MSRV (1.85)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
-      - run: cargo build --workspace
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --workspace
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - run: cargo clippy --workspace -- -D warnings
-
-  fmt:
-    name: Formatting
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - run: cargo fmt --all -- --check
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - name: Core crate on a Cortex-M0 (no std)
+        run: cargo build -p grift --target thumbv6m-none-eabi --locked
+      - name: Chip example
+        working-directory: examples/chip
+        run: cargo build --release --locked

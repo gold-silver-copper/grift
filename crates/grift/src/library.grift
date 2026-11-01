@@ -1,0 +1,119 @@
+; The grift library: everything above the Rust primitives. Grift::new evaluates it, in order,
+; in the ground environment; each form uses only the primitives and the forms above it.
+; Section numbers are those of the Revised^-1 Report on the Kernel Programming Language
+; (05-07.pdf), where each combiner is specified.
+
+; $define! (4.9.1; primitive in Kernel). A one-shot operative receives the name unevaluated
+; and binds it in its caller's environment, the ground.
+(($vau (name) env
+   (bind! env name
+     ($vau (definiend expression) env
+       (bind! env definiend (eval expression env)))))
+ $define!)
+
+; $quote (given in the rationale of 5.5.1).
+($define! $quote ($vau (x) #ignore x))
+
+; list (5.2.1).
+($define! list (wrap ($vau xs #ignore xs)))
+
+; $if (4.5.2; primitive in Kernel). select picks the expression, eval runs it as a tail call.
+($define! $if
+  ($vau (test consequent alternative) env
+    (eval (select (eval test env) consequent alternative) env)))
+
+; $sequence (5.1.1): each expression in turn, the last one as a tail call. `next` is called
+; with the value of the first expression, which its caller evaluates first, then continues
+; with the rest.
+($define! $sequence
+  ((wrap ($vau (next) #ignore
+     ($vau body env
+       ($if (eq? body ())
+         #inert
+         ($if (eq? (cdr body) ())
+           (eval (car body) env)
+           (next (eval (car body) env) (cdr body) env))))))
+   (wrap ($vau (#ignore rest env) #ignore (eval (cons $sequence rest) env)))))
+
+; $lambda (5.3.2). A body of one expression is kept as is, so printing the combiner shows it.
+($define! $lambda
+  ($vau (formals . body) env
+    (wrap (eval (list $vau formals #ignore
+                  ($if ($if (eq? body ()) #f (eq? (cdr body) ()))
+                    (car body)
+                    (cons $sequence body)))
+                env))))
+
+; not? (6.1.1).
+($define! not? ($lambda (x) (select x #f #t)))
+
+; $and? and $or? (6.1.4, 6.1.5): left to right, the last operand as a tail call.
+($define! $and?
+  ($vau xs env
+    ($if (eq? xs ()) #t
+      ($if (eq? (cdr xs) ()) (eval (car xs) env)
+        ($if (eval (car xs) env) (eval (cons $and? (cdr xs)) env) #f)))))
+
+($define! $or?
+  ($vau xs env
+    ($if (eq? xs ()) #f
+      ($if (eq? (cdr xs) ()) (eval (car xs) env)
+        ($if (eval (car xs) env) #t (eval (cons $or? (cdr xs)) env))))))
+
+; =? (12.5.2), of two integers: neither is less than the other.
+($define! =? ($lambda (a b) ($and? (not? (<? a b)) (not? (<? b a)))))
+
+; apply (5.5.1), its two-operand form: the underlying combiner sees a new empty environment.
+($define! apply
+  ($lambda (applicative args)
+    (eval (cons (unwrap applicative) args) (make-environment))))
+
+; map (5.9.1), over one list.
+($define! map
+  ($lambda (f xs)
+    ($if (eq? xs ())
+      ()
+      (cons (apply f (list (car xs))) (map f (cdr xs))))))
+
+; $let (5.10.1). Each binding is a list of a formals tree and an expression.
+($define! $let
+  ($vau (clauses . body) env
+    (eval (cons (cons $lambda (cons (map car clauses) body))
+                (map ($lambda ((#ignore expression)) expression) clauses))
+          env)))
+
+; $cond (5.6.1). With no true test the result is #inert, as in Kernel.
+($define! $cond
+  ($vau clauses env
+    ($if (eq? clauses ())
+      #inert
+      ($let (((test . body) (car clauses)))
+        ($if (eval test env)
+          (eval (cons $sequence body) env)
+          (eval (cons $cond (cdr clauses)) env))))))
+
+; length (6.3.1), of a proper list, counting in a loop.
+($define! length
+  ($lambda (xs)
+    ($define! count ($lambda (xs n) ($if (eq? xs ()) n (count (cdr xs) (+ n 1)))))
+    (count xs 0)))
+
+; append (6.3.3): every list but the last is copied; the last is shared.
+($define! append
+  ($lambda lists
+    ($define! append2
+      ($lambda (xs ys) ($if (eq? xs ()) ys (cons (car xs) (append2 (cdr xs) ys)))))
+    ($cond ((eq? lists ()) ())
+           ((eq? (cdr lists) ()) (car lists))
+           (#t (append2 (car lists) (apply append (cdr lists)))))))
+
+; equal? (6.6.1): pairs compare by structure, everything else with eq?.
+($define! equal?
+  ($lambda (a b)
+    ($if ($and? (eq? (type-of a) ($quote pair)) (eq? (type-of b) ($quote pair)))
+      ($and? (equal? (car a) (car b)) (equal? (cdr a) (cdr b)))
+      (eq? a b))))
+
+; Not in Kernel: the ground environment by name, so (bindings ground-environment) lists the
+; primitives and this library.
+($define! ground-environment (($vau () env env)))

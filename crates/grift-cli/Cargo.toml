@@ -1,0 +1,13 @@
+[package]
+name = "grift-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The grift runner: runs grift files or stdin"
+
+[[bin]]
+name = "grift"
+path = "src/main.rs"
+
+[dependencies]
+grift = { path = "../grift" }

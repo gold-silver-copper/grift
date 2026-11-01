@@ -3,15 +3,14 @@ name = "grift"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version.workspace = true
-description = "A simple minimalistic Lisp with a built-in arena allocator"
+description = "A tiny Kernel-style Lisp built on fexprs, for embedding in Rust (no_std + alloc)"
 
-[features]
-repl = ["dep:rustyline"]
+[lints.rust]
+unsafe_code = "forbid"
 
-[dependencies]
-rustyline = { version = "17.0.2", optional = true }
-
-[[bin]]
-name = "grift"
-required-features = ["repl"]
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"
