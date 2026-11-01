@@ -226,13 +226,10 @@ fn describe(g: &G, e: &Error) -> String {
             fmt::Write::write_str(&mut out, " ")?;
             g.write(v, &mut out)
         })?;
-        match e.at {
-            Some(at) => {
-                fmt::Write::write_str(&mut out, " in ")?;
-                g.write(at, &mut out)
-            }
-            None => Ok(()),
-        }
+        e.at.iter().enumerate().try_for_each(|(i, &at)| {
+            fmt::Write::write_str(&mut out, if i == 0 { " in " } else { " from " })?;
+            g.write(at, &mut out)
+        })
     });
     out.0
 }

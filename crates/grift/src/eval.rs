@@ -8,99 +8,66 @@
 //! same safe point checks the host's interrupt flag.
 
 use crate::heap::{Obj, Op};
-use crate::{Error, Grift, Host, K, Ref, Symbol, Value, push};
+use crate::{Error, Grift, Host, K, Ref, Symbol, Value, boxed, push};
 use alloc::vec::Vec;
+use core::fmt::Write;
 
-/// The Rust primitives. All but `$vau` are bound wrapped, as applicatives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Prim {
-    Vau,
-    Wrap,
-    Unwrap,
-    Eval,
-    MakeEnvironment,
-    Bind,
-    Bindings,
-    Cons,
-    Car,
-    Cdr,
-    Eq,
-    Select,
-    TypeOf,
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Less,
-    Error,
-    EvalProtected,
+/// Declares the primitives: each one's variant, its name in the ground environment, and the
+/// fewest and most operands it takes.
+macro_rules! prims {
+    ($($p:ident $name:literal $lo:literal $hi:expr;)*) => {
+        /// The Rust primitives. All but `$vau` are bound wrapped, as applicatives.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Prim { $($p),* }
+
+        impl Prim {
+            pub(crate) const ALL: &[Prim] = &[$(Prim::$p),*];
+
+            /// The name the primitive is bound to in the ground environment.
+            pub fn name(self) -> &'static str {
+                match self { $(Prim::$p => $name),* }
+            }
+
+            /// The fewest and most operands.
+            fn arity(self) -> (usize, usize) {
+                match self { $(Prim::$p => ($lo, $hi)),* }
+            }
+        }
+    };
 }
 
-impl Prim {
-    pub(crate) const ALL: [Prim; 21] = [
-        Prim::Vau,
-        Prim::Wrap,
-        Prim::Unwrap,
-        Prim::Eval,
-        Prim::MakeEnvironment,
-        Prim::Bind,
-        Prim::Bindings,
-        Prim::Cons,
-        Prim::Car,
-        Prim::Cdr,
-        Prim::Eq,
-        Prim::Select,
-        Prim::TypeOf,
-        Prim::Add,
-        Prim::Sub,
-        Prim::Mul,
-        Prim::Div,
-        Prim::Mod,
-        Prim::Less,
-        Prim::Error,
-        Prim::EvalProtected,
-    ];
-
-    /// The name the primitive is bound to in the ground environment.
-    pub fn name(self) -> &'static str {
-        match self {
-            Prim::Vau => "$vau",
-            Prim::Wrap => "wrap",
-            Prim::Unwrap => "unwrap",
-            Prim::Eval => "eval",
-            Prim::MakeEnvironment => "make-environment",
-            Prim::Bind => "bind!",
-            Prim::Bindings => "bindings",
-            Prim::Cons => "cons",
-            Prim::Car => "car",
-            Prim::Cdr => "cdr",
-            Prim::Eq => "eq?",
-            Prim::Select => "select",
-            Prim::TypeOf => "type-of",
-            Prim::Add => "+",
-            Prim::Sub => "-",
-            Prim::Mul => "*",
-            Prim::Div => "div",
-            Prim::Mod => "mod",
-            Prim::Less => "<?",
-            Prim::Error => "error",
-            Prim::EvalProtected => "eval-protected",
-        }
-    }
-
-    /// The fewest and most operands.
-    fn arity(self) -> (usize, usize) {
-        match self {
-            Prim::MakeEnvironment => (0, 1),
-            Prim::Wrap | Prim::Unwrap | Prim::Bindings | Prim::Car | Prim::Cdr | Prim::TypeOf => {
-                (1, 1)
-            }
-            Prim::Error => (1, usize::MAX),
-            Prim::Vau | Prim::Bind | Prim::Select | Prim::EvalProtected => (3, 3),
-            _ => (2, 2),
-        }
-    }
+prims! {
+    Vau "$vau" 3 3;
+    Wrap "wrap" 1 1;
+    Unwrap "unwrap" 1 1;
+    Eval "eval" 2 2;
+    MakeEnvironment "make-environment" 0 1;
+    Bind "bind!" 3 3;
+    Bindings "bindings" 1 1;
+    Cons "cons" 2 2;
+    Car "car" 1 1;
+    Cdr "cdr" 1 1;
+    Eq "eq?" 2 2;
+    Select "select" 3 3;
+    TypeOf "type-of" 1 1;
+    Add "+" 2 2;
+    Sub "-" 2 2;
+    Mul "*" 2 2;
+    Div "div" 2 2;
+    Mod "mod" 2 2;
+    Less "<?" 2 2;
+    Error "error" 1 usize::MAX;
+    EvalProtected "eval-protected" 3 3;
+    Guard "guard" 2 2;
+    Raise "raise" 1 1;
+    StringLength "string-length" 1 1;
+    StringByte "string-byte" 2 2;
+    Substring "substring" 3 3;
+    StringAppend "string-append" 0 usize::MAX;
+    CodePointToString "code-point->string" 1 1;
+    SymbolToString "symbol->string" 1 1;
+    StringToSymbol "string->symbol" 1 1;
+    NumberToString "number->string" 1 1;
 }
 
 /// What the machine does next.
@@ -120,8 +87,14 @@ pub(crate) enum Mode {
 enum Frame {
     /// Evaluate the remaining forms of one `eval` call; with none left, pass the value on.
     /// `outer` is the location of the evaluation this one runs inside (a host function's
-    /// call), kept here so the collector sees it until it is restored.
-    Top { rest: Value, env: Ref, outer: Ref },
+    /// call), kept here so the collector sees it until it is restored; `at` is the form
+    /// being evaluated.
+    Top {
+        rest: Value,
+        env: Ref,
+        outer: Ref,
+        at: Ref,
+    },
     /// The value is the combiner of a combination with these operands.
     Combine { operands: Value, env: Ref, at: Ref },
     /// The value is an argument of `comb`; arguments so far are on the argument stack from
@@ -133,10 +106,18 @@ enum Frame {
         base: usize,
         at: Ref,
     },
-    /// When the evaluation above ends, by a value or an error, evaluate `cleanup` in `env`;
-    /// `args` is the argument stack's height to go back to.
+    /// When the evaluation above ends, by a value or an error, call the combiner `cleanup` with
+    /// no arguments in `env`; `args` is the argument stack's height to go back to.
     Cleanup {
         cleanup: Value,
+        env: Ref,
+        args: usize,
+        at: Ref,
+    },
+    /// When an error leaves the evaluation above, call `handler` in `env` with it as a value
+    /// instead; `args` is the argument stack's height to go back to. A value passes through.
+    Guard {
+        handler: Value,
         env: Ref,
         args: usize,
         at: Ref,
@@ -151,7 +132,12 @@ impl Frame {
     fn values(self) -> [Value; 4] {
         let nil = Value::Nil;
         match self {
-            Frame::Top { rest, env, outer } => [rest, Value::Env(env), Value::Pair(outer), nil],
+            Frame::Top {
+                rest,
+                env,
+                outer,
+                at,
+            } => [rest, Value::Env(env), Value::Pair(outer), Value::Pair(at)],
             Frame::Combine { operands, env, at } => {
                 [operands, Value::Env(env), Value::Pair(at), nil]
             }
@@ -165,8 +151,23 @@ impl Frame {
             Frame::Cleanup {
                 cleanup, env, at, ..
             } => [cleanup, Value::Env(env), Value::Pair(at), nil],
+            Frame::Guard {
+                handler, env, at, ..
+            } => [handler, Value::Env(env), Value::Pair(at), nil],
             Frame::Deliver(v) => [v, nil, nil, nil],
             Frame::Raise => [nil; 4],
+        }
+    }
+
+    /// The combination of the program the frame belongs to, or [`Ref::NONE`].
+    fn at(self) -> Ref {
+        match self {
+            Frame::Top { at, .. }
+            | Frame::Combine { at, .. }
+            | Frame::Args { at, .. }
+            | Frame::Cleanup { at, .. }
+            | Frame::Guard { at, .. } => at,
+            Frame::Deliver(_) | Frame::Raise => Ref::NONE,
         }
     }
 }
@@ -181,6 +182,9 @@ pub(crate) struct Machine {
     here: Ref,
     /// Scratch for matching formals trees.
     work: Vec<(Value, Value)>,
+    /// Steps taken, for tests of what a form costs.
+    #[cfg(test)]
+    pub steps: u64,
 }
 
 impl Default for Machine {
@@ -191,6 +195,8 @@ impl Default for Machine {
             raised: Vec::new(),
             here: Ref::NONE,
             work: Vec::new(),
+            #[cfg(test)]
+            steps: 0,
         }
     }
 }
@@ -218,6 +224,7 @@ impl<T> Grift<T> {
             rest: forms,
             env,
             outer,
+            at: Ref::NONE,
         };
         self.start(state, &[top], Mode::Return(Value::Inert))
     }
@@ -230,16 +237,14 @@ impl<T> Grift<T> {
             Value::App(r) => self.app(r)?,
             _ => f,
         };
-        let mut operands = Value::Nil;
-        for &a in args.iter().rev() {
-            operands = self.cons(a, operands)?;
-        }
+        let operands = self.list(args)?;
         let env = self.heap.alloc(Obj::Env(None, Vec::new()))?;
         let frames = [
             Frame::Top {
                 rest: Value::Nil,
                 env,
                 outer: self.machine.here,
+                at: Ref::NONE,
             },
             Frame::Combine {
                 operands,
@@ -279,6 +284,10 @@ impl<T> Grift<T> {
         floor: usize,
     ) -> Result<Value, Error> {
         loop {
+            #[cfg(test)]
+            {
+                self.machine.steps += 1;
+            }
             if let Mode::Return(v) = mode
                 && self.machine.frames.len() <= floor
             {
@@ -322,6 +331,10 @@ impl<T> Grift<T> {
                 if !library && !is_combiner(combiner) {
                     self.machine.here = r;
                 }
+                // A combiner that needs no evaluation of its own is combined at once.
+                if let Some(f) = self.at_once(combiner, env)? {
+                    return self.combine(f, operands, env);
+                }
                 let at = self.machine.here;
                 push(
                     &mut self.machine.frames,
@@ -336,9 +349,20 @@ impl<T> Grift<T> {
                     rest: Value::Pair(r),
                     env,
                     outer,
+                    ..
                 }) => {
                     let (form, rest) = self.pair(r)?;
-                    push(&mut self.machine.frames, Frame::Top { rest, env, outer })?;
+                    let at = match form {
+                        Value::Pair(f) => f,
+                        _ => Ref::NONE,
+                    };
+                    let top = Frame::Top {
+                        rest,
+                        env,
+                        outer,
+                        at,
+                    };
+                    push(&mut self.machine.frames, top)?;
                     self.machine.here = Ref::NONE;
                     Mode::Eval(form, env)
                 }
@@ -363,7 +387,11 @@ impl<T> Grift<T> {
                 }) => {
                     self.machine.here = at;
                     push(&mut self.machine.frames, Frame::Deliver(v))?;
-                    Mode::Eval(cleanup, env)
+                    self.call_thunk(cleanup, env, at)?
+                }
+                Some(Frame::Guard { at, .. }) => {
+                    self.machine.here = at;
+                    Mode::Return(v)
                 }
                 Some(Frame::Deliver(v)) => Mode::Return(v),
                 Some(Frame::Raise) => {
@@ -377,31 +405,77 @@ impl<T> Grift<T> {
     }
 
     /// An error stops the evaluation at `here`. Frames above `floor` are dropped down to the
-    /// innermost cleanup, which then runs, the error waiting until it is done; with none, the
-    /// error goes to the caller. An error in a cleanup replaces the one waiting.
+    /// innermost cleanup or guard, adding where each was to the error. A cleanup then runs, the
+    /// error waiting until it is done; a guard calls its handler with the error instead. With
+    /// neither, the error goes to the caller. An error in a cleanup replaces the one waiting.
     fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
-        if e.at.is_none() && self.machine.here != Ref::NONE {
-            e.at = Some(Value::Pair(self.machine.here));
-        }
+        locate(&mut e, self.machine.here);
         while self.machine.frames.len() > floor {
-            match self.machine.frames.pop() {
-                Some(Frame::Cleanup {
+            let Some(frame) = self.machine.frames.pop() else {
+                break;
+            };
+            match frame {
+                Frame::Cleanup {
                     cleanup,
                     env,
                     args,
                     at,
-                }) => {
+                } => {
+                    locate(&mut e, at);
                     self.machine.args.truncate(args);
                     self.machine.here = at;
                     push(&mut self.machine.raised, e)?;
                     push(&mut self.machine.frames, Frame::Raise)?;
-                    return Ok(Mode::Eval(cleanup, env));
+                    return self.call_thunk(cleanup, env, at);
                 }
-                Some(Frame::Raise) => drop(self.machine.raised.pop()),
-                _ => {}
+                // The host's limits hold: an interrupt or the allocator's refusal isn't caught.
+                Frame::Guard {
+                    handler,
+                    env,
+                    args,
+                    at,
+                } if e.code != K::Interrupted.into() && e.code != K::OutOfMemory.into() => {
+                    self.machine.args.truncate(args);
+                    self.machine.here = at;
+                    match self.catch(&e, handler, env, args, at) {
+                        Ok(mode) => return Ok(mode),
+                        Err(oom) => e = oom,
+                    }
+                }
+                Frame::Raise => drop(self.machine.raised.pop()),
+                frame => locate(&mut e, frame.at()),
             }
         }
         Err(e)
+    }
+
+    /// Calls a guard's handler with the error as the value `(code values at)`.
+    fn catch(
+        &mut self,
+        e: &Error,
+        handler: Value,
+        env: Ref,
+        base: usize,
+        at: Ref,
+    ) -> Result<Mode, Error> {
+        let (values, chain) = (self.list(&e.values)?, self.list(&e.at)?);
+        let v = self.list(&[Value::Sym(e.code), values, chain])?;
+        let comb = match handler {
+            Value::App(r) => self.app(r)?,
+            h => h,
+        };
+        let rest = Value::Nil;
+        push(
+            &mut self.machine.frames,
+            Frame::Args {
+                comb,
+                env,
+                rest,
+                base,
+                at,
+            },
+        )?;
+        Ok(Mode::Return(v))
     }
 
     fn collect(&mut self, mode: Mode) -> Result<(), Error> {
@@ -414,7 +488,7 @@ impl<T> Grift<T> {
         let raised = m
             .raised
             .iter()
-            .flat_map(|e| e.values.iter().copied().chain(e.at));
+            .flat_map(|e| e.values.iter().chain(&e.at).copied());
         let roots = m
             .frames
             .iter()
@@ -478,7 +552,17 @@ impl<T> Grift<T> {
     }
 
     /// Evaluates the next operand of an applicative, or applies its combiner once none is left.
+    /// Operands that are symbols or constants are evaluated here, without a step of their own.
     fn next_arg(&mut self, comb: Value, env: Ref, rest: Value, base: usize) -> Result<Mode, Error> {
+        let mut rest = rest;
+        while let Value::Pair(r) = rest {
+            let (x, next) = self.pair(r)?;
+            match self.at_once(x, env)? {
+                Some(v) => push(&mut self.machine.args, v)?,
+                None => break,
+            }
+            rest = next;
+        }
         match rest {
             Value::Pair(r) => {
                 let (x, rest) = self.pair(r)?;
@@ -497,6 +581,17 @@ impl<T> Grift<T> {
             }
             Value::Nil => self.apply(comb, env, base),
             _ => Err(Error::new(K::TypeError, &[comb, rest])),
+        }
+    }
+
+    /// The value of `x` in `env` if it is a symbol or evaluates to itself; `None` for a
+    /// combination.
+    #[inline(always)]
+    fn at_once(&self, x: Value, env: Ref) -> Result<Option<Value>, Error> {
+        match x {
+            Value::Pair(_) => Ok(None),
+            Value::Sym(s) => self.lookup(env, s).map(Some),
+            x => Ok(Some(x)),
         }
     }
 
@@ -548,7 +643,7 @@ impl<T> Grift<T> {
             return Err(Error {
                 code: K::ArityError.into(),
                 values,
-                at: None,
+                at: Vec::new(),
             });
         }
         let n = given.len();
@@ -634,9 +729,10 @@ impl<T> Grift<T> {
                 return Err(Error {
                     code,
                     values,
-                    at: None,
+                    at: Vec::new(),
                 });
             }
+            Prim::EvalProtected if !is_combiner(z) => return Err(type_error(p, z)),
             Prim::EvalProtected => match y {
                 Value::Env(e) => {
                     let (args, at) = (base, self.machine.here);
@@ -651,8 +747,132 @@ impl<T> Grift<T> {
                 }
                 _ => return Err(type_error(p, y)),
             },
+            Prim::Guard => {
+                if let Some(&v) = [x, y].iter().find(|&&v| !is_combiner(v)) {
+                    return Err(type_error(p, v));
+                }
+                let at = self.machine.here;
+                let guard = Frame::Guard {
+                    handler: y,
+                    env,
+                    args: base,
+                    at,
+                };
+                push(&mut self.machine.frames, guard)?;
+                return self.call_thunk(x, env, at);
+            }
+            Prim::Raise => return Err(self.caught(x)?),
+            Prim::StringLength => {
+                Value::Int(i64::try_from(self.text(p, x)?.len()).unwrap_or(i64::MAX))
+            }
+            Prim::StringByte => {
+                let (s, i) = (self.text(p, x)?, int_of(p, y)?);
+                let byte = usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i));
+                let byte =
+                    byte.ok_or_else(|| Error::new(K::RangeError, &[Value::Prim(p), x, y]))?;
+                Value::Int(i64::from(*byte))
+            }
+            Prim::Substring => {
+                let range = (
+                    usize::try_from(int_of(p, y)?),
+                    usize::try_from(int_of(p, z)?),
+                );
+                let part = match range {
+                    (Ok(a), Ok(b)) => self.text(p, x)?.get(a..b),
+                    _ => None,
+                };
+                let part =
+                    part.ok_or_else(|| Error::new(K::RangeError, &[Value::Prim(p), x, y, z]))?;
+                let part = boxed(part)?;
+                Value::Str(self.heap.alloc(Obj::Str(part))?)
+            }
+            Prim::StringAppend => {
+                let given = self.machine.args.get(base..).unwrap_or_default();
+                let mut s = alloc::string::String::new();
+                for &v in given {
+                    let t = self.text(p, v)?;
+                    s.try_reserve(t.len()).map_err(|_| Error::oom())?;
+                    s.push_str(t);
+                }
+                Value::Str(self.heap.alloc(Obj::Str(s.into_boxed_str()))?)
+            }
+            Prim::CodePointToString => {
+                let c = u32::try_from(int_of(p, x)?).ok().and_then(char::from_u32);
+                let c = c.ok_or_else(|| Error::new(K::RangeError, &[Value::Prim(p), x]))?;
+                let s = boxed(c.encode_utf8(&mut [0; 4]))?;
+                Value::Str(self.heap.alloc(Obj::Str(s))?)
+            }
+            Prim::SymbolToString => match x {
+                Value::Sym(s) => {
+                    let name = boxed(self.names.get(s.0 as usize).map_or("", |n| n))?;
+                    Value::Str(self.heap.alloc(Obj::Str(name))?)
+                }
+                _ => return Err(type_error(p, x)),
+            },
+            Prim::StringToSymbol => {
+                let name = boxed(self.text(p, x)?)?;
+                Value::Sym(self.symbol(&name)?)
+            }
+            Prim::NumberToString => {
+                let mut s = alloc::string::String::new();
+                s.try_reserve(20).map_err(|_| Error::oom())?;
+                // An i64 has at most 20 characters, so this never grows the string.
+                write!(s, "{}", int_of(p, x)?).map_err(|_| Error::oom())?;
+                Value::Str(self.heap.alloc(Obj::Str(s.into_boxed_str()))?)
+            }
         };
         Ok(Mode::Return(v))
+    }
+
+    /// Calls combiner `f` with no arguments in `env`.
+    fn call_thunk(&mut self, f: Value, env: Ref, at: Ref) -> Result<Mode, Error> {
+        let operands = Value::Nil;
+        push(
+            &mut self.machine.frames,
+            Frame::Combine { operands, env, at },
+        )?;
+        Ok(Mode::Return(f))
+    }
+
+    /// The error a guard caught, from the list `(code values at)` its handler got, as it was.
+    fn caught(&self, e: Value) -> Result<Error, Error> {
+        let bad = || type_error(Prim::Raise, e);
+        let mut parts = [Value::Nil; 3];
+        let mut rest = e;
+        for part in &mut parts {
+            (*part, rest) = self.uncons(rest).ok_or_else(bad)?;
+        }
+        let ([Value::Sym(code), values, at], Value::Nil) = (parts, rest) else {
+            return Err(bad());
+        };
+        let (values, at) = (self.items(values, bad)?, self.items(at, bad)?);
+        Ok(Error { code, values, at })
+    }
+
+    /// The elements of a proper list; `bad()` for anything else.
+    fn items(&self, mut list: Value, bad: impl Fn() -> Error) -> Result<Vec<Value>, Error> {
+        let mut v = Vec::new();
+        while let Some((x, rest)) = self.uncons(list) {
+            push(&mut v, x)?;
+            list = rest;
+        }
+        if list == Value::Nil {
+            Ok(v)
+        } else {
+            Err(bad())
+        }
+    }
+
+    /// The contents of string `v`, or a type error naming `p`.
+    fn text(&self, p: Prim, v: Value) -> Result<&str, Error> {
+        self.string(v).ok_or_else(|| type_error(p, v))
+    }
+
+    /// A new list of `xs`.
+    fn list(&mut self, xs: &[Value]) -> Result<Value, Error> {
+        xs.iter()
+            .rev()
+            .try_fold(Value::Nil, |l, &x| self.cons(x, l))
     }
 
     /// Checks a formals tree: symbols, `#ignore`, `()` and pairs, no symbol twice, and an
@@ -771,6 +991,22 @@ impl<T> Grift<T> {
             Obj::App(c) => Ok(*c),
             _ => Err(Error::new(K::StaleValue, &[Value::App(r)])),
         }
+    }
+}
+
+/// Adds program combination `r` to the error's locations, unless it is there already. With no
+/// memory to spare the list stays as it is: the error matters more than its last location.
+fn locate(e: &mut Error, r: Ref) {
+    let v = Value::Pair(r);
+    if r != Ref::NONE && !e.at.contains(&v) && e.at.try_reserve(1).is_ok() {
+        e.at.push(v);
+    }
+}
+
+fn int_of(p: Prim, v: Value) -> Result<i64, Error> {
+    match v {
+        Value::Int(n) => Ok(n),
+        _ => Err(type_error(p, v)),
     }
 }
 

@@ -110,3 +110,83 @@ Evidence: three Emacs-style editors built on grift on 2026-11-01, with friction 
 - **G-25. No chip example.** The owner doesn't use it: `examples/chip` and `scripts/qemu.sh` are
   gone, and G-16 no longer applies. The core stays `no_std` + `alloc` (G-2), and CI still builds
   it for `thumbv6m-none-eabi` so it stays that way.
+
+## Owner decisions, 2026-11-01, after twelve programs were written on grift
+
+Evidence: twelve programs written three ways each without changing grift, with reports and
+friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.md`).
+
+- **G-26. Catching: `(guard thunk handler)` (amends G-4).** It calls `thunk` with no arguments;
+  if an error leaves it, the cleanups inside run first, then `handler` is called with the error
+  as a value and its result is `guard`'s. Errors still go to the host when nothing catches them.
+  No continuations of any kind. Made alone, within it:
+  - The error value is the list `(code values at)`: `values` the list of the error's values, `at`
+    the list of where it happened (G-29). A formals tree takes it apart:
+    `($lambda ((code values at)) ...)`. No new type (G-9).
+  - `interrupted` is never caught (G-17: the host's limit must hold, and a guard in a loop must
+    not swallow C-g). **`out-of-memory` is never caught either:** it is the allocator's limit, the
+    same kind of limit as the host's interrupt (G-5); a handler would need memory to run, so
+    catching it invites a loop that fails the same way; and the host already gets it with the
+    interpreter still usable, which is where recovery from a full heap belongs.
+  - `guard` is a primitive with a frame of its own, beside `eval-protected`'s: the machine's
+    unwinding has to stop somewhere, and only the machine can stop it.
+  - Its handler is called as a tail call; a non-combiner `thunk` or `handler` is a `type-error`
+    raised at once, not caught by the guard being made.
+  - `(raise e)` raises a caught error again as it was, locations included. Added after the
+    eval-direct port: a handler that passed an error on with `(apply error ...)` gave it the
+    handler's location, so an evaluator's own bug no longer said where it happened, and the
+    library's `$binds?` had the same loss. It keeps G-22's rule that re-raising keeps the
+    location.
+- **G-27. Strings (amends G-9's opaque strings; they stay immutable).** `string-length` and
+  `string-byte` (byte offsets, O(1)), `substring` (a byte range), `string-append`,
+  `code-point->string`, `symbol->string`, `string->symbol`, `number->string`. No character type:
+  a code point is an integer. Made alone, within it:
+  - An offset out of range or off a character boundary, and a code point that isn't a Unicode
+    scalar value, are the new error `range-error` carrying the primitive and its operands.
+  - `string-append` takes any number of strings (R7RS); `(apply string-append list)` joins a list.
+  - `string->symbol` takes any string, as R7RS does; a symbol whose name doesn't read back prints
+    as its name.
+  - Nothing more was added: `string<?`, `string->number` and `string-index` had one asker each
+    in the twelve programs (tally §4) and are a few lines of grift each over `string-byte`.
+- **G-28. Speed.** Fix what the twelve programs showed: library forms that built new code on each
+  use, `$binds?`, and name lookup. Making `$if` and `$sequence` Rust primitives would bend G-1:
+  it is measured, on a branch of its own, and not part of this change.
+
+## Made with G-26 to G-28, 2026-11-01 (the owner may overrule any)
+
+- **G-29. Errors list every program combination around them** (extends G-22; tally need 7).
+  `Error.at` is a list: the combinations of the program being evaluated, innermost first, each
+  once, ending with the top-level form. Unwinding collects them from the frames it pops, which
+  already held their combination for G-22, and the frame of each top-level form now holds that
+  form. Nothing is recorded per call, so tail calls stay constant-space, and a call in tail
+  position, having finished, isn't listed; the list is never longer than the frames the error
+  passed, and a recursion lists each combination once. So `(error ...)` in a program's own helper
+  names the helper's caller, out to the user's top-level form. Rejected: `error` taking an
+  explicit location (every library would thread it through), and marking a program's helpers as
+  library code (the location would then skip the helper, but a DSL several levels deep still
+  wouldn't name the user's form).
+- **G-30. Name lookup stays a linear scan of each environment** (tally need 6). Measured on two
+  programs with lookup kept out of line: 14.5 % (logic-stack, 8 queens) and 16.3 % (eval-direct,
+  guest fib 20) of the run. A sorted index for environments past 16 bindings made both slower
+  (logic-stack 5.2-5.6 s to 6.5-6.6 s; eval-direct 4.8-4.9 s to 5.1-5.3 s): the time goes into
+  walking chains of small environments, not scanning large ones. The ledger has the numbers.
+- **G-31. Library forms build no code on each use, and the machine evaluates simple operands in
+  place** (tally need 1; the owner's update of 2026-11-01: grift stays a pure fexpr Lisp).
+  `$sequence`, `$cond`, `$when`, `$let`, `$let*`, `$and?`, `$or?` and `$unwind-protect` stay plain
+  operatives that walk their operands with `car` and `cdr` and call `eval` only on the operands
+  they were given, in the caller's environment or one they made, as R-1RK's derivations do. Their
+  loops are helpers in a one-shot environment of their own, looked up on each call; none builds
+  `(cons $cond ...)`, `(cons $sequence ...)` or a `$lambda` to evaluate. No caching, no
+  expansion, no compile step, no Rust primitive for any of them. `$let` still matches every
+  binding's formals at once, so a symbol in two bindings is an error, as in Kernel.
+  - `$lambda` still evaluates the `$vau` combination it makes, `(list $vau formals #ignore body)`,
+    as R-1RK 5.3.2 derives it: making an operative is its job, and only `$vau` makes one. A body
+    of several forms becomes `($sequence ...)` with the symbol, because grift's `$vau` takes one
+    body, so the combiner prints as written. `apply` builds the combination it calls (5.5.1).
+  - So that `$unwind-protect` needn't build `($sequence cleanup ...)`, `eval-protected` takes its
+    cleanup as a combiner it calls with no arguments, as `guard` takes its thunk (amends G-18's
+    primitive; `$unwind-protect` is unchanged for programs).
+  - The machine evaluates an operand that is a symbol or a constant, and a combiner that is a
+    symbol, where it is, without a step of its own: the same lookup at the same moment, so the
+    same meaning and error locations, and about 3.5 times fewer steps for every form, `$if`
+    included. Nothing is cached between evaluations.

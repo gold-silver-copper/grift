@@ -306,9 +306,13 @@ fn errors_name_the_program_combination() {
         ("(error ($quote mine))", "(error ($quote mine))"),
     ] {
         let e = g.eval(&mut (), src).unwrap_err();
-        assert_eq!(e.at.map(|v| show(&g, v)).as_deref(), Some(at), "{src}");
+        assert_eq!(
+            e.at.first().map(|&v| show(&g, v)).as_deref(),
+            Some(at),
+            "{src}"
+        );
     }
-    assert_eq!(g.eval(&mut (), "(car").unwrap_err().at, None);
+    assert_eq!(g.eval(&mut (), "(car").unwrap_err().at, []);
     // A host function's location survives collections in an evaluation it runs.
     g.eval(
         &mut (),
@@ -321,7 +325,7 @@ fn errors_name_the_program_combination() {
     })
     .unwrap();
     let e = g.eval(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, e.at.unwrap()), "(fail-after-churn)");
+    assert_eq!(show(&g, e.at[0]), "(fail-after-churn)");
 }
 
 #[test]
@@ -519,7 +523,7 @@ fn cleanup_runs_and_the_error_goes_on() {
     assert_eq!(code(&mut g, &e), "mine");
     assert_eq!(e.values[0], Value::Int(7));
     assert_eq!(show(&g, e.values[1]), "(8)");
-    assert_eq!(show(&g, e.at.unwrap()), "(error ($quote mine) 7 (list 8))");
+    assert_eq!(show(&g, e.at[0]), "(error ($quote mine) 7 (list 8))");
     let log = g.eval(&mut (), "log").unwrap();
     assert_eq!(show(&g, log), "(4 3 2 1)");
     // A cleanup that fails replaces the error; the outer cleanup still runs.
@@ -537,14 +541,13 @@ fn cleanup_runs_and_the_error_goes_on() {
         g.eval(&mut (), "(get-current-environment)").unwrap(),
     );
     let missing = Value::Sym(g.symbol("missing").unwrap());
-    let forms = g.read("(list 1)").unwrap();
-    let cleanup = g.uncons(forms).unwrap().0;
+    let cleanup = g.eval(&mut (), "($lambda () (list 1))").unwrap();
     let e = g
         .call(&mut (), protect, &[missing, env, cleanup])
         .unwrap_err();
     assert_eq!(
         (code(&mut g, &e), e.at),
-        (String::from("unbound-symbol"), None)
+        (String::from("unbound-symbol"), alloc::vec![])
     );
     // The waiting error's values survive collections in the cleanup.
     g.eval(&mut (), "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))")
@@ -572,4 +575,221 @@ fn stale_values_are_refused() {
     };
     let e = g.pair(r).unwrap_err();
     assert_eq!(code(&mut g, &e), "stale-value");
+}
+
+/// The machine steps taken and the operatives made evaluating `src`.
+fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
+    (g.machine.steps, g.heap.operatives) = (0, 0);
+    g.eval(&mut (), src).unwrap();
+    (g.machine.steps, g.heap.operatives)
+}
+
+#[test]
+fn library_forms_build_no_code() {
+    // Each form against the same thing written by hand: a use makes no operative and takes at
+    // most six times the steps. They used to build new code each time: $let made two
+    // operatives, and $cond took 29 times the steps.
+    let mut g = grift();
+    g.eval(
+        &mut (),
+        "($define! n 3) ($define! e (get-current-environment))",
+    )
+    .unwrap();
+    for (form, by_hand) in [
+        (
+            "($cond ((eq? n 1) 1) ((eq? n 2) 2) (#t 3))",
+            "($if (eq? n 1) 1 ($if (eq? n 2) 2 3))",
+        ),
+        ("($let ((x (+ n 1))) x)", "(($lambda (x) x) (+ n 1))"),
+        (
+            "($let* ((x (+ n 1)) (y x)) y)",
+            "(($lambda (x) (($lambda (y) y) x)) (+ n 1))",
+        ),
+        ("($when #t n)", "($if #t n #inert)"),
+        (
+            "($sequence 1 2 n)",
+            "(($lambda (#ignore #ignore x) x) 1 2 n)",
+        ),
+        ("($and? #t (eq? n 3))", "($if #t (eq? n 3) #f)"),
+        ("($set! e n 3)", "(bind! e ($quote n) 3)"),
+    ] {
+        let ((steps, made), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
+        assert_eq!(made, 0, "{form} made operatives");
+        assert!(
+            steps <= 6 * by_hand_steps,
+            "{form}: {steps} steps against {by_hand_steps}"
+        );
+    }
+}
+
+#[test]
+fn guard_catches_errors_as_values() {
+    let mut g = grift();
+    g.eval(
+        &mut (),
+        "($define! log ()) ($define! here (get-current-environment))
+         ($define! note ($lambda (x) ($set! here log (cons x log))))
+         ($define! check ($lambda (x) ($if (integer? x) x (error ($quote not-int) x 2))))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            // A value passes through; an error becomes the handler's (code values at).
+            "(eq? (guard ($lambda () 5) car) 5)",
+            "(equal? (guard ($lambda () (+ 1 (check ($quote a)))) ($lambda ((code values #ignore)) (list code values))) \
+             ($quote (not-int (a 2))))",
+            "(equal? (guard ($lambda () (car 1)) ($lambda ((#ignore #ignore at)) at)) ($quote ((car 1))))",
+            // Cleanups inside run first, innermost first; the handler's value is guard's.
+            "(eq? (guard ($lambda () ($unwind-protect ($unwind-protect (car 1) (note 1)) (note 2))) \
+                         ($lambda (#ignore) (note 3) 7)) 7)",
+            "(equal? log ($quote (3 2 1)))",
+            // Guards nest; an error in a handler goes to the guard around it.
+            "(eq? (guard ($lambda () (guard ($lambda () (car 1)) ($lambda (#ignore) (cdr 1)))) \
+                         ($lambda ((code (p . #ignore) #ignore)) (eq? p (unwrap cdr)))) #t)",
+            // A guard in a loop runs in constant space.
+            "($sequence ($define! loop ($lambda (n) ($if (eq? n 0) #t ($sequence (guard ($lambda () (car n)) list) (loop (- n 1)))))) \
+             (loop 20000))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(guard 1 car)", "type-error"),
+            (
+                "(guard ($lambda () (car 1)) ($lambda (e) (apply error (cons ($quote again) (car (cdr e))))))",
+                "again",
+            ),
+            ("(raise ($quote (code (1))))", "type-error"),
+        ],
+    );
+    // raise passes a caught error on as it was, where it happened included.
+    let e = g
+        .eval(
+            &mut (),
+            "(guard ($lambda () (+ 1 (check ($quote a)))) raise)",
+        )
+        .unwrap_err();
+    assert_eq!(code(&mut g, &e), "not-int");
+    assert_eq!(show(&g, e.at[0]), "(error ($quote not-int) x 2)");
+    assert!(
+        g.heap.len() < 100_000,
+        "heap grew to {} slots",
+        g.heap.len()
+    );
+}
+
+fn stop(_: &mut Grift, _: &mut (), _: &[Value]) -> Result<Value, Error> {
+    STOP.store(true, Ordering::Relaxed);
+    Ok(Value::Inert)
+}
+
+#[test]
+fn guard_never_catches_an_interrupt() {
+    let mut g = grift();
+    g.set_interrupt_flag(&STOP);
+    g.define("stop", stop).unwrap();
+    // The host's limit holds through a guard that would catch anything, even in a loop.
+    let e = g
+        .eval(
+            &mut (),
+            "($define! spin ($lambda () (guard ($lambda () (stop) (spin)) ($lambda (#ignore) (spin))))) (spin)",
+        )
+        .unwrap_err();
+    assert_eq!(code(&mut g, &e), "interrupted");
+}
+
+#[test]
+fn binds_tells_bound_from_unbound() {
+    let mut g = grift();
+    g.eval(
+        &mut (),
+        "($define! x 1) ($define! e (get-current-environment))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            "($and? ($binds? e x car) (not? ($binds? e x nope)) (not? ($binds? (make-environment) car)))",
+            "($binds? e)",
+            // The environment operand is evaluated once, the symbols not at all.
+            "($sequence ($define! n 0) ($binds? ($sequence ($set! e n (+ n 1)) e) n) (=? n 1))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("($binds? e (car 1))", "type-error"),
+            ("($binds? 1 x)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn errors_name_each_program_combination_around_them() {
+    let mut g = grift();
+    g.eval(
+        &mut (),
+        "($define! check ($lambda (x) ($if (integer? x) x (error ($quote not-int) x))))
+         ($define! run ($lambda (x) (+ 1 (check x))))
+         ($define! loop ($lambda (n) ($if (eq? n 0) (check ($quote a)) (loop (- n 1)))))
+         ($define! deep ($lambda (n) ($if (eq? n 0) (check ($quote a)) (+ 1 (deep (- n 1))))))",
+    )
+    .unwrap();
+    // A helper's error names the caller, out to the top-level form; a call in tail position has
+    // finished, so it isn't listed, and each combination is listed once, however deep.
+    for (src, want) in [
+        (
+            "(run ($quote a))",
+            "(error ($quote not-int) x) (+ 1 (check x)) (run ($quote a))",
+        ),
+        ("(loop 100000)", "(error ($quote not-int) x) (loop 100000)"),
+        (
+            "(deep 10000)",
+            "(error ($quote not-int) x) (+ 1 (deep (- n 1))) (deep 10000)",
+        ),
+        ("(car 1)", "(car 1)"),
+    ] {
+        let e = g.eval(&mut (), src).unwrap_err();
+        let at: alloc::vec::Vec<String> = e.at.iter().map(|&v| show(&g, v)).collect();
+        assert_eq!(at.join(" "), want, "{src}");
+    }
+}
+
+#[test]
+fn strings_by_byte_offsets() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            // Lengths and offsets count bytes: "λx" is three.
+            "(=? (string-length \"λx\") 3)",
+            "(equal? (list (string-byte \"λx\" 0) (string-byte \"λx\" 2)) ($quote (206 120)))",
+            "(eq? (substring \"λx\" 2 3) \"x\")",
+            "(eq? (substring \"abc\" 1 1) \"\")",
+            "(eq? (string-append \"a\" (code-point->string 955) \"\") \"aλ\")",
+            "(eq? (string-append) \"\")",
+            // Symbols and integers to strings and back.
+            "(eq? (string->symbol (symbol->string ($quote $foo?))) ($quote $foo?))",
+            "(eq? (symbol->string ($quote a)) \"a\")",
+            "(equal? (map number->string (list 0 -9223372036854775808)) (list \"0\" \"-9223372036854775808\"))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            // Off a character boundary, out of range, or not a Unicode scalar value.
+            ("(substring \"λ\" 0 1)", "range-error"),
+            ("(substring \"abc\" 2 1)", "range-error"),
+            ("(substring \"abc\" 0 4)", "range-error"),
+            ("(string-byte \"abc\" 3)", "range-error"),
+            ("(string-byte \"abc\" -1)", "range-error"),
+            ("(code-point->string 55296)", "range-error"),
+            ("(code-point->string -1)", "range-error"),
+            ("(string-length ($quote a))", "type-error"),
+            ("(string-append \"a\" 1)", "type-error"),
+            ("(symbol->string \"a\")", "type-error"),
+            ("(number->string \"1\")", "type-error"),
+        ],
+    );
 }

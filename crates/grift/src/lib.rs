@@ -79,9 +79,10 @@ pub struct Error {
     pub code: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
-    /// The innermost combination of the program that was being evaluated, if any. The
-    /// library's own code is skipped, so `($if 1 2 3)` fails at `($if 1 2 3)`.
-    pub at: Option<Value>,
+    /// Where: the combinations of the program that were being evaluated, innermost first, each
+    /// once, ending with the top-level form. The library's own code is skipped, so `($if 1 2 3)`
+    /// fails at `($if 1 2 3)`; a call in tail position has finished, so it isn't listed.
+    pub at: Vec<Value>,
 }
 
 /// Symbols every [`Grift`] interns first, in this order, so the core can name them as constants.
@@ -98,6 +99,7 @@ pub(crate) enum K {
     ParseError,
     StaleValue,
     Interrupted,
+    RangeError,
     Null,
     Boolean,
     Inert,
@@ -111,7 +113,7 @@ pub(crate) enum K {
     Applicative,
 }
 
-const K_NAMES: [&str; 22] = [
+const K_NAMES: [&str; 23] = [
     "unbound-symbol",
     "type-error",
     "arity-error",
@@ -123,6 +125,7 @@ const K_NAMES: [&str; 22] = [
     "parse-error",
     "stale-value",
     "interrupted",
+    "range-error",
     "null",
     "boolean",
     "inert",
@@ -153,7 +156,7 @@ impl Error {
         Error {
             code: code.into(),
             values: v,
-            at: None,
+            at: Vec::new(),
         }
     }
 
@@ -161,9 +164,17 @@ impl Error {
         Error {
             code: K::OutOfMemory.into(),
             values: Vec::new(),
-            at: None,
+            at: Vec::new(),
         }
     }
+}
+
+/// A copy of `s`, reporting `out-of-memory` instead of aborting.
+pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
+    let mut b = String::new();
+    b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+    b.push_str(s);
+    Ok(b.into_boxed_str())
 }
 
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
@@ -208,7 +219,7 @@ impl<T> Grift<T> {
         for name in K_NAMES {
             g.symbol(name)?;
         }
-        for p in Prim::ALL {
+        for &p in Prim::ALL {
             let s = g.symbol(p.name())?;
             let v = match p {
                 Prim::Vau => Value::Prim(p),
@@ -294,12 +305,8 @@ impl<T> Grift<T> {
 
     /// A new string holding a copy of `s`.
     pub fn make_string(&mut self, s: &str) -> Result<Value, Error> {
-        let mut boxed = String::new();
-        boxed.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
-        boxed.push_str(s);
-        Ok(Value::Str(
-            self.heap.alloc(Obj::Str(boxed.into_boxed_str()))?,
-        ))
+        let s = boxed(s)?;
+        Ok(Value::Str(self.heap.alloc(Obj::Str(s))?))
     }
 
     /// The new pair `(a . d)`.

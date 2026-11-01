@@ -52,6 +52,9 @@ pub(crate) struct Heap {
     since_gc: usize,
     live: usize,
     marks: Vec<Ref>,
+    /// Operatives made, for tests of what a form costs.
+    #[cfg(test)]
+    pub operatives: usize,
 }
 
 impl Default for Heap {
@@ -62,6 +65,8 @@ impl Default for Heap {
             since_gc: 0,
             live: 0,
             marks: Vec::new(),
+            #[cfg(test)]
+            operatives: 0,
         }
     }
 }
@@ -85,6 +90,10 @@ impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Obj) -> Result<Ref, Error> {
         self.since_gc = self.since_gc.saturating_add(1);
+        #[cfg(test)]
+        {
+            self.operatives += usize::from(matches!(obj, Obj::Op(_)));
+        }
         let idx = self.free;
         if let Some(slot) = self.slots.get_mut(idx as usize)
             && let Obj::Free(next) = slot.obj

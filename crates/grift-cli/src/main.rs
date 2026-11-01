@@ -91,8 +91,10 @@ fn report(g: &Grift, source: &str, e: &Error) -> ExitCode {
         let _ = fmt::Write::write_str(&mut err, " ");
         let _ = g.write(v, &mut err);
     }
-    if let Some(at) = e.at {
-        let _ = fmt::Write::write_str(&mut err, " in ");
+    // The innermost combination on the error's line, then each one around it on a line of
+    // its own.
+    for (i, &at) in e.at.iter().enumerate() {
+        let _ = fmt::Write::write_str(&mut err, if i == 0 { " in " } else { "\n  from " });
         let _ = g.write(at, &mut err);
     }
     let _ = fmt::Write::write_str(&mut err, "\n");
