@@ -1,74 +1,103 @@
 //! The grift runner. `grift FILE...` runs the files in order in one top-level environment. With
 //! no files it reads stdin; when stdin is a terminal it evaluates each complete input and
 //! prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift
-//! error, 2 on a usage error or unreadable input. A closed stdout ends the run quietly.
+//! error or failed output, 2 on a usage error or unreadable input. A closed stdout (a broken
+//! pipe) ends the run quietly.
 
 use grift::{Error, Grift, Value};
+use std::ffi::OsString;
+use std::fmt;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const USAGE: &str =
     "usage: grift [FILE...]\n  with no FILE, reads stdin (use `rlwrap grift` for line editing)";
 
-/// The error code a host function returns when stdout is closed.
-const CLOSED: &str = "stdout-closed";
+/// Set once a write to stdout found the pipe closed: the run then ends quietly.
+static CLOSED: AtomicBool = AtomicBool::new(false);
 
-fn out(g: &mut Grift, text: &str) -> Result<Value, Error> {
-    let mut stdout = io::stdout().lock();
-    match stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
+/// A `fmt::Write` straight into an `io::Write`, keeping the I/O error, so printing a value
+/// needs no buffer that could grow without bound.
+struct Sink<W: Write> {
+    w: W,
+    error: Option<io::Error>,
+}
+
+impl<W: Write> fmt::Write for Sink<W> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.w.write_all(s.as_bytes()).map_err(|e| {
+            self.error = Some(e);
+            fmt::Error
+        })
+    }
+}
+
+fn error(g: &mut Grift, code: &str, values: &[Value]) -> Result<Value, Error> {
+    Err(Error {
+        code: g.symbol(code)?,
+        values: values.to_vec(),
+    })
+}
+
+/// Writes the values to stdout, strings without quotes when `raw`, then `end`, and flushes.
+fn put(g: &mut Grift, values: &[Value], raw: bool, end: &str) -> Result<Value, Error> {
+    let mut out = Sink {
+        w: io::stdout().lock(),
+        error: None,
+    };
+    let mut written = values.iter().try_for_each(|&v| match g.string(v) {
+        Some(s) if raw => fmt::Write::write_str(&mut out, s),
+        _ => g.write(v, &mut out),
+    });
+    written = written.and_then(|()| fmt::Write::write_str(&mut out, end));
+    if written.is_ok()
+        && let Err(e) = out.w.flush()
     {
-        Ok(()) => Ok(Value::Inert),
-        Err(_) => Err(Error {
-            code: g.symbol(CLOSED)?,
-            values: Vec::new(),
-        }),
+        out.error = Some(e);
+        written = Err(fmt::Error);
+    }
+    match (written, out.error) {
+        (Ok(()), _) => Ok(Value::Inert),
+        (Err(_), Some(e)) if e.kind() == io::ErrorKind::BrokenPipe => {
+            CLOSED.store(true, Ordering::Relaxed);
+            error(g, "stdout-closed", &[])
+        }
+        (Err(_), Some(_)) => error(g, "output-error", values),
+        // The printer stops only when its own stack can't grow.
+        (Err(_), None) => error(g, "out-of-memory", &[]),
     }
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut Grift, args: &[Value]) -> Result<Value, Error> {
-    let mut text = String::new();
-    for &v in args {
-        match g.string(v) {
-            Some(s) => text.push_str(s),
-            None => {
-                let _ = g.write(v, &mut text);
-            }
-        }
-    }
-    out(g, &text)
+    put(g, args, true, "")
 }
 
 /// `(newline)`.
 fn newline(g: &mut Grift, args: &[Value]) -> Result<Value, Error> {
     match args {
-        [] => out(g, "\n"),
-        _ => Err(Error {
-            code: g.symbol("arity-error")?,
-            values: args.to_vec(),
-        }),
+        [] => put(g, args, true, "\n"),
+        _ => error(g, "arity-error", args),
     }
-}
-
-fn show(g: &Grift, v: Value) -> String {
-    let mut s = String::new();
-    let _ = g.write(v, &mut s);
-    s
 }
 
 /// Prints an error to stderr as its code followed by its values, unless stdout closed.
-fn report(g: &mut Grift, source: &str, e: &Error) -> ExitCode {
-    if g.symbol(CLOSED).is_ok_and(|c| c == e.code) {
+fn report(g: &Grift, source: &str, e: &Error) -> ExitCode {
+    if CLOSED.load(Ordering::Relaxed) {
         return ExitCode::SUCCESS;
     }
-    let mut line = format!("{source}: {}", show(g, Value::Sym(e.code)));
+    let mut err = Sink {
+        w: io::stderr().lock(),
+        error: None,
+    };
+    let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
+    let _ = g.write(Value::Sym(e.code), &mut err);
     for &v in &e.values {
-        line.push(' ');
-        line.push_str(&show(g, v));
+        let _ = fmt::Write::write_str(&mut err, " ");
+        let _ = g.write(v, &mut err);
     }
-    eprintln!("{line}");
+    let _ = fmt::Write::write_str(&mut err, "\n");
     ExitCode::FAILURE
 }
 
@@ -83,6 +112,7 @@ fn unfinished(g: &mut Grift, src: &str, e: &Error) -> bool {
 fn interactive(g: &mut Grift) -> ExitCode {
     let mut status = ExitCode::SUCCESS;
     let mut src = String::new();
+    let mut pending = None;
     eprint!("> ");
     for line in io::stdin().lock().lines() {
         let line = match line {
@@ -99,29 +129,35 @@ fn interactive(g: &mut Grift) -> ExitCode {
             eprint!("> ");
             continue;
         }
+        pending = None;
         match g.eval(&src) {
             Err(e) if unfinished(g, &src, &e) => {
+                pending = Some(e);
                 eprint!("  ");
                 continue;
             }
-            Ok(v) => {
-                let text = show(g, v) + "\n";
-                if out(g, &text).is_err() {
-                    return ExitCode::SUCCESS;
-                }
-                status = ExitCode::SUCCESS;
-            }
+            Ok(v) => match put(g, &[v], false, "\n") {
+                Ok(_) => status = ExitCode::SUCCESS,
+                Err(e) => status = report(g, "stdin", &e),
+            },
             Err(e) => status = report(g, "stdin", &e),
+        }
+        if CLOSED.load(Ordering::Relaxed) {
+            return ExitCode::SUCCESS;
         }
         src.clear();
         eprint!("> ");
     }
-    status
+    // End of input in the middle of a form: that form is an error.
+    match pending {
+        Some(e) => report(g, "stdin", &e),
+        None => status,
+    }
 }
 
 fn main() -> ExitCode {
-    let files: Vec<String> = std::env::args().skip(1).collect();
-    if files.iter().any(|f| f.starts_with('-')) {
+    let files: Vec<OsString> = std::env::args_os().skip(1).collect();
+    if files.iter().any(|f| f.as_encoded_bytes().starts_with(b"-")) {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -139,16 +175,21 @@ fn main() -> ExitCode {
         .define("display", display)
         .and_then(|()| g.define("newline", newline));
     if let Err(e) = host {
-        return report(&mut g, "grift", &e);
+        return report(&g, "grift", &e);
     }
     if files.is_empty() && io::stdin().is_terminal() {
         return interactive(&mut g);
     }
     let sources = match files.is_empty() {
-        true => vec![("stdin".to_string(), read_stdin())],
+        true => vec![("stdin".into(), read_stdin())],
         false => files
             .into_iter()
-            .map(|f| (f.clone(), std::fs::read_to_string(&f)))
+            .map(|f| {
+                (
+                    f.to_string_lossy().into_owned(),
+                    std::fs::read_to_string(&f),
+                )
+            })
             .collect(),
     };
     for (name, text) in sources {
@@ -160,7 +201,7 @@ fn main() -> ExitCode {
             }
         };
         if let Err(e) = g.eval(&text) {
-            return report(&mut g, &name, &e);
+            return report(&g, &name, &e);
         }
     }
     ExitCode::SUCCESS

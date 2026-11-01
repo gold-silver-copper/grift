@@ -59,7 +59,8 @@ rlwrap cargo run --release                     # interactive: prints each result
 `grift FILE...` runs the files; with no files it reads stdin, and when stdin is a terminal it
 evaluates each complete input and prints its result. It defines two host functions, `display`
 and `newline`. Data goes to stdout, errors to stderr as `SOURCE: CODE VALUE...`. It exits with 0,
-1 on a grift error, 2 on a usage error or unreadable input; a closed stdout ends it quietly. It
+1 on a grift error or a failed write (`output-error`), 2 on a usage error or unreadable input; a
+closed pipe on stdout ends it quietly. Unfinished input at the end is a `parse-error`. It
 has no line editor: `rlwrap grift` gives one. Limits belong to the OS: `timeout 10 grift prog`
 for time, `prlimit --as=…` or `ulimit -v` for memory.
 
