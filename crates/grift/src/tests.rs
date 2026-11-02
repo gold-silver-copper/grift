@@ -911,7 +911,8 @@ fn floats_read_back_as_they_print() {
         let printed = show(&g, Value::Float(x));
         let again = float(&mut g, &printed);
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
-        // float-to-string and string-to-float are Rust's Display and parse, and undo each other.
+        // float-to-string and string-to-float are Rust's Display and parse, and undo each other
+        // (a not-a-number only up to its sign, which these floats don't vary).
         let s = g
             .evaluate(&mut (), &format!("(float-to-string {printed})"))
             .unwrap();

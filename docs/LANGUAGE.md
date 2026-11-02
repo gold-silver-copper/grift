@@ -114,7 +114,7 @@ All are applicatives except `vau!`.
 | `(code-point-to-string n)` | The string of the one character whose Unicode code point is `n`; a `range-error` for a surrogate or past `#x10FFFF`. |
 | `(symbol-to-string sym)`, `(string-to-symbol s)` | A symbol's name; the symbol named `s`, interned. |
 | `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
-| `(float-to-string x)`, `(string-to-float s)` | Rust's `to_string` (`Display`) and `parse::<f64>`, which undo each other: `(float-to-string 1.0)` is `"1"`, `(float-to-string #not-a-number)` is `"NaN"`, and `(string-to-float "inf")` is `#infinity`. A string Rust can't read as a float is a `parse-error`. |
+| `(float-to-string x)`, `(string-to-float s)` | Rust's `to_string` (`Display`) and `parse::<f64>`, which undo each other for every float but a not-a-number (Rust writes every one as `"NaN"`, its sign lost): `(float-to-string 1.0)` is `"1"`, `(float-to-string #not-a-number)` is `"NaN"`, and `(string-to-float "inf")` is `#infinity`. A string Rust can't read as a float is a `parse-error`. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
 

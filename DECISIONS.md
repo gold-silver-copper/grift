@@ -343,8 +343,9 @@ reference that matches them.
   Rust's shortest form that reads back (`{:?}`, always with a `.` or an exponent) and
   `#infinity`, `#-infinity`, `#not-a-number`, so every float but a not-a-number prints and reads
   back to the same bits; every not-a-number reads back as Rust's `f64::NAN`, its sign and payload
-  lost (printing writes no payloads). `float-to-string` and `string-to-float` are exactly Rust's `Display` and `parse::<f64>`,
-  which undo each other (`"NaN"`, `"inf"`), as `integer-to-string` and `string-to-integer` are.
+  lost (printing writes no payloads). `float-to-string` and `string-to-float` are exactly Rust's
+  `Display` and `parse::<f64>`, as `integer-to-string` and `string-to-integer` are; they undo each
+  other for every float but a not-a-number, which Rust writes as `"NaN"`, its sign lost.
 - **G-62. A string that isn't a number is a `parse-error`**, carrying the primitive and the
   string: it means what the reader's `parse-error` means, text that doesn't read (the reader's
   carries a line and column).

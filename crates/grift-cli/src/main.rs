@@ -424,16 +424,18 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String]) -> Result<(), Error> 
     }
     g.define("command-line-arguments", list)?;
     // The setup is made in a private context, so the operations it makes look names up there,
-    // never where the program could redefine them. Each value is made only once no evaluation
-    // can come before it is used: an evaluation may reclaim values held only here.
+    // never where the program could redefine them. An evaluation may reclaim a value held only
+    // here, so `form`, `private`, `setup` and the host functions are each made after the last
+    // evaluation before their use; `top` and `evaluate` are always kept.
     let (top, evaluate) = (
         g.evaluate(r, "(current-context)")?,
         g.evaluate(r, "evaluate")?,
     );
     let forms = g.read(RUNNER)?;
-    let (form, _) = g
-        .as_pair(forms)
-        .ok_or_else(|| g.error("parse-error", &[]))?;
+    // runner.grift is one form, the setup combiner.
+    let Some((form, Value::EmptyList)) = g.as_pair(forms) else {
+        return Err(g.error("parse-error", &[forms]));
+    };
     let private = g.context()?;
     let setup = g.call(r, evaluate, &[form, private])?;
     let mut hosts = vec![top];

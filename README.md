@@ -176,8 +176,8 @@ fn main() -> Result<(), Error> {
   `write(&self, Value, &mut dyn fmt::Write)`; `host_function(&mut self, &str, HostFunction<T>) ->
   Result<Value, Error>` (an applicative, bound nowhere); `define(&mut self, &str, Value)` (binds
   in the top-level context); `context(&mut self) -> Result<Value, Error>` (a new child of the
-  built-in context, a private top level); `symbol(&mut self, &str) -> Result<Symbol, Error>`; `string(&mut
-  self, &str)`, `pair(&mut self, Value, Value)`, both `-> Result<Value, Error>`; `as_str(&self,
+  built-in context, a private top level); `symbol(&mut self, &str) -> Result<Symbol, Error>`;
+  `string(&mut self, &str)`, `pair(&mut self, Value, Value)`, both `-> Result<Value, Error>`; `as_str(&self,
   Value) -> Option<&str>`, `as_pair(&self, Value) -> Option<(Value, Value)>`; `error(&mut self,
   &str, &[Value]) -> Error`; `set_interrupt_flag(&mut self, &'static AtomicBool)`.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
