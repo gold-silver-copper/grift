@@ -95,12 +95,29 @@
   (lambda! (applicative arguments)
     (evaluate (pair (unwrap applicative) arguments) (context))))
 
-; map (5.9.1), over one list.
-(define! map
+; any? and all? (not in Kernel): whether f gives #true for some element, for every element,
+; stopping early.
+(define! any?
   (lambda! (f xs)
-    (if! (same? xs ())
-      ()
-      (pair (apply f (list (first xs))) (map f (rest xs))))))
+    (if! (same? xs ()) #false (if! (apply f (list (first xs))) #true (any? f (rest xs))))))
+(define! all?
+  (lambda! (f xs)
+    (if! (same? xs ()) #true (if! (apply f (list (first xs))) (all? f (rest xs)) #false))))
+
+; map (5.9.1): f on each element of one list, or on the elements at each place of several lists
+; of one length. Lists of different lengths are an error, as in Kernel: first fails on the short one.
+(define! map
+  ((lambda! ()
+     (define! each
+       (lambda! (f xs)
+         (if! (same? xs ()) () (pair (apply f (list (first xs))) (each f (rest xs))))))
+     (define! across
+       (lambda! (f lists)
+         (if! (all? empty-list? lists)
+           ()
+           (pair (apply f (each first lists)) (across f (each rest lists))))))
+     (lambda! (f xs . more)
+       (if! (same? more ()) (each f xs) (across f (pair xs more)))))))
 
 ; for-each (6.9.1), over one list: f on each element in turn, for its effect.
 (define! for-each
@@ -227,38 +244,162 @@
 ; if there is none.
 (define! find-association
   (lambda! (x pairs)
-    (conditional! ((same? pairs ()) ())
-                  ((equal? x (first (first pairs))) (first pairs))
-                  (#true (find-association x (rest pairs))))))
+    (if! (same? pairs ())
+      ()
+      (if! (equal? x (first (first pairs)))
+        (first pairs)
+        (find-association x (rest pairs))))))
 
 ; member? (6.3.7): whether x is equal? to an element of xs.
 (define! member?
   (lambda! (x xs)
-    (conditional! ((same? xs ()) #false)
-                  ((equal? x (first xs)) #true)
-                  (#true (member? x (rest xs))))))
+    (if! (same? xs ())
+      #false
+      (if! (equal? x (first xs)) #true (member? x (rest xs))))))
 
-; binds!? (6.7.1, $binds?): whether each symbol is bound in the context `c` evaluates to or one
-; of its parents. As R-1RK derives it, it looks each one up, and catching the error
-; unbound-symbol gives #false.
-(define! binds!?
+; binds!? (6.7.1, $binds?) and binds? (not in Kernel, the same with both operands evaluated):
+; whether each symbol is bound in the context or one of its parents. As R-1RK derives it, it looks
+; each one up, and catching the error unbound-symbol gives #false.
+(define! (binds!? binds?)
   ((lambda! ()
      (define! look-up
-       (lambda! (c symbols)
+       (lambda! (name c symbols)
          (if! (same? symbols ())
            #true
            (sequence!
              (if! (symbol? (first symbols))
                (evaluate (first symbols) c)
-               (raise (error (quote! type-error) (quote! binds!?) (first symbols))))
-             (look-up c (rest symbols))))))
-     (vau! (operand . symbols) caller
-       (let! ((c (evaluate operand caller)))
+               (raise (error (quote! type-error) name (first symbols))))
+             (look-up name c (rest symbols))))))
+     (define! bound?
+       (lambda! (name c symbols)
          (if! (context? c)
-           (catch! (look-up c symbols)
+           (catch! (look-up name c symbols)
                    e
                    (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
-           (raise (error (quote! type-error) (quote! binds!?) c))))))))
+           (raise (error (quote! type-error) name c)))))
+     (list (vau! (operand . symbols) caller
+             (bound? (quote! binds!?) (evaluate operand caller) symbols))
+           (lambda! (c symbol) (bound? (quote! binds?) c (list symbol)))))))
+
+; Not in Kernel, each asked for by three or more programs: filter, fold, range.
+(define! filter
+  (lambda! (f xs)
+    (if! (same? xs ())
+      ()
+      (if! (apply f (list (first xs)))
+        (pair (first xs) (filter f (rest xs)))
+        (filter f (rest xs))))))
+; fold: f on the value so far and each element in turn, from the left, as Rust's Iterator::fold.
+(define! fold
+  (lambda! (f value xs)
+    (if! (same? xs ()) value (fold f (apply f (list value (first xs))) (rest xs)))))
+; range: the integers from start up to, not including, end, as Rust's start..end.
+(define! range
+  (lambda! (start end)
+    (if! (less-than? start end) (pair start (range (add start 1) end)) ())))
+
+; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
+; everywhere; a valid pattern only matches on character boundaries.
+(define! (string-search string-starts-with? string-ends-with? string-split)
+  ((lambda! ()
+     (define! matches?
+       (lambda! (text at pattern i size)
+         (if! (same? i size)
+           #true
+           (if! (same? (string-byte text (add at i)) (string-byte pattern i))
+             (matches? text at pattern (add i 1) size)
+             #false))))
+     (define! search
+       (lambda! (text pattern start)
+         (let! ((size (string-byte-length pattern))
+                (last (subtract (string-byte-length text) size))
+                (from
+                  (lambda! (at)
+                    (if! (less-than? last at)
+                      ()
+                      (if! (same? (string-byte text at) (string-byte pattern 0))
+                        (if! (matches? text at pattern 1 size) at (from (add at 1)))
+                        (from (add at 1)))))))
+           (if! (same? size 0) start (from start)))))
+     (define! pieces
+       (lambda! (text separator from at)
+         (if! (same? at ())
+           (list (byte-substring text from (string-byte-length text)))
+           (let! ((next (add at (string-byte-length separator))))
+             (pair (byte-substring text from at)
+                   (pieces text separator next (search text separator next)))))))
+     (list
+       ; string-search: the offset of the first place at or after start where pattern is, or ().
+       ; The empty substring refuses a start out of range or off a character boundary.
+       (lambda! (text pattern start)
+         (byte-substring text start start)
+         (search text pattern start))
+       (lambda! (text prefix)
+         (let! ((size (string-byte-length prefix)))
+           (and!? (not? (less-than? (string-byte-length text) size))
+                  (matches? text 0 prefix 0 size))))
+       (lambda! (text suffix)
+         (let! ((size (string-byte-length suffix))
+                (at (subtract (string-byte-length text) size)))
+           (and!? (not? (less-than? at 0)) (matches? text at suffix 0 size))))
+       ; string-split: the parts between the separators, empty ones too; string-join undoes it. An
+       ; empty separator is a range-error.
+       (lambda! (text separator)
+         (if! (same? separator "")
+           (raise (error (quote! range-error) (quote! string-split) separator))
+           (pieces text separator 0 (search text separator 0))))))))
+
+; string-join: the strings with the separator between them.
+(define! string-join
+  ((lambda! ()
+     (define! between
+       (lambda! (xs separator)
+         (if! (same? xs ())
+           ()
+           (pair separator (pair (first xs) (between (rest xs) separator))))))
+     (lambda! (strings separator)
+       (if! (same? strings ()) "" (apply string-append (rest (between strings separator))))))))
+
+; string-trim: without the ASCII whitespace at either end, as Rust's trim_ascii.
+(define! string-trim
+  ((lambda! ()
+     (define! blank? (lambda! (byte) (member? byte (quote! (32 9 10 12 13)))))
+     (define! start-of
+       (lambda! (s at end)
+         (if! (and!? (less-than? at end) (blank? (string-byte s at))) (start-of s (add at 1) end) at)))
+     (define! end-of
+       (lambda! (s start at)
+         (if! (and!? (less-than? start at) (blank? (string-byte s (subtract at 1))))
+           (end-of s start (subtract at 1))
+           at)))
+     (lambda! (s)
+       (let! ((end (string-byte-length s)) (start (start-of s 0 end)))
+         (byte-substring s start (end-of s start end)))))))
+
+; string-pad-left and string-pad-right: s with spaces before it, after it, up to width bytes.
+(define! (string-pad-left string-pad-right)
+  ((lambda! ()
+     (define! room
+       (lambda! (s width)
+         (apply string-append (map (lambda! (#ignore) " ") (range (string-byte-length s) width)))))
+     (list (lambda! (s width) (string-append (room s width) s))
+           (lambda! (s width) (string-append s (room s width)))))))
+
+; string-to-lowercase: with A to Z made a to z, and every other byte as it is, as Rust's
+; to_ascii_lowercase.
+(define! string-to-lowercase
+  ((lambda! ()
+     (define! parts
+       (lambda! (s from at end)
+         (if! (same? at end)
+           (list (byte-substring s from end))
+           (let! ((byte (string-byte s at)) (next (add at 1)))
+             (if! (and!? (less-than? 64 byte) (less-than? byte 91))
+               (pair (byte-substring s from at)
+                     (pair (code-point-to-string (add byte 32)) (parts s next next end)))
+               (parts s from next end))))))
+     (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
 
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
 ; list them. The built-in context itself stays out of reach, so no program can change what the

@@ -2,7 +2,7 @@
 //! pair only refers to older values), and a context prints only its names, so it ends.
 
 use crate::heap::Object;
-use crate::{Grift, Value};
+use crate::{Error, Grift, Growing, Value};
 use std::fmt::{self, Write};
 
 enum Item {
@@ -13,6 +13,13 @@ enum Item {
 }
 
 impl<T> Grift<T> {
+    /// A new string of the text [`Grift::write`] writes for `v`.
+    pub(crate) fn printed(&mut self, v: Value) -> Result<Value, Error> {
+        let mut s = Growing::default();
+        self.write(v, &mut s).map_err(|_| Error::oom())?;
+        self.string(&s.0)
+    }
+
     /// Writes `v` as grift would read it back, where it can be read back. Combiners show their
     /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive first]]`;
     /// a context shows its own names, sorted: `#[context a b]`.

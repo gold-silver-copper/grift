@@ -1,15 +1,24 @@
-//! The reader: source text to a list of forms, with an explicit stack of open lists.
+//! The reader: source text to forms, with an explicit stack of open lists.
 
 use crate::heap::Object;
 use crate::{Error, Grift, K, Value, push};
-use std::iter::Peekable;
-use std::str::CharIndices;
+use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, and where a dotted tail stands.
 struct List {
     head: Value,
     last: Value,
     dot: Dot,
+}
+
+impl List {
+    fn new() -> List {
+        List {
+            head: Value::EmptyList,
+            last: Value::EmptyList,
+            dot: Dot::No,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -23,29 +32,19 @@ enum Dot {
 
 struct Cursor<'a> {
     src: &'a str,
-    chars: Peekable<CharIndices<'a>>,
-    line: i64,
-    col: i64,
+    /// The byte offset of the next character.
+    at: usize,
 }
 
 impl Cursor<'_> {
-    fn next(&mut self) -> Option<(usize, char)> {
-        let (i, c) = self.chars.next()?;
-        if c == '\n' {
-            self.line += 1;
-            self.col = 1;
-        } else {
-            self.col += 1;
-        }
-        Some((i, c))
+    fn peek(&self) -> Option<char> {
+        self.src.get(self.at..)?.chars().next()
     }
 
-    fn peek(&mut self) -> Option<char> {
-        self.chars.peek().map(|&(_, c)| c)
-    }
-
-    fn end(&mut self) -> usize {
-        self.chars.peek().map_or(self.src.len(), |&(i, _)| i)
+    fn next(&mut self) -> Option<char> {
+        let c = self.peek()?;
+        self.at += c.len_utf8();
+        Some(c)
     }
 
     fn skip_space(&mut self) {
@@ -64,47 +63,68 @@ impl Cursor<'_> {
     }
 }
 
+/// A `parse-error` at byte offset `at` of `src`: its line and column, counted from the start of
+/// the text only now, so reading form by form never recounts.
+fn parse_error(src: &str, at: usize) -> Error {
+    let before = src.get(..at).unwrap_or_default();
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+    let place = [line, column].map(|n| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX)));
+    Error::new(K::ParseError, &place)
+}
+
 fn delimiter(c: char) -> bool {
     c.is_whitespace() || matches!(c, '(' | ')' | '"' | ';')
+}
+
+/// The float a `#` name stands for, for the reader and `string-to-float`.
+pub(crate) fn float_name(token: &str) -> Option<f64> {
+    match token {
+        "#infinity" => Some(f64::INFINITY),
+        "#-infinity" => Some(f64::NEG_INFINITY),
+        "#not-a-number" => Some(f64::NAN),
+        _ => None,
+    }
 }
 
 impl<T> Grift<T> {
     /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries the
     /// line and column where reading failed; an unfinished form fails at the end of the text.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let mut cur = Cursor {
-            src,
-            chars: src.char_indices().peekable(),
-            line: 1,
-            col: 1,
-        };
-        let mut top = List {
-            head: Value::EmptyList,
-            last: Value::EmptyList,
-            dot: Dot::No,
-        };
+        let mut forms = List::new();
+        let mut at = 0;
+        while let Some((form, place)) = self.read_form(src, at)? {
+            self.add(&mut forms, form)?;
+            at = place.end;
+        }
+        Ok(forms.head)
+    }
+
+    /// Reads the form after byte offset `from` of `src`, a character boundary: the form and where
+    /// it is, or `None` if only space and comments are left.
+    pub(crate) fn read_form(
+        &mut self,
+        src: &str,
+        from: usize,
+    ) -> Result<Option<(Value, Range<usize>)>, Error> {
+        let mut cur = Cursor { src, at: from };
+        cur.skip_space();
+        let start = cur.at;
         let mut open: Vec<List> = Vec::new();
         loop {
             cur.skip_space();
-            let at = [Value::Integer(cur.line), Value::Integer(cur.col)];
-            let fail = || Error::new(K::ParseError, &at);
-            let Some((start, c)) = cur.next() else {
+            let begin = cur.at;
+            let fail = || parse_error(src, begin);
+            let Some(c) = cur.next() else {
                 return if open.is_empty() {
-                    Ok(top.head)
+                    Ok(None)
                 } else {
                     Err(fail())
                 };
             };
             let datum = match c {
                 '(' => {
-                    push(
-                        &mut open,
-                        List {
-                            head: Value::EmptyList,
-                            last: Value::EmptyList,
-                            dot: Dot::No,
-                        },
-                    )?;
+                    push(&mut open, List::new())?;
                     continue;
                 }
                 ')' => match open.pop() {
@@ -116,7 +136,7 @@ impl<T> Grift<T> {
                     while cur.peek().is_some_and(|c| !delimiter(c)) {
                         cur.next();
                     }
-                    let token = src.get(start..cur.end()).unwrap_or_default();
+                    let token = src.get(begin..cur.at).unwrap_or_default();
                     if token == "." {
                         match open.last_mut() {
                             Some(list) if list.dot == Dot::No && list.last != Value::EmptyList => {
@@ -129,25 +149,32 @@ impl<T> Grift<T> {
                     self.atom(token).ok_or_else(fail)??
                 }
             };
-            let list = open.last_mut().unwrap_or(&mut top);
-            match list.dot {
-                Dot::No => {
-                    let pair = self.pair(datum, Value::EmptyList)?;
-                    match list.last {
-                        Value::Pair(r) => self.set_rest(r, pair)?,
-                        _ => list.head = pair,
-                    }
-                    list.last = pair;
-                }
-                Dot::Tail => {
-                    if let Value::Pair(r) = list.last {
-                        self.set_rest(r, datum)?;
-                    }
-                    list.dot = Dot::Done;
-                }
-                Dot::Done => return Err(fail()),
+            let Some(list) = open.last_mut() else {
+                return Ok(Some((datum, start..cur.at)));
+            };
+            if list.dot == Dot::Done {
+                return Err(fail());
             }
+            self.add(list, datum)?;
         }
+    }
+
+    /// Adds `datum` to the end of a list being read: an element, or its tail after a `.`.
+    fn add(&mut self, list: &mut List, datum: Value) -> Result<(), Error> {
+        if list.dot == Dot::Tail {
+            if let Value::Pair(r) = list.last {
+                self.set_rest(r, datum)?;
+            }
+            list.dot = Dot::Done;
+            return Ok(());
+        }
+        let pair = self.pair(datum, Value::EmptyList)?;
+        match list.last {
+            Value::Pair(r) => self.set_rest(r, pair)?,
+            _ => list.head = pair,
+        }
+        list.last = pair;
+        Ok(())
     }
 
     /// Sets the rest of a pair the reader made and nobody else has seen yet.
@@ -167,10 +194,7 @@ impl<T> Grift<T> {
             "#false" => Value::False,
             "#inert" => Value::Inert,
             "#ignore" => Value::Ignore,
-            "#infinity" => Value::Float(f64::INFINITY),
-            "#-infinity" => Value::Float(f64::NEG_INFINITY),
-            "#not-a-number" => Value::Float(f64::NAN),
-            _ if token.starts_with('#') => return None,
+            _ if token.starts_with('#') => Value::Float(float_name(token)?),
             _ if token
                 .trim_start_matches(['+', '-'])
                 .starts_with(|c: char| c.is_ascii_digit()) =>
@@ -190,35 +214,30 @@ impl<T> Grift<T> {
     /// (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor) -> Result<Value, Error> {
         let mut s = String::new();
-        let fail = |cur: &Cursor| {
-            Error::new(
-                K::ParseError,
-                &[Value::Integer(cur.line), Value::Integer(cur.col)],
-            )
-        };
         loop {
             let c = match cur.next() {
-                Some((_, '"')) => break,
-                Some((_, '\\')) => match cur.next() {
-                    Some((_, '\\')) => '\\',
-                    Some((_, '"')) => '"',
-                    Some((_, 'n')) => '\n',
-                    Some((_, 't')) => '\t',
-                    Some((at, 'x')) => {
+                Some('"') => break,
+                Some('\\') => match cur.next() {
+                    Some('\\') => '\\',
+                    Some('"') => '"',
+                    Some('n') => '\n',
+                    Some('t') => '\t',
+                    Some('x') => {
+                        let begin = cur.at;
                         while cur.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
                             cur.next();
                         }
-                        let hex = cur.src.get(at + 1..cur.end()).unwrap_or_default();
+                        let hex = cur.src.get(begin..cur.at).unwrap_or_default();
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
                         match (cur.next(), c) {
-                            (Some((_, ';')), Some(c)) => c,
-                            _ => return Err(fail(cur)),
+                            (Some(';'), Some(c)) => c,
+                            _ => return Err(parse_error(cur.src, cur.at)),
                         }
                     }
-                    _ => return Err(fail(cur)),
+                    _ => return Err(parse_error(cur.src, cur.at)),
                 },
-                Some((_, c)) => c,
-                None => return Err(fail(cur)),
+                Some(c) => c,
+                None => return Err(parse_error(cur.src, cur.at)),
             };
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);

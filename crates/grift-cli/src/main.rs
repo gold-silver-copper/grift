@@ -6,8 +6,9 @@
 //! closed stdout (a broken pipe) ends the run quietly.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display` and `newline`,
-//! `standard-input`, `open-file`, `create-file` and `run-process` (contexts of operations, made
-//! by `runner.grift`), `command-line-arguments`, `environment-variable` and `exit`.
+//! `standard-input`, `standard-error`, `open-file`, `create-file` and `run-process` (contexts of
+//! operations, made by `runner.grift`), `command-line-arguments`, `environment-variable` and
+//! `exit`.
 
 use grift::{Error, Grift, HostFunction, Value};
 use std::fmt;
@@ -36,10 +37,11 @@ struct Opened {
 
 enum Stream {
     Reading(Box<dyn BufRead>),
-    Writing(File),
+    Writing(Box<dyn Write>),
 }
 
-/// The runner's state: the files opened, standard input first, and the status `exit` gave.
+/// The runner's state: the files opened, standard input and standard error first, and the status
+/// `exit` gave.
 struct Runner {
     files: Vec<Opened>,
     exit: Option<u8>,
@@ -160,7 +162,9 @@ fn open_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> 
 }
 
 fn create_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    opened(g, r, args, |path| Ok(Stream::Writing(File::create(path)?)))
+    opened(g, r, args, |path| {
+        Ok(Stream::Writing(Box::new(File::create(path)?)))
+    })
 }
 
 /// The open file whose number is `id`, and its path; `closed` once it is closed.
@@ -319,7 +323,7 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     }
     // The innermost combination on the error's line, then each one around it on a line of
     // its own.
-    for (i, &at) in e.trace.iter().enumerate() {
+    for (i, &at) in e.trace().iter().enumerate() {
         let _ = fmt::Write::write_str(&mut err, if i == 0 { " in " } else { "\n  from " });
         let _ = g.write(at, &mut err);
     }
@@ -365,13 +369,14 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
             eprint!("> ");
             continue;
         }
-        pending = None;
+        // Read first: a `parse-error` from running the input (`read-form`'s) doesn't mean there is
+        // more of it to come.
+        pending = g.read(&src).err().filter(|e| unfinished(g, &src, e));
+        if pending.is_some() {
+            eprint!("  ");
+            continue;
+        }
         let done = match g.evaluate(r, &src) {
-            Err(e) if unfinished(g, &src, &e) => {
-                pending = Some(e);
-                eprint!("  ");
-                continue;
-            }
             Ok(v) => put(g, &[v], false, "\n"),
             Err(e) => Err(e),
         };
@@ -458,10 +463,16 @@ fn main() -> ExitCode {
     }
     let arguments: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let mut r = Runner {
-        files: vec![Opened {
-            path: String::from("standard-input"),
-            file: Some(Stream::Reading(Box::new(BufReader::new(io::stdin())))),
-        }],
+        files: vec![
+            Opened {
+                path: String::from("standard-input"),
+                file: Some(Stream::Reading(Box::new(BufReader::new(io::stdin())))),
+            },
+            Opened {
+                path: String::from("standard-error"),
+                file: Some(Stream::Writing(Box::new(io::stderr()))),
+            },
+        ],
         exit: None,
     };
     let mut g: G = match Grift::new() {
@@ -482,7 +493,9 @@ fn main() -> ExitCode {
         None if io::stdin().is_terminal() => return interactive(&mut g, &mut r),
         None => {
             // The program is standard input, so it can't read it as data too.
-            r.files.iter_mut().for_each(|f| f.file = None);
+            if let Some(input) = r.files.first_mut() {
+                input.file = None;
+            }
             let mut s = String::new();
             (
                 String::from("stdin"),

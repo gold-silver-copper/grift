@@ -6,8 +6,6 @@
 ;   (write-file path s)            replaces the file with the string's bytes
 ;   (string-to-code-points s)      the string's characters, as a list of code points
 ;   (code-points-to-string list)   the other way
-;   (value-to-string v)            the printed form of any value
-;   (string-to-forms s)            the forms in s, read, not evaluated
 ; The host starts the editor with (editor-main file message) and, after an error stopped a
 ; command, goes on with (editor-recover message). C-g while a command runs interrupts it.
 ; Everything else is here: the buffer, redisplay, keys and keymaps, the minibuffer, the
@@ -623,9 +621,17 @@
 (define! execute-extended-command
   (lambda! () (run-command (string-to-symbol (read-from-minibuffer "M-x ")))))
 
+; The forms of `text` from offset `at`, read and not evaluated.
+(define! read-forms
+  (lambda! (text at)
+    (let! ((read (read-form text at)))
+      (if! (empty-list? read)
+        ()
+        (let! (((form #ignore end) read)) (pair form (read-forms text end)))))))
+
 (define! eval-expression
   (lambda! ()
-    (define! forms (string-to-forms (read-from-minibuffer "Eval: ")))
+    (define! forms (read-forms (read-from-minibuffer "Eval: ") 0))
     (message (value-to-string (evaluate (pair (quote! sequence!) forms) editor-context)))))
 
 ; --- Help ---------------------------------------------------------------------------------------

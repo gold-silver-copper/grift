@@ -174,6 +174,37 @@ fn command_line_arguments_and_environment_variables() {
 }
 
 #[test]
+fn standard_error_is_written_to_as_a_file_is() {
+    let dir = scratch("standard-error");
+    // The text goes to stderr, nothing to stdout, and the status can then be any.
+    let say = "((evaluate-in! write standard-error) \"no rule\\n\") (display \"data\") (exit 2)";
+    let (status, out, err) = script(&dir, say, &[], "");
+    assert_eq!(
+        (status, out.as_str(), err.as_str()),
+        (Some(2), "data", "no rule\n")
+    );
+    // Also for a program read from stdin, whose standard input alone is closed.
+    let out = run(&[], say, Stdio::piped());
+    assert_eq!(out.stderr, b"no rule\n");
+    let (status, _, err) = script(&dir, "((evaluate-in! write standard-error) 1)", &[], "");
+    assert_eq!(status, Some(1));
+    assert!(err.contains("type-error"));
+    // Writes add to what is there: it is the descriptor, not a path to empty.
+    let log = dir.join("log");
+    let held = std::fs::File::create(&log).unwrap();
+    writeln!(&held, "before").unwrap();
+    let path = dir.join("say.grift");
+    std::fs::write(&path, say).unwrap();
+    Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(held)
+        .status()
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "before\nno rule\n");
+}
+
+#[test]
 fn exit_ends_the_run_with_its_status() {
     let dir = scratch("exit");
     assert_eq!(script(&dir, "(exit 7) (display 1)", &[], "").0, Some(7));

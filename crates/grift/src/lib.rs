@@ -7,7 +7,7 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-use heap::{Bindings, Heap, Object};
+use heap::{Bindings, Heap, Object, Seen};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -76,10 +76,10 @@ pub struct Error {
     pub kind: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
-    /// Where: the combinations of the program that were being evaluated, innermost first, each
-    /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
-    /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
-    pub trace: Vec<Value>,
+    /// Where, read with [`Error::trace`].
+    trace: Vec<Value>,
+    /// The combinations in `trace`, so adding one searches nothing.
+    seen: Seen<Reference>,
 }
 
 /// Symbols every [`Grift`] interns first, in this order, so the core can name them as constants.
@@ -151,6 +151,13 @@ impl From<K> for Symbol {
 }
 
 impl Error {
+    /// Where: the combinations of the program that were being evaluated, innermost first, each
+    /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
+    /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
+    pub fn trace(&self) -> &[Value] {
+        &self.trace
+    }
+
     /// An error with a copy of `values`; if even that copy can't be allocated, `out-of-memory`.
     pub(crate) fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut v = Vec::new();
@@ -162,6 +169,7 @@ impl Error {
             kind: kind.into(),
             values: v,
             trace: Vec::new(),
+            seen: Seen::default(),
         }
     }
 
@@ -170,6 +178,7 @@ impl Error {
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Vec::new(),
+            seen: Seen::default(),
         }
     }
 }
@@ -182,17 +191,21 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     Ok(b.into_boxed_str())
 }
 
+/// A string to format into, failing when it can't grow instead of aborting.
+#[derive(Default)]
+pub(crate) struct Growing(pub String);
+
+impl fmt::Write for Growing {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.try_reserve(s.len()).map_err(|_| fmt::Error)?;
+        self.0.push_str(s);
+        Ok(())
+    }
+}
+
 /// Rust's formatting of `x`, reporting `out-of-memory` instead of aborting.
 pub(crate) fn formatted(x: fmt::Arguments) -> Result<Box<str>, Error> {
-    struct Growing(String);
-    impl fmt::Write for Growing {
-        fn write_str(&mut self, s: &str) -> fmt::Result {
-            self.0.try_reserve(s.len()).map_err(|_| fmt::Error)?;
-            self.0.push_str(s);
-            Ok(())
-        }
-    }
-    let mut s = Growing(String::new());
+    let mut s = Growing::default();
     fmt::write(&mut s, x).map_err(|_| Error::oom())?;
     boxed(&s.0)
 }

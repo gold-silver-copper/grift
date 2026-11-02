@@ -7,6 +7,7 @@
 
 use crate::{Error, Grift, Value};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 fn grift() -> Grift {
     Grift::new().expect("the library loads")
@@ -335,7 +336,7 @@ fn errors_name_the_program_combination() {
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
         assert_eq!(
-            e.trace.first().map(|&v| show(&g, v)).as_deref(),
+            e.trace().first().map(|&v| show(&g, v)).as_deref(),
             Some(at),
             "{src}"
         );
@@ -352,7 +353,7 @@ fn errors_name_the_program_combination() {
         Err(g.error("mine", &[]))
     });
     let e = g.evaluate(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, e.trace[0]), "(fail-after-churn)");
+    assert_eq!(show(&g, e.trace()[0]), "(fail-after-churn)");
 }
 
 #[test]
@@ -554,7 +555,7 @@ fn cleanup_runs_and_the_error_goes_on() {
     assert_eq!(e.values[0], Value::Integer(7));
     assert_eq!(show(&g, e.values[1]), "(8)");
     assert_eq!(
-        show(&g, e.trace[0]),
+        show(&g, e.trace()[0]),
         "(raise (error (quote! mine) 7 (list 8)))"
     );
     let log = g.evaluate(&mut (), "log").unwrap();
@@ -576,8 +577,8 @@ fn cleanup_runs_and_the_error_goes_on() {
         .call(&mut (), protect, &[missing, here, cleanup])
         .unwrap_err();
     assert_eq!(
-        (kind(&mut g, &e), e.trace),
-        (String::from("unbound-symbol"), vec![])
+        (kind(&mut g, &e), e.trace()),
+        (String::from("unbound-symbol"), &[][..])
     );
     // The waiting error's values survive collections in the cleanup.
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
@@ -719,7 +720,7 @@ fn catch_catches_errors_as_contexts() {
         .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
     assert_eq!(kind(&mut g, &e), "not-integer");
-    let trace: Vec<String> = e.trace.iter().map(|&v| show(&g, v)).collect();
+    let trace: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
     assert_eq!(
         trace,
         [
@@ -817,6 +818,26 @@ fn binds_looks_through_parents() {
             ("(binds!? 1)", "type-error"),
         ],
     );
+    // binds? is binds!? for one symbol, with both operands evaluated: a computed symbol is the
+    // one looked up, not the name it is held in.
+    holds(
+        &mut g,
+        &[
+            "(binds? e (string-to-symbol \"x\"))",
+            "(not? (binds? e (string-to-symbol \"nope\")))",
+            "(sequence! (define! s (quote! nope)) (not? (binds? e s)))",
+            "(binds? (context e) (quote! first))",
+            "(same? (binds? (context) (quote! first)) (binds!? (context) first))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(binds? 1 (quote! x))", "type-error"),
+            ("(binds? e 1)", "type-error"),
+            ("(binds? e)", "arity-error"),
+        ],
+    );
 }
 
 #[test]
@@ -848,7 +869,7 @@ fn errors_name_each_program_combination_around_them() {
         ("(first 1)", "(first 1)"),
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
-        let at: Vec<String> = e.trace.iter().map(|&v| show(&g, v)).collect();
+        let at: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }
@@ -921,12 +942,12 @@ fn floats_read_back_as_they_print() {
         let printed = show(&g, Value::Float(x));
         let again = float(&mut g, &printed);
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
-        // float-to-string and string-to-float are Rust's Display and parse, and undo each other
-        // (a not-a-number only up to its sign, which these floats don't vary).
+        // float-to-string gives the printer's text, and string-to-float reads it back (a
+        // not-a-number only up to its sign, which these floats don't vary).
         let s = g
             .evaluate(&mut (), &format!("(float-to-string {printed})"))
             .unwrap();
-        assert_eq!(g.as_str(s), Some(x.to_string().as_str()));
+        assert_eq!(g.as_str(s), Some(printed.as_str()));
         let again = float(
             &mut g,
             &format!("(string-to-float (float-to-string {printed}))"),
@@ -943,6 +964,8 @@ fn floats_read_back_as_they_print() {
             "(float? 1e3)",
             "(integer? 1000)",
             "(same? (string-to-float \"1\") 1.0)",
+            "(same? (float-to-string 1.0) \"1.0\")",
+            "(same? (string-to-float \"inf\") #infinity)",
             "(same? (string-to-integer \"-42\") -42)",
             "(same? (integer-to-string -42) \"-42\")",
         ],
@@ -1306,4 +1329,406 @@ fn contexts() {
     assert_eq!(show(&g, empty), "#[context]");
     let e = g.evaluate(&mut (), "(error (quote! mine) 1)").unwrap();
     assert_eq!(show(&g, e), "#[context kind trace values]");
+}
+
+/// Whether a test program finishes within this: about 5 times what it takes (2 s) and less than
+/// a search per frame takes (14 s), in a release build at a load of about 8 on 32 cores.
+const LINEAR: Duration = Duration::from_secs(10);
+
+#[test]
+fn unwinding_and_checking_parameters_search_nothing() {
+    // 300,000 frames, each around a combination made for it, so the trace holds each of them.
+    // Through a cleanup per frame, too.
+    for around in ["x", "(finally! x #inert)"] {
+        let mut g = grift();
+        let deep = format!(
+            "(define! here (current-context))
+             (define! deep
+               (lambda! (n)
+                 (if! (same? n 0)
+                   (raise (error (quote! bottom)))
+                   (evaluate (list (quote! add) 1 (list (quote! wrapped) (subtract n 1))) here))))
+             (define! wrapped (vau! (n) caller ((lambda! (x) {around}) (deep (evaluate n caller)))))
+             (catch! (deep 300000) e (length (evaluate-in! trace e)))"
+        );
+        let start = Instant::now();
+        let traced = g.evaluate(&mut (), &deep).unwrap();
+        assert!(start.elapsed() < LINEAR, "{:?}", start.elapsed());
+        assert!(matches!(traced, Value::Integer(n) if n >= 300_000));
+    }
+    // 300,000 parameters, in the order they intern fastest: 9 s with a search, 0.05 s without.
+    let mut g = grift();
+    let names: Vec<String> = (0..300_000).map(|i| format!("p{i:06}")).collect();
+    let start = Instant::now();
+    let good = format!("((wrap vau!) (quote! ({})) #ignore 1)", names.join(" "));
+    assert!(g.evaluate(&mut (), &good).is_ok());
+    assert!(start.elapsed() < LINEAR, "{:?}", start.elapsed());
+    let twice = format!(
+        "((wrap vau!) (quote! ({} p000000)) #ignore 1)",
+        names.join(" ")
+    );
+    fails(&mut g, &[(twice.as_str(), "parameter-error")]);
+}
+
+#[test]
+fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            // A recursion passes one combination many times.
+            "(sequence!
+               (define! down (lambda! (n) (if! (same? n 0) (raise (error (quote! bottom))) (add 1 (down (subtract n 1))))))
+               (define! trace (catch! (down 100) e (evaluate-in! trace e)))
+               (equal? (length trace) (length (fold (lambda! (seen x) (if! (member? x seen) seen (pair x seen))) () trace))))",
+            // A caught error raised again passes the same combinations again, at every level.
+            "(sequence!
+               (define! up
+                 (lambda! (n)
+                   (if! (same? n 0)
+                     (raise (error (quote! bottom)))
+                     (catch! (add 1 (up (subtract n 1))) e (raise e)))))
+               (define! trace (catch! (up 20) e (evaluate-in! trace e)))
+               (equal? (length trace) (length (fold (lambda! (seen x) (if! (member? x seen) seen (pair x seen))) () trace))))",
+            // What a raise is given stays, repeats and all, and what it passes is added once.
+            "(sequence!
+               (define! e (error (quote! mine)))
+               (define! at (quote! (a b)))
+               (bind e (quote! trace) (list 1 at at))
+               (define! trace (catch! (add 1 (raise e)) caught (evaluate-in! trace caught)))
+               (and!? (equal? (first trace) 1)
+                      (same? (first (rest trace)) at)
+                      (same? (first (rest (rest trace))) at)
+                      (equal? (length trace) 4)))",
+        ],
+    );
+}
+
+/// `s` as a grift string literal.
+fn literal(s: &str) -> String {
+    let mut g = grift();
+    let v = g.string(s).unwrap();
+    show(&g, v)
+}
+
+#[test]
+fn read_form_is_the_program_reader() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! forms
+           (lambda! (text at)
+             (let! ((read (read-form text at)))
+               (if! (empty-list? read)
+                 ()
+                 (let! (((form start end) read))
+                   ; The text between its offsets is the form's, and reads back as the form.
+                   (if! (equal? (first (read-form (byte-substring text start end) 0)) form)
+                     (pair form (forms text end))
+                     (raise (error (quote! not-the-form) form))))))))",
+    )
+    .unwrap();
+    // Form by form, it reads what the program reader reads.
+    for text in [
+        "",
+        "  ; only a comment\n",
+        "1 -2.5 1e3 #true #inert () (a . b) (a (b \"c\\n\" . d) e) \"é\" sym ; end",
+        "(first\n  ; between\n  (quote! (x)))\n\"\\x41;\"",
+        "a(b)c\"d\"e",
+    ] {
+        let t = literal(text);
+        holds(
+            &mut g,
+            &[&format!("(equal? (forms {t} 0) (quote! ({text}\n)))")],
+        );
+    }
+    holds(
+        &mut g,
+        &[
+            // The form, where it starts past space and comments, and the offset right after it; a
+            // form that is () from the end of the text.
+            "(equal? (read-form \"  (add 1 2.5) x\" 0) (quote! ((add 1 2.5) 2 13)))",
+            "(equal? (read-form \"  (add 1 2.5) x\" 13) (quote! (x 14 15)))",
+            "(equal? (read-form \"é x\" 2) (quote! (x 3 4)))",
+            "(equal? (read-form \"; é\\n\\xc;\\xa0; ()\" 0) (quote! (() 9 11)))",
+            "(empty-list? (read-form \"() \" 2))",
+            "(empty-list? (read-form \"\" 0))",
+            // It evaluates nothing, and what it reads evaluates as written.
+            "(same? (evaluate (first (read-form \"(add 1 2)\" 0)) (current-context)) 3)",
+            "(pair? (first (read-form \"(no-such-thing)\" 0)))",
+        ],
+    );
+    // A parse-error says the line and column in the whole text, as the program reader's does.
+    for bad in [
+        ")",
+        "(a",
+        "\n  (a . )",
+        "\"é\n",
+        "(a\n#nope)",
+        "1.2.3",
+        "(. a)",
+        "\"\\q\"",
+    ] {
+        let whole = g.read(bad).unwrap_err();
+        assert_eq!(kind(&mut g, &whole), "parse-error");
+        let one = g
+            .evaluate(&mut (), &format!("(read-form {} 0)", literal(bad)))
+            .unwrap_err();
+        assert_eq!(
+            (kind(&mut g, &one), one.values),
+            ("parse-error".into(), whole.values)
+        );
+    }
+    let e = g
+        .evaluate(&mut (), "(read-form \"a\\nb\\n)\" 4)")
+        .unwrap_err();
+    assert_eq!(e.values, [Value::Integer(3), Value::Integer(1)]);
+    fails(
+        &mut g,
+        &[
+            ("(read-form 1 0)", "type-error"),
+            ("(read-form \"a\" 1.0)", "type-error"),
+            ("(read-form \"a\" 2)", "range-error"),
+            ("(read-form \"a\" -1)", "range-error"),
+            ("(read-form \"é\" 1)", "range-error"),
+        ],
+    );
+    // The text is all there afterwards, whatever the outcome.
+    holds(
+        &mut g,
+        &["(sequence!
+               (define! t \"(a) (\")
+               (read-form t 0)
+               (catch! (read-form t 3) #ignore #inert)
+               (catch! (read-form t 9) #ignore #inert)
+               (same? t \"(a) (\"))"],
+    );
+}
+
+#[test]
+fn value_to_string_is_the_printer() {
+    let mut g = grift();
+    for src in [
+        "(list 1 1.0 -0.5 #infinity \"a\\n\\\"b\" (quote! (s . t)) () #true #inert #ignore)",
+        "first",
+        "vau!",
+        "(lambda! (x) (add x 1))",
+        "(vau! (x . y) caller (x y))",
+        "(sequence! (define! c (context)) (define-in! c b 1) (define-in! c a 2) c)",
+    ] {
+        let v = g.evaluate(&mut (), src).unwrap();
+        let printed = show(&g, v);
+        let text = g
+            .evaluate(&mut (), &format!("(value-to-string {src})"))
+            .unwrap();
+        assert_eq!(g.as_str(text), Some(printed.as_str()));
+    }
+    // What can be read back reads back, by read-form.
+    holds(
+        &mut g,
+        &[
+            "(sequence!
+               (define! v (quote! (1 -2.5 \"s\\t\" (a . b) () #false)))
+               (equal? (first (read-form (value-to-string v) 0)) v))",
+            "(float? (first (read-form (float-to-string 1.0) 0)))",
+        ],
+    );
+}
+
+#[test]
+fn member_and_find_association_cost_what_a_loop_by_hand_does() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! xs (quote! (1 2 3 4)))
+         (define! ps (quote! ((1 . a) (2 . b) (3 . c) (4 . d))))
+         (define! member-by-hand
+           (lambda! (x xs)
+             (if! (same? xs ()) #false (if! (equal? x (first xs)) #true (member-by-hand x (rest xs))))))
+         (define! find-by-hand
+           (lambda! (x ps)
+             (if! (same? ps ())
+               ()
+               (if! (equal? x (first (first ps))) (first ps) (find-by-hand x (rest ps))))))",
+    )
+    .unwrap();
+    for (form, by_hand) in [
+        ("(member? 9 xs)", "(member-by-hand 9 xs)"),
+        ("(find-association 9 ps)", "(find-by-hand 9 ps)"),
+    ] {
+        let ((steps, _), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
+        assert!(
+            steps <= by_hand_steps,
+            "{form}: {steps} against {by_hand_steps}"
+        );
+    }
+    holds(
+        &mut g,
+        &[
+            "(member? 4 xs)",
+            "(not? (member? 9 xs))",
+            "(member? (list 1) (list 2 (list 1)))",
+            "(member? \"a\" (list \"a\"))",
+            // equal?'s meaning: not-a-number is equal to nothing, and -0.0 to 0.0.
+            "(not? (member? #not-a-number (list #not-a-number)))",
+            "(member? 0.0 (list -0.0))",
+            "(equal? (find-association 2 ps) (quote! (2 . b)))",
+            "(empty-list? (find-association 9 ps))",
+            "(equal? (find-association 0.0 (list (pair -0.0 1))) (pair -0.0 1))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(member? 1 2)", "type-error"),
+            ("(find-association 1 (list 2))", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn list_helpers() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! xs (range -3 4))
+         (define! even? (lambda! (x) (same? (remainder x 2) 0)))
+         (define! calls 0)
+         (define! counting (lambda! (x) (define-in! top calls (add calls 1)) (even? x)))
+         (define! top (current-context))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            // range: as many as the distance, each one more than the last.
+            "(equal? xs (list -3 -2 -1 0 1 2 3))",
+            "(same? (length (range 5 105)) 100)",
+            "(empty-list? (range 3 3))",
+            "(empty-list? (range 3 2))",
+            // filter: the elements that pass, in order, and the others are the rest of the list.
+            "(all? even? (filter even? xs))",
+            "(same? (add (length (filter even? xs))
+                         (length (filter (lambda! (x) (not? (even? x))) xs)))
+                    (length xs))",
+            "(equal? (filter even? xs) (list -2 0 2))",
+            // fold: from the left, the sum of a range by its formula.
+            "(same? (fold add 0 (range 0 101)) 5050)",
+            "(equal? (fold pair () (list 1 2)) (pair (pair () 1) 2))",
+            "(same? (fold add 7 ()) 7)",
+            // any? and all? negate each other, and stop at the answer.
+            "(same? (any? even? xs) (not? (all? (lambda! (x) (not? (even? x))) xs)))",
+            "(not? (any? even? ()))",
+            "(all? even? ())",
+            "(sequence! (any? counting (list 2 1 3)) (same? calls 1))",
+            "(sequence! (define-in! top calls 0) (all? counting (list 1 2 4)) (same? calls 1))",
+            // map: with one list as before; with several, element by element.
+            "(equal? (map even? (list 1 2)) (list #false #true))",
+            "(equal? (map add (list 1 2) (list 10 20)) (list 11 22))",
+            "(equal? (map list (list 1) (list 2) (list 3)) (list (list 1 2 3)))",
+            "(empty-list? (map add () ()))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(filter add (list 1))", "arity-error"),
+            ("(filter first (list (list 1)))", "type-error"),
+            ("(any? first (list (list 1)))", "type-error"),
+            ("(all? first (list (list 1)))", "type-error"),
+            ("(range 1 1.5)", "type-error"),
+            ("(range 1.0 2.0)", "type-error"),
+            ("(map add (list 1) (list 2 3))", "type-error"),
+            ("(map add (list 1 2) (list 3))", "type-error"),
+            ("(map add () (list 3))", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn string_helpers() {
+    let mut g = grift();
+    // Each case holds for every text and pattern here, UTF-8 included.
+    g.evaluate(
+        &mut (),
+        "(define! texts (list \"\" \"a\" \"a,b,,c\" \",\" \",,\" \"é,ü\" \"日本語,日本\" \"Hello, World\"))
+         (define! patterns (list \",\" \"b\" \"é\" \"日本\" \", \" \"xyz\"))
+         (define! every-pair
+           (lambda! (test)
+             (all? (lambda! (t) (all? (lambda! (p) (test t p)) patterns)) texts)))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            // string-split and string-join undo each other, and no part holds the separator.
+            "(every-pair (lambda! (t p) (same? (string-join (string-split t p) p) t)))",
+            "(every-pair (lambda! (t p)
+               (all? (lambda! (part) (empty-list? (string-search part p 0))) (string-split t p))))",
+            "(equal? (string-split \"a,,b\" \",\") (list \"a\" \"\" \"b\"))",
+            "(equal? (string-split \"\" \",\") (list \"\"))",
+            "(same? (string-join () \",\") \"\")",
+            "(same? (string-join (list \"a\") \",\") \"a\")",
+            // string-search: the pattern is at the offset it gives, and it is at none before it.
+            "(every-pair (lambda! (t p)
+               (let! ((at (string-search t p 0)) (size (string-byte-length p)))
+                 (if! (empty-list? at)
+                   (same? (length (string-split t p)) 1)
+                   (and!? (same? (byte-substring t at (add at size)) p)
+                          (empty-list? (string-search (byte-substring t 0 at) p 0)))))))",
+            "(same? (string-search \"abcabc\" \"c\" 3) 5)",
+            "(same? (string-search \"abc\" \"\" 3) 3)",
+            "(empty-list? (string-search \"abc\" \"abcd\" 0))",
+            // Every text starts with what it starts with and ends with what it ends with.
+            "(every-pair (lambda! (t p)
+               (and!? (string-starts-with? (string-append p t) p)
+                      (string-ends-with? (string-append t p) p))))",
+            "(not? (string-starts-with? \"é\" \"a\"))",
+            "(not? (string-starts-with? \"a\" \"ab\"))",
+            "(not? (string-ends-with? \"é\" \"a\"))",
+            "(not? (string-ends-with? \"b\" \"ab\"))",
+            // string-trim: nothing blank is left at the ends, nothing else goes, and once is enough.
+            "(same? (string-trim \" \\t\\n a b\\xd;\\n \") \"a b\")",
+            "(same? (string-trim \"  \\n\") \"\")",
+            "(all? (lambda! (t) (same? (string-trim (string-trim t)) (string-trim t))) texts)",
+            "(all? (lambda! (t) (same? (string-trim (string-append \" \" t \"\\n\")) t)) texts)",
+            // The pads: at least the width, the text unchanged, the spaces on the side named.
+            "(all? (lambda! (t)
+               (and!? (same? (string-byte-length (string-pad-left t 30)) 30)
+                      (string-ends-with? (string-pad-left t 30) t)
+                      (string-starts-with? (string-pad-right t 30) t)
+                      (same? (string-pad-right t 0) t)
+                      (same? (string-pad-left t 0) t)))
+               texts)",
+            "(same? (string-pad-left \"ab\" 4) \"  ab\")",
+            "(same? (string-pad-right \"ab\" 4) \"ab  \")",
+            "(same? (string-pad-left \"ab\" -9223372036854775808) \"ab\")",
+            "(same? (string-pad-right \"ab\" -9223372036854775808) \"ab\")",
+            // string-to-lowercase: only A to Z change, and once is enough.
+            "(same? (string-to-lowercase \"ÉCLAIR Ab1 [@]\") \"Éclair ab1 [@]\")",
+            "(all? (lambda! (t)
+               (let! ((low (string-to-lowercase t)))
+                 (and!? (same? (string-to-lowercase low) low)
+                        (same? (string-byte-length low) (string-byte-length t)))))
+               texts)",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(string-split \"a\" \"\")", "range-error"),
+            ("(string-search \"é\" \"a\" 1)", "range-error"),
+            ("(string-search \"a\" \"a\" 2)", "range-error"),
+            ("(string-search \"a\" \"a\" -1)", "range-error"),
+            ("(string-search 1 \"a\" 0)", "type-error"),
+            ("(string-search \"a\" 1 0)", "type-error"),
+            ("(string-join (list 1 2) \",\")", "type-error"),
+            ("(string-starts-with? 1 \"a\")", "type-error"),
+            ("(string-ends-with? \"a\" 1)", "type-error"),
+            ("(string-trim 1)", "type-error"),
+            ("(string-pad-left 1 2)", "type-error"),
+            ("(string-pad-right \"a\" \"b\")", "type-error"),
+            ("(string-to-lowercase 1)", "type-error"),
+        ],
+    );
 }

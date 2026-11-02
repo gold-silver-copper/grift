@@ -423,3 +423,92 @@ reference that matches them.
     branch beside `if!`. Speed (release, one run each, load about 7 on 32 cores): `fib 25` 0.216 s
     on the base, 0.132 s here; a 200,000-step loop through a four-clause `conditional!` 1.467 s on
     the base, 0.868 s here, against 0.530 s and 0.347 s for the same loop with nested `if!`s.
+
+## Owner decisions, 2026-11-01, after wave 2
+
+Evidence: twelve programs (spreadsheet, text adventure, build tool, sandboxed plugin host, three
+ways each) written on grift at 27c2aa4 without changing it, ranked in
+`~/code/notes/projects/grift/apps2-2026-11-01/tally.md`.
+
+- **G-74. grift does not sandbox the code it runs** (VISION "Embedding"). Hostile code is the
+  embedder's problem, not the language's. grift adds no safety limit that would limit genuine
+  programs: no depth limit, no trace-length cap, no memory quota, no change to cleanups. **G-17,
+  G-35 and G-48 stand:** cleanups always run, `interrupted` included. This declines what the wave 2
+  sandbox agents asked for: stopping a plugin through its cleanups (tally section 3, attacks 13, 28,
+  31 and 32), a guard against a host function calling back without end (37), charging a plugin for
+  its memory (44, 45), and trusting a trace (a program can `bind` any trace on an error it raises,
+  69 and sbx-c 30). An embedder running untrusted code isolates it itself, for example in its own
+  process.
+- **G-75. What wave 2 earned** (G-57; tally sections 4 and 7): a reader and a printer to a string in
+  the core (9 and 8 programs); in the library an applicative `binds?` (9), a faster `member?` and
+  `find-association` (7), and the list and string helpers with three or more askers (10; sort, with
+  two, not now); `standard-error` in the runner (8); and unwinding and the parameter check without a
+  search, which are speed bugs, no behaviour changes (holes 33, 34, 69). G-27 left the string helpers
+  out for one asker each; they now have 3 to 9 each.
+
+## Made with G-74 and G-75, 2026-11-01 (the owner may overrule any)
+
+- **G-76. An error keeps a set of the combinations in its trace** (G-29 unchanged: each once,
+  innermost first, a given trace as it was given). Adding a frame's combination checks the set, so
+  unwinding is linear in the frames, also through a cleanup per frame, which is why the set stays with
+  the error instead of being rebuilt each time the error goes on. So that the two can't drift apart,
+  `Error`'s `trace` is private now and hosts read it with `Error::trace()`: review showed a host
+  adding to the public field could get a combination listed twice. No host wrote to it. The parameter
+  check (`vau!`, `bind`) uses the same kind of set. Both hash a small id with the one multiplication
+  contexts already use. Rejected: removing repeats only when the error leaves (the trace then holds a
+  repeat per frame while it unwinds, so a deep recursion near the allocator's limit loses locations the
+  set keeps; and a raised trace's own repeats would go). Measured (release, one run each, load about 8
+  on 32 cores): a 300,000-deep raise through a combination made per frame, 11.9 s to 1.0 s; 300,000
+  parameters, 9.2 s to 0.05 s; `fib 25`, 0.141 s to 0.131 s; a loop of `define!` and `lambda!`, 0.918 s
+  to 0.978 s. A catch and raise at every level still copies the trace each time; that copy is the record
+  the handler gets.
+- **G-77. `read-form`** (G-38: a verb and what it reads, beside the runner's `read-line` and
+  `read-all`; agents typed `read` first, which says nothing about one form, and `string-to-value`, but
+  the operation takes an offset and gives more than a conversion would). `(read-form text offset)` is
+  `(form start end)`, or `()` when only space and comments are left: a form is always in a list, so the
+  end can't be mistaken for one, and no value is set aside. One reader: `Grift::read` loops over the
+  same function, so the two can't disagree. The offsets are in bytes as everywhere, and the one given
+  must be on a character boundary. `start` was added to the form and the offset after it after porting
+  build-data: a form's line is where it starts, so with the end alone a program skipped space and
+  comments itself, by its own idea of whitespace, and a form feed gave a wrong line. It also makes the
+  form's own text one `byte-substring`. A `parse-error` keeps its values, the line and column, now
+  counted from the start of the whole text when the error happens, so reading costs nothing per form
+  for the length of the text before it; the primitive lends the string's text to the reader for the
+  call for the same reason. Reading 40,000 forms, 1.5 MB, takes 0.17 s, against 10-63 µs a byte for the
+  programs' readers. Not added: `Grift::read_form` for hosts, and a reason in a `parse-error` (tally
+  core 6, not chosen for this change).
+- **G-78. `value-to-string`; `float-to-string` is the printer's** (amends G-61). `value-to-string`
+  is what `Grift::write` writes, as a string. `float-to-string` now gives a float's printed text, so
+  `(float-to-string 1.0)` is `"1.0"`, not the integer's text, and any float's text reads back as a float
+  through both the reader and `string-to-float`; `string-to-float` reads the three `#` names too, and is
+  otherwise still `parse::<f64>`. Rust's `{:?}` alone would give `"inf"`, which reads as a symbol.
+- **G-79. `binds?` shares `binds!?`'s helper**: one symbol, as asked; several are one `and!?` away.
+  An own-names-only test had one asker and isn't added.
+- **G-80. `member?` and `find-association` walk with `if!`, no `conditional!`.** On the tally's 4-element
+  case, 24.5 µs to 10.1 µs a call for `member?`, the same for `find-association`, with loop overhead
+  of about 1.3 µs in both. `same?` before `equal?` (the tally's proposal) is wrong: `same?` holds for a
+  not-a-number and `equal?` doesn't, and a miss would still pay for both. Measured and rejected:
+  choosing `same?` once when `x` is neither a pair nor a float, a special case the owner ruled out;
+  `equal?` asking `type-of` once, 11% on this case for 5 lines.
+- **G-81. The helpers' names and shapes** (G-38). `filter`, `fold` (Rust's order, `(f value element)`),
+  `any?`, `all?`, `range` (Rust's `start..end`, not Scheme's `iota`), `string-search`,
+  `string-starts-with?`, `string-ends-with?`, `string-split`, `string-join`, `string-trim`,
+  `string-pad-left`, `string-pad-right`, `string-to-lowercase` (a conversion spells out `to`). They call
+  through `apply`, as `map` does, so an applicative gets an empty context, never the library's.
+  - `map` takes several lists of one length, as Kernel's does; different lengths are a `type-error`,
+    not Rust's silent stop at the shortest (G-8). `for-each` keeps one list: no asker.
+  - `string-search` gives `()` when the pattern isn't there, as `find-association` does, and a start
+    out of range or off a boundary is refused with the `range-error` of the empty `byte-substring`.
+  - `string-split` keeps empty parts, so `string-join` undoes it; an empty separator is a `range-error`.
+  - Pads and lowercase work on bytes and ASCII, what the library can do honestly; `string-pad-left` is
+    named for where the spaces go, as the programs named theirs. The spaces come from `range`, from the
+    string's length to the width, so a width below the length gives none, whatever it is.
+  - `string-search` stays library grift (G-57): 1 µs a byte (1 MiB in 1.0 s), a 64 KiB text split into
+    4,096 lines in about 0.1 s; usable. The library reader that earned a primitive took 10-63 µs a byte.
+- **G-82. `standard-error`** (extends G-55 and G-70): a context with `write` alone, as `standard-input`
+  has no `close` or `path`; it writes to the descriptor, so `> log 2>&1` keeps what is there. It is
+  file number 1 in the runner, a closure like the rest. A failing write is a `file-error`. A message
+  with status 2 is now `((evaluate-in! write standard-error) "...") (exit 2)`.
+- **G-83. The interactive runner reads before it evaluates.** It keeps asking for more only if the input
+  itself doesn't read yet. It used to judge by the error from evaluating, and `read-form` gives a
+  program a `parse-error` at any line and column, so an input could run twice.

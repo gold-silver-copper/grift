@@ -2,14 +2,20 @@
 //! sweep.
 
 use crate::{Error, K, Symbol, Value, push};
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Reference {
     idx: u32,
     generation: u32,
+}
+
+impl Hash for Reference {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u32(self.idx);
+    }
 }
 
 /// A compound operative: its parameter tree, its context parameter, its body, the context it
@@ -35,14 +41,17 @@ pub(crate) enum Object {
 }
 
 /// A context's bindings.
-pub(crate) type Bindings = HashMap<Symbol, Value, BuildHasherDefault<SymbolHasher>>;
+pub(crate) type Bindings = HashMap<Symbol, Value, BuildHasherDefault<IdHasher>>;
 
-/// Hashes a symbol by its id, a small integer: one multiplication spreads it over the bits the
-/// table looks at.
+/// A set of symbols or references, for checking in constant time whether one was met before.
+pub(crate) type Seen<T> = HashSet<T, BuildHasherDefault<IdHasher>>;
+
+/// Hashes a symbol or a reference by its id, a small integer: one multiplication spreads it over
+/// the bits the table looks at.
 #[derive(Default)]
-pub(crate) struct SymbolHasher(u64);
+pub(crate) struct IdHasher(u64);
 
-impl Hasher for SymbolHasher {
+impl Hasher for IdHasher {
     fn finish(&self) -> u64 {
         self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
     }
