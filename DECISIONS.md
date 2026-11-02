@@ -646,7 +646,8 @@ them. Each has a test stating a property, a LANGUAGE.md or README entry, and its
 - **G-100. Bytes are a list of integers 0-255** (K4: Brainfuck's `-.`, base64 of binary, `head -c 1` on
   `é`, `cat` of a binary file). Reader contexts get `(read-bytes count)`, up to `count` bytes, `()` at
   the end; writer contexts get `(write-bytes bytes)`; a new `standard-output` context (`write`,
-  `write-bytes`) is where bytes go to stdout, beside `standard-error`. Against VISION "Values": no new
+  `write-bytes`) is where bytes go to stdout, beside `standard-error`, which gains `write-bytes` (amends
+  G-82's "`write` alone"). Against VISION "Values": no new
   value, no vectors, strings stay UTF-8 text; a list is what every helper already takes (`map`, `fold`,
   `take`, `element-at`), and embedding's host wrote exactly this (`read-bytes`, a list of integers,
   200 KB through `hexdump` in 3.1 s). A count, not "the rest", so `head -c 1` and Brainfuck's `,` read

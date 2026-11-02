@@ -397,3 +397,23 @@ fn a_parse_error_says_where_the_form_opened() {
         "{err}"
     );
 }
+
+#[test]
+fn a_closed_stderr_is_an_error_not_a_quiet_end() {
+    // Only a closed stdout ends the run quietly; a failed message to stderr is a failure.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"(display-error \"lost\") (display \"after\")")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!((out.status.code(), &out.stdout[..]), (Some(1), &b""[..]));
+}

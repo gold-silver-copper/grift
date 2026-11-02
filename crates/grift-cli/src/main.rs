@@ -67,13 +67,15 @@ impl<W: Write> fmt::Write for Sink<W> {
     }
 }
 
-/// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes.
+/// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes. A broken
+/// pipe ends the run quietly only when `w` is stdout.
 fn put(
     g: &mut G,
     values: &[Value],
     raw: bool,
     end: &str,
     w: &mut dyn Write,
+    stdout: bool,
 ) -> Result<Value, Error> {
     let mut out = Sink { w, error: None };
     let mut written = values.iter().try_for_each(|&v| match g.as_str(v) {
@@ -89,7 +91,7 @@ fn put(
     }
     match (written, out.error) {
         (Ok(()), _) => Ok(Value::Inert),
-        (Err(_), Some(e)) if e.kind() == io::ErrorKind::BrokenPipe => {
+        (Err(_), Some(e)) if stdout && e.kind() == io::ErrorKind::BrokenPipe => {
             CLOSED.store(true, Ordering::Relaxed);
             Err(g.error("stdout-closed", &[]))
         }
@@ -101,12 +103,12 @@ fn put(
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stdout().lock())
+    put(g, args, true, "", &mut io::stdout().lock(), true)
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
 fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stderr().lock())
+    put(g, args, true, "", &mut io::stderr().lock(), false)
 }
 
 /// `(read-file path)`: the whole text of the file.
@@ -493,7 +495,7 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
             continue;
         }
         let done = match g.evaluate(r, &src) {
-            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock()),
+            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), true),
             Err(e) => Err(e),
         };
         if let Some(status) = ended(r) {

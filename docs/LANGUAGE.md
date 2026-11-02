@@ -127,7 +127,7 @@ All are applicatives except `vau!`.
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
 | `(sort list before?)` | The elements in the order `before?` gives, a combiner of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
-| `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`. |
+| `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`; `(last ())`, with no index, gives `range-error last ()`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.5). A binding that isn't `(parameters expression)` is an `arity-error`. |
@@ -222,10 +222,11 @@ can't swallow C-g; an error in one of those cleanups doesn't replace them. Wheth
 ```lisp
 (define! first-even
   (lambda! (xs)
-    (catch! (sequence! (for-each (lambda! (x) (when! (same? (remainder x 2) 0) (raise (error (quote! found) x)))) xs)
-                       #false)
-            e
-            (if! (same? (evaluate-in! kind e) (quote! found)) (first (evaluate-in! values e)) (raise e)))))
+    (catch-kind! (sequence! (for-each (lambda! (x) (when! (same? (remainder x 2) 0) (raise (error (quote! found) x)))) xs)
+                            #false)
+                 found
+                 e
+                 (first (evaluate-in! values e)))))
 (first-even (list 1 3 4 5))   ; => 4
 ```
 
@@ -252,8 +253,17 @@ is `parse-error unclosed-list 2 2`.
 | `interrupted` | the host set its interrupt flag | none |
 | any symbol | a program raised an error it made | the values given |
 
-The runner adds its own operations, `standard-error` among them, and its own kinds;
-[the README](../README.md#the-runner) lists them.
+The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
+describes each. Those added with the evidence of wave 4:
+
+| Operation | Meaning |
+|---|---|
+| `(load path)` | The file's forms, all read first, evaluated in turn in the caller's context, as Kernel's `load`; a relative path is relative to the file being loaded when `load` is called (at first the script). An error while it runs has `"path:line"` in its trace. |
+| `script-path` | The script's path as given; unbound for a program on stdin. |
+| `(read-file path)` | The file's whole text. |
+| `(display-error v ...)` | `display`, to stderr. |
+| `(read-bytes count)`, `(write-bytes bytes)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): bytes that aren't text as a list of integers 0-255, up to `count` of them, `()` at the end. |
+| `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | The system's time since 1970 UTC, which can be set back; the time since the run started, which never goes back. |
 
 ## Where grift differs from R-1RK, and why
 

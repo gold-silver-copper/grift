@@ -377,11 +377,15 @@
          (if! (same? xs ())
            (raise (error (quote! range-error) name index index))
            (first xs))))
-     ; n, if it is an integer: given the list in its place, the error names the combiner.
+     ; n, if it is an integer of 0 or more: given the list in its place, the error names the
+     ; combiner, and a negative one is out of range without counting down from it.
      (define! counted
-       (lambda! (name n) (if! (integer? n) n (raise (error (quote! type-error) name n)))))
+       (lambda! (name xs n)
+         (if! (integer? n)
+           (if! (less-than? n 0) (raise (error (quote! range-error) name n (length xs))) n)
+           (raise (error (quote! type-error) name n)))))
      (define! at
-       (lambda! (name xs index) (element name (after name xs (counted name index) index) index)))
+       (lambda! (name xs index) (element name (after name xs (counted name xs index) index) index)))
      (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
      (define! taken
        (lambda! (xs i n)
@@ -406,8 +410,8 @@
              (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
        (lambda! (xs)
          (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
-       (lambda! (xs n) (taken xs (counted (quote! take) n) n))
-       (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) n) n))))))
+       (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
+       (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
 
 ; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
@@ -506,11 +510,11 @@
 ; string-repeat: s count times, as Rust's str::repeat; a count below 0 is a range-error.
 (define! string-repeat
   (lambda! (s count)
-    (if! (and!? (string? s) (not? (less-than? count 0)))
-      (apply string-append (map (lambda! (#ignore) s) (range 0 count)))
-      (raise (error (if! (string? s) (quote! range-error) (quote! type-error))
-                    (quote! string-repeat)
-                    (if! (string? s) count s))))))
+    (if! (and!? (string? s) (integer? count))
+      (if! (less-than? count 0)
+        (raise (error (quote! range-error) (quote! string-repeat) count))
+        (apply string-append (map (lambda! (#ignore) s) (range 0 count))))
+      (raise (error (quote! type-error) (quote! string-repeat) (if! (string? s) count s))))))
 
 ; string-pad-left and string-pad-right: s with copies of fill, a string of one byte, before it,
 ; after it, up to width bytes.

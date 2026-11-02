@@ -1806,6 +1806,7 @@ fn string_helpers() {
             ("(string-pad-left \"a\" 3)", "arity-error"),
             ("(string-repeat \"a\" -1)", "range-error"),
             ("(string-repeat 1 2)", "type-error"),
+            ("(string-repeat \"a\" 1.0)", "type-error"),
             ("(string-to-lowercase 1)", "type-error"),
         ],
     );
@@ -1891,19 +1892,19 @@ fn lookup_and_unbind() {
         ],
     );
     // An unbound value can be reclaimed: the collector frees it, so the host's copy goes stale.
+    let churn = "(length (map (lambda! (n) (list n)) (range 0 20000)))";
     let held = g
         .evaluate(
             &mut (),
-            "(sequence! (bind inner (quote! held) \"kept?\") held)",
+            "(sequence! (bind inner (quote! held) (string-append \"kept\" \"?\"))
+                        (lookup inner (quote! held) ()))",
         )
-        .unwrap_or(Value::Inert);
-    g.evaluate(&mut (), "(evaluate (quote! held) inner)")
         .unwrap();
-    g.evaluate(
-        &mut (),
-        "(unbind inner (quote! held)) (length (map (lambda! (n) (list n)) (range 0 20000)))",
-    )
-    .unwrap();
+    // While bound it survives collections; once unbound, nothing holds it.
+    g.evaluate(&mut (), churn).unwrap();
+    assert_eq!(g.as_str(held), Some("kept?"));
+    g.evaluate(&mut (), "(unbind inner (quote! held))").unwrap();
+    g.evaluate(&mut (), churn).unwrap();
     assert_eq!(g.as_str(held), None);
 }
 
@@ -2017,6 +2018,11 @@ fn list_access_by_index() {
             "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
             "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
             "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list (quote! take) xs))",
+            "(equal? (catch! (element-at xs -9223372036854775808) e (evaluate-in! values e))
+                     (quote! (element-at -9223372036854775808 10)))",
+            "(equal? (catch! (drop xs -9223372036854775808) e (evaluate-in! values e))
+                     (quote! (drop -9223372036854775808 10)))",
+            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (quote! (take -1 10)))",
         ],
     );
     fails(
