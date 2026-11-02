@@ -1,0 +1,382 @@
+#!/usr/bin/env grift
+; build: a make-like tool. `main.grift [-n] [TARGET...]` reads `build.data` in the current
+; directory and brings the targets (or the default one) up to date by running their commands.
+;
+; The build file is plain data, read with read-form and never evaluated as a program. Its
+; entries, each a list:
+;   (variable NAME EXPRESSION)            NAME is bound to EXPRESSION's value
+;   (function NAME (PARAMETER ...) BODY ...)
+;   (rule TARGET (INPUT ...) COMMAND ...) a COMMAND is a list of words
+;   (rules NAME LIST TARGET (INPUT ...) COMMAND ...)
+;                                         one rule for each element of LIST, bound to NAME
+;   (default TARGET)                      else the first rule's target is the default
+; TARGET, each INPUT and each word of a command is an expression, evaluated in the build file's
+; scope, giving a string or a list of strings (spliced in). In a command, `target`, `inputs` and
+; `input` (the first input) are bound too. A command runs as a process, with no shell.
+;
+; Out of date, as make decides it: a target is remade when it doesn't exist, when an input is
+; newer than it (modification times, from stat), or when an input was remade in this run. A rule
+; with no commands only gathers its inputs.
+
+; ---------------------------------------------------------------------------------------------
+; General helpers the library lacks.
+
+; The elements of xs up to and including the first equal? to x.
+(define! up-to
+  (lambda! (x xs)
+    (if! (same? xs ()) () (pair (first xs) (if! (equal? x (first xs)) () (up-to x (rest xs)))))))
+
+; A new context binding names to values: a record.
+(define! record
+  (lambda! (names values)
+    (let! ((c (context)))
+      (bind c names values)
+      c)))
+
+; ---------------------------------------------------------------------------------------------
+; Errors. The tool's own are of kind build-error; their values are the pieces of the message.
+
+(define! build-file "build.data")
+
+(define! fail (lambda! pieces (raise (apply error (pair (quote! build-error) pieces)))))
+
+(define! fail-at
+  (lambda! (line . pieces)
+    (apply fail (append (list build-file " line " (integer-to-string line) ": ") pieces))))
+
+; An error's kind and values, as the pieces of a message.
+(define! error-pieces
+  (lambda! (e)
+    (pair (evaluate-in! kind e)
+          (apply append (map (lambda! (v) (list " " v)) (evaluate-in! values e))))))
+
+; The value of (thunk); an error that isn't the tool's own is told as one at the line.
+(define! at-line
+  (lambda! (line thunk)
+    (catch! (thunk)
+            e
+            (if! (same? (evaluate-in! kind e) (quote! build-error))
+              (raise e)
+              (apply fail-at (pair line (error-pieces e)))))))
+
+; Writes a message to stderr, its pieces as display would write them.
+(define! complain
+  (lambda! pieces
+    ((evaluate-in! write standard-error)
+     (string-append "build: "
+                    (string-join (map (lambda! (v) (if! (string? v) v (value-to-string v))) pieces) "")
+                    "\n"))))
+
+; ---------------------------------------------------------------------------------------------
+; Reading: the forms of a text, each as (line . form), a form's line being where it starts.
+
+(define! read-forms
+  (lambda! (text)
+    (let! (; Ending in a newline, the end of the text is alone on its line.
+           (text (string-append text "\n"))
+           (end (string-byte-length text))
+           ; The line of offset to, counting from offset from on line n.
+           (line-from
+             (lambda! (from to n)
+               (add n (subtract (length (string-split (byte-substring text from to) "\n")) 1))))
+           ; A form after offset i, on line n, never ends. read-form fails at the end of the text
+           ; and doesn't say where the form started: it is on the first line with more than space
+           ; or a comment.
+           (never-closed
+             (lambda! (i n)
+               (let! ((newline (string-search text "\n" i))
+                      (part (string-trim (byte-substring text i newline))))
+                 (if! (or!? (same? part "") (string-starts-with? part ";"))
+                   (never-closed (add newline 1) (add n 1))
+                   (fail-at n (if! (string-starts-with? part "\"") "a string" "a (")
+                            " that is never closed")))))
+           (read-after
+             (lambda! (i n)
+               (catch! (read-form text i)
+                       e
+                       (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                         (let! (((at column) (evaluate-in! values e)))
+                           (if! (same? at (line-from i end n))
+                             (never-closed i n)
+                             (fail-at at "text that doesn't read, at column "
+                                      (integer-to-string column))))
+                         (raise e)))))
+           ; i is on line n; each form's line is counted on from the one before.
+           (forms
+             (lambda! (i n done)
+               (let! ((read (read-after i n)))
+                 (if! (same? read ())
+                   (reverse done)
+                   (let! (((form start next) read)
+                          (line (line-from i start n)))
+                     (forms next (line-from start next line) (pair (pair line form) done))))))))
+      (forms 0 1 ()))))
+
+; ---------------------------------------------------------------------------------------------
+; Helpers a build file can use, besides grift's library.
+
+(define! without-suffix
+  (lambda! (s suffix)
+    (if! (string-ends-with? s suffix)
+      (byte-substring s 0 (subtract (string-byte-length s) (string-byte-length suffix)))
+      (fail "\"" s "\" doesn't end with \"" suffix "\""))))
+
+(define! replace-suffix
+  (lambda! (s old new) (string-append (without-suffix s old) new)))
+
+; The words that run line in sh, for a command that needs redirection or a pipe.
+(define! shell (lambda! (line) (list "sh" "-c" line)))
+
+; ---------------------------------------------------------------------------------------------
+; Loading the build file.
+
+; The build file's variables and functions.
+(define! scope (context (current-context)))
+; Each target, as a symbol, to its rule: a record of target, inputs, commands, scope and line.
+(define! rules (context))
+; The first rule's target, and the one (default ...) names, or ().
+(define! settings (record (quote! (first-target default)) (list () ())))
+
+; The strings a word gives: a string, or a list of strings spliced in.
+(define! word-strings
+  (lambda! (word value line)
+    (conditional!
+      ((string? value) (list value))
+      ((and!? (or!? (pair? value) (empty-list? value))
+              (all? string? value))
+       value)
+      (#true (fail-at line "the word " word " gave " value ", not a string or a list of strings")))))
+
+(define! words
+  (lambda! (expressions c line)
+    (if! (or!? (pair? expressions) (empty-list? expressions))
+      (at-line line
+               (lambda! ()
+                 (apply append (map (lambda! (x) (word-strings x (evaluate x c) line)) expressions))))
+      (fail-at line "expected a list of words, not " expressions))))
+
+(define! one-word
+  (lambda! (expression c line)
+    (let! ((strings (words (list expression) c line)))
+      (if! (and!? (pair? strings) (same? (rest strings) ()))
+        (first strings)
+        (fail-at line "a target must be one string, not " expression)))))
+
+(define! add-rule
+  (lambda! (line c target-word input-words commands)
+    (let! ((target (one-word target-word c line))
+           (key (string-to-symbol target)))
+      (when! (binds? rules key)
+        (fail-at line "a second rule for " target "; the first is on line "
+                 (integer-to-string (evaluate-in! line (evaluate key rules)))))
+      (for-each (lambda! (command)
+                  (when! (not? (pair? command))
+                    (fail-at line "a command must be a list of words, not " command)))
+                commands)
+      (bind rules key
+            (record (quote! (target inputs commands scope line))
+                    (list target (words input-words c line) commands c line)))
+      (when! (same? (evaluate-in! first-target settings) ())
+        (bind settings (quote! first-target) target)))))
+
+(define! symbol-named
+  (lambda! (line what x)
+    (if! (symbol? x) x (fail-at line what " must be a symbol, not " x))))
+
+; Each entry: its shape, checked, then its effect.
+(define! load-entry
+  (lambda! ((line . entry))
+    (define! shape
+      (lambda! (at-least? n example)
+        (let! ((k (at-line line (lambda! () (length entry)))))
+          (when! (if! at-least? (less-than? k n) (not? (same? k n)))
+            (fail-at line "expected " example ", not " entry)))))
+    (define! kind (if! (pair? entry) (first entry) entry))
+    (conditional!
+      ((same? kind (quote! variable))
+       (shape #false 3 "(variable NAME EXPRESSION)")
+       (let! (((#ignore name expression) entry))
+         (bind scope (symbol-named line "a variable's name" name)
+               (at-line line (lambda! () (evaluate expression scope))))))
+      ((same? kind (quote! function))
+       (shape #true 4 "(function NAME (PARAMETER ...) BODY ...)")
+       (let! (((#ignore name parameters . body) entry))
+         (bind scope (symbol-named line "a function's name" name)
+               (at-line line (lambda! () (evaluate (pair lambda! (pair parameters body)) scope))))))
+      ((same? kind (quote! rule))
+       (shape #true 3 "(rule TARGET (INPUT ...) COMMAND ...)")
+       (let! (((#ignore target inputs . commands) entry))
+         (add-rule line scope target inputs commands)))
+      ((same? kind (quote! rules))
+       (shape #true 5 "(rules NAME LIST TARGET (INPUT ...) COMMAND ...)")
+       (let! (((#ignore name elements target inputs . commands) entry)
+              (name (symbol-named line "a rules entry's name" name)))
+         (for-each (lambda! (element)
+                     (let! ((c (context scope)))
+                       (bind c name element)
+                       (add-rule line c target inputs commands)))
+                   (words (list elements) scope line))))
+      ((same? kind (quote! default))
+       (shape #false 2 "(default TARGET)")
+       (bind settings (quote! default) (one-word (first (rest entry)) scope line)))
+      (#true
+       (fail-at line "an entry is a list starting with variable, function, rule, rules or "
+                "default, not " entry)))))
+
+(define! load-build-file
+  (lambda! ()
+    (let! ((file (catch! (open-file build-file)
+                         e
+                         (if! (same? (evaluate-in! kind e) (quote! file-error))
+                           (fail "no " build-file " here: " (first (rest (evaluate-in! values e))))
+                           (raise e))))
+           (text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file)))))
+      (for-each load-entry (read-forms text)))))
+
+; ---------------------------------------------------------------------------------------------
+; Modification times, from stat, each file's at most once a run.
+
+; Each path, as a symbol, to (seconds nanoseconds), or () when there is no such file.
+(define! times (context))
+
+(define! stat
+  (lambda! (path)
+    (let! ((p (run-process "stat" "--format=%.9Y" "--" path)))
+      (if! (same? (evaluate-in! status p) 0)
+        (let! (((seconds . fraction)
+                (map string-to-integer (string-split (string-trim (evaluate-in! output p)) "."))))
+          (list seconds (if! (same? fraction ()) 0 (first fraction))))
+        ()))))
+
+(define! modification-time
+  (lambda! (path)
+    (let! ((key (string-to-symbol path)))
+      (if! (binds? times key)
+        (evaluate key times)
+        (let! ((time (stat path))) (bind times key time) time)))))
+
+(define! newer?
+  (lambda! ((s1 n1) (s2 n2))
+    (or!? (less-than? s2 s1) (and!? (same? s1 s2) (less-than? n2 n1)))))
+
+; ---------------------------------------------------------------------------------------------
+; Building.
+
+(define! (dry-run? goals)
+  ((lambda! ()
+     (define! walk
+       (lambda! (arguments dry goals)
+         (conditional!
+           ((same? arguments ()) (list dry (reverse goals)))
+           ((same? (first arguments) "-n") (walk (rest arguments) #true goals))
+           ((string-starts-with? (first arguments) "-")
+            (complain "unknown option " (first arguments) "\nusage: build [-n] [TARGET...]")
+            (exit 2))
+           (#true (walk (rest arguments) dry (pair (first arguments) goals))))))
+     (walk command-line-arguments #false ()))))
+
+; A word as it would be typed to a shell, for echoing a command.
+(define! shown
+  (lambda! (word)
+    (if! (or!? (same? word "") (integer? (string-search word " " 0)) (integer? (string-search word "'" 0)))
+      (string-append "'" (string-join (string-split word "'") "'\\''") "'")
+      word)))
+
+(define! run-command
+  (lambda! (target command)
+    (when! (same? command ()) (fail "a command for " target " has no words"))
+    (display (string-join (map shown command) " "))
+    (display "\n")
+    (when! (not? dry-run?)
+      (let! ((p (catch! (apply run-process command)
+                        e
+                        (if! (same? (evaluate-in! kind e) (quote! process-error))
+                          (fail "can't run " (first command) " for " target ": "
+                                (first (rest (evaluate-in! values e))))
+                          (raise e))))
+             (status (evaluate-in! status p)))
+        (display (evaluate-in! output p))
+        ((evaluate-in! write standard-error) (evaluate-in! error-output p))
+        (when! (not? (same? status 0))
+          (if! (same? #inert status)
+            (fail "the command for " target " was killed by a signal")
+            (fail "the command for " target " failed with status " (integer-to-string status))))))))
+
+(define! run-rule
+  (lambda! (rule)
+    (let! ((target (evaluate-in! target rule))
+           (inputs (evaluate-in! inputs rule))
+           (line (evaluate-in! line rule))
+           (c (context (evaluate-in! scope rule))))
+      (bind c (quote! (target inputs input)) (list target inputs (if! (same? inputs ()) "" (first inputs))))
+      (for-each (lambda! (command) (run-command target (words command c line)))
+                (evaluate-in! commands rule)))))
+
+; Each target, as a symbol, to #true if it was remade in this run (or would be, with -n), or
+; #false if it was up to date.
+(define! made (context))
+
+(define! out-of-date?
+  (lambda! (target inputs remade)
+    (let! ((time (modification-time target)))
+      (or!? (same? time ())
+            (member? #true remade)
+            (any? (lambda! (input)
+                    (let! ((t (modification-time input)))
+                      (and!? (not? (same? t ())) (newer? t time))))
+                  inputs)))))
+
+; Brings target up to date; needed-by is the target that needs it, or (); path, the targets
+; being built around it, innermost first. Whether it was remade.
+(define! build
+  (lambda! (target needed-by path)
+    (let! ((key (string-to-symbol target)))
+      (conditional!
+        ((binds? made key) (evaluate key made))
+        ((member? target path)
+         (fail "a cycle: " (string-join (append (reverse (up-to target path)) (list target)) " -> ")))
+        (#true
+         (let! ((remade (build-new target needed-by path)))
+           (bind made key remade)
+           remade))))))
+
+(define! build-new
+  (lambda! (target needed-by path)
+    (let! ((key (string-to-symbol target)))
+      (if! (not? (binds? rules key))
+        (if! (same? (modification-time target) ())
+          (if! (same? needed-by ())
+            (fail "no rule to make " target ", and no such file")
+            (fail "no rule to make " target ", needed by " needed-by ", and no such file"))
+          #false)
+        (let! ((rule (evaluate key rules))
+               (inputs (evaluate-in! inputs rule))
+               (remade (map (lambda! (input) (build input target (pair target path))) inputs)))
+          (if! (same? (evaluate-in! commands rule) ())
+            (member? #true remade)
+            (if! (out-of-date? target inputs remade)
+              (sequence! (run-rule rule) #true)
+              #false)))))))
+
+(define! main
+  (lambda! ()
+    (load-build-file)
+    (let! ((default (evaluate-in! default settings))
+           (first-target (evaluate-in! first-target settings))
+           (goals (conditional! ((pair? goals) goals)
+                                ((string? default) (list default))
+                                ((string? first-target) (list first-target))
+                                (#true (fail "no rules in " build-file)))))
+      (for-each (lambda! (goal)
+                  (when! (not? (build goal () ()))
+                    (display "build: " goal " is up to date.")
+                    (display "\n")))
+                goals))))
+
+(catch! (main)
+        e
+        (apply complain
+               (if! (same? (evaluate-in! kind e) (quote! build-error))
+                 (evaluate-in! values e)
+                 (error-pieces e)))
+        (exit 1))

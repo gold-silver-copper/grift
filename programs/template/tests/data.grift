@@ -1,0 +1,13 @@
+; Shared data for the tests.
+(define! shop (record! (name "Corner") (owner (record! (name "Bo") (address (record! (city "Oslo")))))))
+(define! orders
+  (list (record! (id 1) (lines (list "tea" "milk")))
+        (record! (id 2) (lines ()))))
+(define! nothing ())
+(define! count 3)
+(define! ratio 0.5)
+(define! status (quote! open))
+(define! html "<a href='x'>&</a>")
+(define! shout (lambda! (s) (string-append s "!")))
+(define! broken (lambda! (s) (add s 1)))
+(define! even? (lambda! (n) (same? (remainder n 2) 0)))

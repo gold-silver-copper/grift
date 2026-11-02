@@ -1,0 +1,3 @@
+; Run by meta running meta, in test.sh.
+(define! square (lambda! (x) (multiply x x)))
+(display "meta on meta: " (square 12)) (display "\n")

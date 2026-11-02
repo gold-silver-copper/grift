@@ -56,11 +56,8 @@ impl Hasher for IdHasher {
         self.0.wrapping_mul(0x9e37_79b9_7f4a_7c15)
     }
 
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.0 = self.0.rotate_left(8) ^ u64::from(b);
-        }
-    }
+    /// Never called: both kinds of id hash with `write_u32`.
+    fn write(&mut self, _: &[u8]) {}
 
     fn write_u32(&mut self, n: u32) {
         self.0 = u64::from(n);

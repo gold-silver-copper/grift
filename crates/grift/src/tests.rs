@@ -33,7 +33,7 @@ fn define<T>(g: &mut Grift<T>, name: &str, f: crate::HostFunction<T>) {
 fn holds(g: &mut Grift, cases: &[&str]) {
     for src in cases {
         match g.evaluate(&mut (), src) {
-            Ok(Value::True) => {}
+            Ok(Value::Boolean(true)) => {}
             Ok(v) => panic!("{src} gave {}", show(g, v)),
             Err(e) => panic!("{src} failed: {}", kind(g, &e)),
         }
@@ -136,14 +136,14 @@ fn library_basics() {
             "(equal? (list (remainder -9223372036854775808 3) (remainder 9223372036854775807 -2)) \
                      (quote! (-2 1)))",
             "(sequence! (define! seen ()) (define! here (current-context)) \
-             (for-each (lambda! (x) (define-in! here seen (pair x seen))) (list 1 2 3)) \
+             (for-each (lambda! (x) (bind here (quote! seen) (pair x seen))) (list 1 2 3)) \
              (equal? seen (quote! (3 2 1))))",
             "(and!? (same? (when! #false (first ())) #inert) (same? (when! #true 1) 1))",
             "(equal? (let! ((x 1) (y (add x 1))) (list x y)) (quote! (1 2)))",
             "(same? (let! () 5) 5)",
-            // define-in! changes the binding where it is, even from inside a function.
+            // bind changes the binding where it is, even from inside a function.
             "(sequence! (define! n 0) (define! e (current-context)) \
-             ((lambda! () (define-in! e n (add n 1)))) (equal? n 1))",
+             ((lambda! () (bind e (quote! n) (add n 1)))) (equal? n 1))",
         ],
     );
 }
@@ -201,8 +201,14 @@ fn tail_calls_run_in_constant_space() {
          (define! count (lambda! (n) (conditional! ((same? n 0) #true) (#true (let! ((m (subtract n 1))) (count m))))))",
     )
     .unwrap();
-    assert_eq!(g.evaluate(&mut (), "(loop 200000)"), Ok(Value::True));
-    assert_eq!(g.evaluate(&mut (), "(count 50000)"), Ok(Value::True));
+    assert_eq!(
+        g.evaluate(&mut (), "(loop 200000)"),
+        Ok(Value::Boolean(true))
+    );
+    assert_eq!(
+        g.evaluate(&mut (), "(count 50000)"),
+        Ok(Value::Boolean(true))
+    );
     // when!'s last body form is a tail call too.
     g.evaluate(
         &mut (),
@@ -232,7 +238,7 @@ fn deep_nesting_needs_no_rust_stack() {
     g.evaluate(&mut (), &format!("(define! deep (quote! {nested}))"))
         .unwrap();
     let copy = format!("(equal? deep (quote! {nested}))");
-    assert_eq!(g.evaluate(&mut (), &copy), Ok(Value::True));
+    assert_eq!(g.evaluate(&mut (), &copy), Ok(Value::Boolean(true)));
 }
 
 #[test]
@@ -245,7 +251,10 @@ fn collection_reclaims_garbage_and_keeps_live_data() {
          (define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (build 100 ()) (churn (subtract n 1))))))",
     )
     .unwrap();
-    assert_eq!(g.evaluate(&mut (), "(churn 5000)"), Ok(Value::True));
+    assert_eq!(
+        g.evaluate(&mut (), "(churn 5000)"),
+        Ok(Value::Boolean(true))
+    );
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -275,7 +284,7 @@ fn printing_reads_back() {
                 &format!("(equal? (quote! {printed}) (quote! {src}))"),
             )
             .unwrap();
-        assert_eq!((again, same), (printed, Value::True));
+        assert_eq!((again, same), (printed, Value::Boolean(true)));
     }
     let f = g.evaluate(&mut (), "(lambda! (x) (multiply x x))").unwrap();
     assert_eq!(
@@ -395,7 +404,7 @@ fn redefinition_and_names() {
             &mut (),
             "(equal? (map first (quote! ((1) (2)))) (quote! (1 2)))"
         ),
-        Ok(Value::True)
+        Ok(Value::Boolean(true))
     );
     fails(&mut g, &[("built-in-context", "unbound-symbol")]);
 }
@@ -520,7 +529,7 @@ fn the_host_interrupts_a_runaway_evaluation() {
     let e = g
         .evaluate(
             &mut (),
-            "(finally! (spin) (define-in! here log (pair 1 log)))",
+            "(finally! (spin) (bind here (quote! log) (pair 1 log)))",
         )
         .unwrap_err();
     setter.join().unwrap();
@@ -537,7 +546,7 @@ fn cleanup_runs_and_the_error_goes_on() {
         .unwrap();
     g.evaluate(
         &mut (),
-        "(define! note (lambda! (x) (define-in! here log (pair x log))))",
+        "(define! note (lambda! (x) (bind here (quote! log) (pair x log))))",
     )
     .unwrap();
     assert_eq!(
@@ -646,7 +655,6 @@ fn library_forms_build_no_code() {
             "(or!? #false (same? n 3))",
             "(if! #false #true (same? n 3))",
         ),
-        ("(define-in! e n 3)", "(bind e (quote! n) 3)"),
     ] {
         let ((steps, made), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
         assert_eq!(made, 0, "{form} made operatives");
@@ -663,7 +671,7 @@ fn catch_catches_errors_as_contexts() {
     g.evaluate(
         &mut (),
         "(define! log ()) (define! here (current-context))
-         (define! note (lambda! (x) (define-in! here log (pair x log))))
+         (define! note (lambda! (x) (bind here (quote! log) (pair x log))))
          (define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x 2)))))",
     )
     .unwrap();
@@ -676,12 +684,15 @@ fn catch_catches_errors_as_contexts() {
             "(equal? (catch! (add 1 (check (quote! a))) e (list (evaluate-in! kind e) (evaluate-in! values e))) \
              (quote! (not-integer (a 2))))",
             "(equal? (catch! (first 1) e (evaluate-in! trace e)) (quote! ((first 1))))",
+            // A handler that fails on being called still says where.
+            "(equal? (catch! (call-with-handler (lambda! () (first 1)) (vau! () #ignore 1)) e (evaluate-in! trace e)) \
+             (quote! ((call-with-handler (lambda! () (first 1)) (vau! () #ignore 1)))))",
             "(equal? (catch! (first 1) e (names e)) (quote! (kind trace values)))",
-            "(catch! (first 1) e (not? (binds!? e list)))",
+            "(catch! (first 1) e (not? (binds? e (quote! list))))",
             // error makes the same kind of context, with an empty trace, and raises nothing.
             "(sequence! (define! made (error (quote! mine) 1)) \
                         (and!? (equal? (names made) (quote! (kind trace values))) \
-                               (equal? (evaluate-in! trace made) ()) (not? (binds!? made list))))",
+                               (equal? (evaluate-in! trace made) ()) (not? (binds? made (quote! list)))))",
             // The handler forms run in a child of the caller's context; the last one's value is
             // catch!'s.
             "(sequence! (define! y 1) (equal? (catch! (first 1) e (define! y 2) (add y 1)) 3))",
@@ -803,31 +814,20 @@ fn binds_looks_through_parents() {
     holds(
         &mut g,
         &[
-            "(and!? (binds!? e x first) (not? (binds!? e x nope)) (not? (binds!? (context) first)))",
-            "(binds!? e)",
-            // The context operand is evaluated once, the symbols not at all.
-            "(binds!? (context e) x)",
-            "(sequence! (define! n 0) (binds!? (sequence! (define-in! e n (add n 1)) e) n) (equal? n 1))",
+            "(and!? (binds? e (quote! x)) (binds? e (quote! first)) (not? (binds? e (quote! nope))) \
+                    (not? (binds? (context) (quote! first))))",
         ],
     );
-    fails(
-        &mut g,
-        &[
-            ("(binds!? e (first 1))", "type-error"),
-            ("(binds!? 1 x)", "type-error"),
-            ("(binds!? 1)", "type-error"),
-        ],
-    );
-    // binds? is binds!? for one symbol, with both operands evaluated: a computed symbol is the
-    // one looked up, not the name it is held in.
+    // Both operands are evaluated: a computed symbol is the one looked up, not the name it is
+    // held in.
     holds(
         &mut g,
         &[
             "(binds? e (string-to-symbol \"x\"))",
             "(not? (binds? e (string-to-symbol \"nope\")))",
+            "(equal? (catch! (binds? e 1) x (evaluate-in! values x)) (quote! (binds? 1)))",
             "(sequence! (define! s (quote! nope)) (not? (binds? e s)))",
             "(binds? (context e) (quote! first))",
-            "(same? (binds? (context) (quote! first)) (binds!? (context) first))",
         ],
     );
     fails(
@@ -907,6 +907,7 @@ fn strings_by_byte_offsets() {
             ("(string-byte-length (quote! a))", "type-error"),
             ("(string-append \"a\" 1)", "type-error"),
             ("(symbol-to-string \"a\")", "type-error"),
+            ("(float-to-string 1)", "type-error"),
             ("(integer-to-string \"1\")", "type-error"),
         ],
     );
@@ -942,15 +943,15 @@ fn floats_read_back_as_they_print() {
         let printed = show(&g, Value::Float(x));
         let again = float(&mut g, &printed);
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
-        // float-to-string gives the printer's text, and string-to-float reads it back (a
+        // value-to-string gives the printer's text, and string-to-float reads it back (a
         // not-a-number only up to its sign, which these floats don't vary).
         let s = g
-            .evaluate(&mut (), &format!("(float-to-string {printed})"))
+            .evaluate(&mut (), &format!("(value-to-string {printed})"))
             .unwrap();
         assert_eq!(g.as_str(s), Some(printed.as_str()));
         let again = float(
             &mut g,
-            &format!("(string-to-float (float-to-string {printed}))"),
+            &format!("(string-to-float (value-to-string {printed}))"),
         );
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
     }
@@ -964,7 +965,9 @@ fn floats_read_back_as_they_print() {
             "(float? 1e3)",
             "(integer? 1000)",
             "(same? (string-to-float \"1\") 1.0)",
+            "(same? (value-to-string 1.0) \"1.0\")",
             "(same? (float-to-string 1.0) \"1.0\")",
+            "(same? (float-to-string -2.5e-7) (value-to-string -2.5e-7))",
             "(same? (string-to-float \"inf\") #infinity)",
             "(same? (string-to-integer \"-42\") -42)",
             "(same? (integer-to-string -42) \"-42\")",
@@ -984,7 +987,6 @@ fn floats_read_back_as_they_print() {
             ("(string-to-integer \" 1\")", "parse-error"),
             ("(string-to-float \"one\")", "parse-error"),
             ("(string-to-float 1.0)", "type-error"),
-            ("(float-to-string 1)", "type-error"),
         ],
     );
 }
@@ -1017,7 +1019,7 @@ fn arithmetic_is_rusts() {
                 }
             }
             let less = g.evaluate(&mut (), &format!("(less-than? {a} {b})"));
-            assert_eq!(less, Ok(if a < b { Value::True } else { Value::False }));
+            assert_eq!(less, Ok(Value::Boolean(a < b)));
         }
     }
     let floats = FLOATS.map(|x| show(&g, Value::Float(x)));
@@ -1104,7 +1106,7 @@ fn comparisons_agree_with_rust() {
                     ("equal?", equal),
                 ] {
                     let got = g.evaluate(&mut (), &format!("({name} {a} {b})"));
-                    let want = if want { Value::True } else { Value::False };
+                    let want = Value::Boolean(want);
                     assert_eq!(got, Ok(want), "({name} {a} {b})");
                 }
             }
@@ -1169,8 +1171,6 @@ fn a_predicate_for_every_type() {
     let predicates = [
         "empty-list?",
         "boolean?",
-        "inert?",
-        "ignore?",
         "integer?",
         "float?",
         "symbol?",
@@ -1183,8 +1183,6 @@ fn a_predicate_for_every_type() {
     let values = [
         "()",
         "#false",
-        "#inert",
-        "#ignore",
         "1",
         "1.0",
         "(quote! a)",
@@ -1194,7 +1192,8 @@ fn a_predicate_for_every_type() {
         "if!",
         "first",
     ];
-    // Each value's type-of names exactly one predicate, and only that one holds.
+    // Each value's type-of names exactly one predicate, and only that one holds. #inert and #ignore,
+    // each the only value of its type, have none: `same?` says it.
     for value in values {
         let kind = g
             .evaluate(&mut (), &format!("(symbol-to-string (type-of {value}))"))
@@ -1202,7 +1201,7 @@ fn a_predicate_for_every_type() {
         let kind = format!("{}?", g.as_str(kind).unwrap());
         assert!(predicates.contains(&kind.as_str()), "{value}: {kind}");
         for p in predicates {
-            let want = if p == kind { Value::True } else { Value::False };
+            let want = Value::Boolean(p == kind);
             assert_eq!(
                 g.evaluate(&mut (), &format!("({p} {value})")),
                 Ok(want),
@@ -1231,15 +1230,15 @@ fn if_and_let() {
             "(same? (when! #false (first ())) #inert)",
             "(same? (when! #true) #inert)",
             "(sequence! (define! seen ()) (define! here (current-context)) \
-             (equal? (list (when! #true (define-in! here seen (pair 1 seen)) (define-in! here seen (pair 2 seen)) 3) seen) \
+             (equal? (list (when! #true (bind here (quote! seen) (pair 1 seen)) (bind here (quote! seen) (pair 2 seen)) 3) seen) \
                      (quote! (3 (2 1)))))",
             // conditional!: the body of the first clause whose test is #true, its forms in order;
             // #inert if there is none or the body is empty; later tests aren't evaluated.
             "(same? (conditional! (#false (first ())) (#true 1) (#true 2) ((first ()) 3)) 1)",
             "(sequence! (define! seen ()) (define! here (current-context)) \
-             (equal? (list (conditional! (#false 0) (#true (define-in! here seen (pair 1 seen)) (define-in! here seen (pair 2 seen)) 3)) seen) \
+             (equal? (list (conditional! (#false 0) (#true (bind here (quote! seen) (pair 1 seen)) (bind here (quote! seen) (pair 2 seen)) 3)) seen) \
                      (quote! (3 (2 1)))))",
-            "(and!? (inert? (conditional!)) (inert? (conditional! (#false 1))) (inert? (conditional! (#true))))",
+            "(and!? (same? #inert (conditional!)) (same? #inert (conditional! (#false 1))) (same? #inert (conditional! (#true))))",
             // let! binds in order in one new context: each binding sees the ones before it, and a
             // combiner it binds can call itself and the ones after it.
             "(same? (let! ((x 1) (y (add x 1))) y) 2)",
@@ -1312,10 +1311,10 @@ fn contexts() {
             // evaluate-in! evaluates in the context given, through its parents, and only there.
             "(and!? (same? (evaluate-in! a child) 2) (same? (evaluate-in! c child) 3))",
             "(catch! (evaluate-in! (add a c) child) e (equal? (evaluate-in! values e) (quote! (add))))",
-            // binds!? looks through parents.
-            "(and!? (binds!? child a b c) (not? (binds!? parent c)))",
-            // define-in! binds in the context given, never in its parent.
-            "(sequence! (define-in! child a 10) (and!? (same? (evaluate-in! a child) 10) \
+            // binds? looks through parents.
+            "(and!? (binds? child (quote! a)) (binds? child (quote! c)) (not? (binds? parent (quote! c))))",
+            // bind binds in the context given, never in its parent.
+            "(sequence! (bind child (quote! a) 10) (and!? (same? (evaluate-in! a child) 10) \
                                                        (same? (evaluate-in! a parent) 2)))",
             "(equal? (names child) (quote! (a c)))",
             // current-context is the context it is called in.
@@ -1514,7 +1513,7 @@ fn value_to_string_is_the_printer() {
         "vau!",
         "(lambda! (x) (add x 1))",
         "(vau! (x . y) caller (x y))",
-        "(sequence! (define! c (context)) (define-in! c b 1) (define-in! c a 2) c)",
+        "(sequence! (define! c (context)) (bind c (quote! b) 1) (bind c (quote! a) 2) c)",
     ] {
         let v = g.evaluate(&mut (), src).unwrap();
         let printed = show(&g, v);
@@ -1530,7 +1529,8 @@ fn value_to_string_is_the_printer() {
             "(sequence!
                (define! v (quote! (1 -2.5 \"s\\t\" (a . b) () #false)))
                (equal? (first (read-form (value-to-string v) 0)) v))",
-            "(float? (first (read-form (float-to-string 1.0) 0)))",
+            "(equal? (read-form \"#!/x\\n1\" 0) (quote! (1 5 6)))",
+            "(float? (first (read-form (value-to-string 1.0) 0)))",
         ],
     );
 }
@@ -1594,7 +1594,7 @@ fn list_helpers() {
         "(define! xs (range -3 4))
          (define! even? (lambda! (x) (same? (remainder x 2) 0)))
          (define! calls 0)
-         (define! counting (lambda! (x) (define-in! top calls (add calls 1)) (even? x)))
+         (define! counting (lambda! (x) (bind top (quote! calls) (add calls 1)) (even? x)))
          (define! top (current-context))",
     )
     .unwrap();
@@ -1621,7 +1621,7 @@ fn list_helpers() {
             "(not? (any? even? ()))",
             "(all? even? ())",
             "(sequence! (any? counting (list 2 1 3)) (same? calls 1))",
-            "(sequence! (define-in! top calls 0) (all? counting (list 1 2 4)) (same? calls 1))",
+            "(sequence! (bind top (quote! calls) 0) (all? counting (list 1 2 4)) (same? calls 1))",
             // map: with one list as before; with several, element by element.
             "(equal? (map even? (list 1 2)) (list #false #true))",
             "(equal? (map add (list 1 2) (list 10 20)) (list 11 22))",

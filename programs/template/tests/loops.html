@@ -1,0 +1,12 @@
+{{#for order in orders}}
+Order {{ order.id }} at {{ shop.name }}:
+  {{#for line n in order.lines}}
+  {{ n }}={{ line }}{{#if n | even?}} (even){{#else}} (odd){{/if}}
+  {{#else}}
+  no lines
+  {{/for}}
+{{/for}}
+{{#for x in nothing}}never{{#else}}empty list{{/for}}
+{{#if count | even? | not?}}
+odd count
+{{/if}}

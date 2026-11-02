@@ -1,0 +1,22 @@
+; The build file of the greeter: a small C program, and a banner made from a template with sed.
+(variable compiler "cc")
+(variable flags (list "-O2" "-Wall"))
+(variable sources (list "main.c" "greet.c"))
+
+; out/main.o for main.c
+(function object-for (source)
+  (string-append "out/" (without-suffix source ".c") ".o"))
+
+(variable objects (map object-for sources))
+
+(default "all")
+(rule "all" ("greeter" "banner.txt"))
+(rule "greeter" (objects)
+  (compiler flags "-o" target inputs))
+(rules source sources (object-for source) (source "greet.h")
+  ("mkdir" "-p" "out")
+  (compiler flags "-c" "-o" target input))
+(rule "banner.txt" ("banner.in")
+  ((shell (string-append "sed 's/NAME/grift/' " input " > " target))))
+(rule "clean" ()
+  ("rm" "-rf" "out" "greeter" "banner.txt"))

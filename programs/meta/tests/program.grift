@@ -1,0 +1,29 @@
+; A 30-line program in plain grift, run by grift and by meta unchanged: primes by trial division,
+; a word count in a context used as a table, and an early exit with catch!.
+(define! prime?
+  (lambda! (n)
+    (let! ((try (lambda! (d) (conditional! ((less-than? n (multiply d d)) #true)
+                                           ((same? (remainder n d) 0) #false)
+                                           (#true (try (add d 1)))))))
+      (and!? (less-than? 1 n) (try 2)))))
+(define! primes (filter prime? (range 0 600)))
+(display (length primes) " primes below 600, the last " (first (reverse primes))) (display "\n")
+(display "their sum: " (fold add 0 primes)) (display "\n")
+
+(define! counts (context))
+(define! count-word
+  (lambda! (word)
+    (let! ((name (string-to-symbol word)))
+      (bind counts name (if! (binds? counts name) (add 1 (evaluate name counts)) 1)))))
+(define! text "the cat and the hat and the bat sat on the mat")
+(for-each count-word (string-split text " "))
+(display (map (lambda! (name) (list name (evaluate name counts))) (names counts))) (display "\n")
+
+(define! first-over
+  (lambda! (limit xs)
+    (catch! (sequence! (for-each (lambda! (x) (when! (less-than? limit x) (raise (error (quote! found) x)))) xs)
+                       #false)
+            e
+            (if! (same? (evaluate-in! kind e) (quote! found)) (first (evaluate-in! values e)) (raise e)))))
+(display "first prime over 500: " (first-over 500 primes)) (display "\n")
+(display (string-join (map integer-to-string (list 1 2 3)) ", ")) (display "\n")

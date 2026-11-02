@@ -1,0 +1,7 @@
+; A limit can't be caught, so this ends the run: reported, status 1.
+(test! "before"
+  (expect-true! #true))
+(test! "raises the host's limit"
+  (raise (error (quote! interrupted))))
+(test! "never runs"
+  (expect-true! #true))

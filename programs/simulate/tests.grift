@@ -1,0 +1,100 @@
+; Tests of simulate's parts: grift tests.grift PATH-TO-MAIN. Prints a line for each failure and
+; a summary, and exits 1 if any failed.
+
+; load-definitions: evaluates the forms of the file at path here, up to the form that defines
+; `stop`, so the tests get main.grift's definitions without running its command line. grift has
+; no load.
+(define! load-definitions
+  (lambda! (path stop c)
+    (define! file (open-file path))
+    (define! text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+    (define! each
+      (lambda! (offset)
+        (let! ((read (read-form text offset)))
+          (when! (pair? read)
+            (let! (((form #ignore end) read))
+              (when! (not? (and!? (pair? form) (pair? (rest form)) (same? (first (rest form)) stop)))
+                (evaluate form c)
+                (each end)))))))
+    (each 0)))
+
+(load-definitions (first command-line-arguments) (quote! usage) (current-context))
+
+(define! failures (record (quote! count) 0))
+(define! checks (record (quote! count) 0))
+(define! expect
+  (lambda! (name ok? . shown)
+    (bind checks (quote! count) (add (evaluate-in! count checks) 1))
+    (when! (not? ok?)
+      (bind failures (quote! count) (add (evaluate-in! count failures) 1))
+      (display "FAIL " name ": ")
+      (for-each (lambda! (v) (display (value-to-string v) " ")) shown)
+      (display "\n"))))
+
+; The generator against L'Ecuyer's reference: MRG32k3a from words all 12345.
+(define! uniform (random-generator (list 12345 12345 12345 12345 12345 12345)))
+(define! draws (map (lambda! (#ignore) (uniform)) (range 0 3)))
+(expect "MRG32k3a reference" (equal? draws (list 0.12701112204657714 0.3185275653967945 0.3091860155832701)) draws)
+
+; The same seed gives the same stream; another seed another.
+(define! stream (lambda! (seed) (let! ((u (random-generator (seed-words seed)))) (map (lambda! (#ignore) (u)) (range 0 5)))))
+(expect "same seed, same stream" (equal? (stream 7) (stream 7)))
+(expect "other seed, other stream" (not? (equal? (stream 7) (stream 8))))
+
+; Exponential times: the mean of 20,000 draws at rate 0.25 is within 3% of 4.
+(define! u (random-generator (seed-words 99)))
+(define! mean (divide (fold (lambda! (sum #ignore) (add sum (exponential-time u 0.25))) 0.0 (range 0 20000)) 20000.0))
+(expect "exponential mean" (less-than? (absolute-value (subtract mean 4.0)) 0.12) mean)
+
+; The heap gives 300 events back in time order, ties in the order they were put in.
+(define! event (lambda! (time order) (record (quote! (time order)) (list time order))))
+(define! u (random-generator (seed-words 5)))
+(define! heap
+  (fold (lambda! (heap order)
+          (heap-insert heap (event (floor (multiply 20.0 (u))) order)))
+        ()
+        (range 0 300)))
+(define! drain
+  (lambda! (heap)
+    (if! (same? heap ()) () (pair (heap-earliest heap) (drain (heap-without-earliest heap))))))
+(define! out (drain heap))
+(define! in-order?
+  (lambda! (events)
+    (or!? (same? (rest events) ())
+          (and!? (earlier? (first events) (first (rest events))) (in-order? (rest events))))))
+(expect "heap order" (and!? (same? (length out) 300) (in-order? out)) (length out))
+
+; The line is first in, first out.
+(define! line (fold line-join (pair () ()) (list 1 2 3)))
+(define! (a . line) (line-leave line))
+(define! line (line-join line 4))
+(define! (b . line) (line-leave line))
+(define! (c . line) (line-leave line))
+(define! (d . line) (line-leave line))
+(expect "line order" (equal? (list a b c d) (list 1 2 3 4)) (list a b c d))
+
+; Floats to text.
+(for-each (lambda! ((x places text))
+            (expect "float-to-fixed" (equal? (float-to-fixed x places) text) x places (float-to-fixed x places) text))
+          (list (list 3.14159 2 "3.14") (list 2.0 2 "2.00") (list 0.005 1 "0.0") (list -0.004 2 "0.00")
+                (list -1.5 0 "-2") (list 99.996 2 "100.00") (list 0.05 2 "0.05") (list 1234.5 1 "1234.5")))
+
+; Erlang's formula: M/M/1 at load 0.5 waits 1/(1 - 0.5) - 1 = 1 minute, a line of 0.5; an
+; overloaded bank has no prediction.
+(define! config (record (quote! (tellers arrival-rate service-rate)) (list 1 0.5 1.0)))
+(define! (wait line-length use) (erlang-prediction config))
+(expect "M/M/1" (and!? (less-than? (absolute-value (subtract wait 1.0)) 1e-12)
+                       (less-than? (absolute-value (subtract line-length 0.5)) 1e-12)
+                       (equal? use 0.5))
+        wait line-length use)
+; M/M/2, a = 1: C(2, 1) = 1/3, so the wait is (1/3) / (2 - 1) at service rate 1.
+(define! config (record (quote! (tellers arrival-rate service-rate)) (list 2 1.0 1.0)))
+(define! (wait #ignore #ignore) (erlang-prediction config))
+(expect "M/M/2" (less-than? (absolute-value (subtract wait (divide 1.0 3.0))) 1e-12) wait)
+(define! config (record (quote! (tellers arrival-rate service-rate)) (list 2 2.0 1.0)))
+(expect "overloaded" (same? (erlang-prediction config) ()))
+
+(display (integer-to-string (subtract (evaluate-in! count checks) (evaluate-in! count failures))) " of "
+         (integer-to-string (evaluate-in! count checks)) " checks passed")
+(display "\n")
+(exit (if! (same? (evaluate-in! count failures) 0) 0 1))

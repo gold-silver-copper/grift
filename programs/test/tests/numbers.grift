@@ -1,0 +1,49 @@
+; Rust's numeric semantics, as VISION says.
+
+(group! "integers"
+  (test! "divide and remainder truncate toward zero"
+    (expect-equal! (divide 7 2) 3)
+    (expect-equal! (divide -7 2) -3)
+    (expect-equal! (remainder -7 2) -1)
+    (expect-equal! (remainder 7 -2) 1))
+  (test! "comparisons"
+    (expect-true! (less-than? 1 2))
+    (expect-true! (greater-than? 2 1))
+    (expect-true! (less-than-or-equal? 1 1))
+    (expect-true! (greater-than-or-equal? 1 1))
+    (expect-false! (greater-than-or-equal? 0 1)))
+  (test! "minimum and maximum"
+    (expect-equal! (minimum 1 2) 1)
+    (expect-equal! (maximum 1 2) 2)
+    (expect-error! type-error (minimum 1 2.0))))
+
+(group! "floats"
+  (test! "IEEE division"
+    (expect-equal! (divide 1.0 0.0) #infinity)
+    (expect-equal! (divide -1.0 0.0) #-infinity)
+    (expect-false! (equal? (divide 0.0 0.0) (divide 0.0 0.0))))
+  (test! "functions"
+    (expect-near! (square-root 2.0) 1.41421356 0.00001)
+    (expect-near! (sine 0.0) 0.0 0.0)
+    (expect-near! (exponential 1.0) 2.71828 0.001)
+    (expect-near! (power 2.0 10.0) 1024.0 0.0)
+    (expect-near! (natural-logarithm 1.0) 0.0 0.0))
+  (test! "rounding"
+    (expect-equal! (floor 1.5) 1.0)
+    (expect-equal! (ceiling 1.5) 2.0)
+    (expect-equal! (round 2.5) 3.0)
+    (expect-equal! (round -2.5) -3.0)
+    (expect-equal! (truncate -1.5) -1.0))
+  (test! "the functions take floats only"
+    (expect-error! type-error (square-root 4))
+    (expect-error! type-error (absolute-value -1)))
+  (test! "conversions are Rust's as"
+    (expect-equal! (integer-to-float 2) 2.0)
+    (expect-equal! (float-to-integer -1.9) -1)
+    (expect-equal! (float-to-integer #infinity) 9223372036854775807)
+    (expect-equal! (float-to-integer #not-a-number) 0))
+  (test! "with not-a-number, comparisons are #false"
+    (expect-false! (less-than? #not-a-number 1.0))
+    (expect-false! (greater-than? #not-a-number 1.0))
+    (expect-false! (less-than-or-equal? #not-a-number #not-a-number))
+    (expect-false! (greater-than-or-equal? #not-a-number #not-a-number))))

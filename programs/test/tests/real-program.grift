@@ -1,0 +1,74 @@
+; Testing a whole script from this repo, unchanged: it runs at load!, its top-level forms see the
+; test's context first, so what it takes from the runner is replaced by binding the same names.
+(define! count-words "../../../crates/grift-cli/tests/count-words.grift")
+
+; A stand-in for standard-input, giving these lines.
+(define! input-of
+  (lambda! lines
+    (let! ((self (context)))
+      (bind self (quote! left) lines)
+      (bind self (quote! read-line)
+        (lambda! ()
+          (if! (empty-list? (evaluate-in! left self))
+            ""
+            (let! ((line (first (evaluate-in! left self))))
+              (bind self (quote! left) (rest (evaluate-in! left self)))
+              line))))
+      self)))
+
+; A stand-in for a file written, keeping the text.
+(define! file-to-keep
+  (lambda! ()
+    (let! ((self (context)))
+      (bind self (quote! text) "")
+      (bind self (quote! write)
+        (lambda! (more) (bind self (quote! text) (string-append (evaluate-in! text self) more))))
+      (bind self (quote! close)
+        (lambda! () (bind self (quote! write) (lambda! (more) (raise (error (quote! closed)))))))
+      self)))
+
+(test! "count-words writes the counts, shows them, and exits 0"
+  (define! command-line-arguments (list "report.txt"))
+  (define! standard-input (input-of "one two\n" "three\n"))
+  (define! kept (file-to-keep))
+  (define! create-file (lambda! (path) kept))
+  (define! run-process
+    (lambda! (program path)
+      (let! ((record (context)))
+        (bind record (quote! output) (evaluate-in! text kept))
+        record)))
+  (define! kept-status (catch! (load! count-words) e (evaluate-in! values e)))
+  (expect-equal! kept-status (list 0))
+  (expect-equal! (evaluate-in! text kept) "2 3\n")
+  (expect-equal! lines 2)
+  (expect-equal! words 3))
+
+(test! "count-words exits 3 on no words"
+  (define! command-line-arguments (list "report.txt"))
+  (define! standard-input (input-of))
+  (define! kept (file-to-keep))
+  (define! create-file (lambda! (path) kept))
+  (define! run-process
+    (lambda! (program path)
+      (let! ((record (context)))
+        (bind record (quote! output) "")
+        record)))
+  (expect-error! exit-called (load! count-words))
+  (expect-equal! words 0))
+
+(test! "count-words with no arguments says what's wrong"
+  (expect-error! arity-error (load! count-words)))
+
+; A test file can write expectations of its own on these.
+(define! expect-even!
+  (vau! (expression) caller
+    (evaluate (list expect-equal! (list remainder expression 2) 0) caller)))
+
+(test! "an expectation of the file's own"
+  (expect-even! (add 1 1)))
+
+(test! "a test's own binding of a library name changes nothing around it"
+  (define! list (lambda! xs (quote! mine)))
+  (define! first (lambda! (x) (quote! mine)))
+  (expect-equal! (list 1) (quote! mine))
+  (expect-equal! (map first (pair 1 ())) (pair (quote! mine) ())))

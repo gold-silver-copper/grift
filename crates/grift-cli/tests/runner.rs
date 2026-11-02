@@ -43,7 +43,7 @@ fn script(dir: &Path, program: &str, args: &[&str], stdin: &str) -> (Option<i32>
 fn statuses() {
     let ok = run(
         &[],
-        "(define! f (lambda! (x) (multiply x x))) (display (f 7)) (newline)",
+        "(define! f (lambda! (x) (multiply x x))) (display (f 7) \"\\n\")",
         Stdio::piped(),
     );
     assert_eq!((ok.status.code(), &ok.stdout[..]), (Some(0), &b"49\n"[..]));
@@ -109,23 +109,23 @@ fn files_are_contexts_of_operations() {
     let program = r#"
         (define! (path) command-line-arguments)
         (define! out (create-file path))
-        (display out " " (evaluate-in! path out)) (newline)
+        (display out " " (evaluate-in! path out)) (display "\n")
         ((evaluate-in! write out) "one\ntwo\n")
         ((evaluate-in! close out))
         (define! in (open-file path))
-        (display in) (newline)
+        (display in) (display "\n")
         (display (list ((evaluate-in! read-line in)) ((evaluate-in! read-all in)) ((evaluate-in! read-line in))))
-        (newline)
+        (display "\n")
         ((evaluate-in! close in))
         ; Using a file after it is closed is the error closed.
         (display (catch! ((evaluate-in! read-line in)) e (list (evaluate-in! kind e) (evaluate-in! values e))))
-        (newline)
+        (display "\n")
         (display (catch! ((evaluate-in! close out)) e (evaluate-in! kind e)))
-        (newline)
+        (display "\n")
         (display (catch! (open-file "no/such/file") e (evaluate-in! kind e)))
-        (newline)
+        (display "\n")
         ; The host functions behind the operations are bound nowhere a program can reach.
-        (display (binds!? (current-context) open-host read-line-host write-host close-host run-host))
+        (display (any? (lambda! (name) (binds? (current-context) name)) (quote! (open-host read-line-host write-host close-host run-host))))
     "#;
     let (status, out, err) = script(&dir, program, &[path], "");
     assert_eq!(status, Some(0), "{err}");
@@ -145,7 +145,7 @@ fn a_program_cannot_reach_the_runner_s_host_functions() {
     let program = r#"
         (define! top (current-context))
         (define! leaked #inert)
-        (define! spy (vau! #ignore caller (sequence! (define-in! top leaked caller) #inert)))
+        (define! spy (vau! #ignore caller (sequence! (bind top (quote! leaked) caller) #inert)))
         (define! lambda! spy) (define! quote! spy) (define! list spy) (define! context "scratch")
         (define! in (open-file "/dev/null"))
         (display (same? leaked #inert) " " in " " ((evaluate-in! read-all in)))

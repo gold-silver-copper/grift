@@ -24,7 +24,7 @@
                   (list path
                         (lambda! (text) (write-host file text))
                         (lambda! () (close-host file))))))
-  (define-in! top (standard-input standard-error open-file create-file run-process)
+  (bind top (quote! (standard-input standard-error open-file create-file run-process))
     (list (operations (quote! (read-line read-all))
                       (list (lambda! () (read-line-host 0)) (lambda! () (read-all-host 0))))
           (operations (quote! (write)) (list (lambda! (text) (write-host 1 text))))

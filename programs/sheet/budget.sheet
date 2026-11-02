@@ -1,0 +1,12 @@
+; A small budget.
+(define! with-tax (lambda! (x) (multiply x 1.2)))
+A1 "Rent"
+B1 1200
+A2 "Food"
+B2 310.5
+A3 "Bus"
+B3 45
+B4 (add (integer-to-float B1) (add B2 (integer-to-float B3)))
+B5 (with-tax B4)
+C1 (count B1:B3)
+C2 (average B1:B3)

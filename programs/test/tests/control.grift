@@ -1,0 +1,102 @@
+; The forms that choose and the booleans. No truthiness anywhere.
+
+(group! "if!"
+  (test! "both branches are required"
+    (expect-error! arity-error (if! #true 1))
+    (expect-error! arity-error (if! #true 1 2 3)))
+  (test! "the test must be a boolean"
+    (expect-error! type-error (if! 1 2 3))
+    (expect-error! type-error (if! () 2 3)))
+  (test! "only the branch taken is evaluated"
+    (expect-equal! (if! #true 1 (raise (error (quote! never)))) 1)))
+
+(group! "when!"
+  (test! "the body if true, #inert if false"
+    (expect-equal! (when! #true 1 2) 2)
+    (expect-true! (same? #inert (when! #false 1))))
+  (test! "an empty body is #inert, no test an arity-error"
+    (expect-true! (same? #inert (when! #true)))
+    (expect-error! arity-error (when!))))
+
+(group! "conditional!"
+  (test! "the first true clause"
+    (expect-equal! (conditional! (#false 1) (#true 2) (#true 3)) 2))
+  (test! "#inert if none is true, or no clauses, or an empty body"
+    (expect-true! (same? #inert (conditional! (#false 1))))
+    (expect-true! (same? #inert (conditional!)))
+    (expect-true! (same? #inert (conditional! (#true)))))
+  (test! "a clause that isn't a pair is an arity-error"
+    (expect-error! arity-error (conditional! 1)))
+  (test! "a test that isn't a boolean is a type-error"
+    (expect-error! type-error (conditional! (1 2)))))
+
+(group! "and!? and or!?"
+  (test! "of nothing"
+    (expect-true! (and!?))
+    (expect-false! (or!?)))
+  (test! "stop early"
+    (expect-false! (and!? #false (raise (error (quote! never)))))
+    (expect-true! (or!? #true (raise (error (quote! never))))))
+  (test! "every operand evaluated must be a boolean, the last too"
+    (expect-error! type-error (and!? #true 1))
+    (expect-error! type-error (or!? #false 1))))
+
+(group! "not?"
+  (test! "booleans only"
+    (expect-false! (not? #true))
+    (expect-error! type-error (not? 1))))
+
+(group! "let!"
+  (test! "binds in order, seeing the ones before"
+    (expect-equal! (let! ((a 1) (b (add a 1))) (list a b)) (list 1 2)))
+  (test! "a combiner can call itself"
+    (expect-equal! (let! ((down (lambda! (n) (if! (same? n 0) 0 (down (subtract n 1))))))
+                     (down 3))
+                   0))
+  (test! "parameters are trees"
+    (expect-equal! (let! (((a . b) (pair 1 2))) (list a b)) (list 1 2)))
+  (test! "a malformed binding is an arity-error"
+    (expect-error! arity-error (let! ((a)) a))))
+
+(group! "lambda! and vau!"
+  (test! "an operative sees its operands and the caller's context"
+    (define! operands! (vau! xs #ignore xs))
+    (expect-equal! (operands! (add 1 1) b) (quote! ((add 1 1) b)))
+    (define! here! (vau! () caller caller))
+    (define! marker 7)
+    (expect-equal! (evaluate-in! marker (here!)) 7))
+  (test! "a symbol twice is a parameter-error"
+    (expect-error! parameter-error (vau! (a a) #ignore a))
+    (expect-error! parameter-error (vau! (a) a a)))
+  (test! "the wrong number of arguments is an arity-error"
+    (expect-error! arity-error ((lambda! (a) a)))
+    (expect-error! arity-error ((lambda! (a) a) 1 2)))
+  (test! "wrap and unwrap undo each other"
+    (define! operative! (vau! xs #ignore xs))
+    (expect-same! (unwrap (wrap operative!)) operative!)
+    (expect-true! (applicative? (wrap operative!)))
+    (expect-error! type-error (unwrap operative!))))
+
+(group! "tail calls"
+  (test! "a long loop through if!, when!, conditional! and let! runs in constant space"
+    (define! count-down
+      (lambda! (n)
+        (let! ((left (subtract n 1)))
+          (conditional!
+            ((same? left 0) "done")
+            (#true (when! #true (if! #true (count-down left) #inert)))))))
+    (expect-equal! (count-down 100000) "done")))
+
+(group! "equal? and same?"
+  (test! "same? on strings by content, on pairs by identity"
+    (expect-same! "a" (string-append "a" ""))
+    (expect-false! (same? (list 1) (list 1)))
+    (expect-true! (equal? (list 1) (list 1))))
+  (test! "different types are never equal"
+    (expect-false! (equal? 1 1.0))
+    (expect-false! (same? 1 1.0)))
+  (test! "not-a-number and the zeros"
+    (expect-false! (equal? #not-a-number #not-a-number))
+    (expect-true! (same? #not-a-number #not-a-number))
+    (expect-true! (equal? 0.0 -0.0))
+    (expect-false! (same? 0.0 -0.0))))

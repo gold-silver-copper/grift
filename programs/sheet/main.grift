@@ -1,0 +1,413 @@
+#!/usr/bin/env grift
+; sheet-graph: a spreadsheet engine that keeps an explicit dependency graph and recalculates in
+; dependency order.
+;
+;   grift main.grift SHEET-FILE < commands
+;
+; A sheet file has one entry per line: a cell and its formula (`B1 (add A1 2.5)`), a function
+; definition (`(define! double (lambda! (x) (multiply x 2)))`), a blank line or a `;` comment.
+; A formula is a grift expression; a cell name (A1 .. Z999) is the cell's value, and a range
+; (A1:B3) is the list of the values of the cells in that rectangle that aren't empty.
+;
+; Commands on standard input, one per line:
+;   set CELL FORMULA   set a cell; prints the cells recalculated, in order
+;   clear CELL         empty a cell
+;   show CELL          its formula and value, or the error
+;   define FORM        add or replace a function, then recalculate every cell
+;   print              the grid
+;   save [PATH]        write the sheet, to the file it was loaded from by default
+;   quit
+
+; ---------------------------------------------------------------------------------------------
+; General helpers the library lacks.
+
+(define! remove (lambda! (x xs) (filter (lambda! (y) (not? (equal? x y))) xs)))
+(define! adjoin (lambda! (x xs) (if! (member? x xs) xs (pair x xs))))
+(define! look-up (lambda! (c s default) (if! (binds? c s) (evaluate s c) default)))
+
+; Strings.
+; Written with same? rather than (member? b (list 32 9 10 13)), which costs 27 µs a call.
+(define! space-byte? (lambda! (b) (or!? (same? b 32) (same? b 10) (same? b 9) (same? b 13))))
+(define! digit-byte? (lambda! (b) (and!? (greater-than-or-equal? b 48) (less-than-or-equal? b 57))))
+(define! trim-end
+  (lambda! (s)
+    (let! ((end-at (lambda! (i) (if! (and!? (greater-than? i 0) (space-byte? (string-byte s (subtract i 1)))) (end-at (subtract i 1)) i))))
+      (byte-substring s 0 (end-at (string-byte-length s))))))
+; The first word of s and the trimmed rest, as a pair of strings.
+(define! split-word
+  (lambda! (s)
+    (let! ((s (string-trim s))
+           (end (string-byte-length s))
+           (word-end (lambda! (i) (if! (and!? (less-than? i end) (not? (space-byte? (string-byte s i)))) (word-end (add i 1)) i)))
+           (i (word-end 0)))
+      (pair (byte-substring s 0 i) (string-trim (byte-substring s i end))))))
+
+; ---------------------------------------------------------------------------------------------
+; A formula is one form of grift. A problem is the error formula-error, with a message, the text
+; and the position, from 0.
+
+(define! read-formula
+  (lambda! (text)
+    (let! ((fail (lambda! (message i) (raise (error (quote! formula-error) message text i))))
+           (read-at (lambda! (i)
+                      (catch! (read-form text i)
+                              e
+                              (fail "does not read" (subtract (first (rest (evaluate-in! values e))) 1)))))
+           (found (read-at 0)))
+      (when! (same? found ()) (fail "no formula" 0))
+      (let! (((form #ignore end) found))
+        (when! (not? (same? (read-at end) ())) (fail "more after the formula" end))
+        form))))
+
+; ---------------------------------------------------------------------------------------------
+; Cell names and ranges. A cell is a column letter A-Z and a row from 1: column 0 is A.
+
+(define! cell-name
+  (lambda! (column row)
+    (string-to-symbol (string-append (code-point-to-string (add 65 column)) (integer-to-string row)))))
+; The (column . row) of a cell name, or () if s (a string) isn't one.
+(define! cell-position
+  (lambda! (s)
+    (let! ((n (string-byte-length s))
+           (digits? (lambda! (i) (or!? (same? i n) (and!? (digit-byte? (string-byte s i)) (digits? (add i 1)))))))
+      (if! (and!? (greater-than-or-equal? n 2) (less-than-or-equal? n 4)
+                  (greater-than-or-equal? (string-byte s 0) 65) (less-than-or-equal? (string-byte s 0) 90)
+                  (not? (same? (string-byte s 1) 48)) (digits? 1))
+        (pair (subtract (string-byte s 0) 65) (string-to-integer (byte-substring s 1 n)))
+        ()))))
+(define! cell? (lambda! (x) (and!? (symbol? x) (not? (same? (cell-position (symbol-to-string x)) ())))))
+; The cells of a range symbol such as A1:B3, row by row, or () if it isn't one.
+(define! range-cells
+  (lambda! (x)
+    (let! ((s (if! (symbol? x) (symbol-to-string x) ""))
+           (at (string-search s ":" 0)))
+      (if! (same? at ())
+        ()
+        (let! ((from (cell-position (byte-substring s 0 at)))
+               (to (cell-position (byte-substring s (add at 1) (string-byte-length s)))))
+          (if! (or!? (same? from ()) (same? to ()))
+            ()
+            (fold append ()
+                  (map (lambda! (row)
+                         (map (lambda! (column) (cell-name column row))
+                              (range (minimum (first from) (first to)) (add 1 (maximum (first from) (first to))))))
+                       (range (minimum (rest from) (rest to)) (add 1 (maximum (rest from) (rest to))))))))))))
+(define! range? (lambda! (x) (not? (same? (range-cells x) ()))))
+; The cell and range names an expression mentions, each once.
+(define! references
+  (lambda! (x found)
+    (conditional! ((pair? x) (references (rest x) (references (first x) found)))
+                  ((or!? (cell? x) (range? x)) (adjoin x found))
+                  (#true found))))
+; The cells a list of references reads, each once, sorted by name; a context is the set.
+(define! cells-read
+  (lambda! (refs)
+    (let! ((seen (context)))
+      (for-each (lambda! (r) (for-each (lambda! (c) (bind seen c #true)) (if! (cell? r) (list r) (range-cells r)))) refs)
+      (names seen))))
+
+; ---------------------------------------------------------------------------------------------
+; The sheet. `cells` maps a cell name to its record, a context binding source (the formula's
+; text), expression, references, reads, failed (a boolean) and value (the value, or the error
+; when failed). An empty cell is unbound or bound to (): a context can't lose a binding.
+; `dependents` is the graph's other direction: a cell name to the cells that read it.
+
+(define! cells (context))
+(define! dependents (context))
+(define! cell-record (lambda! (name) (look-up cells name ())))
+(define! cell-names (lambda! () (filter (lambda! (n) (not? (same? (cell-record n) ()))) (names cells))))
+
+; Formulas see the library as it was when the program started, the range functions, and the
+; sheet's own functions; not this program's definitions.
+(define! library (context))
+(for-each (lambda! (n) (bind library n (evaluate n (current-context)))) built-in-names)
+(define! functions (context library))
+(define! function-sources ())
+; The range functions. grift never mixes integers and floats, but a column often does
+; (1200 and 310.5), so sum and average add integers as floats once a float is among them.
+(evaluate (quote! (sequence!
+  (define! floats (lambda! (xs) (map (lambda! (x) (if! (integer? x) (integer-to-float x) x)) xs)))
+  (define! sum
+    (lambda! (xs)
+      (conditional! ((same? xs ()) 0)
+                    ((any? float? xs) (fold add 0.0 (floats xs)))
+                    (#true (fold add 0 xs)))))
+  (define! count (lambda! (xs) (length xs)))
+  (define! average
+    (lambda! (xs)
+      (if! (same? xs ())
+        (raise (error (quote! empty-range)))
+        (divide (fold add 0.0 (floats xs)) (integer-to-float (length xs))))))))
+  functions)
+
+(define! link
+  (lambda! (name reads)
+    (for-each (lambda! (r) (bind dependents r (adjoin name (look-up dependents r ())))) reads)))
+(define! unlink
+  (lambda! (name reads)
+    (for-each (lambda! (r) (bind dependents r (remove name (look-up dependents r ())))) reads)))
+
+; A new record for a cell's formula text; a formula that doesn't read is a failed cell.
+(define! make-cell
+  (lambda! (source)
+    (let! ((cell (context))
+           (expression (catch! (read-formula source) e e))
+           (unreadable (context? expression))
+           (refs (if! unreadable () (references expression ()))))
+      (bind cell (quote! (source expression references reads failed value))
+            (list source expression refs (cells-read refs) unreadable expression))
+      cell)))
+(define! store (lambda! (cell failed value) (bind cell (quote! (failed value)) (list failed value))))
+
+; The value a reference has in a formula: a cell's value or a range's list of values. A failed
+; or empty cell read directly, or a failed cell in a range, is an error in the reading cell.
+(define! cell-value
+  (lambda! (name)
+    (let! ((cell (cell-record name)))
+      (conditional! ((same? cell ()) (raise (error (quote! empty-cell) name)))
+                    ((evaluate-in! failed cell) (raise (error (quote! error-in-cell) name)))
+                    (#true (evaluate-in! value cell))))))
+(define! reference-value
+  (lambda! (r)
+    (if! (cell? r)
+      (cell-value r)
+      (map cell-value (filter (lambda! (c) (not? (same? (cell-record c) ()))) (range-cells r))))))
+
+(define! evaluate-cell
+  (lambda! (name)
+    (let! ((cell (cell-record name)))
+      (when! (not? (context? (evaluate-in! expression cell)))
+        (let! ((local (context functions)))
+          (catch! (sequence!
+                    (for-each (lambda! (r) (bind local r (reference-value r))) (evaluate-in! references cell))
+                    (store cell #false (evaluate (evaluate-in! expression cell) local)))
+                  e
+                  (store cell #true e)))))))
+
+; Every cell reachable from `starts` through dependents, starts included, that isn't empty.
+(define! affected-from
+  (lambda! (starts)
+    (let! ((seen (context))
+           (visit (lambda! (#ignore todo)
+                    (conditional! ((same? todo ()) #inert)
+                                  ((binds? seen (first todo)) (visit #inert (rest todo)))
+                                  (#true (visit (bind seen (first todo) #true)
+                                                (append (look-up dependents (first todo) ()) (rest todo))))))))
+      (visit #inert starts)
+      (filter (lambda! (n) (not? (same? (cell-record n) ()))) (names seen)))))
+
+; Recalculates the cells `affected`: orders them so each comes after the cells it reads (a
+; depth-first walk along reads), marks each cell on a cycle, then evaluates them in that order.
+; Gives the cells in the order they were evaluated.
+(define! recalculate
+  (lambda! (affected)
+    (let! ((inside (context))
+           (state (context))
+           (cycles (context))
+           ; path: the cells being visited, innermost first. A cell met again while it is being
+           ; visited closes a cycle: the cells on the path back to it.
+           (cycle-of (lambda! (name path) (if! (same? (first path) name) (list name) (pair (first path) (cycle-of name (rest path))))))
+           (visit (lambda! (order name path)
+                    (conditional!
+                      ((not? (binds? inside name)) order)
+                      ((same? (look-up state name ()) (quote! done)) order)
+                      ((same? (look-up state name ()) (quote! visiting))
+                       (let! ((cycle (reverse (cycle-of name path))))
+                         (for-each (lambda! (c) (bind cycles c cycle)) cycle)
+                         order))
+                      (#true
+                       (bind state name (quote! visiting))
+                       (let! ((order (fold (lambda! (o r) (visit o r (pair name path))) order
+                                           (evaluate-in! reads (cell-record name)))))
+                         (bind state name (quote! done))
+                         (pair name order))))))
+           (order (sequence! (for-each (lambda! (n) (bind inside n #true)) affected)
+                             (reverse (fold (lambda! (o n) (visit o n ())) () affected)))))
+      (for-each (lambda! (name)
+                  (if! (binds? cycles name)
+                    (store (cell-record name) #true (apply error (pair (quote! cycle) (evaluate name cycles))))
+                    (evaluate-cell name)))
+                order)
+      order)))
+
+(define! set-cell
+  (lambda! (name source)
+    (let! ((old (cell-record name)))
+      (when! (not? (same? old ())) (unlink name (evaluate-in! reads old)))
+      (if! (same? source "")
+        (bind cells name ())
+        (let! ((cell (make-cell source)))
+          (bind cells name cell)
+          (link name (evaluate-in! reads cell))))
+      (recalculate (affected-from (list name))))))
+
+(define! sheet (current-context))
+(define! define-function
+  (lambda! (source)
+    (let! ((form (read-formula source)))
+      (evaluate form functions)
+      (bind sheet (quote! function-sources) (append function-sources (list source))))))
+
+; ---------------------------------------------------------------------------------------------
+; Showing values. A float shows two decimals.
+
+(define! two-digits (lambda! (n) (if! (less-than? n 10) (string-append "0" (integer-to-string n)) (integer-to-string n))))
+(define! float-text
+  (lambda! (x)
+    (conditional!
+      ; A not-a-number fails this test too.
+      ((not? (less-than-or-equal? (absolute-value x) 1e15)) (value-to-string x))
+      (#true (let! ((hundredths (float-to-integer (round (multiply x 100.0))))
+                    (size (if! (less-than? hundredths 0) (subtract 0 hundredths) hundredths)))
+               (string-append (if! (less-than? hundredths 0) "-" "")
+                              (integer-to-string (divide size 100)) "." (two-digits (remainder size 100))))))))
+(define! value-text
+  (lambda! (v)
+    (conditional! ((float? v) (float-text v))
+                  ((string? v) v)
+                  ((pair? v) (string-append "(" (string-join (map value-text v) " ") ")"))
+                  ((or!? (context? v) (operative? v) (applicative? v)) (string-append "#" (symbol-to-string (type-of v))))
+                  (#true (value-to-string v)))))
+(define! cell-text
+  (lambda! (cell)
+    (if! (evaluate-in! failed cell)
+      (string-append "#" (symbol-to-string (evaluate-in! kind (evaluate-in! value cell))))
+      (value-text (evaluate-in! value cell)))))
+
+(define! print-grid
+  (lambda! ()
+    (let! ((positions (map (lambda! (n) (cell-position (symbol-to-string n))) (cell-names)))
+           (columns (range 0 (add 1 (fold maximum -1 (map first positions)))))
+           (rows (range 1 (add 1 (fold maximum 0 (map rest positions)))))
+           (text-at (lambda! (column row)
+                      (let! ((cell (cell-record (cell-name column row))))
+                        (if! (same? cell ()) "" (cell-text cell)))))
+           (right? (lambda! (column row)
+                     (let! ((cell (cell-record (cell-name column row))))
+                       (and!? (not? (same? cell ())) (not? (evaluate-in! failed cell))
+                              (or!? (integer? (evaluate-in! value cell)) (float? (evaluate-in! value cell)))))))
+           (widths (map (lambda! (column) (fold (lambda! (w row) (maximum w (string-byte-length (text-at column row)))) 1 rows)) columns))
+           (label-width (string-byte-length (integer-to-string (length rows))))
+           (line (lambda! (label texts) (display (trim-end (string-append (string-pad-left label label-width) " " (string-join texts " "))) "\n"))))
+      (line "" (map (lambda! (column width) (string-pad-right (code-point-to-string (add 65 column)) width)) columns widths))
+      (for-each (lambda! (row)
+                  (line (integer-to-string row)
+                        (map (lambda! (column width)
+                               (if! (right? column row)
+                                 (string-pad-left (text-at column row) width)
+                                 (string-pad-right (text-at column row) width)))
+                             columns widths)))
+                rows))))
+
+(define! show-cell
+  (lambda! (name)
+    (let! ((cell (cell-record name)))
+      (conditional!
+        ((same? cell ()) (display (symbol-to-string name) " is empty\n"))
+        ((evaluate-in! failed cell)
+         (let! ((e (evaluate-in! value cell)))
+           (display (symbol-to-string name) " " (evaluate-in! source cell) " => error " (evaluate-in! kind e) " " (evaluate-in! values e) "\n")))
+        (#true (display (symbol-to-string name) " " (evaluate-in! source cell) " => " (evaluate-in! value cell) "\n"))))))
+
+; ---------------------------------------------------------------------------------------------
+; Loading and saving. A line that doesn't load is the error sheet-error, with the path, the line
+; number and the line.
+
+; The lines of a file, each with its number: (number . line).
+(define! numbered-lines
+  (lambda! (file)
+    (let! ((lines (string-split (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))) "\n")))
+      (map pair (range 1 (add 1 (length lines))) lines))))
+
+(define! load-sheet
+  (lambda! (path)
+    (for-each
+      (lambda! ((number . text))
+        (let! ((line (string-trim text)))
+          (conditional!
+            ((or!? (same? line "") (string-starts-with? line ";")) #inert)
+            ((string-starts-with? line "(")
+             (catch! (define-function line)
+                     e
+                     (raise (error (quote! sheet-error) path number line (evaluate-in! kind e) (evaluate-in! values e)))))
+            (#true
+             (let! (((word . formula) (split-word line)))
+               (if! (and!? (not? (same? (cell-position word) ())) (not? (same? formula "")))
+                 (let! ((cell (make-cell formula))
+                        (name (string-to-symbol word)))
+                   (bind cells name cell)
+                   (link name (evaluate-in! reads cell)))
+                 (raise (error (quote! sheet-error) path number line "expected a cell name and a formula"))))))))
+      (numbered-lines (open-file path)))
+    (recalculate (cell-names))))
+
+(define! save-sheet
+  (lambda! (path)
+    (let! ((out (create-file path))
+           (write (evaluate-in! write out)))
+      (finally!
+        (sequence!
+          (for-each (lambda! (source) (write (string-append source "\n"))) function-sources)
+          (for-each (lambda! (name) (write (string-append (symbol-to-string name) " " (evaluate-in! source (cell-record name)) "\n")))
+                    (cell-names)))
+        ((evaluate-in! close out)))
+      (display "saved " path "\n"))))
+
+; ---------------------------------------------------------------------------------------------
+; Commands.
+
+(define! say-recalculated
+  (lambda! (order) (display "recalculated " (if! (same? order ()) "no cells" (string-join (map symbol-to-string order) " ")) "\n")))
+(define! with-cell
+  (lambda! (word then)
+    (if! (same? (cell-position word) ())
+      (display "not a cell name: " word "\n")
+      (then (string-to-symbol word)))))
+
+(define! run-command
+  (lambda! (line)
+    (let! (((command . argument) (split-word line)))
+      (conditional!
+        ((same? command "") #inert)
+        ((same? command "set")
+         (let! (((word . formula) (split-word argument)))
+           (if! (same? formula "")
+             (display "set needs a cell and a formula\n")
+             (with-cell word (lambda! (name) (say-recalculated (set-cell name formula)))))))
+        ((same? command "clear") (with-cell argument (lambda! (name) (say-recalculated (set-cell name "")))))
+        ((same? command "show") (with-cell argument show-cell))
+        ((same? command "define")
+         (catch! (sequence! (define-function argument) (say-recalculated (recalculate (cell-names))))
+                 e
+                 (sequence! (display "define failed: " (evaluate-in! kind e))
+                            (for-each (lambda! (v) (display " " v)) (evaluate-in! values e))
+                            (display "\n"))))
+        ((same? command "print") (print-grid))
+        ((same? command "save")
+         (catch! (save-sheet (if! (same? argument "") sheet-path argument))
+                 e
+                 (sequence! (display "save failed: " (evaluate-in! kind e))
+                            (for-each (lambda! (v) (display " " v)) (evaluate-in! values e))
+                            (display "\n"))))
+        (#true (display "unknown command: " command " (set, clear, show, define, print, save, quit)\n"))))))
+
+(define! command-loop
+  (lambda! (read-line)
+    (let! ((line (read-line)))
+      (when! (not? (or!? (same? line "") (same? (string-trim line) "quit")))
+        (run-command line)
+        (command-loop read-line)))))
+
+(when! (not? (same? (length command-line-arguments) 1))
+  (display "usage: main.grift SHEET-FILE < commands\n")
+  (exit 2))
+(define! sheet-path (first command-line-arguments))
+;; A sheet that doesn't load is one line on standard error and status 1.
+(catch! (load-sheet sheet-path)
+        e
+        (sequence!
+          ((evaluate-in! write standard-error)
+           (string-append "sheet-graph: " (symbol-to-string (evaluate-in! kind e)) " "
+                          (string-join (map value-text (evaluate-in! values e)) " ") "\n"))
+          (exit 1)))
+(command-loop (evaluate-in! read-line standard-input))

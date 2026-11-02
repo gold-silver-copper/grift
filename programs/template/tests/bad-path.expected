@@ -1,0 +1,2 @@
+bad-path.html:1: "shop..name" isn't a name or a path like user.name
+[exit 1]

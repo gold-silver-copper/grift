@@ -1,0 +1,22 @@
+; fib, a closure counter and a user-defined operative, in the interpreted subset.
+(define! fib (lambda! (n) (if! (less-than? n 2) n (add (fib (subtract n 1)) (fib (subtract n 2))))))
+(display "fib 15: " (fib 15)) (display "\n")
+
+(define! make-counter
+  (lambda! ()
+    (let! ((state (context)))
+      (bind state (quote! count) 0)
+      (lambda! ()
+        (bind state (quote! count) (add (evaluate (quote! count) state) 1))
+        (evaluate (quote! count) state)))))
+(define! tick (make-counter))
+(define! other (make-counter))
+(tick) (tick)
+(display "counter: " (tick) " other: " (other)) (display "\n")
+
+; unless!: an operative of the program's own, evaluating only the branch it picks.
+(define! unless!
+  (vau! (test . body) caller
+    (if! (evaluate test caller) #inert (evaluate (pair sequence! body) caller))))
+(unless! (less-than? 2 1) (display "unless! ran its body") (display "\n"))
+(unless! (less-than? 1 2) (display "never printed") (display "\n"))

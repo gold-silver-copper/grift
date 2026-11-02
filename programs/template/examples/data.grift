@@ -1,0 +1,20 @@
+; The data for page.html.
+(define! title "Shop & more")
+(define! banner "<b>new</b>")
+(define! user (record! (name "Ann <ann@example.com>") (bio "Likes \"quotes\"") (admin #true)))
+(define! items
+  (list (record! (name "Tea") (price 450) (sale #false))
+        (record! (name "Cake") (price 1200) (sale #true))))
+; Filters: any applicative bound here; the value comes first.
+(define! upper
+  (lambda! (s)
+    (apply string-append
+           (map (lambda! (i)
+                  (let! ((b (string-byte s i)))
+                    (code-point-to-string (if! (and!? (less-than? 96 b) (less-than? b 123)) (subtract b 32) b))))
+                (range 0 (string-byte-length s))))))
+(define! money
+  (lambda! (cents)
+    (string-append "$" (integer-to-string (divide cents 100)) "."
+                   (if! (less-than? (remainder cents 100) 10) "0" "")
+                   (integer-to-string (remainder cents 100)))))

@@ -1,0 +1,3 @@
+(display (catch! (first 5) e (list (evaluate-in! kind e) (evaluate-in! values e) (evaluate-in! trace e)))) (display "\n")
+(display (finally! (add 1 2) (display "cleanup ")))  (display "\n")
+(5 6)

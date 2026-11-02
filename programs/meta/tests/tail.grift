@@ -1,0 +1,2 @@
+(define! count-down (lambda! (n) (if! (same? n 0) (quote! done) (count-down (subtract n 1)))))
+(display (count-down (string-to-integer (first command-line-arguments)))) (display "\n")

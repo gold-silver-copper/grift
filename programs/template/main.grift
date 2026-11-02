@@ -1,0 +1,411 @@
+#!/usr/bin/env grift
+; A template engine. `main.grift TEMPLATE DATA` prints TEMPLATE with its tags filled from DATA, a
+; file of grift forms evaluated in a context of their own, so its definitions are the names a
+; template sees and its applicatives are the filters. The tags:
+;   {{ user.name }}               a value by path, escaped for HTML
+;   {{ name | upper | pad-left 8 }} through filters: (pad-left (upper name) 8); `raw` last skips escaping
+;   {{#if test}} ... {{#else}} ... {{/if}}    the test, with any filters, must give a boolean
+;   {{#for item in items}} ... {{#else}} ... {{/for}}  each element; `{{#for item i in items}}`
+;                                 also binds its index, from 0; the else part runs for ()
+;   {{> header.html}}             another template, relative to this one's directory
+;   {{! a comment }}
+; A tag other than a value that is alone on its line takes the line with it. Every error names the
+; file and line and goes to standard error with status 1; a usage error has status 2.
+
+; The engine is one closure, so the data, evaluated in a child of the top-level context, sees
+; only `run-template` there and none of the engine's own names: a program can't make a context
+; that reads the built-in names alone.
+(define! run-template
+  ((lambda! ()
+    ; Errors of a template: the kind template-error with the file, the line and the message.
+    (define! fail
+      (lambda! (file line . message)
+        (raise (error (quote! template-error) file line (apply string-append message)))))
+
+    ; The text of any value, for a message.
+    (define! show value-to-string)
+    ; The same, but a combiner, which prints as its whole source, by its type alone.
+    (define! describe
+      (lambda! (value)
+        (if! (or!? (operative? value) (applicative? value)) (string-append "an " (show (type-of value))) (show value))))
+
+    ; Text and lines.
+
+    ; The number of newlines in the bytes of text from `from` to `to`.
+    (define! count-lines
+      (lambda! (text from to)
+        (define! count
+          (lambda! (at n)
+            (if! (same? at to) n (count (add at 1) (if! (same? (string-byte text at) 10) (add n 1) n)))))
+        (count from 0)))
+
+    ; The offset after the last `/` in path, 0 if none: where its file name starts.
+    (define! file-name-start
+      (lambda! (path)
+        (define! back
+          (lambda! (at)
+            (if! (same? at 0) 0 (if! (same? (string-byte path (subtract at 1)) 47) at (back (subtract at 1))))))
+        (back (string-byte-length path))))
+
+    ; path read from the directory of the file `from`, unless it starts with `/`.
+    (define! relative-to
+      (lambda! (from path)
+        (if! (string-starts-with? path "/")
+          path
+          (string-append (byte-substring from 0 (file-name-start from)) path))))
+
+    (define! read-file
+      (lambda! (path)
+        (let! ((file (open-file path)))
+          (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
+
+    ; text with the characters HTML gives a meaning to replaced by their entities. It is the hot path,
+    ; so it tests bytes with if! and passes values to a helper rather than binding them with let!,
+    ; which was 2.3 times slower on a 10-byte string.
+    (define! escape-html
+      ((lambda! ()
+         (define! entity
+           (lambda! (byte)
+             (if! (less-than? 62 byte) ()
+               (if! (same? byte 38) "&amp;"
+                 (if! (same? byte 60) "&lt;"
+                   (if! (same? byte 62) "&gt;"
+                     (if! (same? byte 34) "&quot;" (if! (same? byte 39) "&#39;" ()))))))))
+         (define! parts
+           (lambda! (s from at end)
+             (if! (same? at end)
+               (list (byte-substring s from end))
+               (replace s from at end (entity (string-byte s at))))))
+         (define! replace
+           (lambda! (s from at end replacement)
+             (if! (same? replacement ())
+               (parts s from (add at 1) end)
+               (pair (byte-substring s from at) (pair replacement (parts s (add at 1) (add at 1) end))))))
+         (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
+
+    ; The words of s between runs of spaces.
+    (define! words
+      (lambda! (s) (filter (lambda! (w) (not? (same? w ""))) (string-split (string-trim s) " "))))
+
+    ; Tokens: (text string) and (tag content line), content trimmed.
+
+    ; Whether the bytes of text from `from` to `to` are all spaces and tabs.
+    (define! blank?
+      (lambda! (text from to)
+        (if! (same? from to)
+          #true
+          (and!? (member? (string-byte text from) (quote! (32 9))) (blank? text (add from 1) to)))))
+
+    ; The offset of the newline before `at`, or -1.
+    (define! line-start
+      (lambda! (text at)
+        (if! (same? at 0) -1 (if! (same? (string-byte text (subtract at 1)) 10) (subtract at 1) (line-start text (subtract at 1))))))
+
+    (define! tokenize
+      (lambda! (text file)
+        (define! size (string-byte-length text))
+        ; A tag that isn't a value, alone on its line, takes the whole line: the text before it ends at
+        ; the start of the line, and the text after it starts after the newline. `cuts` gives the two
+        ; cuts.
+        (define! cuts
+          (lambda! (content open close)
+            (let! ((before (line-start text open))
+                   (after (let! ((n (string-search text "\n" close))) (if! (same? n ()) size n))))
+              (if! (and!? (not? (same? content ""))
+                          (member? (string-byte content 0) (quote! (35 47 62 33)))
+                          (blank? text (add before 1) open)
+                          (blank? text close after))
+                (list (add before 1) (minimum size (add after 1)))
+                (list open close)))))
+        (define! scan
+          (lambda! (at line done)
+            (let! ((open (string-search text "{{" at)))
+              (if! (same? open ())
+                (reverse (pair (list (quote! text) (byte-substring text at size)) done))
+                (let! ((tag-line (add line (count-lines text at open)))
+                       (close (string-search text "}}" (add open 2))))
+                  (when! (same? close ()) (fail file tag-line "a {{ that is never closed with }}"))
+                  (let! ((content (string-trim (byte-substring text (add open 2) close)))
+                         ((text-end next) (cuts content open (add close 2))))
+                    (scan next
+                          (add tag-line (count-lines text open next))
+                          (pair (list (quote! tag) content tag-line)
+                                (pair (list (quote! text) (byte-substring text at (minimum text-end open)))
+                                      done)))))))))
+        (scan 0 1 ())))
+
+    ; Expressions: a path and filters, `user.name | upper | pad-left 8`, as
+    ; (path filter ...): the path a list of symbols, each filter the list of forms read from its text.
+
+    (define! read-forms
+      (lambda! (text file line)
+        (define! from
+          (lambda! (at)
+            (let! ((read (catch! (read-form text at)
+                                 e
+                                 (fail file line "\"" text "\" doesn't read: "
+                                       (show (evaluate-in! kind e)) " at column "
+                                       (show (first (rest (evaluate-in! values e))))))))
+              (if! (same? read ()) () (pair (first read) (from (first (rest (rest read)))))))))
+        (from 0)))
+
+    (define! parse-expression
+      (lambda! (text file line)
+        (let! (((path-text . filter-texts) (map string-trim (string-split text "|")))
+               (path (string-split path-text ".")))
+          (when! (any? (lambda! (segment) (or!? (same? segment "") (not? (equal? (words segment) (list segment))))) path)
+            (fail file line "\"" path-text "\" isn't a name or a path like user.name"))
+          (pair (map string-to-symbol path)
+                (map (lambda! (filter-text)
+                       (let! ((forms (read-forms filter-text file line)))
+                         (when! (same? forms ()) (fail file line "an empty filter after | in \"" text "\""))
+                         forms))
+                     filter-texts)))))
+
+    ; Nodes, from tokens: (text string), (insert expression raw line), (if expression then otherwise
+    ; line), (for item index expression body otherwise line) with index #ignore when not asked for,
+    ; and (include path line).
+
+    ; A tag's kind and the rest of its content.
+    (define! classify
+      (lambda! (content)
+        (conditional!
+          ((same? content "#else") (list (quote! else) ""))
+          ((same? content "/if") (list (quote! end-if) ""))
+          ((same? content "/for") (list (quote! end-for) ""))
+          ((string-starts-with? content "#if ") (list (quote! if) (byte-substring content 4 (string-byte-length content))))
+          ((string-starts-with? content "#for ") (list (quote! for) (byte-substring content 5 (string-byte-length content))))
+          ((string-starts-with? content ">") (list (quote! include) (string-trim (byte-substring content 1 (string-byte-length content)))))
+          ((string-starts-with? content "!") (list (quote! comment) ""))
+          ((member? (string-byte (string-append content " ") 0) (quote! (35 47))) (list (quote! unknown) content))
+          (#true (list (quote! insert) content)))))
+
+    ; The nodes up to the end of the tokens or a tag that ends a block: (nodes stop rest), where stop
+    ; is () at the end or (kind line), and rest the tokens after it.
+    (define! parse
+      (lambda! (tokens file)
+        (define! block
+          (lambda! (tokens done)
+            (if! (same? tokens ())
+              (list (reverse done) () ())
+              (let! (((token . more) tokens))
+                (if! (same? (first token) (quote! text))
+                  (block more (pair token done))
+                  (let! (((#ignore content line) token)
+                         ((kind detail) (classify content)))
+                    (conditional!
+                      ((member? kind (quote! (else end-if end-for))) (list (reverse done) (list kind line) more))
+                      ((same? kind (quote! comment)) (block more done))
+                      ((same? kind (quote! unknown)) (fail file line "unknown tag {{" detail "}}"))
+                      ((same? kind (quote! include))
+                       (block more (pair (list (quote! include) detail line) done)))
+                      ((same? kind (quote! insert))
+                       (let! (((path . filters) (parse-expression detail file line))
+                              (kept (reverse filters))
+                              (raw? (and!? (pair? kept) (equal? (first kept) (quote! (raw))))))
+                         (block more
+                                (pair (list (quote! insert)
+                                            (pair path (if! raw? (reverse (rest kept)) filters))
+                                            raw? line)
+                                      done))))
+                      ((same? kind (quote! if))
+                       (let! ((test (parse-expression detail file line))
+                              ((then otherwise after) (branches more line "if" (quote! end-if))))
+                         (block after (pair (list (quote! if) test then otherwise line) done))))
+                      (#true
+                       (let! ((parts (string-split detail " in "))
+                              (variables (map string-to-symbol (words (first parts)))))
+                         (when! (not? (and!? (same? (length parts) 2) (member? (length variables) (list 1 2))))
+                           (fail file line "{{#for " detail "}} isn't {{#for item in list}} or {{#for item index in list}}"))
+                         (let! ((expression (parse-expression (first (rest parts)) file line))
+                                ((body otherwise after) (branches more line "for" (quote! end-for))))
+                           (block after
+                                  (pair (list (quote! for) (first variables)
+                                              (if! (same? (length variables) 2) (first (rest variables)) #ignore)
+                                              expression body otherwise line)
+                                        done))))))))))))
+        ; The nodes of an if or a for opened on `line`, an optional else part and its end: (nodes
+        ; otherwise rest).
+        (define! branches
+          (lambda! (tokens line name end)
+            (let! (((nodes stop after) (block tokens ())))
+              (define! closed
+                (lambda! (stop)
+                  (conditional!
+                    ((same? stop ()) (fail file line "{{#" name "}} is never closed with {{/" name "}}"))
+                    ((not? (same? (first stop) end))
+                     (fail file (first (rest stop)) "{{" (stop-text (first stop)) "}} where {{/" name "}} from line "
+                           (integer-to-string line) " was expected")))))
+              (if! (and!? (not? (same? stop ())) (same? (first stop) (quote! else)))
+                (let! (((otherwise stop after) (block after ())))
+                  (closed stop)
+                  (list nodes otherwise after))
+                (sequence! (closed stop) (list nodes () after))))))
+        (let! (((nodes stop #ignore) (block tokens ())))
+          (when! (not? (same? stop ()))
+            (fail file (first (rest stop)) "{{" (stop-text (first stop)) "}} with no {{#if}} or {{#for}} open"))
+          nodes)))
+
+    (define! stop-text
+      (lambda! (kind) (if! (same? kind (quote! else)) "#else" (if! (same? kind (quote! end-if)) "/if" "/for"))))
+
+    ; Rendering. A scope is a context: the data's, or a child binding a loop's names.
+
+    ; The value of a path in scope: its first name looked up there, each further one a binding of the
+    ; record before it.
+    (define! look-up
+      (lambda! ((name . more) scope file line)
+        (define! into
+          (lambda! (value path more)
+            (if! (same? more ())
+              value
+              (let! ((next (first more)) (path (string-append path "." (symbol-to-string next))))
+                (when! (not? (context? value))
+                  (fail file line "can't take " path ": " (show value) " isn't a record"))
+                (when! (not? (member? next (names value)))
+                  (fail file line "no " path ": the record has " (show (names value))))
+                (into (evaluate next value) path (rest more))))))
+        (when! (not? (binds? scope name)) (fail file line "no value named " (symbol-to-string name)))
+        (into (evaluate name scope) (symbol-to-string name) more)))
+
+    ; The value of an expression: its path's, through each filter, the value first and then the
+    ; filter's own arguments, evaluated in scope.
+    (define! evaluate-expression
+      (lambda! ((path . filters) scope file line)
+        (fold (lambda! (value (head . arguments))
+                (let! ((filter (catch! (evaluate head scope)
+                                       e
+                                       (fail file line "no filter named " (show head)))))
+                  (when! (not? (applicative? filter))
+                    (fail file line "filter " (show head) " is " (describe filter) ", not an applicative"))
+                  (catch! (apply filter (pair value (map (lambda! (form) (evaluate form scope)) arguments)))
+                          e
+                          (if! (same? (evaluate-in! kind e) (quote! template-error))
+                            (raise e)
+                            (fail file line "filter " (show head) " on " (show value) ": "
+                                  (show (evaluate-in! kind e)) " "
+                                  (string-join (map show (evaluate-in! values e)) " ")
+                                  (where (evaluate-in! trace e)))))))
+              (look-up path scope file line)
+              filters)))
+
+    ; " in" and the innermost combination of a trace, if it has one.
+    (define! where
+      (lambda! (trace) (if! (same? trace ()) "" (string-append " in " (show (first trace))))))
+
+    (define! value-text
+      (lambda! (value file line)
+        (conditional!
+          ((string? value) value)
+          ((integer? value) (integer-to-string value))
+          ((float? value) (value-to-string value))
+          ((symbol? value) (symbol-to-string value))
+          (#true (fail file line "can't insert " (describe value) "; only strings, numbers and symbols go in text")))))
+
+    ; The rendering of nodes, each output string added in front of `done`, last first. `files` are the
+    ; templates being included, innermost first.
+    (define! render
+      (lambda! (nodes scope files done)
+        (fold (lambda! (done node) (render-node node scope files done)) done nodes)))
+
+    (define! render-node
+      (lambda! (node scope files done)
+        (let! ((file (first files)) (kind (first node)))
+          (conditional!
+            ((same? kind (quote! text)) (pair (first (rest node)) done))
+            ((same? kind (quote! insert))
+             (let! (((#ignore expression raw? line) node)
+                    (text (value-text (evaluate-expression expression scope file line) file line)))
+               (pair (if! raw? text (escape-html text)) done)))
+            ((same? kind (quote! if))
+             (let! (((#ignore test then otherwise line) node)
+                    (value (evaluate-expression test scope file line)))
+               (when! (not? (boolean? value))
+                 (fail file line "{{#if}} needs #true or #false, not " (show value)))
+               (render (if! value then otherwise) scope files done)))
+            ((same? kind (quote! for))
+             (let! (((#ignore item index expression body otherwise line) node)
+                    (items (evaluate-expression expression scope file line)))
+               (when! (not? (or!? (pair? items) (empty-list? items)))
+                 (fail file line "{{#for}} needs a list, not " (show items)))
+               (if! (same? items ())
+                 (render otherwise scope files done)
+                 (fold (lambda! (done (element number))
+                         (let! ((local (context scope)))
+                           (bind local (list item index) (list element number))
+                           (render body local files done)))
+                       done
+                       (map list items (range 0 (length items)))))))
+            (#true
+             (let! (((#ignore path line) node) (included (relative-to file path)))
+               (when! (member? included files)
+                 (fail file line "include cycle: "
+                       (string-join (reverse (pair included files)) " includes ")))
+               (render (load-template included file line) scope (pair included files) done)))))))
+
+    ; The nodes of the template file at path; `from` and `line` say where it was asked for, () for the
+    ; command line.
+    (define! load-template
+      (lambda! (path from line)
+        (let! ((text (catch! (read-file path)
+                             e
+                             (if! (same? line ())
+                               (raise e)
+                               (fail from line "can't include " path ": "
+                                     (first (rest (evaluate-in! values e))))))))
+          (parse (tokenize text path) path))))
+
+    ; The data: each form of the file evaluated in turn in a new child of `top`, the program's
+    ; top-level context, which `record!` is bound in for the file: (record! (name "Ann") (age 30)) is
+    ; a record, a context with no parent binding each name to its value.
+    (define! load-data
+      (lambda! (path top)
+        (let! ((text (read-file path)) (data (context top)))
+          (bind data (quote! record!)
+            (vau! fields caller
+              (let! ((record (context)))
+                (for-each (lambda! ((name value)) (bind record name (evaluate value caller))) fields)
+                record)))
+          (define! from
+            (lambda! (at)
+              (let! ((read (catch! (read-form text at)
+                                   e
+                                   (let! (((line column) (evaluate-in! values e)))
+                                     (fail path line "the data doesn't read at column " (integer-to-string column))))))
+                (when! (not? (same? read ()))
+                  (let! (((form start end) read))
+                    (catch! (evaluate form data)
+                            e
+                            (fail path (add 1 (count-lines text 0 start))
+                                  (show (evaluate-in! kind e)) " "
+                                  (string-join (map show (evaluate-in! values e)) " ")
+                                  (where (evaluate-in! trace e))))
+                    (from end))))))
+          (from 0)
+          data)))
+
+    (define! complain
+      (lambda! text
+        ((evaluate-in! write standard-error) (apply string-append text))))
+
+    (lambda! (top arguments)
+      (if! (not? (same? (length arguments) 2))
+        (sequence! (complain "usage: main.grift TEMPLATE DATA\n") (exit 2))
+        (let! (((template-path data-path) arguments))
+          (catch! (display (apply string-append
+                                  (reverse (render (load-template template-path () ())
+                                                   (load-data data-path top)
+                                                   (list template-path)
+                                                   ()))))
+                  e
+                  (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
+                    (conditional!
+                      ((same? kind (quote! template-error))
+                       (let! (((file line message) values))
+                         (complain file ":" (integer-to-string line) ": " message "\n")))
+                      ((same? kind (quote! file-error))
+                       (complain (first values) ": " (first (rest values)) "\n"))
+                      (#true (complain (show kind) " " (string-join (map show values) " ") "\n")))
+                    (exit 1)))))))))
+
+(run-template (current-context) command-line-arguments)

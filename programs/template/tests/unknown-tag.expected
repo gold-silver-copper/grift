@@ -1,0 +1,2 @@
+unknown-tag.html:1: unknown tag {{#each x in orders}}
+[exit 1]

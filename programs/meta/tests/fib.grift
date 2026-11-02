@@ -1,0 +1,3 @@
+; fib 18, timed under grift and meta for the slowdown.
+(define! fib (lambda! (n) (if! (less-than? n 2) n (add (fib (subtract n 1)) (fib (subtract n 2))))))
+(display (fib 18)) (display "\n")

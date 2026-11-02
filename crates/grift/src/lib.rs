@@ -27,10 +27,8 @@ const LIBRARY: &str = include_str!("library.grift");
 pub enum Value {
     /// The empty list `()`.
     EmptyList,
-    /// `#true`.
-    True,
-    /// `#false`.
-    False,
+    /// `#true` or `#false`.
+    Boolean(bool),
     /// `#inert`, the value of a form with nothing useful to return.
     Inert,
     /// `#ignore`, the parameter that binds nothing.
@@ -82,67 +80,25 @@ pub struct Error {
     seen: Seen<Reference>,
 }
 
-/// Symbols every [`Grift`] interns first, in this order, so the core can name them as constants.
-#[derive(Clone, Copy)]
-pub(crate) enum K {
-    UnboundSymbol,
-    TypeError,
-    ArityError,
-    NotACombiner,
-    ParameterError,
-    Overflow,
-    DivisionByZero,
-    OutOfMemory,
-    ParseError,
-    StaleValue,
-    Interrupted,
-    RangeError,
-    EmptyList,
-    Boolean,
-    Inert,
-    Ignore,
-    Integer,
-    Float,
-    Symbol,
-    Pair,
-    String,
-    Context,
-    Operative,
-    Applicative,
-    Kind,
-    Values,
-    Trace,
+/// Declares the symbols every [`Grift`] interns first, in this order, so the core can name them as
+/// constants.
+macro_rules! known_symbols {
+    ($($k:ident $name:literal)*) => {
+        #[derive(Clone, Copy)]
+        pub(crate) enum K { $($k),* }
+        const K_NAMES: &[&str] = &[$($name),*];
+    };
 }
 
-const K_NAMES: [&str; 27] = [
-    "unbound-symbol",
-    "type-error",
-    "arity-error",
-    "not-a-combiner",
-    "parameter-error",
-    "overflow",
-    "division-by-zero",
-    "out-of-memory",
-    "parse-error",
-    "stale-value",
-    "interrupted",
-    "range-error",
-    "empty-list",
-    "boolean",
-    "inert",
-    "ignore",
-    "integer",
-    "float",
-    "symbol",
-    "pair",
-    "string",
-    "context",
-    "operative",
-    "applicative",
-    "kind",
-    "values",
-    "trace",
-];
+known_symbols! {
+    UnboundSymbol "unbound-symbol" TypeError "type-error" ArityError "arity-error"
+    NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
+    DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
+    StaleValue "stale-value" Interrupted "interrupted" RangeError "range-error"
+    EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
+    Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
+    Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
+}
 
 impl From<K> for Symbol {
     fn from(k: K) -> Symbol {
@@ -160,17 +116,12 @@ impl Error {
 
     /// An error with a copy of `values`; if even that copy can't be allocated, `out-of-memory`.
     pub(crate) fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
-        let mut v = Vec::new();
-        if v.try_reserve_exact(values.len()).is_err() {
-            return Error::oom();
+        let mut e = Error::oom();
+        if e.values.try_reserve_exact(values.len()).is_ok() {
+            e.kind = kind.into();
+            e.values.extend_from_slice(values);
         }
-        v.extend_from_slice(values);
-        Error {
-            kind: kind.into(),
-            values: v,
-            trace: Vec::new(),
-            seen: Seen::default(),
-        }
+        e
     }
 
     pub(crate) fn oom() -> Error {
@@ -201,13 +152,6 @@ impl fmt::Write for Growing {
         self.0.push_str(s);
         Ok(())
     }
-}
-
-/// Rust's formatting of `x`, reporting `out-of-memory` instead of aborting.
-pub(crate) fn formatted(x: fmt::Arguments) -> Result<Box<str>, Error> {
-    let mut s = Growing::default();
-    fmt::write(&mut s, x).map_err(|_| Error::oom())?;
-    boxed(&s.0)
 }
 
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
@@ -311,11 +255,7 @@ impl<T> Grift<T> {
                 .unwrap_or(std::cmp::Ordering::Less)
         });
         match at {
-            Ok(i) => self
-                .sorted
-                .get(i)
-                .map(|&id| Symbol(id))
-                .ok_or_else(Error::oom),
+            Ok(i) => Ok(Symbol(self.sorted.get(i).copied().unwrap_or_default())),
             Err(i) => {
                 let id = u32::try_from(self.names.len()).map_err(|_| Error::oom())?;
                 push(&mut self.names, boxed(name)?)?;

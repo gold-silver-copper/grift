@@ -1,0 +1,5 @@
+; A file that stops reading: the tests before the bad form still run.
+(test! "before the bad form"
+  (expect-true! #true))
+(test! "the bad form"
+  (expect-true! #true)

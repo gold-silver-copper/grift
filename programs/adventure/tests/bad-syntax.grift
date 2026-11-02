@@ -1,0 +1,5 @@
+(start! hall)
+(place! hall
+  (title "Hall")
+  (exits (north library))
+(item! lamp (called "a lamp"))

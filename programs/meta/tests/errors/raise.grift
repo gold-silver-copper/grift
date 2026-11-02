@@ -1,0 +1,6 @@
+; A type error inside a function, reported with the forms it passed.
+(define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x)))))
+(define! run (lambda! (x) (add 1 (check x))))
+(display (run 2)) (display "\n")
+(display (run (quote! a))) (display "\n")
+(display "not reached")

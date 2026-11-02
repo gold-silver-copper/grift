@@ -1,0 +1,14 @@
+; An exit to a place that doesn't exist, and an item in two places.
+(start! hall)
+(place! hall
+  (title "Hall")
+  (description "A hall.")
+  (exits (north librery))
+  (holds lamp))
+(place! library
+  (title "Library")
+  (description "Books.")
+  (exits (south hall)))
+(item! lamp
+  (called "a lamp")
+  (in library))

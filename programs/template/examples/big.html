@@ -1,0 +1,5 @@
+<table>
+{{#for row n in rows}}
+<tr><td>{{ n }}</td><td>{{ row.id | double }}</td><td>{{ row.name }}</td>{{#if row.even}}<td>even</td>{{/if}}</tr>
+{{/for}}
+</table>

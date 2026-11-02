@@ -1,0 +1,2 @@
+bad-filter.html:1: "add (1" doesn't read: parse-error at column 7
+[exit 1]

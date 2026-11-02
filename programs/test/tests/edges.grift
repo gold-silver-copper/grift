@@ -1,0 +1,136 @@
+; The edges of what docs/LANGUAGE.md states: wrong types, empty cases, odd shapes. These found what
+; the friction log says about them.
+
+(group! "wrong types are type-errors"
+  (test! "the primitives"
+    (expect-error! type-error (wrap 1))
+    (expect-error! type-error (evaluate 1 1))
+    (expect-error! type-error (context 1))
+    (expect-error! type-error (names 1))
+    (expect-error! type-error (bind 1 (quote! a) 1))
+    (expect-error! type-error (select 1 2 3))
+    (expect-error! type-error (string-byte-length 1))
+    (expect-error! type-error (string-append "a" 1))
+    (expect-error! type-error (symbol-to-string "a"))
+    (expect-error! type-error (string-to-symbol (quote! a)))
+    (expect-error! type-error (integer-to-string 1.0))
+    (expect-error! type-error (float-to-integer 1))
+    (expect-error! type-error (integer-to-float 1.0))
+    (expect-error! type-error (read-form 1 0))
+    (expect-error! type-error (read-form "a" "b"))
+    (expect-error! type-error (code-point-to-string "a")))
+  (test! "the list helpers on what isn't a list"
+    (expect-error! type-error (map first 1))
+    (expect-error! type-error (for-each first 1))
+    (expect-error! type-error (filter integer? 1))
+    (expect-error! type-error (fold add 0 1))
+    (expect-error! type-error (reverse 1))
+    (expect-error! type-error (any? integer? 1))
+    (expect-error! type-error (all? integer? 1))
+    (expect-error! type-error (member? 1 1))
+    (expect-error! type-error (find-association 1 1))
+    (expect-error! type-error (find-association 1 (list 1))))
+  (test! "the string helpers on what isn't a string"
+    (expect-error! type-error (string-split 1 ","))
+    (expect-error! type-error (string-join (list 1) ","))
+    (expect-error! type-error (string-trim 1))
+    (expect-error! type-error (string-pad-left 1 2))
+    (expect-error! type-error (string-to-lowercase 1))
+    (expect-error! type-error (string-search 1 "a" 0))
+    (expect-error! type-error (string-starts-with? 1 "a"))
+    (expect-error! type-error (string-ends-with? "a" 1)))
+  (test! "range and the pads with floats mixed in"
+    (expect-error! type-error (range 0 1.5))
+    (expect-error! type-error (string-pad-left "a" 1.5))))
+
+(group! "out of range"
+  (test! "string-byte"
+    (expect-error! range-error (string-byte "" 0))
+    (expect-error! range-error (string-byte "a" -1))
+    (expect-error! range-error (string-byte "a" 1)))
+  (test! "byte-substring"
+    (expect-error! range-error (byte-substring "abc" -1 2))
+    (expect-error! range-error (byte-substring "abc" 0 4))
+    (expect-equal! (byte-substring "abc" 3 3) ""))
+  (test! "code points"
+    (expect-error! range-error (code-point-to-string -1))
+    (expect-equal! (code-point-to-string 0) "\x0;")))
+
+(group! "empty and odd shapes"
+  (test! "bodies may be empty"
+    (expect-true! (same? #inert (sequence!)))
+    (expect-true! (same? #inert ((lambda! ()))))
+    (expect-true! (same? #inert (let! ())))
+    (expect-true! (same? #inert (catch! (first 1) e))))
+  (test! "required operands aren't"
+    (expect-error! arity-error (finally!))
+    (expect-error! arity-error (catch! 1))
+    (expect-error! arity-error (quote!))
+    (expect-error! arity-error (define! a))
+    (expect-error! arity-error (vau! ()))
+    (expect-error! arity-error (first))
+    (expect-error! arity-error (add 1)))
+  (test! "lambda! with one symbol takes all its arguments"
+    (expect-equal! ((lambda! all all) 1 2) (list 1 2)))
+  (test! "a dotted tree"
+    (expect-equal! ((lambda! (a . b) (list a b)) 1 2 3) (list 1 (list 2 3))))
+  (test! "#ignore in a tree"
+    (expect-equal! ((lambda! (#ignore b) b) 1 2) 2))
+  (test! "() as a parameter matches only ()"
+    (expect-equal! ((lambda! (() a) a) () 1) 1)
+    (expect-error! arity-error ((lambda! (() a) a) 1 1)))
+  (test! "a parameter that's not a tree is a parameter-error"
+    (expect-error! parameter-error (vau! 1 #ignore 1))
+    (expect-error! parameter-error (lambda! (1) 1)))
+  (test! "define! a tree that doesn't match is an arity-error"
+    (expect-error! arity-error (define! (a b) (list 1)))))
+
+(group! "raise of a made-up error"
+  (test! "a context without the three fields is a type-error"
+    (expect-error! type-error (raise (context))))
+  (test! "a context with them raises"
+    (define! e (context))
+    (bind e (quote! (kind values trace)) (list (quote! mine) (list 1) ()))
+    (expect-error! mine (raise e))))
+
+(group! "catch!"
+  (test! "the parameter can be #ignore"
+    (expect-equal! (catch! (first 1) #ignore 2) 2))
+  (test! "a tree parameter doesn't match an error"
+    (expect-error! arity-error (catch! (first 1) (a b) a)))
+  (test! "the handler's raise goes outward, past this catch!"
+    (expect-equal! (catch! (catch! (first 1) e (raise (error (quote! second-kind))))
+                           e
+                           (evaluate-in! kind e))
+                   (quote! second-kind)))
+  (test! "the handler sees the caller's bindings"
+    (define! here 5)
+    (expect-equal! (catch! (first 1) e here) 5)))
+
+(group! "numbers in text"
+  (test! "negative zero and the extremes read back"
+    (expect-same! (first (read-form (value-to-string -0.0) 0)) -0.0)
+    (expect-same! (first (read-form (value-to-string 1e300) 0)) 1e300)
+    (expect-equal! (string-to-integer (integer-to-string -9223372036854775808))
+                   -9223372036854775808))
+  (test! "too big an integer doesn't read"
+    (expect-error! parse-error (read-form "99999999999999999999" 0)))
+  (test! "a sign alone is a symbol"
+    (expect-equal! (first (read-form "-" 0)) (quote! -))
+    (expect-true! (symbol? (first (read-form "+" 0))))))
+
+(group! "strings in text"
+  (test! "escapes read"
+    (expect-equal! "\x41;" "A")
+    (expect-equal! (string-byte-length "\n\t\\\"") 4))
+  (test! "a bad escape doesn't read"
+    (expect-error! parse-error (read-form "\"\\q\"" 0))
+    (expect-error! parse-error (read-form "\"\\xD800;\"" 0)))
+  (test! "any string makes a symbol, and it prints as its name"
+    (expect-equal! (value-to-string (string-to-symbol "a b")) "a b")))
+
+(group! "string-trim's whitespace is what it says"
+  (test! "vertical tab isn't in it"
+    (expect-equal! (string-trim "\x0B;a") "\x0B;a"))
+  (test! "form feed and return are"
+    (expect-equal! (string-trim "\x0C;\xD;a") "a")))

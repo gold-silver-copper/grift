@@ -47,8 +47,8 @@ grift has few kinds of value, and each earns its place:
 
 There is no truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and `or!?` must be
 booleans, and anything else is a type error. Nothing is guessed for a missing branch either: `if!`
-needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers and floats never mix implicitly: `(add 1 1.5)` is a
-type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
+needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers
+and floats never mix implicitly: `(add 1 1.5)` is a type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
 and no vector type. Host types are not grift values: the host converts at the boundary (checked;
 `range-error` when a number doesn't fit) or gives grift a context of operations.
 
@@ -72,19 +72,19 @@ follows `lambda!`: both name the abstraction they make).
 - A combiner that gets its operands unevaluated ends in `!` (`lambda!`, `if!`, `define!`), as a
   Rust macro does. `!` never means "changes something", as it does in Scheme.
 - A combiner that returns a boolean ends in `?` (`empty-list?`, `not?`); an operative that does,
-  in `!?` (`binds!?`, `and!?`).
+  in `!?` (`and!?`).
 - A constructor is named after what it makes (`pair`, `list`, `context`, `error`).
 - A conversion spells out `to` (`symbol-to-string`, `string-to-integer`).
 - Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`), as
   in fuxth.
 - Only bindings change, so the combiners that change anything are a short, complete list of verbs
-  about bindings: `define!`, `define-in!` and `bind`.
+  about bindings: `define!` and `bind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
 became the verb itself. Equality is `same?` and `equal?`: `same?` is identity for pairs, contexts
 and combiners, equality of value for integers, symbols and strings, and equality of the stored bits
 for floats; `equal?` compares pairs by structure, floats as IEEE does (NaN is never equal), and
 everything else as `same?` does. Values of different types are never equal (`(equal? 1 1.0)` is
-`#false`). Table: `names-draft.md`.
+`#false`).
 
 ## Embedding
 grift is a Rust library with zero dependencies, using `std`. It does no I/O, starts no threads and
@@ -110,26 +110,22 @@ its names.
 
 ## The host boundary
 A host resource (a buffer, a file, a socket) appears in grift as a context of operations on it.
-The operations call host functions bound only in a private context, so a program reaches a resource
-only through a context it was given and can't forge one from an id. The resource itself stays in
-the host; closing it is explicit (no finalizers), and using it after it is closed is the error
-`closed`.
+Its operations call host functions bound only in a private context, so a program can't forge one
+from an id. Closing is explicit (no finalizers), and using it after that is the error `closed`.
 
 ## The runner
-The `grift` runner is a Unix tool: it runs files or stdin, prints data to stdout and diagnostics to
-stderr, and exits 0, 1 on an error, 2 on a usage error. For scripting it gives programs a small,
-fixed set of host operations: reading stdin as data, writing to stderr, files (as contexts of
-operations), the command-line arguments, environment variables, the exit status, and running
-processes. The core does none of this.
+The `grift` runner is a Unix tool: it runs a script or stdin, prints data to stdout and diagnostics
+to stderr, and exits 0, 1 on an error, 2 on a usage error. It gives programs a small, fixed set of
+host operations: reading stdin as data, writing to stderr, files (as contexts of operations), the
+command-line arguments, environment variables, the exit status, and running processes.
 
 ## Implementation
 The implementation stays small and uniform: one evaluation step for every kind of form, one
 representation for each kind of value, no fast paths or special cases. Speed comes from simpler
 library code and better representations, never from shortcuts. When simple and fast disagree,
-simple wins and the cost is written down. grift stays built entirely on fexprs: library forms are
-`vau!` operatives that walk their operands and call `evaluate`; no expansion caching, no compile
-step. `if!` and `sequence!` stay library code (owner, 2026-11-01), although making them primitives
-measured 1.5-2.3x faster: G-1 and simplicity win.
+simple wins and the cost is written down. Library forms are `vau!` operatives that walk their
+operands and call `evaluate`; no expansion caching, no compile step. `if!` and `sequence!` stay
+library code (owner, 2026-11-01), although making them primitives measured 1.5-2.3x faster.
 
 ## Errors
 An error has a kind (a symbol such as `type-error`), the values involved, and a trace: the program
@@ -186,8 +182,8 @@ again. An error, a context, prints its names; the host reports its kind, its val
 3. **What is derived.** Every library form, from a few dozen primitives. `names`,
    `built-in-names` and printed source, from the definitions. An error's trace, from the
    combinations being evaluated when it happened.
-4. **What changes, and who may change it.** Only bindings change: programs through `define!`,
-   `define-in!` and `bind`, on contexts they hold; the host through `define` and its own state.
+4. **What changes, and who may change it.** Only bindings change: programs through `define!` and
+   `bind`, on contexts they hold; the host through `define` and its own state.
    Errors unwind the machine; `finally!` and `catch!` meet them on the way. Collection happens only
    at safe points; the host's interrupt flag stops evaluation there.
 5. **What makes a change to grift correct.** No Rust recursion that grows with a program's nesting;
@@ -196,12 +192,10 @@ again. An error, a context, prints its names; the host reports its kind, its val
    form; a new primitive only when the library version can't exist or can't be used.
 
 ## What complete means
-grift is complete when a closed list of programs runs well on it, each written without changing
-grift, each with no blocker in its friction log: the Emacs-style editor; wave 1's evaluator, logic
-engine, algebra system and JSON filter; wave 2's spreadsheet, text adventure, build tool and
-sandboxed plugin host; and a set of Unix scripts on the runner. "Well" means the program's own done
-list passes and its hot path is acceptable for what it does. Adding a program to the list is a
-decision, recorded like any other.
+grift is complete when a closed list of programs runs well on it, each with no blocker in its
+friction log: the Emacs-style editor in `examples/emacs` and the programs in `programs/`, which the
+gate runs. "Well" means the program's own test passes and its hot path is acceptable for what it
+does. Adding a program to the list is a decision, recorded like any other.
 
 ## How grift grows
 A feature enters only with evidence from real programs (a friction entry with a reproduction: one

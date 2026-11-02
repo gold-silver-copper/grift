@@ -1,0 +1,438 @@
+#!/usr/bin/env grift
+; simulate: a discrete-event simulation of a bank. Customers arrive at random times (a Poisson
+; process), wait in one line and go to the teller who has been free longest; service times are
+; exponential too, so the bank is an M/M/c queue and the run can be checked against Erlang's
+; formula, which it prints beside what it measured.
+;
+;   main.grift CONFIG-FILE [--trace N]
+;
+; CONFIG-FILE holds grift forms, each (name value), read as data and never evaluated:
+;   (tellers 3) (arrival-rate 1.0) (service-rate 0.4) (duration 480.0) (seed 42)
+; Rates are per minute, the duration is how long the doors stay open, in minutes; customers in
+; the bank when they close are still served. --trace N prints the first N events as they happen.
+
+; ---------------------------------------------------------------------------------------------
+; General helpers the library doesn't have.
+
+; record: a new context binding `names` to `values`, a record or table.
+(define! record
+  (lambda! (names values)
+    (let! ((c (context)))
+      (bind c names values)
+      c)))
+
+; float-to-fixed: x's text with `places` decimals, rounded half away from zero, as
+; format!("{:.2}") but for the halves.
+(define! float-to-fixed
+  (lambda! (x places)
+    (let! ((scale (fold (lambda! (n #ignore) (multiply n 10)) 1 (range 0 places)))
+           (n (float-to-integer (round (multiply (absolute-value x) (integer-to-float scale)))))
+           (fraction (integer-to-string (add scale (remainder n scale))))
+           (sign (if! (and!? (less-than? x 0.0) (not? (same? n 0))) "-" "")))
+      (if! (same? places 0)
+        (string-append sign (integer-to-string n))
+        (string-append sign (integer-to-string (divide n scale)) "."
+                       (byte-substring fraction 1 (string-byte-length fraction)))))))
+
+; percent: a fraction as a percentage with one decimal.
+(define! percent
+  (lambda! (x) (string-append (float-to-fixed (multiply x 100.0) 1) "%")))
+
+; line-at: the line, from 1, of byte `offset` in `text`.
+(define! line-at
+  (lambda! (text offset)
+    (define! count
+      (lambda! (i n)
+        (if! (same? i offset)
+          n
+          (count (add i 1) (if! (same? (string-byte text i) 10) (add n 1) n)))))
+    (count 0 1)))
+
+; complain: the error simulate reports and stops for, a message made of the strings given.
+(define! complain
+  (lambda! parts (raise (error (quote! simulate-error) (apply string-append parts)))))
+
+; ---------------------------------------------------------------------------------------------
+; Random numbers.
+
+; random-generator: a combiner giving the next of a stream of floats uniform in (0, 1), from six
+; words of state, the first three below m1 and not all zero, the last three below m2 and not all
+; zero. It is L'Ecuyer's MRG32k3a, whose products stay below 2^53 and so fit grift's checked 64-bit
+; integers (generators built on wrapping multiplication or on bits don't: grift has neither).
+(define! random-generator
+  (lambda! (words)
+    (define! m1 4294967087)
+    (define! m2 4294944443)
+    (define! modulo (lambda! (a m) (let! ((r (remainder a m))) (if! (less-than? r 0) (add r m) r))))
+    (define! state (record (quote! words) words))
+    (lambda! ()
+      (let! (((s10 s11 s12 s20 s21 s22) (evaluate-in! words state))
+             (p1 (modulo (subtract (multiply 1403580 s11) (multiply 810728 s10)) m1))
+             (p2 (modulo (subtract (multiply 527612 s22) (multiply 1370589 s20)) m2)))
+        (bind state (quote! words) (list s11 s12 p1 s21 s22 p2))
+        (divide (integer-to-float (if! (less-than? p2 p1) (subtract p1 p2) (add (subtract p1 p2) m1)))
+                (integer-to-float (add m1 1)))))))
+
+; seed-words: six words of state for random-generator from one seed, 1 to 2^31 - 2, by MINSTD,
+; Park and Miller's generator, so each is between 1 and 2^31 - 2: below both moduli, never zero.
+(define! seed-words
+  (lambda! (seed)
+    (define! minstd (lambda! (x) (remainder (multiply x 48271) 2147483647)))
+    (rest (reverse (fold (lambda! (words #ignore) (pair (minstd (first words)) words))
+                         (list seed)
+                         (range 0 6))))))
+
+; exponential-time: a time drawn from the exponential distribution with this rate, by inverting
+; its distribution function; the uniform draw is never 0, so the logarithm is finite.
+(define! exponential-time
+  (lambda! (uniform rate) (divide (subtract 0.0 (natural-logarithm (uniform))) rate)))
+
+; ---------------------------------------------------------------------------------------------
+; The event queue: a leftist heap, a binary tree of events in which every event is due no later
+; than those below it and the path down the right is the shortest, so a merge, and with it an
+; insertion or a removal of the earliest event, walks O(log n) nodes. It is built of lists and
+; never changes: each operation gives a new heap. A node is (rank event left right), the rank
+; being the length of its right path; () is the empty heap.
+;
+; An event is a record binding time, order (when it was scheduled, so that events due at the
+; same time happen in the order they were scheduled), kind and the record it is about.
+
+; earlier?: whether event a is due before b. Two less-than?s, not equal?, which on floats is
+; several times slower and was a third of a run's time (friction F5).
+(define! earlier?
+  (lambda! (a b)
+    (let! ((time-a (evaluate-in! time a)) (time-b (evaluate-in! time b)))
+      (if! (less-than? time-a time-b)
+        #true
+        (if! (less-than? time-b time-a)
+          #false
+          (less-than? (evaluate-in! order a) (evaluate-in! order b)))))))
+
+(define! heap-rank (lambda! (heap) (if! (same? heap ()) 0 (first heap))))
+
+; heap-node: the node holding event over the two heaps, the one with the shorter right path put
+; on the right.
+(define! heap-node
+  (lambda! (event a b)
+    (let! ((rank-a (heap-rank a)) (rank-b (heap-rank b)))
+      (if! (less-than? rank-a rank-b)
+        (list (add rank-a 1) event b a)
+        (list (add rank-b 1) event a b)))))
+
+; heap-merge: the heap of the events of both. The root with the earlier event stays on top and
+; the other heap is merged into its right side.
+(define! heap-merge
+  ((lambda! ()
+     (define! onto
+       (lambda! ((#ignore event left right) other) (heap-node event left (heap-merge right other))))
+     (lambda! (a b)
+       (if! (same? a ())
+         b
+         (if! (same? b ())
+           a
+           (if! (earlier? (first (rest b)) (first (rest a))) (onto b a) (onto a b))))))))
+
+(define! heap-insert (lambda! (heap event) (heap-merge (list 1 event () ()) heap)))
+(define! heap-earliest (lambda! ((#ignore event . #ignore)) event))
+(define! heap-without-earliest (lambda! ((#ignore #ignore left right)) (heap-merge left right)))
+
+; ---------------------------------------------------------------------------------------------
+; A first-in first-out line of two lists: people join at the back, leave from the front, and the
+; back is turned around when the front runs out. A line is (front . back).
+
+(define! line-join (lambda! ((front . back) x) (pair front (pair x back))))
+
+; line-leave: (person . line-after), for a line that isn't empty.
+(define! line-leave
+  (lambda! ((front . back))
+    (if! (same? front ())
+      (line-leave (pair (reverse back) ()))
+      (pair (first front) (pair (rest front) back)))))
+
+; ---------------------------------------------------------------------------------------------
+; The configuration.
+
+; The settings, each with a test of its value and what the test asks for.
+(define! settings
+  (list (list (quote! tellers)
+              (lambda! (v) (and!? (integer? v) (less-than? 0 v)))
+              "a positive integer")
+        (list (quote! arrival-rate)
+              (lambda! (v) (and!? (float? v) (less-than? 0.0 v) (less-than? v #infinity)))
+              "a positive float, customers a minute")
+        (list (quote! service-rate)
+              (lambda! (v) (and!? (float? v) (less-than? 0.0 v) (less-than? v #infinity)))
+              "a positive float, customers a minute for one teller")
+        (list (quote! duration)
+              (lambda! (v) (and!? (float? v) (less-than? 0.0 v) (less-than? v #infinity)))
+              "a positive float, minutes")
+        (list (quote! seed)
+              (lambda! (v) (and!? (integer? v) (less-than? 0 v) (less-than? v 2147483647)))
+              "an integer from 1 to 2147483646")))
+
+; read-config: the record of the settings in the file at path. Every setting must be there, once,
+; with a value its test accepts; anything else is an error naming the file, the line and the
+; setting.
+(define! read-config
+  (lambda! (path)
+    (define! file (open-file path))
+    (define! text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+    (define! config (context))
+    (define! where (lambda! (offset) (string-append path ":" (integer-to-string (line-at text offset)) ": ")))
+    (define! check
+      (lambda! (form start)
+        (define! setting
+          (if! (and!? (pair? form) (pair? (rest form)) (same? (rest (rest form)) ()))
+            (find-association (first form) settings)
+            ()))
+        (if! (same? setting ())
+          (complain (where start) "expected (name value) with a name of "
+                    (string-join (map (lambda! ((name . #ignore)) (symbol-to-string name)) settings) ", ")
+                    ", got " (value-to-string form))
+          (let! (((name test wanted) setting) ((#ignore value) form))
+            (conditional!
+              ((binds? config name) (complain (where start) (symbol-to-string name) " is set twice"))
+              ((not? (test value))
+               (complain (where start) (symbol-to-string name) " must be " wanted ", got "
+                         (value-to-string value)))
+              (#true (bind config name value)))))))
+    (define! each-form
+      (lambda! (offset)
+        (let! ((read (catch! (read-form text offset)
+                             e
+                             (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                               (let! (((line column) (evaluate-in! values e)))
+                                 (complain path ":" (integer-to-string line) ":"
+                                           (integer-to-string column) ": the config doesn't read here"))
+                               (raise e)))))
+          (when! (pair? read)
+            (let! (((form start end) read))
+              (check form start)
+              (each-form end))))))
+    (each-form 0)
+    (for-each (lambda! ((name #ignore wanted))
+                (when! (not? (binds? config name))
+                  (complain path ": " (symbol-to-string name) " is missing; it is " wanted)))
+              settings)
+    config))
+
+; ---------------------------------------------------------------------------------------------
+; The bank. Its state is one record, `bank`, whose bindings change as events happen:
+;   now                the clock, in minutes
+;   events             the event queue, a heap
+;   scheduled          how many events have been scheduled, the next one's order
+;   handled            how many have happened
+;   line, line-length  the line waiting, and its length
+;   free-tellers       the tellers with no customer, the one free longest first
+;   arrived, served    customers so far
+;   total-wait, longest-wait, longest-line
+;   line-area          the integral of the line's length over time, for its average
+; A teller is a record of number, busy (minutes serving) and served; a customer, of number and
+; arrival.
+
+(define! new-bank
+  (lambda! (config)
+    (define! tellers
+      (map (lambda! (n) (record (quote! (number busy served)) (list n 0.0 0)))
+           (range 1 (add (evaluate-in! tellers config) 1))))
+    (record (quote! (config uniform tellers now events scheduled handled line line-length
+                     free-tellers arrived served total-wait longest-wait longest-line line-area))
+            (list config (random-generator (seed-words (evaluate-in! seed config))) tellers 0.0 () 0 0
+                  (pair () ()) 0 tellers 0 0 0.0 0.0 0 0.0))))
+
+; schedule: puts an event of this kind, about `subject`, `delay` minutes from now in the queue.
+(define! schedule
+  (lambda! (bank delay kind subject)
+    (let! ((order (evaluate-in! scheduled bank))
+           (event (record (quote! (time order kind subject))
+                          (list (add (evaluate-in! now bank) delay) order kind subject))))
+      (bind bank (quote! (scheduled events))
+            (list (add order 1) (heap-insert (evaluate-in! events bank) event))))))
+
+(define! draw
+  (lambda! (bank rate-name)
+    (exponential-time (evaluate-in! uniform bank)
+                      (evaluate rate-name (evaluate-in! config bank)))))
+
+; serve: the teller starts on the customer, who has waited since arriving.
+(define! serve
+  (lambda! (bank teller customer)
+    (let! ((wait (subtract (evaluate-in! now bank) (evaluate-in! arrival customer)))
+           (service (draw bank (quote! service-rate))))
+      (bind bank (quote! (served total-wait longest-wait))
+            (list (add (evaluate-in! served bank) 1)
+                  (add (evaluate-in! total-wait bank) wait)
+                  (maximum (evaluate-in! longest-wait bank) wait)))
+      (bind teller (quote! (busy served))
+            (list (add (evaluate-in! busy teller) service) (add (evaluate-in! served teller) 1)))
+      (schedule bank service (quote! departure) teller))))
+
+; arrive: a customer comes in, and the next arrival is scheduled if it comes before closing.
+(define! arrive
+  (lambda! (bank)
+    (let! ((number (add (evaluate-in! arrived bank) 1))
+           (customer (record (quote! (number arrival)) (list number (evaluate-in! now bank))))
+           (gap (draw bank (quote! arrival-rate)))
+           (free (evaluate-in! free-tellers bank)))
+      (bind bank (quote! arrived) number)
+      (when! (less-than? (add (evaluate-in! now bank) gap) (evaluate-in! duration (evaluate-in! config bank)))
+        (schedule bank gap (quote! arrival) #inert))
+      (if! (same? free ())
+        (let! ((length (add (evaluate-in! line-length bank) 1)))
+          (bind bank (quote! (line line-length longest-line))
+                (list (line-join (evaluate-in! line bank) customer)
+                      length
+                      (maximum length (evaluate-in! longest-line bank)))))
+        (sequence!
+          (bind bank (quote! free-tellers) (rest free))
+          (serve bank (first free) customer))))))
+
+; depart: a teller's customer leaves; the teller takes the next in line, or waits for one.
+(define! depart
+  (lambda! (bank teller)
+    (if! (same? (evaluate-in! line-length bank) 0)
+      (bind bank (quote! free-tellers) (append (evaluate-in! free-tellers bank) (list teller)))
+      (let! (((customer . line) (line-leave (evaluate-in! line bank))))
+        (bind bank (quote! (line line-length)) (list line (subtract (evaluate-in! line-length bank) 1)))
+        (serve bank teller customer)))))
+
+(define! describe
+  (lambda! (bank event)
+    (let! ((kind (evaluate-in! kind event)))
+      (display (string-pad-left (float-to-fixed (evaluate-in! time event) 3) 10) "  "
+               (if! (same? kind (quote! arrival))
+                 (string-append "arrival   customer " (integer-to-string (evaluate-in! arrived bank)))
+                 (string-append "departure teller " (integer-to-string (evaluate-in! number (evaluate-in! subject event)))))
+               "  line " (integer-to-string (evaluate-in! line-length bank))
+               ", free tellers " (integer-to-string (length (evaluate-in! free-tellers bank))))
+      (display "\n"))))
+
+; run: handles the events in order until none is left, printing the first `trace` of them.
+(define! run
+  (lambda! (bank trace)
+    (let! ((events (evaluate-in! events bank)))
+      (when! (pair? events)
+        (let! ((event (heap-earliest events))
+               (time (evaluate-in! time event))
+               (handled (add (evaluate-in! handled bank) 1)))
+          (bind bank (quote! (events handled now line-area))
+                (list (heap-without-earliest events) handled time
+                      (add (evaluate-in! line-area bank)
+                           (multiply (integer-to-float (evaluate-in! line-length bank))
+                                     (subtract time (evaluate-in! now bank))))))
+          (if! (same? (evaluate-in! kind event) (quote! arrival))
+            (arrive bank)
+            (depart bank (evaluate-in! subject event)))
+          (when! (not? (less-than? trace handled)) (describe bank event))
+          (run bank trace))))))
+
+; ---------------------------------------------------------------------------------------------
+; Erlang's formula C: for c tellers with an offered load a = arrival-rate / service-rate below c,
+; the chance an arrival has to wait, and from it the average wait c in line and the line's
+; average length, the theory the run is checked against. () when a >= c: the line grows without
+; end.
+(define! erlang-prediction
+  (lambda! (config)
+    (let! ((c (evaluate-in! tellers config))
+           (arrival-rate (evaluate-in! arrival-rate config))
+           (service-rate (evaluate-in! service-rate config))
+           (load (divide arrival-rate service-rate))
+           ; the terms load^k / k! for k from 0 to c
+           (terms (reverse (fold (lambda! (terms k)
+                                   (pair (divide (multiply (first terms) load) (integer-to-float k)) terms))
+                                 (list 1.0)
+                                 (range 1 (add c 1)))))
+           (use (divide load (integer-to-float c))))
+      (if! (not? (less-than? use 1.0))
+        ()
+        (let! ((last (divide (first (reverse terms)) (subtract 1.0 use)))
+               (waiting-chance (divide last (add last (fold add 0.0 (reverse (rest (reverse terms)))))))
+               (wait (divide waiting-chance (subtract (multiply (integer-to-float c) service-rate) arrival-rate))))
+          (list wait (multiply arrival-rate wait) use))))))
+
+(define! report
+  (lambda! (bank)
+    (define! config (evaluate-in! config bank))
+    (define! now (evaluate-in! now bank))
+    (define! served (evaluate-in! served bank))
+    (define! tellers (evaluate-in! tellers bank))
+    (define! prediction (erlang-prediction config))
+    (define! minutes (lambda! (x) (string-append (float-to-fixed x 2) " min")))
+    ; a line of the report: a label, a value, and what Erlang's formula predicts if it is given
+    (define! row
+      (lambda! (label value . theory)
+        (display (string-pad-right label 16) (string-pad-left value 12))
+        (when! (pair? theory) (display "    " (first theory)))
+        (display "\n")))
+    (define! use (lambda! (busy) (if! (same? now 0.0) 0.0 (divide busy now))))
+    (define! (predicted-wait predicted-line predicted-use)
+      (if! (same? prediction ())
+        (list "predicted: none, the line grows without end" "" "")
+        (let! (((wait line-length teller-use) prediction))
+          (list (string-append "predicted " (minutes wait))
+                (string-append "predicted " (float-to-fixed line-length 2))
+                (string-append "predicted " (percent teller-use))))))
+    (display (integer-to-string (evaluate-in! tellers config)) " tellers, "
+             (value-to-string (evaluate-in! arrival-rate config)) " arrivals a minute, "
+             (value-to-string (evaluate-in! service-rate config)) " served a minute by each teller, open "
+             (value-to-string (evaluate-in! duration config)) " minutes, seed "
+             (integer-to-string (evaluate-in! seed config)))
+    (display "\n")
+    (row "events" (integer-to-string (evaluate-in! handled bank)))
+    (row "customers" (integer-to-string served))
+    (row "last left at" (minutes now))
+    (row "average wait"
+         (minutes (if! (same? served 0) 0.0 (divide (evaluate-in! total-wait bank) (integer-to-float served))))
+         predicted-wait)
+    (row "longest wait" (minutes (evaluate-in! longest-wait bank)))
+    (row "average line" (float-to-fixed (if! (same? now 0.0) 0.0 (divide (evaluate-in! line-area bank) now)) 2)
+         predicted-line)
+    (row "longest line" (integer-to-string (evaluate-in! longest-line bank)))
+    (row "teller use"
+         (percent (divide (use (fold add 0.0 (map (lambda! (t) (evaluate-in! busy t)) tellers)))
+                          (integer-to-float (length tellers))))
+         predicted-use)
+    (for-each (lambda! (teller)
+                (row (string-append "  teller " (integer-to-string (evaluate-in! number teller)))
+                     (percent (use (evaluate-in! busy teller)))
+                     (string-append (integer-to-string (evaluate-in! served teller)) " customers")))
+              tellers)))
+
+; ---------------------------------------------------------------------------------------------
+; The command line: CONFIG-FILE [--trace N]. A wrong command line, or a config that is wrong, is
+; a message on standard error and status 2.
+
+(define! usage "usage: main.grift CONFIG-FILE [--trace N]")
+
+(define! (config-path trace)
+  (catch! (let! ((arguments command-line-arguments))
+            (conditional!
+              ((and!? (pair? arguments) (same? (rest arguments) ())) (list (first arguments) 0))
+              ((and!? (same? (length arguments) 3) (equal? (first (rest arguments)) "--trace"))
+               (list (first arguments) (string-to-integer (first (rest (rest arguments))))))
+              (#true (complain usage))))
+          e
+          (sequence!
+            ((evaluate-in! write standard-error)
+             (if! (same? (evaluate-in! kind e) (quote! simulate-error))
+                  (string-append (first (evaluate-in! values e)) "\n")
+               (string-append usage "\n")))
+            (exit 2))))
+
+(define! config
+  (catch! (read-config config-path)
+          e
+          (conditional!
+            ((same? (evaluate-in! kind e) (quote! simulate-error))
+             ((evaluate-in! write standard-error) (string-append "simulate: " (first (evaluate-in! values e)) "\n"))
+             (exit 2))
+            ((same? (evaluate-in! kind e) (quote! file-error))
+             ((evaluate-in! write standard-error)
+              (string-append "simulate: " (string-join (evaluate-in! values e) ": ") "\n"))
+             (exit 2))
+            (#true (raise e)))))
+
+(define! bank (new-bank config))
+(schedule bank (draw bank (quote! arrival-rate)) (quote! arrival) #inert)
+(run bank trace)
+(report bank)

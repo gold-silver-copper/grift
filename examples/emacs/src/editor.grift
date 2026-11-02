@@ -4,8 +4,6 @@
 ;   (terminal-size)                (rows columns)
 ;   (read-file path)               the file's text, () if it doesn't exist
 ;   (write-file path s)            replaces the file with the string's bytes
-;   (string-to-code-points s)      the string's characters, as a list of code points
-;   (code-points-to-string list)   the other way
 ; The host starts the editor with (editor-main file message) and, after an error stopped a
 ; command, goes on with (editor-recover message). C-g while a command runs interrupts it.
 ; Everything else is here: the buffer, redisplay, keys and keymaps, the minibuffer, the
@@ -32,20 +30,34 @@
 (define! spaces
   (lambda! (n) (if! (less-than? n 1) "" (string-append " " (spaces (subtract n 1))))))
 
+; A string's characters as a list of code points, decoding its UTF-8, and the other way.
+(define! string-to-code-points
+  (lambda! (s)
+    (define! end (string-byte-length s))
+    ; The low 6 bits of `count` bytes from offset `at`, added to `value`.
+    (define! continued
+      (lambda! (value at count)
+        (if! (same? count 0)
+          value
+          (continued (add (multiply value 64) (remainder (string-byte s at) 64)) (add at 1) (subtract count 1)))))
+    (define! from
+      (lambda! (at)
+        (if! (same? at end)
+          ()
+          (let! ((b (string-byte s at)))
+            (conditional!
+              ((less-than? b 128) (pair b (from (add at 1))))
+              ((less-than? b 224) (pair (continued (remainder b 32) (add at 1) 1) (from (add at 2))))
+              ((less-than? b 240) (pair (continued (remainder b 16) (add at 1) 2) (from (add at 3))))
+              (#true (pair (continued (remainder b 8) (add at 1) 3) (from (add at 4)))))))))
+    (from 0)))
+(define! code-points-to-string
+  (lambda! (code-points) (apply string-append (map code-point-to-string code-points))))
+
 ; How many characters a string has: string-byte-length counts bytes.
 (define! code-point-count (lambda! (s) (length (string-to-code-points s))))
 
-(define! string-join
-  (lambda! (strings separator)
-    (if! (empty-list? strings)
-      ""
-      (apply string-append
-        (pair (first strings)
-              (apply append (map (lambda! (s) (list separator s)) (rest strings))))))))
-
-; (split-code-points code-points c): the runs of code points between each c, as lists. It
-; runs once for each character of a file opened, so it uses if!: conditional! was 2.8 times
-; slower here.
+; (split-code-points code-points c): the runs of code points between each c, as lists.
 (define! split-code-points
   (lambda! (code-points c)
     (define! loop
@@ -58,8 +70,7 @@
     (loop code-points () ())))
 
 ; The text of a file as its lines, without the newlines: "a\nb\n" is ("a" "b" "").
-(define! text-to-lines
-  (lambda! (text) (map code-points-to-string (split-code-points (string-to-code-points text) 10))))
+(define! text-to-lines (lambda! (text) (string-split text "\n")))
 
 ; A terminal control sequence: ESC [ and s.
 (define! control-sequence (lambda! (s) (string-append "\x1b;[" s)))
@@ -126,20 +137,11 @@
 
 (define! buffer-text
   (lambda! ()
-    (define! lines (reverse-onto (field! above) (pair (line-string) (field! below))))
-    ; Joined from the last line back, so each line is copied once.
-    (define! join
-      (lambda! (reversed done)
-        (if! (empty-list? reversed)
-          done
-          (join (rest reversed)
-                (reverse-onto (reverse (string-to-code-points (first reversed))) (pair 10 done))))))
-    (define! reversed (reverse lines))
-    (code-points-to-string (join (rest reversed) (string-to-code-points (first reversed))))))
+    (string-join (reverse-onto (field! above) (pair (line-string) (field! below))) "\n")))
 
 (define! text-changed #false)
 (define! set-modified
-  (lambda! () (define-field! modified #true) (define-in! editor-context text-changed #true)))
+  (lambda! () (define-field! modified #true) (bind editor-context (quote! text-changed) #true)))
 
 ; A buffer's state for undo. Lines and line halves are immutable lists and strings, so a state
 ; shares everything with the buffer and costs five pairs.
@@ -151,7 +153,7 @@
 ; --- Display ------------------------------------------------------------------------------------
 
 (define! message-text "")
-(define! message (lambda! (s) (define-in! editor-context message-text s)))
+(define! message (lambda! (s) (bind editor-context (quote! message-text) s)))
 
 ; The buffer in the window, and the minibuffer while one is being read (else ()).
 (define! window-buffer ())
@@ -375,8 +377,8 @@
   (lambda! (command)
     (define! b current-buffer)
     (define! state (buffer-state b))
-    (define-in! editor-context this-command command)
-    (define-in! editor-context text-changed #false)
+    (bind editor-context (quote! this-command) command)
+    (bind editor-context (quote! text-changed) #false)
     (if! (symbol? command)
       (evaluate (list command) editor-context)
       (command))
@@ -385,8 +387,8 @@
                   (not? (and!? (same? command (quote! self-insert-command))
                                (same? last-command (quote! self-insert-command)))))
       (bind b (quote! undo) (pair state (evaluate-in! undo b))))
-    (define-in! editor-context text-changed #false)
-    (define-in! editor-context last-command this-command)))
+    (bind editor-context (quote! text-changed) #false)
+    (bind editor-context (quote! last-command) this-command)))
 
 ; Runs the key sequence that starts with `event`, looked up in `keymap`; `keys` are the events
 ; so far, latest first.
@@ -411,7 +413,7 @@
     (redisplay)
     (define! event (read-event))
     (message "")
-    (define-in! editor-context last-command-event event)
+    (bind editor-context (quote! last-command-event) event)
     (dispatch (if! (same? (lookup-key (field! keymap) event) #false) global-map (field! keymap))
               event
               (list event))))
@@ -420,7 +422,7 @@
 (define! command-loop
   (lambda! ()
     (command-step)
-    (if! exit-flag (define-in! editor-context exit-flag #false) (command-loop))))
+    (if! exit-flag (bind editor-context (quote! exit-flag) #false) (command-loop))))
 
 ; --- The minibuffer -----------------------------------------------------------------------------
 
@@ -434,13 +436,13 @@
     (define! outer-minibuffer minibuffer)
     (define! reading (buffer "*minibuffer*" () (list "")))
     (bind reading (quote! (keymap prompt)) (list minibuffer-map prompt))
-    (define-in! editor-context (minibuffer current-buffer) (list reading reading))
+    (bind editor-context (quote! (minibuffer current-buffer)) (list reading reading))
     (finally!
       (sequence! (command-loop) (line-string))
-      (define-in! editor-context (current-buffer minibuffer exit-flag)
+      (bind editor-context (quote! (current-buffer minibuffer exit-flag))
         (list outer-buffer outer-minibuffer #false)))))
 
-(define! exit-minibuffer (lambda! () (define-in! editor-context exit-flag #true)))
+(define! exit-minibuffer (lambda! () (bind editor-context (quote! exit-flag) #true)))
 
 ; --- Starting and recovering --------------------------------------------------------------------
 
@@ -454,8 +456,8 @@
 
 (define! editor-main
   (lambda! (file text)
-    (define-in! editor-context window-buffer (find-file-noselect file))
-    (define-in! editor-context current-buffer window-buffer)
+    (bind editor-context (quote! window-buffer) (find-file-noselect file))
+    (bind editor-context (quote! current-buffer) window-buffer)
     ; An empty text keeps what the init file put in the echo area.
     (when! (not? (same? text "")) (message text))
     (main-loop)))
@@ -502,7 +504,7 @@
 (define! set-goal
   (lambda! ()
     (when! (not? (member? last-command (quote! (next-line previous-line))))
-      (define-in! editor-context goal-column (current-column)))))
+      (bind editor-context (quote! goal-column) (current-column)))))
 
 (define! next-line
   (lambda! ()
@@ -579,7 +581,7 @@
          (list 10))
         (#true (message "End of buffer") ())))
     (when! (pair? killed)
-      (define-in! editor-context kill-ring
+      (bind editor-context (quote! kill-ring)
         (if! (same? last-command (quote! kill-line)) (append kill-ring killed) killed))
       (set-modified))))
 
@@ -611,7 +613,7 @@
   (lambda! ()
     (when! (or!? (not? (evaluate-in! modified window-buffer))
                  (equal? (read-from-minibuffer "Modified buffer; quit anyway? (yes or no) ") "yes"))
-      (define-in! editor-context quit-flag #true))))
+      (bind editor-context (quote! quit-flag) #true))))
 
 (define! keyboard-quit (lambda! () (raise (error (quote! quit)))))
 
@@ -657,9 +659,9 @@
 
 (define! switch-to
   (lambda! (b)
-    (define-in! editor-context previous-buffer window-buffer)
-    (define-in! editor-context window-buffer b)
-    (define-in! editor-context current-buffer b)))
+    (bind editor-context (quote! previous-buffer) window-buffer)
+    (bind editor-context (quote! window-buffer) b)
+    (bind editor-context (quote! current-buffer) b)))
 
 (define! other-buffer
   (lambda! ()

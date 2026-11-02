@@ -1,0 +1,592 @@
+#!/usr/bin/env grift
+; query: runs a query over a CSV file and prints the resulting table.
+;
+;   main.grift [--csv] QUERY FILE.csv
+;
+; QUERY is grift forms, each a clause, applied in the order written to the table read from the
+; file, whose first record names the columns:
+;
+;   (select item ...)        keep these columns, in this order; an item is a column, or
+;                            (as name expression) for a renamed or computed one
+;   (where test)             keep the rows for which test gives #true
+;   (group-by keys aggregate ...)
+;                            one row per distinct value of keys (a column or a list of
+;                            columns), with the keys and each aggregate: (count), (sum x),
+;                            (average x), (minimum x), (maximum x), or (as name aggregate)
+;   (sort-by key ...)        a key is an expression, (ascending x) or (descending x)
+;   (limit n)                the first n rows
+;
+; Expressions are grift, evaluated with the row's columns bound by name over the library's
+; names; (column "a name") reads a column whose name isn't a symbol you can write. An unquoted
+; field that reads as an integer or a float is that number, quoted or not, and every other field
+; a string; an empty field is the empty string, which the aggregates skip. In a column of numbers
+; with one float, every integer is made a float, so its arithmetic never mixes the two.
+; It prints aligned text (floats to four places), or CSV with --csv. Exit status: 0, 1 for an
+; error in the query or the file's text, 2 for a usage error or a file that can't be read.
+
+; The context expressions see: the library's names, copied before this program defines any, so
+; a typo in a query can't find one of the program's own definitions.
+(define! library-context (context))
+(bind library-context built-in-names (map (lambda! (name) (evaluate name (current-context))) built-in-names))
+(bind library-context (quote! column)
+  (vau! (name) caller (evaluate (string-to-symbol (evaluate name caller)) caller)))
+
+(define! fail (lambda! (kind . values) (raise (apply error (pair kind values)))))
+
+; Reading CSV (RFC 4180): fields separated by commas, records by \n or \r\n; a quoted field may
+; hold commas, newlines and "" for a quote. Blank lines are skipped.
+
+(define! digit? (lambda! (byte) (if! (less-than? 47 byte) (less-than? byte 58) #false)))
+
+; field-value: the number an unquoted field reads as, or the field itself.
+(define! field-value
+  ((lambda! ()
+     (define! number-start?
+       (lambda! (text)
+         (if! (same? text "")
+           #false
+           (if! (digit? (string-byte text 0)) #true (signed? text (string-byte text 0))))))
+     (define! signed?
+       (lambda! (text byte)
+         (if! (if! (same? byte 45) #true (if! (same? byte 43) #true (same? byte 46)))
+           (if! (less-than? 1 (string-byte-length text)) (digit? (string-byte text 1)) #false)
+           #false)))
+     ; A caught parse-error costs ~8 microseconds, so the text picks the one parse to try
+     ; (friction F13).
+     (define! float-text? (lambda! (text) (float-from? text 0 (string-byte-length text))))
+     (define! float-from?
+       (lambda! (text at end)
+         (if! (same? at end)
+           #false
+           (if! (point-or-exponent? (string-byte text at)) #true (float-from? text (add at 1) end)))))
+     (define! point-or-exponent?
+       (lambda! (byte) (if! (same? byte 46) #true (if! (same? byte 101) #true (same? byte 69)))))
+     (lambda! (text)
+       (if! (number-start? text)
+         (catch! (if! (float-text? text) (string-to-float text) (string-to-integer text)) #ignore text)
+         text)))))
+
+; The line of byte offset at in text, counting from 1.
+(define! line-at
+  (lambda! (text at)
+    (fold (lambda! (line i) (if! (same? (string-byte text i) 10) (add line 1) line)) 1 (range 0 at))))
+
+; csv-records: the records of text, in order, each a list of field values.
+(define! csv-records
+  (lambda! (text)
+    (let! ((end (string-byte-length text))
+           (end-of-line? (lambda! (byte) (if! (same? byte 10) #true (same? byte 13))))
+           (field-end? (lambda! (byte) (if! (same? byte 44) #true (end-of-line? byte))))
+           ; A new field at offset at; fields is the record so far, newest first, and () at the
+           ; start of a record.
+           (field
+             (lambda! (at fields records)
+               (if! (same? fields ())
+                 (if! (same? at end)
+                   (reverse records)
+                   (if! (end-of-line? (string-byte text at))
+                     (field (add at 1) () records)
+                     (field-text at fields records)))
+                 (if! (same? at end)
+                   (after-field at "" fields records)
+                   (if! (end-of-line? (string-byte text at))
+                     (after-field at "" fields records)
+                     (field-text at fields records))))))
+           (field-text
+             (lambda! (at fields records)
+               (if! (same? (string-byte text at) 34)
+                 (quoted (add at 1) (add at 1) () fields records)
+                 (plain at at fields records))))
+           ; The loops over bytes use if! and calls only: or!?, let! and conditional! cost
+           ; a few microseconds each, ten times a byte's other work (friction F7).
+           (plain
+             (lambda! (start at fields records)
+               (if! (same? at end)
+                 (after-field at (field-value (byte-substring text start at)) fields records)
+                 (if! (field-end? (string-byte text at))
+                   (after-field at (field-value (byte-substring text start at)) fields records)
+                   (plain start (add at 1) fields records)))))
+           ; Inside quotes from start; pieces are the parts before each "" seen, newest first.
+           (quoted
+             (lambda! (start at pieces fields records)
+               (if! (same? at end)
+                 (fail (quote! csv-error) "a quoted field has no closing quote" (line-at text start))
+                 (if! (same? (string-byte text at) 34)
+                   (if! (if! (less-than? (add at 1) end) (same? (string-byte text (add at 1)) 34) #false)
+                     (quoted (add at 2) (add at 2) (pair (byte-substring text start (add at 1)) pieces)
+                             fields records)
+                     (after-field (add at 1)
+                                  (field-value
+                                    (apply string-append
+                                           (reverse (pair (byte-substring text start at) pieces))))
+                                  fields records))
+                   (quoted start (add at 1) pieces fields records)))))
+           (after-field
+             (lambda! (at value fields records)
+               (if! (same? at end)
+                 (reverse (pair (reverse (pair value fields)) records))
+                 (after-byte at (string-byte text at) (pair value fields) records))))
+           (after-byte
+             (lambda! (at byte fields records)
+               (if! (same? byte 44)
+                 (field (add at 1) fields records)
+                 (if! (end-of-line? byte)
+                   (field (add at 1) () (pair (reverse fields) records))
+                   (fail (quote! csv-error) "text after a closing quote" (line-at text at)))))))
+      (field 0 () ()))))
+
+; A table is (columns . rows): the column names, symbols, and each row a context binding them,
+; whose parent is library-context.
+(define! make-row
+  (lambda! (columns values)
+    (let! ((row (context library-context)))
+      (bind row columns values)
+      row)))
+
+(define! row-values (lambda! (columns row) (map (lambda! (c) (evaluate c row)) columns)))
+
+; map-two: f on the elements at each place of two lists of one length. The library's map of two
+; lists takes 56 microseconds for six elements, against 11 for one list (friction F8).
+(define! map-two
+  (lambda! (f xs ys)
+    (if! (same? xs ()) () (pair (f (first xs) (first ys)) (map-two f (rest xs) (rest ys))))))
+
+(define! column-name
+  (lambda! (value) (string-to-symbol (if! (string? value) value (value-to-string value)))))
+
+; float-columns: the records with each integer made a float in a column whose values are all
+; numbers, or empty, and one of them a float, so its arithmetic doesn't mix the two.
+(define! float-columns
+  (lambda! (records)
+    (let! ((kind-of
+             (lambda! (kind x)
+               (if! (if! (integer? x) #true (same? x ""))
+                 kind
+                 (if! (float? x) (if! (same? kind (quote! text)) kind (quote! float)) (quote! text)))))
+           (kinds (fold (lambda! (kinds record) (map-two kind-of kinds record))
+                        (map (lambda! (#ignore) (quote! integer)) (first records))
+                        records)))
+      (if! (member? (quote! float) kinds)
+        (map (lambda! (record)
+               (map-two (lambda! (kind x)
+                          (if! (if! (same? kind (quote! float)) (integer? x) #false) (integer-to-float x) x))
+                        kinds record))
+             records)
+        records))))
+
+(define! csv-table
+  (lambda! (text)
+    (let! ((records (csv-records text)))
+      (when! (same? records ()) (fail (quote! csv-error) "the file has no header record" 1))
+      (let! ((columns (map column-name (first records)))
+             (width (length columns))
+             (check (lambda! (records n)
+                      (when! (pair? records)
+                        (when! (not? (same? (length (first records)) width))
+                          (fail (quote! csv-error)
+                                (string-append "record " (integer-to-string n) " has "
+                                               (integer-to-string (length (first records)))
+                                               " fields and the header "
+                                               (integer-to-string width))
+                                ()))
+                        (check (rest records) (add n 1))))))
+        (check (rest records) 2)
+        (pair columns
+              (if! (same? (rest records) ())
+                ()
+                (map (lambda! (values) (make-row columns values)) (float-columns (rest records)))))))))
+
+; Values: numbers compare as numbers, integers and floats together; strings by their bytes;
+; numbers come before strings.
+
+(define! number? (lambda! (x) (if! (integer? x) #true (float? x))))
+(define! to-float (lambda! (x) (if! (float? x) x (integer-to-float x))))
+
+(define! string-less-than?
+  (lambda! (a b)
+    (let! ((a-end (string-byte-length a))
+           (b-end (string-byte-length b))
+           (from (lambda! (i)
+                   (if! (same? i b-end)
+                     #false
+                     (if! (same? i a-end) #true (bytes i (string-byte a i) (string-byte b i))))))
+           (bytes (lambda! (i x y) (if! (same? x y) (from (add i 1)) (less-than? x y)))))
+      (from 0))))
+
+(define! value-less-than?
+  (lambda! (a b)
+    (if! (same? (type-of a) (type-of b))
+      (if! (string? a)
+        (string-less-than? a b)
+        (if! (number? a) (less-than? a b) (string-less-than? (value-to-string a) (value-to-string b))))
+      (if! (number? a)
+        (if! (number? b) (less-than? (to-float a) (to-float b)) #true)
+        (if! (number? b) #false (string-less-than? (value-to-string a) (value-to-string b)))))))
+
+(define! number-add
+  (lambda! (a b)
+    (conditional!
+      ((and!? (integer? a) (integer? b)) (add a b))
+      ((and!? (number? a) (number? b)) (add (to-float a) (to-float b)))
+      (#true (fail (quote! not-a-number) (if! (number? a) b a))))))
+
+; sort: the elements of xs in the order less? gives, keeping equal ones in order (a merge sort,
+; bottom up).
+(define! sort
+  ((lambda! ()
+     (define! merge
+       (lambda! (less? xs ys done)
+         (if! (same? xs ())
+           (append (reverse done) ys)
+           (if! (same? ys ())
+             (append (reverse done) xs)
+             (if! (less? (first ys) (first xs))
+               (merge less? xs (rest ys) (pair (first ys) done))
+               (merge less? (rest xs) ys (pair (first xs) done)))))))
+     (define! merge-pairs
+       (lambda! (less? runs)
+         (if! (or!? (same? runs ()) (same? (rest runs) ()))
+           runs
+           (pair (merge less? (first runs) (first (rest runs)) ())
+                 (merge-pairs less? (rest (rest runs)))))))
+     (define! merge-all
+       (lambda! (less? runs)
+         (if! (same? (rest runs) ()) (first runs) (merge-all less? (merge-pairs less? runs)))))
+     (lambda! (less? xs)
+       (if! (same? xs ()) () (merge-all less? (map list xs)))))))
+
+; Checking a query before it runs: every symbol in an expression must be a column or a library
+; name, outside (quote! ...).
+(define! check-column
+  (lambda! (name columns)
+    (when! (not? (member? name columns)) (fail (quote! unknown-column) name columns))))
+
+(define! check-expression
+  (lambda! (x columns)
+    (conditional!
+      ((symbol? x) (when! (not? (binds? library-context x)) (check-column x columns)))
+      ((pair? x)
+       (conditional!
+         ((same? (first x) (quote! quote!)) #inert)
+         ((and!? (same? (first x) (quote! column)) (pair? (rest x)) (string? (first (rest x))))
+          (check-column (string-to-symbol (first (rest x))) columns))
+         (#true (check-expression (first x) columns) (check-expression (rest x) columns))))
+      (#true #inert))))
+
+; An item (as name expression), or a bare column, as (name . expression).
+(define! named
+  (lambda! (item)
+    (if! (and!? (pair? item) (same? (first item) (quote! as)))
+      (sequence!
+        (when! (not? (and!? (pair? (rest item)) (symbol? (first (rest item)))
+                            (pair? (rest (rest item))) (same? (rest (rest (rest item))) ())))
+          (fail (quote! bad-clause) "an item to name is (as name expression)" item))
+        (pair (first (rest item)) (first (rest (rest item)))))
+      (if! (symbol? item)
+        (pair item item)
+        (fail (quote! bad-clause) "a computed column needs a name: (as name expression)" item)))))
+
+; The aggregates, each (name initial step finish): fold step over a group's non-empty values
+; from initial, then finish.
+(define! aggregates
+  (list (list (quote! count) 0 (lambda! (n #ignore) (add n 1)) (lambda! (n) n))
+        (list (quote! sum) 0 number-add (lambda! (total) total))
+        (list (quote! average) (list 0 0)
+              (lambda! ((total n) x) (list (number-add total x) (add n 1)))
+              (lambda! ((total n)) (if! (same? n 0) "" (divide (to-float total) (integer-to-float n)))))
+        (list (quote! minimum) ""
+              (lambda! (low x) (if! (or!? (same? low "") (value-less-than? x low)) x low))
+              (lambda! (low) low))
+        (list (quote! maximum) ""
+              (lambda! (high x) (if! (or!? (same? high "") (value-less-than? high x)) x high))
+              (lambda! (high) high))))
+
+; An aggregate as (name expression initial step finish); (count) counts rows, so its expression
+; is 1.
+(define! aggregate
+  (lambda! (form columns)
+    (let! ((item (named* form))
+           (call (rest item))
+           (known (if! (pair? call) (find-association (first call) aggregates) ())))
+      (when! (same? known ()) (fail (quote! bad-clause) "an aggregate is count, sum, average, minimum or maximum" form))
+      (let! (((#ignore initial step finish) known)
+             (expression (if! (same? (rest call) ()) 1 (first (rest call)))))
+        (check-expression expression columns)
+        (list (first item) expression initial step finish)))))
+
+; named*: an aggregate's (name . call), named (as name call), or after the aggregate and its
+; column, as sum-amount, or for (count) count.
+(define! named*
+  (lambda! (form)
+    (if! (and!? (pair? form) (same? (first form) (quote! as)))
+      (named form)
+      (if! (pair? form)
+        (pair (conditional!
+                ((same? (rest form) ()) (first form))
+                ((symbol? (first (rest form)))
+                 (string-to-symbol (string-append (symbol-to-string (first form)) "-"
+                                                  (symbol-to-string (first (rest form))))))
+                (#true (fail (quote! bad-clause) "an aggregate of an expression needs a name: (as name aggregate)" form)))
+              form)
+        (fail (quote! bad-clause) "an aggregate is a list, such as (count) or (sum amount)" form)))))
+
+(define! group-rows
+  (lambda! (keys rows)
+    (let! ((groups (context))
+           (add-row
+             (lambda! (order row)
+               (let! ((values (row-values keys row))
+                      (key (string-to-symbol (value-to-string values))))
+                 (if! (binds? groups key)
+                   (sequence! (bind groups key (pair (first (evaluate key groups)) (pair row (rest (evaluate key groups)))))
+                              order)
+                   (sequence! (bind groups key (list values row)) (pair key order)))))))
+      ; Each group as (key-values . rows), in the order each was first seen.
+      (map (lambda! (key) (let! (((values . rows) (evaluate key groups))) (pair values (reverse rows))))
+           (reverse (fold add-row () rows))))))
+
+(define! aggregate-value
+  (lambda! ((#ignore expression initial step finish) rows)
+    (finish (fold (lambda! (so-far row)
+                    (let! ((x (evaluate expression row)))
+                      (if! (same? x "") so-far (step so-far x))))
+                  initial rows))))
+
+(define! direction
+  (lambda! (key)
+    (if! (and!? (pair? key) (member? (first key) (quote! (ascending descending)))
+                (pair? (rest key)) (same? (rest (rest key)) ()))
+      (pair (same? (first key) (quote! descending)) (first (rest key)))
+      (pair #false key))))
+
+(define! keys-less-than?
+  (lambda! (descending a b)
+    (if! (same? a ())
+      #false
+      ; same? compares strings in Rust: equal keys, the common case, cost one comparison.
+      (if! (same? (first a) (first b))
+        (keys-less-than? (rest descending) (rest a) (rest b))
+        (if! (value-less-than? (first a) (first b)) (not? (first descending)) (first descending))))))
+
+; The clauses: each operative gets its operands as written and gives the function from a table
+; to the next one.
+(define! clause-context (context library-context))
+(bind clause-context (quote! (select where group-by sort-by limit))
+  (list
+    (vau! items #ignore
+      (let! ((items (map named items)))
+        (lambda! ((columns . rows))
+          (for-each (lambda! (item) (check-expression (rest item) columns)) items)
+          (let! ((names (map first items)))
+            (pair names
+                  (map (lambda! (row)
+                         (make-row names (map (lambda! (item) (evaluate (rest item) row)) items)))
+                       rows))))))
+    (vau! (test) #ignore
+      (lambda! ((columns . rows))
+        (check-expression test columns)
+        (pair columns
+              (filter (lambda! (row)
+                        (let! ((keep (evaluate test row)))
+                          (if! (boolean? keep)
+                            keep
+                            (fail (quote! bad-clause) "a where test must give #true or #false" test keep))))
+                      rows))))
+    (vau! (keys . forms) #ignore
+      (let! ((keys (if! (symbol? keys) (list keys) keys)))
+        (lambda! ((columns . rows))
+          (for-each (lambda! (key) (check-column key columns)) keys)
+          (let! ((aggregates (map (lambda! (form) (aggregate form columns)) forms))
+                 (names (append keys (map first aggregates))))
+            (pair names
+                  (map (lambda! ((values . rows))
+                         (make-row names
+                                   (append values
+                                           (map (lambda! (a) (aggregate-value a rows)) aggregates))))
+                       (group-rows keys rows)))))))
+    (vau! keys #ignore
+      (let! ((keys (map direction keys))
+             (descending (map first keys))
+             (expressions (map rest keys)))
+        (lambda! ((columns . rows))
+          (for-each (lambda! (x) (check-expression x columns)) expressions)
+          (pair columns
+                (map rest
+                     (sort (lambda! (a b) (keys-less-than? descending (first a) (first b)))
+                           (map (lambda! (row) (pair (row-values expressions row) row)) rows)))))))
+    (lambda! (n)
+      (lambda! ((columns . rows))
+        (define! take
+          (lambda! (xs n) (if! (or!? (same? xs ()) (same? n 0)) () (pair (first xs) (take (rest xs) (subtract n 1))))))
+        (pair columns (take rows n))))))
+
+; The clauses of a query's text, as (form . function), in order.
+(define! query-clauses
+  (lambda! (text)
+    (let! ((clause
+             (lambda! (form)
+               (catch! (evaluate form clause-context)
+                       e
+                       (if! (and!? (same? (evaluate-in! kind e) (quote! unbound-symbol)) (pair? form)
+                                   (equal? (evaluate-in! values e) (list (first form))))
+                         (fail (quote! bad-clause)
+                               "not a clause; the clauses are select, where, group-by, sort-by and limit"
+                               form)
+                         (fail (quote! bad-clause) (error-text e) form)))))
+           (from (lambda! (offset)
+                   (let! ((read (read-form text offset)))
+                     (if! (same? read ())
+                       ()
+                       (let! (((form #ignore end) read))
+                         (pair (pair form (clause form)) (from end))))))))
+      (from 0))))
+
+; run-query: the table after each clause in turn; an error in one says which.
+(define! run-query
+  (lambda! (clauses table)
+    (fold (lambda! (table (form . function))
+            (catch! (function table)
+                    e
+                    (fail (quote! in-clause) form e)))
+          table clauses)))
+
+; Output.
+
+; display-width: the characters of s, counting each UTF-8 byte that doesn't continue one.
+(define! display-width
+  (lambda! (s)
+    (let! ((end (string-byte-length s))
+           (from (lambda! (at n)
+                   (if! (same? at end) n (from (add at 1) (if! (continues? (string-byte s at)) n (add n 1))))))
+           (continues? (lambda! (byte) (if! (less-than? 127 byte) (less-than? byte 192) #false))))
+      (from 0 0))))
+
+; has-byte?: whether the byte is in s.
+(define! has-byte?
+  (lambda! (s byte)
+    (let! ((end (string-byte-length s))
+           (from (lambda! (at) (if! (same? at end) #false (if! (same? (string-byte s at) byte) #true (from (add at 1)))))))
+      (from 0))))
+
+(define! repeat
+  (lambda! (s n) (if! (less-than? 0 n) (string-append s (repeat s (subtract n 1))) "")))
+(define! blanks (repeat " " 100))
+(define! spaces (lambda! (n) (if! (less-than? n 100) (byte-substring blanks 0 n) (repeat " " n))))
+
+; cell-text: a value as aligned text shows it, a line end as \n and floats rounded to four places.
+(define! cell-text
+  (lambda! (x)
+    (if! (string? x)
+      (if! (has-byte? x 10) (string-join (string-split x "\n") "\\n") x)
+      (if! (integer? x)
+        (integer-to-string x)
+        (if! (if! (float? x) (less-than? (absolute-value x) 1e12) #false)
+          (value-to-string (divide (round (multiply x 10000.0)) 10000.0))
+          (value-to-string x))))))
+
+; print-text: a line for the names, one of dashes, and one for each row; each column as wide as
+; its widest text, numbers on the right, and two spaces between.
+(define! print-text
+  (lambda! ((columns . rows))
+    (let! ((measured (lambda! (text) (pair text (display-width text))))
+           (header (map (lambda! (c) (measured (symbol-to-string c))) columns))
+           (cells (map (lambda! (row) (map (lambda! (c) (measured (cell-text (evaluate c row)))) columns))
+                       rows))
+           (right (map (lambda! (c)
+                         (if! (same? rows ()) #false (all? (lambda! (row) (number? (evaluate c row))) rows)))
+                       columns))
+           (widths (fold (lambda! (widths line) (map-two maximum widths (map rest line)))
+                         (map rest header) cells))
+           ; The pieces of a line; the last column, on the left, isn't padded.
+           (pieces
+             (lambda! (cells widths right)
+               (let! ((((text . width) . more) cells)
+                      (room (spaces (subtract (first widths) width))))
+                 (if! (first right)
+                   (pair room (pair text (gap more widths right)))
+                   (if! (same? more ())
+                     (list text)
+                     (pair text (pair room (gap more widths right))))))))
+           (gap (lambda! (more widths right)
+                  (if! (if! (same? more ()) #true (if! (same? (rest more) ()) (same? (first (first more)) "") #false))
+                    ()
+                    (pair "  " (pieces more (rest widths) (rest right))))))
+           (line (lambda! (cells) (display (apply string-append (pieces cells widths right))) (display "\n"))))
+      (line header)
+      (display (string-join (map (lambda! (width) (repeat "-" width)) widths) "  "))
+      (display "\n")
+      (for-each line cells))))
+
+; csv-field: a value as a CSV field. A string is quoted when it holds a comma, a quote or a line
+; end.
+(define! csv-field
+  (lambda! (x)
+    (if! (string? x)
+      (if! (any? (lambda! (byte) (has-byte? x byte)) (quote! (44 34 10 13)))
+        (string-append "\"" (string-join (string-split x "\"") "\"\"") "\"")
+        x)
+      (value-to-string x))))
+
+(define! print-csv
+  (lambda! ((columns . rows))
+    (let! ((line (lambda! (values) (display (string-join (map csv-field values) ",")) (display "\n"))))
+      (line (map symbol-to-string columns))
+      (for-each (lambda! (row) (line (row-values columns row))) rows))))
+
+; error-text: what went wrong, for standard error.
+(define! error-text
+  (lambda! (e)
+    (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
+      (conditional!
+        ((same? kind (quote! unknown-column))
+         (let! (((name columns) values))
+           (string-append "no column named " (symbol-to-string name) "; the columns are "
+                          (string-join (map symbol-to-string columns) ", "))))
+        ((same? kind (quote! csv-error))
+         (let! (((message line) values))
+           (string-append (if! (same? line ()) "" (string-append "line " (integer-to-string line) ": "))
+                          message)))
+        ((same? kind (quote! bad-clause))
+         (let! (((message form . gave) values))
+           (string-append message ": " (value-to-string form)
+                          (if! (same? gave ()) "" (string-append ", not " (value-to-string (first gave)))))))
+        ((same? kind (quote! not-a-number))
+         (string-append "not a number: " (value-to-string (first values))))
+        ((same? kind (quote! in-clause))
+         (let! (((form inner) values))
+           (string-append "in " (value-to-string form) ": " (error-text inner))))
+        (#true (string-join (map value-to-string (pair kind values)) " "))))))
+
+; The program.
+(define! report
+  (lambda! (text) ((evaluate-in! write standard-error) (string-append "query: " text "\n"))))
+(define! csv-output? (member? "--csv" command-line-arguments))
+(define! operands (filter (lambda! (a) (not? (same? a "--csv"))) command-line-arguments))
+(when! (not? (same? (length operands) 2))
+  (report "usage: main.grift [--csv] QUERY FILE.csv")
+  (exit 2))
+(define! (query-text path) operands)
+(define! clauses
+  (catch! (query-clauses query-text)
+          e
+          (report (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                    (let! (((line column) (evaluate-in! values e)))
+                      (string-append "the query doesn't read at line " (integer-to-string line)
+                                     ", column " (integer-to-string column)))
+                    (error-text e)))
+          (exit 1)))
+(define! text
+  (catch! (let! ((file (open-file path)))
+            (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+          e
+          (report (string-append path ": " (error-text e)))
+          (exit 2)))
+(catch! (let! ((table (run-query clauses (csv-table text))))
+          (if! csv-output? (print-csv table) (print-text table)))
+        e
+        ; A closed stdout (| head) ends the run quietly, as the runner does when nothing catches it.
+        (when! (same? (evaluate-in! kind e) (quote! stdout-closed)) (raise e))
+        (report (if! (same? (evaluate-in! kind e) (quote! csv-error))
+                  (string-append path ": " (error-text e))
+                  (error-text e)))
+        (exit 1))

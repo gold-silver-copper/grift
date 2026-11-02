@@ -1,0 +1,105 @@
+; The library's and the primitives' string names.
+
+(group! "string-split and string-join"
+  (test! "keeps empty parts"
+    (expect-equal! (string-split "a,,b" ",") (list "a" "" "b"))
+    (expect-equal! (string-split "" ",") (list ""))
+    (expect-equal! (string-split ",a," ",") (list "" "a" "")))
+  (test! "a separator of several bytes"
+    (expect-equal! (string-split "a::b:c" "::") (list "a" "b:c")))
+  (test! "an empty separator is a range-error"
+    (expect-error! range-error (string-split "abc" "")))
+  (test! "string-join undoes string-split"
+    (expect-equal! (string-join (string-split "a,,b," ",") ",") "a,,b,")
+    (expect-equal! (string-join () ",") "")
+    (expect-equal! (string-join (list "x") ",") "x")))
+
+(group! "string-search"
+  (test! "the first place at or after start"
+    (expect-equal! (string-search "abcabc" "c" 0) 2)
+    (expect-equal! (string-search "abcabc" "c" 3) 5)
+    (expect-equal! (string-search "abcabc" "x" 0) ()))
+  (test! "an empty pattern is at start"
+    (expect-equal! (string-search "abc" "" 2) 2)
+    (expect-equal! (string-search "abc" "" 3) 3))
+  (test! "a pattern longer than the text isn't there"
+    (expect-equal! (string-search "ab" "abc" 0) ())
+    (expect-equal! (string-search "" "a" 0) ()))
+  (test! "a start out of range or off a boundary is a range-error"
+    (expect-error! range-error (string-search "abc" "a" 4))
+    (expect-error! range-error (string-search "é" "a" 1))))
+
+(group! "string-starts-with? and string-ends-with?"
+  (test! "by bytes"
+    (expect-true! (string-starts-with? "hello" "he"))
+    (expect-false! (string-starts-with? "he" "hello"))
+    (expect-true! (string-ends-with? "hello" "lo"))
+    (expect-false! (string-ends-with? "lo" "hello")))
+  (test! "everything starts and ends with nothing"
+    (expect-true! (string-starts-with? "" ""))
+    (expect-true! (string-ends-with? "a" ""))))
+
+(group! "string-trim"
+  (test! "ASCII whitespace at either end"
+    (expect-equal! (string-trim "  a b\t\n") "a b")
+    (expect-equal! (string-trim "   ") "")
+    (expect-equal! (string-trim "") "")))
+
+(group! "string-pad-left and string-pad-right"
+  (test! "up to width bytes"
+    (expect-equal! (string-pad-left "a" 3) "  a")
+    (expect-equal! (string-pad-right "a" 3) "a  "))
+  (test! "the string itself if it is that long"
+    (expect-equal! (string-pad-left "abc" 2) "abc")
+    (expect-equal! (string-pad-right "abc" -1) "abc")))
+
+(group! "string-to-lowercase"
+  (test! "ASCII only"
+    (expect-equal! (string-to-lowercase "AbC-1") "abc-1")
+    (expect-equal! (string-to-lowercase "É") "É")))
+
+(group! "bytes"
+  (test! "string-byte-length counts bytes of UTF-8"
+    (expect-equal! (string-byte-length "é") 2)
+    (expect-equal! (string-byte-length "") 0))
+  (test! "byte-substring refuses off a boundary"
+    (expect-equal! (byte-substring "héllo" 0 3) "hé")
+    (expect-error! range-error (byte-substring "é" 0 1))
+    (expect-error! range-error (byte-substring "abc" 2 1)))
+  (test! "code-point-to-string"
+    (expect-equal! (code-point-to-string 233) "é")
+    (expect-error! range-error (code-point-to-string 55296))
+    (expect-error! range-error (code-point-to-string 1114112))))
+
+(group! "conversions"
+  (test! "integers"
+    (expect-equal! (integer-to-string -42) "-42")
+    (expect-equal! (string-to-integer "-42") -42)
+    (expect-error! parse-error (string-to-integer "4x"))
+    (expect-error! parse-error (string-to-integer "99999999999999999999")))
+  (test! "floats read back"
+    (expect-equal! (value-to-string 1.0) "1.0")
+    (expect-equal! (value-to-string #infinity) "#infinity")
+    (expect-equal! (string-to-float "1") 1.0)
+    (expect-equal! (string-to-float "inf") #infinity)
+    (expect-error! parse-error (string-to-float "one")))
+  (test! "symbols"
+    (expect-equal! (symbol-to-string (quote! if!)) "if!")
+    (expect-same! (string-to-symbol "a b") (string-to-symbol "a b"))))
+
+(group! "read-form and value-to-string"
+  (test! "read-form gives the form and where it is"
+    (expect-equal! (read-form "  ; hi\n (a b) c" 0) (list (quote! (a b)) 8 13))
+    (expect-equal! (read-form "  ; hi\n (a b) c" 13) (list (quote! c) 14 15)))
+  (test! "() when only space and comments are left, a form () in a list"
+    (expect-equal! (read-form " ; end" 0) ())
+    (expect-equal! (read-form "()" 0) (list () 0 2)))
+  (test! "text that doesn't read gives the line and the column"
+    (expect-equal! (catch! (read-form "\n (a" 0) e (evaluate-in! values e)) (list 2 4)))
+  (test! "an offset off a boundary is a range-error"
+    (expect-error! range-error (read-form "é" 1))
+    (expect-error! range-error (read-form "a" 2)))
+  (test! "value-to-string writes what reads back"
+    (expect-equal! (value-to-string (list 1.0 "a\n" (quote! b))) "(1.0 \"a\\n\" b)")
+    (expect-equal! (first (read-form (value-to-string (list 1.0 "a\n" (pair 1 2))) 0))
+                   (list 1.0 "a\n" (pair 1 2)))))

@@ -1,0 +1,689 @@
+#!/usr/bin/env grift
+; A text adventure engine whose worlds are written in a world-building language of operatives:
+; place!, item!, door!, start!, verb!, command! and on!. It loads a world file, checks it, and
+; plays it with commands from standard input.
+;
+;   main.grift [--echo] [WORLD-FILE]
+;
+; --echo writes each command after the prompt, for scripted play (main.grift --echo <
+; walkthrough.txt). The world file is world.grift in the current directory, else
+; programs/adventure/world.grift.
+
+; ---------------------------------------------------------------------------------------------
+; Text: the general helpers this program needs and the library lacks.
+
+; Writes the texts as one line, its first letter a capital.
+(define! say
+  (lambda! texts
+    (define! line (message* texts))
+    (define! b (if! (same? line "") 0 (string-byte line 0)))
+    (if! (and!? (less-than-or-equal? 97 b) (less-than-or-equal? b 122))
+      (display (code-point-to-string (subtract b 32)) (byte-substring line 1 (string-byte-length line)))
+      (display line))
+    (display "\n")))
+
+; The words of a line: the parts between spaces, tabs, line ends and , ! ?
+(define! split-words
+  (lambda! (s)
+    (fold (lambda! (words gap)
+            (filter (lambda! (w) (not? (same? w "")))
+                    (apply append (map (lambda! (w) (string-split w gap)) words))))
+          (list s)
+          (list " " "\t" "\n" "\xd;" "," "!" "?"))))
+
+; ---------------------------------------------------------------------------------------------
+; Reading and writing data: worlds and saved games are read with read-form.
+
+; The text of each part, strings as they are and other values as they print.
+(define! message* (lambda! (parts) (apply string-append (map (lambda! (p) (if! (string? p) p (value-to-string p))) parts))))
+(define! message (lambda! parts (message* parts)))
+
+; A mistake at a line of a file.
+(define! mistake-at
+  (lambda! (source line . parts)
+    (raise (error (quote! world-error) (message* (append (list source ":" line ": ") parts))))))
+
+; The forms of `whole`, each as (line . form), a form's line being where it starts. Text that
+; doesn't read is a mistake-at its line.
+(define! read-forms
+  (lambda! (whole source)
+    ; Ending in a newline, the end of the text is alone on its line.
+    (define! text (string-append whole "\n"))
+    ; The line of offset `to`, when offset `from` is on `line`.
+    (define! line-at
+      (lambda! (line from to)
+        (add line (subtract (length (string-split (byte-substring text from to) "\n")) 1))))
+    ; A form after `offset`, on `line`, never ends. read-form fails at the end of the text and
+    ; doesn't say where the form starts: on the first line with more than space or a comment.
+    (define! never-closed
+      (lambda! (offset line)
+        (let! ((end (string-search text "\n" offset))
+               (part (string-trim (byte-substring text offset end))))
+          (conditional!
+            ((or!? (same? part "") (string-starts-with? part ";")) (never-closed (add end 1) (add line 1)))
+            ((string-starts-with? part "\"") (mistake-at source line "a string is never closed"))
+            (#true (mistake-at source line "this ( is never closed"))))))
+    (define! read-after
+      (lambda! (offset line)
+        (catch! (read-form text offset) e
+          (if! (same? (field! kind e) (quote! parse-error))
+            (let! (((at column) (field! values e)))
+              (if! (same? at (length (string-split text "\n")))
+                (never-closed offset line)
+                (mistake-at source at "this doesn't read, at column " column)))
+            (raise e)))))
+    (define! from
+      (lambda! (offset line forms)
+        (let! ((found (read-after offset line)))
+          (if! (empty-list? found)
+            (reverse forms)
+            (let! (((form start end) found)
+                   (at (line-at line offset start)))
+              (from end (line-at at start end) (pair (pair at form) forms)))))))
+    (from 0 1 ())))
+
+; The whole text of a file.
+(define! file-text
+  (lambda! (path)
+    (let! ((f (open-file path)))
+      (finally! ((evaluate-in! read-all f)) ((evaluate-in! close f))))))
+
+; ---------------------------------------------------------------------------------------------
+; Tables. A table is a context from symbols to values, with no parent; a record is a context
+; of fields.
+
+(define! table (lambda! () (context)))
+(define! in-table? (lambda! (t key) (and!? (symbol? key) (binds? t key))))
+(define! look-up (lambda! (t key) (evaluate key t)))
+(define! enter (lambda! (t key value) (bind t key value)))
+(define! record
+  (lambda! (fields values)
+    (let! ((c (context)))
+      (bind c fields values)
+      c)))
+(define! field! (vau! (name r) caller (evaluate name (evaluate r caller))))
+
+; ---------------------------------------------------------------------------------------------
+; The world-building language. Each form records what it defines, with the file and line it
+; came from; check-world then checks the whole world before play starts.
+
+(define! places (table))        ; name -> (title description exits where)
+(define! things (table))        ; name -> (called description words fixed? door? where)
+(define! doors (table))         ; name -> (sides key where): sides is ((place direction) ...)
+(define! placements (table))    ; thing -> list of (place where), one for each place it is put in
+(define! vocabulary (table))    ; noun -> list of things
+(define! verbs (table))         ; word -> (name text? handler)
+(define! verb-names ())         ; each verb's name, in the order defined
+(define! rules (table))         ; key -> (where thunk)
+(define! rule-list ())          ; (verb thing ... where) of each rule, to check
+(define! start-place ())
+(define! engine (current-context))
+(define! loading (record (quote! (source line)) (list "main.grift" 0)))
+(define! directions (quote! ((north n) (south s) (east e) (west w) (up u) (down d))))
+
+; Where the form being loaded is, as text: "world.grift:12".
+(define! where-now
+  (lambda! () (message (field! source loading) ":" (field! line loading))))
+
+; A mistake in a world form, found while loading it.
+(define! world-error
+  (lambda! parts (raise (error (quote! world-error) (apply message (pair (where-now) (pair ": " parts)))))))
+
+; The clauses of a form as a table from a clause's name to the list of its operand lists, each
+; clause's name one of `allowed`.
+(define! clauses
+  (lambda! (what name forms allowed)
+    (let! ((c (table)))
+      (for-each (lambda! (clause)
+                  (when! (not? (and!? (pair? clause) (member? (first clause) allowed)))
+                    (world-error what " " name ": " clause " is not a clause it knows; it knows "
+                                 allowed))
+                  (enter c (first clause)
+                         (append (if! (in-table? c (first clause)) (look-up c (first clause)) ())
+                                 (list (rest clause)))))
+                forms)
+      c)))
+
+; The operands of the one clause `name`, or `default` if there is none.
+(define! one-clause
+  (lambda! (what thing c name default)
+    (if! (in-table? c name)
+      (let! ((all (look-up c name)))
+        (when! (not? (empty-list? (rest all)))
+          (world-error what " " thing " has the clause " name " more than once"))
+        (first all))
+      default)))
+
+; The one string a clause holds, evaluated in `caller`.
+(define! text-clause
+  (lambda! (what thing c name caller)
+    (let! ((operands (one-clause what thing c name (list ""))))
+      (define! text (if! (pair? operands) (evaluate (first operands) caller) operands))
+      (when! (not? (and!? (string? text) (empty-list? (rest operands))))
+        (world-error what " " thing ": (" name " ...) needs one string"))
+      text)))
+
+(define! symbols? (lambda! (xs) (and!? (pair? xs) (all? symbol? xs))))
+
+(define! define-name
+  (lambda! (what t name)
+    (when! (not? (symbol? name)) (world-error what " needs a name, not " name))
+    (when! (in-table? t name)
+      (world-error what " " name " is defined twice; the first is at " (field! where (look-up t name))))))
+
+(define! put
+  (lambda! (thing place)
+    (enter placements thing
+           (append (if! (in-table? placements thing) (look-up placements thing) ())
+                   (list (list place (where-now)))))))
+
+(define! add-words
+  (lambda! (thing words)
+    (for-each (lambda! (w)
+                (enter vocabulary w
+                       (pair thing (if! (in-table? vocabulary w) (look-up vocabulary w) ()))))
+              words)))
+
+; (place! name (title "...") (description "...") (exits (direction place) ...) (holds thing ...))
+(define! place!
+  (vau! (name . forms) caller
+    (sequence!
+      (define-name "place" places name)
+      (define! c (clauses "place" name forms (quote! (title description exits holds))))
+      (define! exits (one-clause "place" name c (quote! exits) ()))
+      (for-each (lambda! (exit)
+                  (when! (not? (and!? (symbols? exit) (same? (length exit) 2)))
+                    (world-error "place " name ": the exit " exit " is not (direction place)"))
+                  (when! (not? (pair? (find-association (first exit) directions)))
+                    (world-error "place " name ": " (first exit) " is not a direction; they are "
+                                 (map first directions))))
+                exits)
+      (for-each (lambda! (held) (for-each (lambda! (thing) (put thing name)) held))
+                (if! (in-table? c (quote! holds)) (look-up c (quote! holds)) ()))
+      (enter places name
+             (record (quote! (title description exits where))
+                     (list (text-clause "place" name c (quote! title) caller)
+                           (text-clause "place" name c (quote! description) caller)
+                           exits
+                           (where-now)))))))
+
+(define! define-thing
+  (lambda! (what name forms allowed caller)
+    (define-name what things name)
+    (define! c (clauses what name forms allowed))
+    (define! words (one-clause what name c (quote! words) (list name)))
+    (when! (not? (symbols? words)) (world-error what " " name ": (words ...) needs symbols"))
+    (add-words name words)
+    (when! (in-table? c (quote! in))
+      (for-each (lambda! (in)
+                  (when! (not? (and!? (symbols? in) (same? (length in) 1)))
+                    (world-error what " " name ": (in ...) needs one place"))
+                  (put name (first in)))
+                (look-up c (quote! in))))
+    (enter things name
+           (record (quote! (called description words fixed? door? where))
+                   (list (text-clause what name c (quote! called) caller)
+                         (text-clause what name c (quote! description) caller)
+                         words
+                         (in-table? c (quote! fixed))
+                         (same? what "door")
+                         (where-now))))
+    c))
+
+; (item! name (called "...") (description "...") (words word ...) (in place) (fixed))
+(define! item!
+  (vau! (name . forms) caller
+    (sequence!
+      (define-thing "item" name forms (quote! (called description words in fixed)) caller)
+      #inert)))
+
+; (door! name (called "...") (description "...") (words word ...) (between place direction
+; place direction) (key item)): a door is in the two places it joins and closes those exits
+; while locked.
+(define! door!
+  (vau! (name . forms) caller
+    (sequence!
+      (define! c (define-thing "door" name forms (quote! (called description words between key))
+                   caller))
+      (define! between (one-clause "door" name c (quote! between) ()))
+      (when! (not? (and!? (symbols? between) (same? (length between) 4)))
+        (world-error "door " name ": (between place direction place direction) is missing or wrong"))
+      (define! (a a-way b b-way) between)
+      (enter doors name
+             (record (quote! (sides key where))
+                     (list (list (list a a-way) (list b b-way))
+                           (first (one-clause "door" name c (quote! key) (list ())))
+                           (where-now))))
+      #inert)))
+
+; (start! place)
+(define! start!
+  (vau! (place) #ignore
+    (if! (empty-list? start-place)
+      (bind engine (quote! start-place) (list place (where-now)))
+      (world-error "start! is given twice; the first is at " (first (rest start-place))))))
+
+; The handler of a verb: its parameters and body, evaluated in `caller`, as lambda! makes one.
+(define! handler
+  (lambda! (parameters body caller) (evaluate (pair lambda! (pair parameters body)) caller)))
+
+(define! define-verb
+  (lambda! (words text? h)
+    (when! (not? (symbols? words)) (world-error "a verb needs a list of words, not " words))
+    (when! (not? (member? (first words) verb-names))
+      (bind engine (quote! verb-names) (append verb-names (list (first words)))))
+    (for-each (lambda! (w) (enter verbs w (record (quote! (name text? handler))
+                                                  (list (first words) text? h))))
+              words)))
+
+; (verb! (name synonym ...) (object preposition other) body ...): the handler gets the things
+; the command names, or (); a later verb! of the same word replaces it.
+(define! verb!
+  (vau! (words parameters . body) caller
+    (define-verb words #false (handler parameters body caller))))
+
+; (command! (name synonym ...) (text) body ...): the handler gets the rest of the line, as typed.
+(define! command!
+  (vau! (words parameters . body) caller
+    (define-verb words #true (handler parameters body caller))))
+
+(define! rule-key (lambda! (parts) (string-to-symbol (value-to-string parts))))
+
+; (on! (verb thing [other]) body ...): what happens instead of the verb's handler when a
+; command names these things.
+(define! on!
+  (vau! (pattern . body) caller
+    (sequence!
+      (when! (not? (and!? (symbols? pattern) (less-than? 1 (length pattern)) (less-than? (length pattern) 4)))
+        (world-error "on! needs (verb thing) or (verb thing other), not " pattern))
+      (enter rules (rule-key pattern) (list (where-now) (handler () body caller)))
+      (bind engine (quote! rule-list) (pair (append pattern (list (where-now))) rule-list)))))
+
+; ---------------------------------------------------------------------------------------------
+; Checking a world: every problem in it, each naming what is wrong and where.
+
+(define! check-world
+  (lambda! ()
+    (define! problems ())
+    (define! here (current-context))
+    (define! problem (lambda! parts (bind here (quote! problems) (pair (apply message parts) problems))))
+    (if! (empty-list? start-place)
+      (problem "the world has no (start! place)")
+      (when! (not? (in-table? places (first start-place)))
+        (problem (first (rest start-place)) ": start! names " (first start-place)
+                 ", which is not a place")))
+    (for-each
+      (lambda! (name)
+        (define! p (look-up places name))
+        (for-each (lambda! ((direction to))
+                    (when! (not? (in-table? places to))
+                      (problem (field! where p) ": place " name ": the exit " direction " leads to "
+                               to ", which is not a place")))
+                  (field! exits p)))
+      (names places))
+    (for-each
+      (lambda! (thing)
+        (define! put-in (look-up placements thing))
+        (when! (not? (in-table? things thing))
+          (problem (first (rest (first put-in))) ": " (first (first put-in)) " holds " thing
+                   ", which is not an item"))
+        (when! (in-table? doors thing)
+          (problem (first (rest (first put-in))) ": the door " thing
+                   " is put in a place; a door is in the places its (between ...) names"))
+        (for-each (lambda! ((place at))
+                    (when! (not? (in-table? places place))
+                      (problem at ": " thing " is put in " place ", which is not a place")))
+                  put-in)
+        (when! (less-than? 1 (length put-in))
+          (problem thing " is in more than one place: "
+                   (string-join (map (lambda! ((place at)) (message place " (" at ")")) put-in)
+                               ", "))))
+      (names placements))
+    (for-each
+      (lambda! (name)
+        (define! d (look-up doors name))
+        (for-each (lambda! ((place direction))
+                    (if! (not? (in-table? places place))
+                      (problem (field! where d) ": the door " name " is in " place
+                               ", which is not a place")
+                      (when! (not? (pair? (find-association direction (field! exits (look-up places place)))))
+                        (problem (field! where d) ": the door " name " closes the exit " direction
+                                 " of " place ", which has no such exit"))))
+                  (field! sides d))
+        (when! (not? (and!? (in-table? things (field! key d))
+                            (not? (in-table? doors (field! key d)))))
+          (problem (field! where d) ": the door " name " is unlocked by " (field! key d)
+                   ", which is not an item")))
+      (names doors))
+    (for-each
+      (lambda! (rule)
+        (define! at (first (reverse rule)))
+        (when! (not? (in-table? verbs (first rule)))
+          (problem at ": on! names the verb " (first rule) ", which no verb! defines"))
+        (for-each (lambda! (thing)
+                    (when! (not? (in-table? things thing))
+                      (problem at ": on! names " thing ", which is not an item or a door")))
+                  (reverse (rest (reverse (rest rule))))))
+      rule-list)
+    (reverse problems)))
+
+; ---------------------------------------------------------------------------------------------
+; The state of a game: where the player is and every thing, the flags rules raise and the
+; doors unlocked. A thing is in a place, carried or nowhere.
+
+(define! game (record (quote! (location moves finished)) (list () 0 #false)))
+(define! where (table))
+(define! flags (table))
+(define! unlocked (table))
+
+(define! location (lambda! () (field! location game)))
+(define! where-is (lambda! (thing) (if! (in-table? where thing) (look-up where thing) (quote! nowhere))))
+(define! carried? (lambda! (thing) (same? (where-is thing) (quote! carried))))
+(define! door-here?
+  (lambda! (door)
+    (and!? (in-table? doors door)
+           (any? (lambda! (side) (same? (first side) (location)))
+                 (field! sides (look-up doors door))))))
+(define! present? (lambda! (thing) (or!? (carried? thing) (same? (where-is thing) (location)) (door-here? thing))))
+(define! things-in (lambda! (place) (filter (lambda! (t) (same? (where-is t) place)) (names where))))
+(define! called (lambda! (thing) (field! called (look-up things thing))))
+
+(define! start-game
+  (lambda! ()
+    (for-each (lambda! (thing) (enter where thing (first (first (look-up placements thing)))))
+              (names placements))
+    (bind game (quote! location) (first start-place))))
+
+; What a rule's body can say and ask, in the world-building language.
+(define! flag! (vau! (name) #ignore (enter flags name #true)))
+(define! flagged!? (vau! (name) #ignore (in-table? flags name)))
+(define! carrying!? (vau! (thing) #ignore (carried? thing)))
+(define! move! (vau! (thing place) #ignore (enter where thing place)))
+(define! finish (lambda! texts (apply say texts) (bind game (quote! finished) #true)))
+
+; ---------------------------------------------------------------------------------------------
+; Saving and loading.
+
+(define! saved-state
+  (lambda! ()
+    (append (list (list (quote! at) (location)) (list (quote! moves) (field! moves game)))
+            (map (lambda! (t) (list (quote! thing) t (where-is t))) (names where))
+            (map (lambda! (f) (list (quote! flag) f)) (names flags))
+            (map (lambda! (d) (list (quote! unlocked) d)) (names unlocked)))))
+
+(define! save-game
+  (lambda! (path)
+    (let! ((out (create-file path)))
+      (finally!
+        (for-each (lambda! (form) ((evaluate-in! write out) (string-append (value-to-string form) "\n")))
+                  (saved-state))
+        ((evaluate-in! close out))))
+    (say "Saved to " path ".")))
+
+; Reads a saved game into new tables and only then replaces the game's, so a bad file changes
+; nothing. Each mistake is a world-error naming the file and line.
+(define! load-game
+  (lambda! (path)
+    (define! new-where (table))
+    (define! new-flags (table))
+    (define! new-unlocked (table))
+    (define! at ())
+    (define! moves 0)
+    (define! here (current-context))
+    (for-each
+      (lambda! ((line . form))
+        (define! bad (lambda! parts (apply mistake-at (pair path (pair line parts)))))
+        (define! shape (catch! (pair (first form) (length form)) e ()))
+        (conditional!
+          ((equal? shape (pair (quote! at) 2))
+           (when! (not? (in-table? places (first (rest form)))) (bad (first (rest form)) " is not a place"))
+           (bind here (quote! at) (first (rest form))))
+          ((equal? shape (pair (quote! moves) 2))
+           (when! (not? (integer? (first (rest form)))) (bad "moves needs an integer"))
+           (bind here (quote! moves) (first (rest form))))
+          ((equal? shape (pair (quote! thing) 3))
+           (define! (thing place) (rest form))
+           (when! (not? (in-table? things thing)) (bad thing " is not an item"))
+           (when! (not? (or!? (in-table? places place) (member? place (quote! (carried nowhere)))))
+             (bad place " is not a place, carried or nowhere"))
+           (enter new-where thing place))
+          ((equal? shape (pair (quote! flag) 2)) (enter new-flags (first (rest form)) #true))
+          ((equal? shape (pair (quote! unlocked) 2))
+           (when! (not? (in-table? doors (first (rest form)))) (bad (first (rest form)) " is not a door"))
+           (enter new-unlocked (first (rest form)) #true))
+          (#true (bad form " is not part of a saved game"))))
+      (read-forms (file-text path) path))
+    (when! (empty-list? at) (raise (error (quote! world-error) (message path ": no (at place)"))))
+    (bind engine (quote! (where flags unlocked)) (list new-where new-flags new-unlocked))
+    (bind game (quote! (location moves)) (list at moves))
+    (say "Loaded " path ".")
+    (describe-place)))
+
+; ---------------------------------------------------------------------------------------------
+; Understanding a command: verb, verb thing, or verb thing preposition thing.
+
+(define! prepositions (quote! (with on onto in into to at from using under)))
+(define! articles (quote! (the a an)))
+(define! not-understood (lambda! parts (raise (error (quote! not-understood) (apply message parts)))))
+
+; The thing a phrase of words names, a direction, or () for no words. A word nothing is called
+; is not understood; of the things all the words name, one present comes first.
+(define! thing-named
+  (lambda! (words)
+    (conditional!
+      ((empty-list? words) ())
+      ((and!? (empty-list? (rest words)) (symbol? (direction-named (first words)))) (direction-named (first words)))
+      (#true
+       (define! found
+         (fold (lambda! (found word)
+                 (when! (not? (in-table? vocabulary word))
+                   (not-understood "I don't know the word \"" word "\"."))
+                 (filter (lambda! (t) (member? t (look-up vocabulary word))) found))
+               (names things)
+               words))
+       (define! here (filter present? found))
+       (conditional!
+         ((pair? here) (first here))
+         ((pair? found) (first found))
+         (#true (not-understood "Nothing is called \"" (string-join (map symbol-to-string words) " ")
+                                "\".")))))))
+
+; The direction a word names, or #false.
+(define! direction-named
+  (lambda! (word)
+    (let! ((found (filter (lambda! (d) (member? word d)) directions)))
+      (if! (pair? found) (first (first found)) #false))))
+
+; The words before the first preposition, the preposition, and the words after it.
+(define! split-at-preposition
+  (lambda! (words before)
+    (conditional!
+      ((empty-list? words) (list (reverse before) () ()))
+      ((member? (first words) prepositions) (list (reverse before) (first words) (rest words)))
+      (#true (split-at-preposition (rest words) (pair (first words) before))))))
+
+; Carries out one line typed by the player.
+(define! perform
+  (lambda! (line)
+    (define! typed (split-words line))
+    (when! (pair? typed)
+      (define! verb-word (string-to-symbol (string-to-lowercase (first typed))))
+      (when! (not? (in-table? verbs verb-word))
+        (not-understood "I don't know the verb \"" verb-word "\". Type help for the verbs I know."))
+      (define! verb (look-up verbs verb-word))
+      (bind game (quote! moves) (add (field! moves game) 1))
+      (if! (field! text? verb)
+        ((field! handler verb) (string-join (rest typed) " "))
+        (sequence!
+          (define! words (filter (lambda! (w) (not? (member? w articles)))
+                                 (map (lambda! (w) (string-to-symbol (string-to-lowercase w))) (rest typed))))
+          (define! (before preposition after) (split-at-preposition words ()))
+          (when! (and!? (not? (empty-list? preposition)) (empty-list? after))
+            (not-understood (field! name verb) " the " (string-join (map symbol-to-string before) " ")
+                            " " preposition " what?"))
+          (define! object (thing-named before))
+          (define! other (thing-named after))
+          ; "look at winch": the thing after the preposition is the object.
+          (when! (empty-list? object) (define! object other) (define! other ()))
+          (for-each (lambda! (thing)
+                      (when! (and!? (in-table? things thing) (not? (present? thing)))
+                        (not-understood "You don't see " (called thing) " here.")))
+                    (list object other))
+          (define! key (rule-key (filter symbol? (list (field! name verb) object other))))
+          (if! (in-table? rules key)
+            ((first (rest (look-up rules key))))
+            ((field! handler verb) object preposition other)))))))
+
+; ---------------------------------------------------------------------------------------------
+; The standard verbs, written in the world-building language. A world may replace any of them.
+
+(define! describe-place
+  (lambda! ()
+    (define! p (look-up places (location)))
+    (say (field! title p))
+    (say (field! description p))
+    (define! seen (append (filter door-here? (names doors)) (things-in (location))))
+    (when! (pair? seen) (say "You see " (string-join (map called seen) ", ") "."))
+    (say "Exits: " (string-join (map (lambda! (e) (symbol-to-string (first e))) (field! exits p)) ", ") ".")))
+
+(define! door-closing
+  (lambda! (direction)
+    (filter (lambda! (d)
+              (and!? (not? (in-table? unlocked d))
+                     (member? (list (location) direction) (field! sides (look-up doors d)))))
+            (names doors))))
+
+(define! go
+  (lambda! (direction)
+    (define! exit (find-association direction (field! exits (look-up places (location)))))
+    (conditional!
+      ((not? (pair? exit)) (say "You can't go " direction " from here."))
+      ((pair? (door-closing direction))
+       (say "The way " direction " is shut: " (called (first (door-closing direction))) " is locked."))
+      (#true (bind game (quote! location) (first (rest exit))) (describe-place)))))
+
+(define! need-thing
+  (lambda! (verb thing)
+    (conditional!
+      ((empty-list? thing) (not-understood (message verb " what?")))
+      ((not? (in-table? things thing)) (not-understood "You can't " verb " a direction."))
+      ((not? (present? thing)) (not-understood "You don't see " (called thing) " here."))
+      (#true thing))))
+
+(verb! (look l) (object #ignore #ignore)
+  (if! (empty-list? object)
+    (describe-place)
+    (say (field! description (look-up things (need-thing "look at" object))))))
+(verb! (examine x read) (object #ignore #ignore)
+  (say (field! description (look-up things (need-thing "examine" object))))
+  (when! (in-table? doors object)
+    (say (if! (in-table? unlocked object) "It is unlocked." "It is locked."))))
+(verb! (go walk) (direction #ignore #ignore)
+  (if! (symbol? (direction-named direction))
+    (go direction)
+    (not-understood "Go where? Say a direction: north, south, east, west, up or down.")))
+(for-each (lambda! (d)
+            (define-verb d #false (lambda! (#ignore #ignore #ignore) (go (first d)))))
+          directions)
+(verb! (take get pick) (object #ignore #ignore)
+  (need-thing "take" object)
+  (conditional!
+    ((carried? object) (say "You already have " (called object) "."))
+    ((or!? (field! fixed? (look-up things object)) (field! door? (look-up things object)))
+     (say "You can't take " (called object) "."))
+    (#true (enter where object (quote! carried)) (say "Taken: " (called object) "."))))
+(verb! (drop) (object #ignore #ignore)
+  (need-thing "drop" object)
+  (if! (carried? object)
+    (sequence! (enter where object (location)) (say "Dropped: " (called object) "."))
+    (say "You aren't carrying " (called object) ".")))
+(verb! (inventory i) #ignore
+  (define! carrying (filter carried? (names where)))
+  (if! (empty-list? carrying)
+    (say "You are carrying nothing.")
+    (say "You are carrying " (string-join (map called carrying) ", ") ".")))
+(verb! (unlock open) (door preposition key)
+  (need-thing "unlock" door)
+  (conditional!
+    ((not? (in-table? doors door)) (say "You can't unlock " (called door) "."))
+    ((in-table? unlocked door) (say (called door) " is already unlocked."))
+    ((empty-list? key) (not-understood "Unlock " (called door) " with what?"))
+    ((not? (carried? (need-thing "use" key))) (say "You aren't carrying " (called key) "."))
+    ((not? (same? key (field! key (look-up doors door))))
+     (say (called key) " doesn't fit " (called door) "."))
+    (#true (enter unlocked door #true) (say "You unlock " (called door) " with " (called key) "."))))
+(verb! (use put) (object preposition other)
+  (need-thing "use" object)
+  (when! (not? (empty-list? other)) (need-thing "use" other))
+  (say "Nothing happens."))
+(command! (save) (text)
+  (define! path (if! (same? text "") "adventure.sav" text))
+  (catch! (save-game path) e
+    (if! (same? (field! kind e) (quote! file-error))
+      (say "Can't save to " path ": " (first (rest (field! values e))))
+      (raise e))))
+(command! (load restore) (text)
+  (define! path (if! (same? text "") "adventure.sav" text))
+  (catch! (load-game path) e
+    (conditional!
+      ((same? (field! kind e) (quote! file-error)) (say "Can't load " path ": " (first (rest (field! values e)))))
+      ((same? (field! kind e) (quote! world-error)) (say "Can't load " path ": " (first (field! values e))))
+      (#true (raise e)))))
+(command! (help) #ignore
+  (say "Verbs: " (string-join (map symbol-to-string verb-names) ", ") ".")
+  (say "Say verb, verb thing, or verb thing preposition thing: unlock the door with the key."))
+(command! (quit) #ignore
+  (say "You stop here, after " (field! moves game) " moves.")
+  (exit 0))
+
+; ---------------------------------------------------------------------------------------------
+; Loading and playing.
+
+; Loads a world file: each form is evaluated in a child of this context, so a world sees the
+; world-building language and can define helpers of its own.
+(define! load-world
+  (lambda! (path)
+    (define! world (context engine))
+    (bind loading (quote! source) path)
+    (for-each (lambda! ((line . form))
+                (bind loading (quote! line) line)
+                (evaluate form world))
+              (read-forms (file-text path) path))))
+
+(define! echo? (member? "--echo" command-line-arguments))
+(define! world-files (filter (lambda! (a) (not? (same? a "--echo"))) command-line-arguments))
+(define! world-file
+  (conditional!
+    ((pair? world-files) (first world-files))
+    ((catch! (sequence! ((evaluate-in! close (open-file "world.grift"))) #true) e #false) "world.grift")
+    (#true "programs/adventure/world.grift")))
+
+(catch! (load-world world-file) e
+  (if! (same? (field! kind e) (quote! world-error))
+    (sequence! (display (first (field! values e))) (display "\n") (exit 1))
+    (raise e)))
+(define! problems (check-world))
+(when! (pair? problems)
+  (for-each (lambda! (p) (display p) (display "\n")) problems)
+  (say (length problems) " problems in " world-file "; the game can't start.")
+  (exit 1))
+
+(define! read-line (evaluate-in! read-line standard-input))
+(define! play
+  (lambda! ()
+    (display "> ")
+    (define! line (read-line))
+    (if! (same? line "")
+      (sequence! (display "\n") (say "The input ends; you stop here, after " (field! moves game) " moves."))
+      (sequence!
+        (when! echo? (display (string-trim line)) (display "\n"))
+        (catch! (perform (string-trim line)) e
+          (if! (same? (field! kind e) (quote! not-understood))
+            (say (first (field! values e)))
+            (raise e)))
+        (if! (field! finished game)
+          (say "*** The end, in " (field! moves game) " moves. ***")
+          (play))))))
+(start-game)
+(describe-place)
+(play)
