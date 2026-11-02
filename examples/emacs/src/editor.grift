@@ -147,16 +147,7 @@
 
 (define! buffer-text
   (lambda! ()
-    (define! lines (reverse-onto (field! above) (pair (line-string) (field! below))))
-    ; Joined from the last line back, so each line is copied once.
-    (define! join
-      (lambda! (reversed done)
-        (if! (empty-list? reversed)
-          done
-          (join (rest reversed)
-                (reverse-onto (reverse (string-to-code-points (first reversed))) (pair 10 done))))))
-    (define! reversed (reverse lines))
-    (code-points-to-string (join (rest reversed) (string-to-code-points (first reversed))))))
+    (string-join (reverse-onto (field! above) (pair (line-string) (field! below))) "\n")))
 
 (define! text-changed #false)
 (define! set-modified

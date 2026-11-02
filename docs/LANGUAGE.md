@@ -67,7 +67,7 @@ such as `99999999999999999999` or `1.2.3`, is a `parse-error`. A float prints in
 form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it reads back as the same float, bit
 for bit. Every not-a-number prints as `#not-a-number`, which reads back as Rust's `f64::NAN`: a
 not-a-number's sign and payload don't survive printing.
-`;` starts a comment to the end of the line.
+`;` starts a comment to the end of the line, and so does `#!` at the very start of a text.
 
 ## Primitives (Rust)
 
@@ -99,7 +99,7 @@ All are applicatives except `vau!`.
 | `(string-to-symbol s)` | The symbol named `s`, interned. |
 | `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
 | `(string-to-float s)` | Rust's `parse::<f64>` and the three `#` names, so it reads what `value-to-string` writes for a float: `(string-to-float "1")` is `1.0`, `(string-to-float "inf")` is `#infinity`. A not-a-number's sign and payload are lost. A string that reads as neither is a `parse-error`. |
-| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. A first line starting with `#!` is a comment. It evaluates nothing. Text that doesn't read is a `parse-error` with the line and column in the whole text; an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
+| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with the line and column in the whole text; an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
 | `(value-to-string v)` | The text the printer writes for `v`, combiners and contexts as they print (see Values): `(value-to-string (list 1.0 "a"))` is `"(1.0 \"a\")"`, and a float's text reads back as the same float. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
@@ -190,8 +190,8 @@ can't swallow C-g; an error in one of those cleanups doesn't replace them. Wheth
 | Kind | When | Values |
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
-| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list | the primitive and the value |
-| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match | the primitive and the operands; or the parameters and the value |
+| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; a primitive's improper operand list | the primitive and the value |
+| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, which is how a library form refuses operands that aren't its shape | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
 | `overflow` | integer arithmetic beyond 64 bits | the primitive and the operands |

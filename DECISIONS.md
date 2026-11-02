@@ -532,12 +532,12 @@ name's uses; the PR has each name's decision.
 ## Made with G-84, 2026-11-02 (the owner may overrule any)
 
 - **G-85. Names removed, each with no program that needs it** (amends G-38, G-67, G-70, G-78, G-79).
-  `define-in!` goes for `bind` with the parameters quoted, although G-38 listed it: 4 programs and the
-  editor used it, 8 programs and 2 agents' stated choices used `bind`, and it was `bind` with one operand
-  evaluated. `binds!?` goes for `binds?`: its only callers were a test program's tests of it. `inert?`
+  `define-in!` goes for `bind` with the parameters quoted, although G-38 listed it: 3 programs and the
+  editor used it, 11 programs used `bind` and 2 agents said they chose it, and it was `bind` with one
+  operand evaluated. `binds!?` goes for `binds?`: its only callers were `test`'s and `meta`'s tests. `inert?`
   and `ignore?` go for `same?`: each type has one value (`empty-list?` has the same shape and stays, as
   G-38's own example, in 8 programs). `float-to-string` goes for `value-to-string`, which G-78 made the
-  same text. `newline` goes for `(display "\n")`. Kept although few use them: the float functions (G-42),
+  same text, so `(value-to-string 1)` is `"1"` where `(float-to-string 1)` was a `type-error`. `newline` goes for `(display "\n")`. Kept although few use them: the float functions (G-42),
   `wrap`, `unwrap`, `call-with-handler`, `evaluate-with-cleanup` and `select` (the library is built on
   them), `string-to-lowercase` (adventure), `environment-variable` and `run-process` (G-55).
 - **G-86. `symbol-to-string` is library code over `value-to-string`; `integer-to-string` stays a
@@ -571,4 +571,5 @@ name's uses; the PR has each name's decision.
   that also saw limits could drop a primitive and two frames, but each cleanup would then copy the trace
   into a record and back, which G-76 removed, and every `catch!` would test for limits in grift.
 - **G-92. The editor's conversions between strings and code points are grift** (G-57). Its host gives bytes
-  and files only; its file loading uses `string-split`, and decoding is per line.
+  and files only. Loading and saving a file use `string-split` and `string-join`, so only the line being
+  edited is decoded.

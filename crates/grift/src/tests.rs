@@ -141,7 +141,7 @@ fn library_basics() {
             "(and!? (same? (when! #false (first ())) #inert) (same? (when! #true 1) 1))",
             "(equal? (let! ((x 1) (y (add x 1))) (list x y)) (quote! (1 2)))",
             "(same? (let! () 5) 5)",
-            // define-in! changes the binding where it is, even from inside a function.
+            // bind changes the binding where it is, even from inside a function.
             "(sequence! (define! n 0) (define! e (current-context)) \
              ((lambda! () (bind e (quote! n) (add n 1)))) (equal? n 1))",
         ],
@@ -684,6 +684,9 @@ fn catch_catches_errors_as_contexts() {
             "(equal? (catch! (add 1 (check (quote! a))) e (list (evaluate-in! kind e) (evaluate-in! values e))) \
              (quote! (not-integer (a 2))))",
             "(equal? (catch! (first 1) e (evaluate-in! trace e)) (quote! ((first 1))))",
+            // A handler that fails on being called still says where.
+            "(equal? (catch! (call-with-handler (lambda! () (first 1)) (vau! () #ignore 1)) e (evaluate-in! trace e)) \
+             (quote! ((call-with-handler (lambda! () (first 1)) (vau! () #ignore 1)))))",
             "(equal? (catch! (first 1) e (names e)) (quote! (kind trace values)))",
             "(catch! (first 1) e (not? (binds? e (quote! list))))",
             // error makes the same kind of context, with an empty trace, and raises nothing.
@@ -822,6 +825,7 @@ fn binds_looks_through_parents() {
         &[
             "(binds? e (string-to-symbol \"x\"))",
             "(not? (binds? e (string-to-symbol \"nope\")))",
+            "(equal? (catch! (binds? e 1) x (evaluate-in! values x)) (quote! (binds? 1)))",
             "(sequence! (define! s (quote! nope)) (not? (binds? e s)))",
             "(binds? (context e) (quote! first))",
         ],
@@ -938,7 +942,7 @@ fn floats_read_back_as_they_print() {
         let printed = show(&g, Value::Float(x));
         let again = float(&mut g, &printed);
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
-        // float-to-string gives the printer's text, and string-to-float reads it back (a
+        // value-to-string gives the printer's text, and string-to-float reads it back (a
         // not-a-number only up to its sign, which these floats don't vary).
         let s = g
             .evaluate(&mut (), &format!("(value-to-string {printed})"))

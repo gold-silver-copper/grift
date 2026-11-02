@@ -7,7 +7,7 @@ usage: scripts/census.py RUNNER  (from the repository root; prints a Markdown ta
 """
 import glob, re, subprocess, sys
 
-RUNNER = "display newline environment-variable exit command-line-arguments standard-input \
+RUNNER = "display environment-variable exit command-line-arguments standard-input \
 standard-error open-file create-file run-process".split()
 FIELDS = "read-line read-all write close path status output error-output kind values trace".split()
 TOKEN = re.compile(r'\s+|;[^\n]*|"(?:\\.|[^"\\])*"?|[()]|[^\s();"]+', re.S)

@@ -26,7 +26,7 @@
 
 ; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become
 ; (sequence! ...) with the symbol, as if written so, so printing the combiner shows the body as
-; written. sequence! is defined next, by code whose functions have one expression each.
+; written. sequence! is defined next, by code that runs no such body while it loads.
 (define! lambda!
   (vau! (parameters . body) caller
     (wrap (evaluate (list vau! parameters #ignore
@@ -256,7 +256,7 @@
       (catch! (sequence! (evaluate symbol c) #true)
               e
               (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
-      (raise (error (quote! type-error) (quote! binds?) c symbol)))))
+      (raise (error (quote! type-error) (quote! binds?) (if! (context? c) symbol c))))))
 
 ; symbol-to-string: the printer writes a symbol as its name.
 (define! symbol-to-string

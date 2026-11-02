@@ -375,7 +375,11 @@ impl<T> Grift<T> {
                     self.machine.here = at;
                     match self.handle(&e, handler, context) {
                         Ok(mode) => return Ok(mode),
-                        Err(oom) => e = oom,
+                        // Calling it failed, here: that error goes on instead.
+                        Err(failed) => {
+                            e = failed;
+                            locate(&mut e, at);
+                        }
                     }
                 }
                 // The cleanup's error replaces the one waiting, unless that one is a limit.
