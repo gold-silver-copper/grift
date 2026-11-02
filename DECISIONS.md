@@ -656,7 +656,7 @@ them. Each has a test stating a property, a LANGUAGE.md or README entry, and its
 - **G-101. `sort`, stable, and `string-less-than?` in byte order** (reopens G-75's "sort, not now":
   ten agents, ~376 lines, two unstable sorts). `(sort list before?)` is a merge sort in library grift
   calling `before?` through `apply`; an element goes before an earlier one only if it is `before?` it,
-  so equal ones keep their order. 10,000 integers in about 0.1 s.
+  so equal ones keep their order. 10,000 integers in about 0.3 s, 10,000 short strings in 0.9 s.
 - **G-102. List access by index** (435 `(first (rest x))`, 10 agents). `element-at` (from 0, Rust's
   indexing), `second`, `third`, `last`, `take`, `drop`, list first as Rust's methods and SRFI-1 have
   them. An index or count out of range is a `range-error` carrying the name, the index and the length,

@@ -125,7 +125,7 @@ All are applicatives except `vau!`.
 | `(filter a list)` | The elements for which `a` gives `#true`, in order; `a` must give booleans. |
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
-| `(sort list before?)` | The elements in the order `before?` gives, a combiner of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.1 s. |
+| `(sort list before?)` | The elements in the order `before?` gives, a combiner of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
