@@ -224,7 +224,8 @@ cleanups doesn't replace them. Whether an error is a limit goes by its kind: a p
 | `interrupted` | the host set its interrupt flag | none |
 | any symbol | a program raised an error it made | the values given |
 
-The runner adds its own kinds; [the README](../README.md#the-runner) lists them.
+The runner adds its own operations, `standard-error` among them, and its own kinds;
+[the README](../README.md#the-runner) lists them.
 
 ## Where grift differs from R-1RK, and why
 

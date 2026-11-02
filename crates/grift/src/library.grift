@@ -105,7 +105,7 @@
     (if! (same? xs ()) #true (if! (apply f (list (first xs))) (all? f (rest xs)) #false))))
 
 ; map (5.9.1): f on each element of one list, or on the elements at each place of several lists
-; of one length; lists of different lengths fail at first or rest, as in Kernel they are an error.
+; of one length. Lists of different lengths are an error, as in Kernel: first fails on the short one.
 (define! map
   ((lambda! ()
      (define! each

@@ -1,7 +1,7 @@
 //! An Emacs-style editor whose editor is grift code. The host gives grift bytes and files only:
-//! a key as a byte, writes to the terminal, the terminal's size, reading and writing a file,
-//! the conversions between strings and code points, printing a value, and the reader. The buffer, redisplay, the
-//! keymap, the minibuffer and every command live in `editor.grift`.
+//! a key as a byte, writes to the terminal, the terminal's size, reading and writing a file, and
+//! the conversions between strings and code points. The buffer, redisplay, the keymap, the
+//! minibuffer and every command live in `editor.grift`.
 //!
 //! A thread reads the terminal while grift runs, so C-g stops a command that never returns:
 //! it sets grift's interrupt flag, and the command ends with the error `interrupted`.
@@ -167,29 +167,6 @@ fn code_points_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Valu
     g.string(&s)
 }
 
-/// `(value-to-string v)`: the printed form of any value; strings print with quotes.
-fn value_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    let [v] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    let mut s = String::new();
-    if g.write(*v, &mut s).is_err() {
-        return Err(g.error("out-of-memory", &[]));
-    }
-    g.string(&s)
-}
-
-/// `(string-to-forms s)`: the forms of `s`, read and not evaluated.
-fn string_to_forms(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    match args {
-        [s] => match text(g, *s) {
-            Some(src) => g.read(&src),
-            None => Err(g.error("type-error", args)),
-        },
-        _ => Err(g.error("arity-error", args)),
-    }
-}
-
 /// A `fmt::Write` into a string that stops at `ERROR_TEXT_MAX` bytes.
 struct Capped(String);
 
@@ -240,7 +217,7 @@ fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<V
     g.call(h, f, &values)
 }
 
-const HOST: [(&str, HostFunction<Host>); 9] = [
+const HOST: [(&str, HostFunction<Host>); 7] = [
     ("key", key),
     ("terminal-write", terminal_write),
     ("terminal-size", terminal_size),
@@ -248,8 +225,6 @@ const HOST: [(&str, HostFunction<Host>); 9] = [
     ("write-file", write_file),
     ("string-to-code-points", string_to_code_points),
     ("code-points-to-string", code_points_to_string),
-    ("value-to-string", value_to_string),
-    ("string-to-forms", string_to_forms),
 ];
 
 /// Runs the editor until it quits or input ends. An error before the first key (the file can't
