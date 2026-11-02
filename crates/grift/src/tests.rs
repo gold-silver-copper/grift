@@ -336,7 +336,7 @@ fn errors_name_the_program_combination() {
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
         assert_eq!(
-            e.trace.first().map(|&v| show(&g, v)).as_deref(),
+            e.trace().first().map(|&v| show(&g, v)).as_deref(),
             Some(at),
             "{src}"
         );
@@ -353,7 +353,7 @@ fn errors_name_the_program_combination() {
         Err(g.error("mine", &[]))
     });
     let e = g.evaluate(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, e.trace[0]), "(fail-after-churn)");
+    assert_eq!(show(&g, e.trace()[0]), "(fail-after-churn)");
 }
 
 #[test]
@@ -555,7 +555,7 @@ fn cleanup_runs_and_the_error_goes_on() {
     assert_eq!(e.values[0], Value::Integer(7));
     assert_eq!(show(&g, e.values[1]), "(8)");
     assert_eq!(
-        show(&g, e.trace[0]),
+        show(&g, e.trace()[0]),
         "(raise (error (quote! mine) 7 (list 8)))"
     );
     let log = g.evaluate(&mut (), "log").unwrap();
@@ -577,8 +577,8 @@ fn cleanup_runs_and_the_error_goes_on() {
         .call(&mut (), protect, &[missing, here, cleanup])
         .unwrap_err();
     assert_eq!(
-        (kind(&mut g, &e), e.trace),
-        (String::from("unbound-symbol"), vec![])
+        (kind(&mut g, &e), e.trace()),
+        (String::from("unbound-symbol"), &[][..])
     );
     // The waiting error's values survive collections in the cleanup.
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
@@ -720,7 +720,7 @@ fn catch_catches_errors_as_contexts() {
         .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
     assert_eq!(kind(&mut g, &e), "not-integer");
-    let trace: Vec<String> = e.trace.iter().map(|&v| show(&g, v)).collect();
+    let trace: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
     assert_eq!(
         trace,
         [
@@ -869,7 +869,7 @@ fn errors_name_each_program_combination_around_them() {
         ("(first 1)", "(first 1)"),
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
-        let at: Vec<String> = e.trace.iter().map(|&v| show(&g, v)).collect();
+        let at: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }
@@ -1381,6 +1381,15 @@ fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
                (define! down (lambda! (n) (if! (same? n 0) (raise (error (quote! bottom))) (add 1 (down (subtract n 1))))))
                (define! trace (catch! (down 100) e (evaluate-in! trace e)))
                (equal? (length trace) (length (fold (lambda! (seen x) (if! (member? x seen) seen (pair x seen))) () trace))))",
+            // A caught error raised again passes the same combinations again, at every level.
+            "(sequence!
+               (define! up
+                 (lambda! (n)
+                   (if! (same? n 0)
+                     (raise (error (quote! bottom)))
+                     (catch! (add 1 (up (subtract n 1))) e (raise e)))))
+               (define! trace (catch! (up 20) e (evaluate-in! trace e)))
+               (equal? (length trace) (length (fold (lambda! (seen x) (if! (member? x seen) seen (pair x seen))) () trace))))",
             // What a raise is given stays, repeats and all, and what it passes is added once.
             "(sequence!
                (define! e (error (quote! mine)))
@@ -1693,6 +1702,8 @@ fn string_helpers() {
                texts)",
             "(same? (string-pad-left \"ab\" 4) \"  ab\")",
             "(same? (string-pad-right \"ab\" 4) \"ab  \")",
+            "(same? (string-pad-left \"ab\" -9223372036854775808) \"ab\")",
+            "(same? (string-pad-right \"ab\" -9223372036854775808) \"ab\")",
             // string-to-lowercase: only A to Z change, and once is enough.
             "(same? (string-to-lowercase \"ÉCLAIR Ab1 [@]\") \"Éclair ab1 [@]\")",
             "(all? (lambda! (t)

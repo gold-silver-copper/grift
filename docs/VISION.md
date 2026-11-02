@@ -119,8 +119,8 @@ the host; closing it is explicit (no finalizers), and using it after it is close
 The `grift` runner is a Unix tool: it runs files or stdin, prints data to stdout and diagnostics to
 stderr, and exits 0, 1 on an error, 2 on a usage error. For scripting it gives programs a small,
 fixed set of host operations: reading stdin as data, writing to stderr, files (as contexts of
-operations), the command-line arguments, environment variables, the exit status, and running processes. The core
-does none of this.
+operations), the command-line arguments, environment variables, the exit status, and running
+processes. The core does none of this.
 
 ## Implementation
 The implementation stays small and uniform: one evaluation step for every kind of form, one

@@ -76,11 +76,9 @@ pub struct Error {
     pub kind: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
-    /// Where: the combinations of the program that were being evaluated, innermost first, each
-    /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
-    /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
-    pub trace: Vec<Value>,
-    /// The combinations in `trace` the machine added or was given, so adding one searches nothing.
+    /// Where, read with [`Error::trace`].
+    trace: Vec<Value>,
+    /// The combinations in `trace`, so adding one searches nothing.
     seen: Seen<Reference>,
 }
 
@@ -153,6 +151,13 @@ impl From<K> for Symbol {
 }
 
 impl Error {
+    /// Where: the combinations of the program that were being evaluated, innermost first, each
+    /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
+    /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
+    pub fn trace(&self) -> &[Value] {
+        &self.trace
+    }
+
     /// An error with a copy of `values`; if even that copy can't be allocated, `out-of-memory`.
     pub(crate) fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut v = Vec::new();

@@ -166,7 +166,7 @@ fn main() -> Result<(), Error> {
     assert_eq!(s, "((f 1) (first 1))");
     let e = g.evaluate(&mut board, "(f (quote! x))").unwrap_err();
     let mut trace = String::new();
-    assert!(e.trace.iter().try_for_each(|&v| g.write(v, &mut trace)).is_ok());
+    assert!(e.trace().iter().try_for_each(|&v| g.write(v, &mut trace)).is_ok());
     assert_eq!(trace, "(add x 1)(twice (add x 1))(f (quote! x))"); // innermost first
     Ok(())
 }
@@ -194,7 +194,7 @@ fn main() -> Result<(), Error> {
   in a private `context()`, that makes the operations as closures over them, as the runner's
   [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
   after it is closed is the error `closed`.
-- `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value> }`. `trace` lists the
+- `Error { kind: Symbol, values: Vec<Value>, .. }`, with `Error::trace()`, which lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
   not inside `if!`. A call in tail position has finished, so it isn't listed.
@@ -232,7 +232,7 @@ let p = g.pair(s, Value::EmptyList)?;
 if let Some((first, rest)) = g.as_pair(p) { /* ... */ }
 if let Some(text) = g.as_str(v) { /* ... */ }
 match v { Value::Integer(n) => {} Value::Float(x) => {} Value::Symbol(s) => {} Value::Context(r) => {} _ => {} }
-report(e.kind, &e.values, &e.trace);
+report(e.kind, &e.values, e.trace());
 ```
 
 `HostFn` is `HostFunction`, `Prim` is `Primitive`, `Ref` is `Reference`, and `Value`'s variants

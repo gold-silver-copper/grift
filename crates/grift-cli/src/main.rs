@@ -323,7 +323,7 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     }
     // The innermost combination on the error's line, then each one around it on a line of
     // its own.
-    for (i, &at) in e.trace.iter().enumerate() {
+    for (i, &at) in e.trace().iter().enumerate() {
         let _ = fmt::Write::write_str(&mut err, if i == 0 { " in " } else { "\n  from " });
         let _ = g.write(at, &mut err);
     }
@@ -369,13 +369,14 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
             eprint!("> ");
             continue;
         }
-        pending = None;
+        // Read first: a `parse-error` from running the input (`read-form`'s) doesn't mean there is
+        // more of it to come.
+        pending = g.read(&src).err().filter(|e| unfinished(g, &src, e));
+        if pending.is_some() {
+            eprint!("  ");
+            continue;
+        }
         let done = match g.evaluate(r, &src) {
-            Err(e) if unfinished(g, &src, &e) => {
-                pending = Some(e);
-                eprint!("  ");
-                continue;
-            }
             Ok(v) => put(g, &[v], false, "\n"),
             Err(e) => Err(e),
         };

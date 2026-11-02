@@ -1,6 +1,6 @@
-; The runner's operations on files, standard input, standard error and processes. main.rs evaluates this, in a
-; private child of the built-in context, to a combiner it calls with the top-level context and its
-; host functions, which are bound nowhere else.
+; The runner's operations on files, standard input, standard error and processes. main.rs evaluates
+; this, in a private child of the built-in context, to a combiner it calls with the top-level context
+; and its host functions, which are bound nowhere else.
 ; Every operation a program gets is a closure over them, holding the number of its file: a
 ; program reaches a file only through the context it was given, and can't name one by its
 ; number.

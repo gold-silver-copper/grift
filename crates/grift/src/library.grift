@@ -380,9 +380,9 @@
 ; string-pad-left and string-pad-right: s with spaces before it, after it, up to width bytes.
 (define! (string-pad-left string-pad-right)
   ((lambda! ()
-     (define! spaces
-       (lambda! (n) (if! (less-than? 0 n) (string-append " " (spaces (subtract n 1))) "")))
-     (define! room (lambda! (s width) (spaces (subtract width (string-byte-length s)))))
+     (define! room
+       (lambda! (s width)
+         (apply string-append (map (lambda! (#ignore) " ") (range (string-byte-length s) width)))))
      (list (lambda! (s width) (string-append (room s width) s))
            (lambda! (s width) (string-append s (room s width)))))))
 

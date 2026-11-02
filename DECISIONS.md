@@ -451,15 +451,17 @@ ways each) written on grift at 27c2aa4 without changing it, ranked in
 - **G-76. An error keeps a set of the combinations in its trace** (G-29 unchanged: each once,
   innermost first, a given trace as it was given). Adding a frame's combination checks the set, so
   unwinding is linear in the frames, also through a cleanup per frame, which is why the set stays with
-  the error (a private field of `Error`, derived from `trace`) instead of being rebuilt each time the
-  error goes on. A host that edits `trace` and returns the error doesn't edit the set: a combination it
-  removed isn't added again. The parameter check (`vau!`, `bind`) uses the same kind of set. Both hash a
-  small id with the one multiplication contexts already use. Rejected: removing repeats only when the
-  error leaves (the trace then holds a repeat per frame while it unwinds, so a deep recursion near the
-  allocator's limit loses locations the set keeps; and a raised trace's own repeats would go). Measured
-  (release, one run each, load about 8 on 32 cores): a 300,000-deep raise through a combination made per
-  frame, 11.9 s to 1.0 s; 300,000 parameters, 9.2 s to 0.05 s; `fib 25`, 0.138 s to 0.126 s. A catch and
-  raise at every level still copies the trace each time; that copy is the record the handler gets.
+  the error instead of being rebuilt each time the error goes on. So that the two can't drift apart,
+  `Error`'s `trace` is private now and hosts read it with `Error::trace()`: review showed a host
+  adding to the public field could get a combination listed twice. No host wrote to it. The parameter
+  check (`vau!`, `bind`) uses the same kind of set. Both hash a small id with the one multiplication
+  contexts already use. Rejected: removing repeats only when the error leaves (the trace then holds a
+  repeat per frame while it unwinds, so a deep recursion near the allocator's limit loses locations the
+  set keeps; and a raised trace's own repeats would go). Measured (release, one run each, load about 8
+  on 32 cores): a 300,000-deep raise through a combination made per frame, 11.9 s to 1.0 s; 300,000
+  parameters, 9.2 s to 0.05 s; `fib 25`, 0.141 s to 0.131 s; a loop of `define!` and `lambda!`, 0.918 s
+  to 0.978 s. A catch and raise at every level still copies the trace each time; that copy is the record
+  the handler gets.
 - **G-77. `read-form`** (G-38: a verb and what it reads, beside the runner's `read-line` and
   `read-all`; agents typed `read` first, which says nothing about one form, and `string-to-value`, but
   the operation takes an offset and gives more than a conversion would). `(read-form text offset)` is
@@ -499,10 +501,14 @@ ways each) written on grift at 27c2aa4 without changing it, ranked in
     out of range or off a boundary is refused with the `range-error` of the empty `byte-substring`.
   - `string-split` keeps empty parts, so `string-join` undoes it; an empty separator is a `range-error`.
   - Pads and lowercase work on bytes and ASCII, what the library can do honestly; `string-pad-left` is
-    named for where the spaces go, as the programs named theirs.
+    named for where the spaces go, as the programs named theirs. The spaces come from `range`, from the
+    string's length to the width, so a width below the length gives none, whatever it is.
   - `string-search` stays library grift (G-57): 1 µs a byte (1 MiB in 1.0 s), a 64 KiB text split into
     4,096 lines in about 0.1 s; usable. The library reader that earned a primitive took 10-63 µs a byte.
 - **G-82. `standard-error`** (extends G-55 and G-70): a context with `write` alone, as `standard-input`
   has no `close` or `path`; it writes to the descriptor, so `> log 2>&1` keeps what is there. It is
   file number 1 in the runner, a closure like the rest. A failing write is a `file-error`. A message
   with status 2 is now `((evaluate-in! write standard-error) "...") (exit 2)`.
+- **G-83. The interactive runner reads before it evaluates.** It keeps asking for more only if the input
+  itself doesn't read yet. It used to judge by the error from evaluating, and `read-form` gives a
+  program a `parse-error` at any line and column, so an input could run twice.
