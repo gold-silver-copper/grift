@@ -138,6 +138,24 @@ fn files_are_contexts_of_operations() {
 }
 
 #[test]
+fn a_program_cannot_reach_the_runner_s_host_functions() {
+    let dir = scratch("boundary");
+    // Redefining the library names the file operations use changes nothing for them: they look
+    // names up in a private context, never in the program's.
+    let program = r#"
+        (define! top (current-context))
+        (define! leaked #inert)
+        (define! spy (vau! #ignore caller (sequence! (define-in! top leaked caller) #inert)))
+        (define! lambda! spy) (define! quote! spy) (define! list spy) (define! context "scratch")
+        (define! in (open-file "/dev/null"))
+        (display (same? leaked #inert) " " in " " ((evaluate-in! read-all in)))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(out, "#true #[context close path read-all read-line] ");
+}
+
+#[test]
 fn command_line_arguments_and_environment_variables() {
     let dir = scratch("arguments");
     let program = "(display command-line-arguments (environment-variable \"GRIFT_TEST\"))

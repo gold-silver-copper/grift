@@ -194,7 +194,7 @@ pub(crate) fn formatted(x: fmt::Arguments) -> Result<Box<str>, Error> {
     }
     let mut s = Growing(String::new());
     fmt::write(&mut s, x).map_err(|_| Error::oom())?;
-    Ok(s.0.into_boxed_str())
+    boxed(&s.0)
 }
 
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
@@ -272,6 +272,14 @@ impl<T> Grift<T> {
             .heap
             .alloc(Object::Applicative(Value::Host(Host(id))))?;
         Ok(Value::Applicative(applicative))
+    }
+
+    /// A new empty context whose parent is the built-in one: a private top level. Grift code
+    /// evaluated there (with `call`ing `evaluate`) sees the primitives and the library, never
+    /// what a program defines.
+    pub fn context(&mut self) -> Result<Value, Error> {
+        let c = Object::Context(Some(self.built_in), Bindings::default());
+        Ok(Value::Context(self.heap.alloc(c)?))
     }
 
     /// Binds `name` to `v` in the top-level context.

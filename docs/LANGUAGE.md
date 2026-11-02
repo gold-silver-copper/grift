@@ -80,7 +80,9 @@ Kernel's names, and grift's before 2026-11-01, against grift's:
 A number starts with a digit, after an optional sign: it is an integer if it is one, else a float
 if it has a `.` or an exponent, as Rust reads them (`1.`, `2e5`); anything else that starts so,
 such as `99999999999999999999` or `1.2.3`, is a `parse-error`. A float prints in Rust's shortest
-form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it always reads back as the same float.
+form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it reads back as the same float, bit
+for bit. Every not-a-number prints as `#not-a-number`, which reads back as Rust's `f64::NAN`: a
+not-a-number's sign and payload don't survive printing.
 `;` starts a comment to the end of the line.
 
 ## Primitives (Rust)

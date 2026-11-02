@@ -151,7 +151,7 @@ Every value prints as text that reads back where it can. A combiner prints its s
 parameters, its context parameter and its body (not the context it was made in, so two combiners
 can print alike and differ). A context prints as its own names, sorted
 (`#[context close path read-all read-line]`), never its values, which may reach the context
-again. An error prints its kind, its values and its trace.
+again. An error, a context, prints its names; the host reports its kind, its values and its trace.
 
 ## Terms
 - **Symbol:** a value that is a name; a symbol names a value in a context.

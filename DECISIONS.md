@@ -333,14 +333,17 @@ reference that matches them.
   `Reference`. `Value` is `PartialEq`, no longer `Eq`, because of floats.
 - **G-60. Host functions are values first** (G-41). `host_function(name, f)` gives an applicative
   bound nowhere and `define(name, value)` binds any value at top level, so a host can hand
-  functions to grift code that keeps them private. The runner does: `runner.grift` is evaluated
-  to a combiner called with the top-level context and the private host functions, and every file
-  operation is a closure over them holding the file's number.
+  functions to grift code that keeps them private; `context()` gives a new child of the built-in
+  context, a private top level. The runner does both: `runner.grift` is evaluated in a private
+  context (so a program that redefines `lambda!` or `list` at top level can't intercept the
+  operations) to a combiner called with the top-level context and the private host functions,
+  and every file operation is a closure over them holding the file's number.
 - **G-61. Float text.** The reader reads a number (a digit after an optional sign) as an integer if
   it is one, else as a float if it has a `.` or an exponent, by Rust's parse; the printer writes
   Rust's shortest form that reads back (`{:?}`, always with a `.` or an exponent) and
-  `#infinity`, `#-infinity`, `#not-a-number`, so every float prints and reads back to the same
-  bits. `float-to-string` and `string-to-float` are exactly Rust's `Display` and `parse::<f64>`,
+  `#infinity`, `#-infinity`, `#not-a-number`, so every float but a not-a-number prints and reads
+  back to the same bits; every not-a-number reads back as Rust's `f64::NAN`, its sign and payload
+  lost (printing writes no payloads). `float-to-string` and `string-to-float` are exactly Rust's `Display` and `parse::<f64>`,
   which undo each other (`"NaN"`, `"inf"`), as `integer-to-string` and `string-to-integer` are.
 - **G-62. A string that isn't a number is a `parse-error`**, carrying the primitive and the
   string: it means what the reader's `parse-error` means, text that doesn't read (the reader's

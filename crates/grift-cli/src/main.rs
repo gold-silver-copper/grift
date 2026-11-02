@@ -423,11 +423,23 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String]) -> Result<(), Error> 
         list = g.pair(a, list)?;
     }
     g.define("command-line-arguments", list)?;
-    let mut hosts = vec![g.evaluate(r, "(current-context)")?];
+    // The setup is made in a private context, so the operations it makes look names up there,
+    // never where the program could redefine them. Each value is made only once no evaluation
+    // can come before it is used: an evaluation may reclaim values held only here.
+    let (top, evaluate) = (
+        g.evaluate(r, "(current-context)")?,
+        g.evaluate(r, "evaluate")?,
+    );
+    let forms = g.read(RUNNER)?;
+    let (form, _) = g
+        .as_pair(forms)
+        .ok_or_else(|| g.error("parse-error", &[]))?;
+    let private = g.context()?;
+    let setup = g.call(r, evaluate, &[form, private])?;
+    let mut hosts = vec![top];
     for (name, f) in PRIVATE {
         hosts.push(g.host_function(name, f)?);
     }
-    let setup = g.evaluate(r, RUNNER)?;
     g.call(r, setup, &hosts)?;
     Ok(())
 }
