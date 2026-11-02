@@ -512,3 +512,63 @@ ways each) written on grift at 27c2aa4 without changing it, ranked in
 - **G-83. The interactive runner reads before it evaluates.** It keeps asking for more only if the input
   itself doesn't read yet. It used to judge by the error from evaluating, and `read-form` gives a
   program a `parse-error` at any line and column, so an input could run twice.
+
+## Owner request, 2026-11-02: a corpus, then less surface
+
+The owner asked for a consolidation pass judged on 22 real programs (waves 2 and 3,
+`~/code/notes/projects/grift/apps2-2026-11-01/` and `apps3-2026-11-01/`). `scripts/census.py` counts each
+name's uses; the PR has each name's decision.
+
+- **G-84. The closed list is `programs/` and the editor** (replaces G-58's list; VISION "What complete
+  means"). Thirteen programs, each with its own `test.sh`, which `crates/grift-cli/tests/programs.rs`
+  runs on the gate, four at a time: the ten of wave 3 (`diff format life machine markdown meta query
+  simulate template test`), `sheet` (wave 2's sheet-graph), `build` (build-data) and `adventure`
+  (adventure-language). sheet-graph and build-data because they were already ported onto G-75's forms
+  and read best once their readers are gone; adventure-language because its world is a language of
+  operatives, which exercises fexprs, and its reader goes to one `read-form` loop. The sandboxed plugin
+  host is left out: its smallest host is 389 lines of Rust and a crate of its own, and G-74 declined what
+  it asked of grift. Wave 1's programs were never in the repo; `meta` takes the evaluator's place.
+
+## Made with G-84, 2026-11-02 (the owner may overrule any)
+
+- **G-85. Names removed, each with no program that needs it** (amends G-38, G-67, G-70, G-78, G-79).
+  `define-in!` goes for `bind` with the parameters quoted, although G-38 listed it: 4 programs and the
+  editor used it, 8 programs and 2 agents' stated choices used `bind`, and it was `bind` with one operand
+  evaluated. `binds!?` goes for `binds?`: its only callers were a test program's tests of it. `inert?`
+  and `ignore?` go for `same?`: each type has one value (`empty-list?` has the same shape and stays, as
+  G-38's own example, in 8 programs). `float-to-string` goes for `value-to-string`, which G-78 made the
+  same text. `newline` goes for `(display "\n")`. Kept although few use them: the float functions (G-42),
+  `wrap`, `unwrap`, `call-with-handler`, `evaluate-with-cleanup` and `select` (the library is built on
+  them), `string-to-lowercase` (adventure), `environment-variable` and `run-process` (G-55).
+- **G-86. `symbol-to-string` is library code over `value-to-string`; `integer-to-string` stays a
+  primitive** (G-57). As library code `integer-to-string` took machine's 30,000-step run from 1.42 s to
+  1.81 s (+27%, over the 25% band), since machine makes a symbol from an address on each memory read; it
+  keeps its name and the printer's code, 4 lines. A `type-error` from `symbol-to-string` now names it by
+  symbol, as `binds?` does.
+- **G-87. The reader takes a first line starting with `#!` as a comment** (amends G-69). The runner's own
+  strip is gone, and with it 1-7 lines in each of the programs that loaded scripts with `read-form`.
+  At offset 0 only, in `read-form` and `Grift::read` alike, so the two can't disagree.
+- **G-88. One walker for the forms with a body** (amends G-73). `sequence!` is defined with `when!`,
+  `conditional!`, `let!`, `finally!` and `catch!` and shares `forms`, so its self-passing copy of the loop
+  is gone. While that code loads there is no `sequence!`, so it is one `list`, which evaluates the helpers'
+  definitions in order, whose values the outer `define!`'s parameters ignore. `let!` walks with one call a
+  binding, choosing the next combiner with `if!`; `and!?` and `or!?` take each operand apart in the
+  parameters; `catch!` makes no `lambda!` unless an error comes; `length`, `append` and `reverse` no longer
+  make their helper on each call; `equal?` on floats and `string-trim` use `if!` and `same?`. Measured, each
+  against its loop, in the PR: `catch!` 3.4x, `equal?` on floats 4x, `append` 5x, `length` and `reverse` 2x,
+  `and!?` and `let!` about 10%. `conditional!` and `sequence!` barely move: a compound call and an `if!` per
+  clause or form remain, and only a fast path or a primitive would remove them (G-33, G-56).
+- **G-89. After a real `out-of-memory` a cleanup may do nothing** (a correction of LANGUAGE.md, not a change
+  of behaviour; G-35 and G-48 stand). It starts, as always, and its first allocation fails; that failure
+  doesn't replace the `out-of-memory`. The docs now say so. Collecting first in `unwind` would keep the
+  promise only until a heap that is really full, so it would still need this sentence.
+- **G-90. The machine has one shape of frame** (G-33). A `Frame` is what to do, its context and its
+  combination; so the frame's roots and location need no case per kind, and pushing one is a call. A nested
+  evaluation's outer location goes in a frame below the floor, not in a field of each form frame. A handler
+  is called through `combine`, as anything is. `Value::Boolean(bool)` replaces `True` and `False`. The
+  symbols the core names come from one table. Core Rust: 1,949 to about 1,700 lines, no change in `fib 25`.
+- **G-91. `evaluate-with-cleanup` stays beside `call-with-handler`** (G-48). `finally!` over a handler
+  that also saw limits could drop a primitive and two frames, but each cleanup would then copy the trace
+  into a record and back, which G-76 removed, and every `catch!` would test for limits in grift.
+- **G-92. The editor's conversions between strings and code points are grift** (G-57). Its host gives bytes
+  and files only; its file loading uses `string-split`, and decoding is per line.

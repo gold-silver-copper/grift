@@ -24,20 +24,9 @@
   (vau! (test consequent alternative) caller
     (evaluate (select (evaluate test caller) consequent alternative) caller)))
 
-; sequence! (5.1.1, $sequence): each expression in turn, the last one as a tail call. `next`
-; gets the value of the first expression, evaluated as its operand, and ignores it; it has no
-; name, so it gets itself as an operand too.
-(define! sequence!
-  ((wrap (vau! (next) #ignore
-     (vau! body caller (if! (same? body ()) #inert (next #inert next body caller)))))
-   (wrap (vau! (#ignore next body caller) #ignore
-     (if! (same? (rest body) ())
-       (evaluate (first body) caller)
-       (next (evaluate (first body) caller) next (rest body) caller))))))
-
 ; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become
 ; (sequence! ...) with the symbol, as if written so, so printing the combiner shows the body as
-; written.
+; written. sequence! is defined next, by code whose functions have one expression each.
 (define! lambda!
   (vau! (parameters . body) caller
     (wrap (evaluate (list vau! parameters #ignore
@@ -45,6 +34,70 @@
                         (first body)
                         (pair (quote! sequence!) body)))
                     caller))))
+
+; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
+; $cond), let! (6.7.5, $letrec*), finally! and catch!. Each is an operative that walks its operands
+; and evaluates only them, in the caller's context or one it made; none builds code to evaluate. A
+; loop that evaluates something only for its effect gets its value as an ignored first operand, and
+; a list known not to be empty is taken apart in the parameters. sequence! is defined here, so nothing
+; running now can use it: `list` evaluates the helpers' definitions in order, and the outer define!
+; ignores their values.
+(define! (#ignore #ignore #ignore #ignore #ignore #ignore
+          sequence! when! conditional! let! finally! catch!)
+  ((lambda! ()
+     (list
+       ; The forms of a body in turn, the last as a tail call; called only with a form left.
+       (define! forms
+         (lambda! (#ignore (form . more) c)
+           (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
+       ; A body: its forms, #inert for none.
+       (define! run (lambda! (body c) (if! (same? body ()) #inert (forms #inert body c))))
+       ; The body of the first clause whose test is #true, or #inert; called only with a clause
+       ; left, so a clause that isn't a pair (test . body) is an arity-error.
+       (define! first-true
+         (lambda! (((test . body) . more) caller)
+           (if! (evaluate test caller)
+             (run body caller)
+             (if! (same? more ()) #inert (first-true more caller)))))
+       ; The context `local` with each binding in order; called only with a binding left, so one
+       ; that isn't (parameters expression) is an arity-error.
+       (define! bind-each
+         (lambda! (#ignore ((parameters expression) . more) local)
+           ((if! (same? more ()) done bind-each)
+            (bind local parameters (evaluate expression local))
+            more
+            local)))
+       (define! done (lambda! (#ignore #ignore local) local))
+       ; A caught error's handler forms, with the parameter bound in a new child of the caller's
+       ; context.
+       (define! handle
+         (lambda! (e parameter handler caller)
+           (define! local (context caller))
+           (bind local parameter e)
+           (run handler local)))
+       ; sequence!: each in turn, the last one's value; #inert for none.
+       (vau! body caller (if! (same? body ()) #inert (forms #inert body caller)))
+       ; when!: the body if the test is #true, #inert if it is #false.
+       (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
+       ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
+       (vau! clauses caller (if! (same? clauses ()) #inert (first-true clauses caller)))
+       ; let!: one new child of the caller's context; each binding in order evaluates its
+       ; expression there and binds its parameters there, so it sees the ones before it and a
+       ; combiner it binds can call itself and the ones after it.
+       (vau! (bindings . body) caller
+         (run body
+              (if! (same? bindings ())
+                (context caller)
+                (bind-each #inert bindings (context caller)))))
+       ; finally!: the body's value, after the cleanup forms have run. They run also when an
+       ; error leaves the body, and the error then goes on unchanged.
+       (vau! (body . cleanup) caller
+         (evaluate-with-cleanup body caller (wrap (vau! () #ignore (run cleanup caller)))))
+       ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then
+       ; the handler forms. interrupted and out-of-memory are never caught.
+       (vau! (body parameter . handler) caller
+         (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
+                            (wrap (vau! (e) #ignore (handle e parameter handler caller)))))))))
 
 ; current-context (6.7.2, get-current-environment).
 (define! current-context (wrap (vau! () caller caller)))
@@ -56,12 +109,10 @@
 ; not? (6.1.1).
 (define! not? (lambda! (x) (select x #false #true)))
 
-; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value: one for each kind type-of
-; gives.
+; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value. #inert and #ignore, each the
+; only value of its type, are (same? x #inert) and (same? x #ignore).
 (define! empty-list? (lambda! (x) (same? x ())))
 (define! boolean? (lambda! (x) (same? (type-of x) (quote! boolean))))
-(define! inert? (lambda! (x) (same? x #inert)))
-(define! ignore? (lambda! (x) (same? x #ignore)))
 (define! integer? (lambda! (x) (same? (type-of x) (quote! integer))))
 (define! float? (lambda! (x) (same? (type-of x) (quote! float))))
 (define! symbol? (lambda! (x) (same? (type-of x) (quote! symbol))))
@@ -72,23 +123,17 @@
 (define! applicative? (lambda! (x) (same? (type-of x) (quote! applicative))))
 
 ; and!? and or!? (6.1.4, 6.1.5, $and? and $or?): left to right, stopping early. Every operand
-; evaluated must give a boolean, the last one included, so it isn't a tail call. Each walks its
-; operands with a loop of its own, evaluating them in the caller's context.
-(define! and!?
+; evaluated must give a boolean, the last one included, so it isn't a tail call.
+(define! (and!? or!?)
   ((lambda! ()
      (define! all
-       (lambda! (xs caller)
-         (if! (same? xs ()) #true
-           (if! (evaluate (first xs) caller) (all (rest xs) caller) #false))))
-     (vau! xs caller (all xs caller)))))
-
-(define! or!?
-  ((lambda! ()
+       (lambda! ((x . more) caller)
+         (if! (evaluate x caller) (if! (same? more ()) #true (all more caller)) #false)))
      (define! any
-       (lambda! (xs caller)
-         (if! (same? xs ()) #false
-           (if! (evaluate (first xs) caller) #true (any (rest xs) caller)))))
-     (vau! xs caller (any xs caller)))))
+       (lambda! ((x . more) caller)
+         (if! (evaluate x caller) #true (if! (same? more ()) #false (any more caller)))))
+     (list (vau! xs caller (if! (same? xs ()) #true (all xs caller)))
+           (vau! xs caller (if! (same? xs ()) #false (any xs caller)))))))
 
 ; apply (5.5.1), its two-operand form: the underlying combiner sees a new empty context.
 (define! apply
@@ -126,64 +171,6 @@
       #inert
       (sequence! (apply f (list (first xs))) (for-each f (rest xs))))))
 
-; The forms with a body: when! (not in Kernel), conditional! (5.6.1, $cond), let! (6.7.5,
-; $letrec*), finally! and catch!. Each is an operative that walks its operands and evaluates only
-; them, in the caller's context or one it made; none builds code to evaluate. A loop that
-; evaluates something only for its effect gets its value as an ignored first operand, as
-; sequence!'s does, and a list known not to be empty is taken apart in the parameters.
-(define! (when! conditional! let! finally! catch!)
-  ((lambda! ()
-     ; run: the forms of a body in turn, the last as a tail call; #inert for none. Its loop
-     ; `forms` is called only with a form left.
-     (define! forms
-       (lambda! (#ignore (form . more) c)
-         (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
-     (define! run (lambda! (body c) (if! (same? body ()) #inert (forms #inert body c))))
-     ; The body of the first clause whose test is #true, or #inert; called only with a clause
-     ; left, so a clause that isn't a pair (test . body) is an arity-error.
-     (define! first-true
-       (lambda! (((test . body) . more) caller)
-         (if! (evaluate test caller)
-           (run body caller)
-           (if! (same? more ()) #inert (first-true more caller)))))
-     ; A binding is (parameters expression); anything else is an arity-error.
-     (define! bind-one
-       (lambda! ((parameters expression) local)
-         (bind local parameters (evaluate expression local))))
-     (define! bind-each
-       (lambda! (#ignore bindings local)
-         (if! (same? bindings ())
-           local
-           (bind-each (bind-one (first bindings) local) (rest bindings) local))))
-     (list
-       ; when!: the body if the test is #true, #inert if it is #false.
-       (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
-       ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
-       (vau! clauses caller (if! (same? clauses ()) #inert (first-true clauses caller)))
-       ; let!: one new child of the caller's context; each binding in order evaluates its
-       ; expression there and binds its parameters there, so it sees the ones before it and a
-       ; combiner it binds can call itself and the ones after it.
-       (vau! (bindings . body) caller (run body (bind-each #inert bindings (context caller))))
-       ; finally!: the body's value, after the cleanup forms have run. They run also when an
-       ; error leaves the body, and the error then goes on unchanged.
-       (vau! (body . cleanup) caller
-         (evaluate-with-cleanup body caller (wrap (vau! () #ignore (run cleanup caller)))))
-       ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then
-       ; the handler forms, with `parameter` bound to the error in a new child of the caller's
-       ; context. interrupted and out-of-memory are never caught.
-       (vau! (body parameter . handler) caller
-         (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (lambda! (e)
-                              (define! local (context caller))
-                              (bind local parameter e)
-                              (run handler local))))))))
-
-; define-in! (6.8.1, $set!): matches the parameters to the value in the context `target`
-; evaluates to, as define! does in the current one.
-(define! define-in!
-  (vau! (target parameters value) caller
-    (bind (evaluate target caller) parameters (evaluate value caller))))
-
 ; error (not in Kernel): a new error, a context with no parent binding kind, values and an empty
 ; trace. raise raises it, and gives it where it happened.
 (define! error
@@ -194,35 +181,38 @@
 
 ; length (6.3.1), of a proper list, counting in a loop.
 (define! length
-  (lambda! (xs)
-    (define! count (lambda! (xs n) (if! (same? xs ()) n (count (rest xs) (add n 1)))))
-    (count xs 0)))
+  ((lambda! ()
+     (define! count (lambda! (xs n) (if! (same? xs ()) n (count (rest xs) (add n 1)))))
+     (lambda! (xs) (count xs 0)))))
 
 ; append (6.3.3): every list but the last is copied; the last is shared.
 (define! append
-  (lambda! lists
-    (define! append-two
-      (lambda! (xs ys) (if! (same? xs ()) ys (pair (first xs) (append-two (rest xs) ys)))))
-    (conditional! ((same? lists ()) ())
-                  ((same? (rest lists) ()) (first lists))
-                  (#true (append-two (first lists) (apply append (rest lists)))))))
+  ((lambda! ()
+     (define! onto
+       (lambda! (xs ys) (if! (same? xs ()) ys (pair (first xs) (onto (rest xs) ys)))))
+     (define! all
+       (lambda! ((xs . more))
+         (if! (same? more ()) xs (onto xs (all more)))))
+     (lambda! lists (if! (same? lists ()) () (all lists))))))
 
 ; reverse (not in Kernel): a list's elements in the opposite order.
 (define! reverse
-  (lambda! (xs)
-    (define! onto
-      (lambda! (xs done) (if! (same? xs ()) done (onto (rest xs) (pair (first xs) done)))))
-    (onto xs ())))
+  ((lambda! ()
+     (define! onto
+       (lambda! (xs done) (if! (same? xs ()) done (onto (rest xs) (pair (first xs) done)))))
+     (lambda! (xs) (onto xs ())))))
 
 ; equal? (6.6.1): pairs compare by structure, the rest of a list as a tail call; floats as
 ; IEEE does; everything else with same?. Values of different types are never equal.
 (define! equal?
   ((lambda! ()
      ; Not-a-number, the one float neither less than 1.0 nor more than 0.0, is equal to nothing.
-     (define! number? (lambda! (x) (or!? (less-than? x 1.0) (less-than? 0.0 x))))
+     (define! number? (lambda! (x) (if! (less-than? x 1.0) #true (less-than? 0.0 x))))
      (define! equal-floats?
        (lambda! (a b)
-         (and!? (number? a) (number? b) (not? (less-than? a b)) (not? (less-than? b a)))))
+         (if! (less-than? a b)
+           #false
+           (if! (less-than? b a) #false (if! (number? a) (number? b) #false)))))
      (lambda! (a b)
        (if! (pair? a)
          (if! (pair? b) (if! (equal? (first a) (first b)) (equal? (rest a) (rest b)) #false) #false)
@@ -233,8 +223,8 @@
 ; The comparisons above less-than? (12.5.1, Kernel's <? and the rest), of two integers or two
 ; floats; mixing them is a type-error, as it is for less-than?.
 (define! greater-than? (lambda! (a b) (less-than? b a)))
-(define! less-than-or-equal? (lambda! (a b) (or!? (less-than? a b) (equal? a b))))
-(define! greater-than-or-equal? (lambda! (a b) (or!? (less-than? b a) (equal? a b))))
+(define! less-than-or-equal? (lambda! (a b) (if! (less-than? a b) #true (equal? a b))))
+(define! greater-than-or-equal? (lambda! (a b) (less-than-or-equal? b a)))
 
 ; minimum and maximum (12.5.13, min and max), of two integers or two floats.
 (define! minimum (lambda! (a b) (if! (less-than? b a) b a)))
@@ -257,30 +247,23 @@
       #false
       (if! (equal? x (first xs)) #true (member? x (rest xs))))))
 
-; binds!? (6.7.1, $binds?) and binds? (not in Kernel, the same with both operands evaluated):
-; whether each symbol is bound in the context or one of its parents. As R-1RK derives it, it looks
-; each one up, and catching the error unbound-symbol gives #false.
-(define! (binds!? binds?)
-  ((lambda! ()
-     (define! look-up
-       (lambda! (name c symbols)
-         (if! (same? symbols ())
-           #true
-           (sequence!
-             (if! (symbol? (first symbols))
-               (evaluate (first symbols) c)
-               (raise (error (quote! type-error) name (first symbols))))
-             (look-up name c (rest symbols))))))
-     (define! bound?
-       (lambda! (name c symbols)
-         (if! (context? c)
-           (catch! (look-up name c symbols)
-                   e
-                   (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
-           (raise (error (quote! type-error) name c)))))
-     (list (vau! (operand . symbols) caller
-             (bound? (quote! binds!?) (evaluate operand caller) symbols))
-           (lambda! (c symbol) (bound? (quote! binds?) c (list symbol)))))))
+; binds? (6.7.1, $binds?, with both operands evaluated, so the symbol can be computed): whether
+; the symbol is bound in the context or one of its parents. As R-1RK derives it, it looks the symbol
+; up, and catching the error unbound-symbol gives #false.
+(define! binds?
+  (lambda! (c symbol)
+    (if! (and!? (context? c) (symbol? symbol))
+      (catch! (sequence! (evaluate symbol c) #true)
+              e
+              (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
+      (raise (error (quote! type-error) (quote! binds?) c symbol)))))
+
+; symbol-to-string: the printer writes a symbol as its name.
+(define! symbol-to-string
+  (lambda! (s)
+    (if! (symbol? s)
+      (value-to-string s)
+      (raise (error (quote! type-error) (quote! symbol-to-string) s)))))
 
 ; Not in Kernel, each asked for by three or more programs: filter, fold, range.
 (define! filter
@@ -364,7 +347,8 @@
 ; string-trim: without the ASCII whitespace at either end, as Rust's trim_ascii.
 (define! string-trim
   ((lambda! ()
-     (define! blank? (lambda! (byte) (member? byte (quote! (32 9 10 12 13)))))
+     (define! blank?
+       (lambda! (b) (or!? (same? b 32) (same? b 10) (same? b 9) (same? b 13) (same? b 12))))
      (define! start-of
        (lambda! (s at end)
          (if! (and!? (less-than? at end) (blank? (string-byte s at))) (start-of s (add at 1) end) at)))

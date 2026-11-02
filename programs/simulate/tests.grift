@@ -16,8 +16,7 @@
               (when! (not? (and!? (pair? form) (pair? (rest form)) (same? (first (rest form)) stop)))
                 (evaluate form c)
                 (each end)))))))
-    ; the runner skips a first line starting with #!, the reader doesn't
-    (each (if! (string-starts-with? text "#!") (add (string-search text "\n" 0) 1) 0))))
+    (each 0)))
 
 (load-definitions (first command-line-arguments) (quote! usage) (current-context))
 
@@ -30,7 +29,7 @@
       (bind failures (quote! count) (add (evaluate-in! count failures) 1))
       (display "FAIL " name ": ")
       (for-each (lambda! (v) (display (value-to-string v) " ")) shown)
-      (newline))))
+      (display "\n"))))
 
 ; The generator against L'Ecuyer's reference: MRG32k3a from words all 12345.
 (define! uniform (random-generator (list 12345 12345 12345 12345 12345 12345)))
@@ -97,5 +96,5 @@
 
 (display (integer-to-string (subtract (evaluate-in! count checks) (evaluate-in! count failures))) " of "
          (integer-to-string (evaluate-in! count checks)) " checks passed")
-(newline)
+(display "\n")
 (exit (if! (same? (evaluate-in! count failures) 0) 0 1))

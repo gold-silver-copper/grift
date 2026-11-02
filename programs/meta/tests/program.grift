@@ -7,8 +7,8 @@
                                            (#true (try (add d 1)))))))
       (and!? (less-than? 1 n) (try 2)))))
 (define! primes (filter prime? (range 0 600)))
-(display (length primes) " primes below 600, the last " (first (reverse primes))) (newline)
-(display "their sum: " (fold add 0 primes)) (newline)
+(display (length primes) " primes below 600, the last " (first (reverse primes))) (display "\n")
+(display "their sum: " (fold add 0 primes)) (display "\n")
 
 (define! counts (context))
 (define! count-word
@@ -17,7 +17,7 @@
       (bind counts name (if! (binds? counts name) (add 1 (evaluate name counts)) 1)))))
 (define! text "the cat and the hat and the bat sat on the mat")
 (for-each count-word (string-split text " "))
-(display (map (lambda! (name) (list name (evaluate name counts))) (names counts))) (newline)
+(display (map (lambda! (name) (list name (evaluate name counts))) (names counts))) (display "\n")
 
 (define! first-over
   (lambda! (limit xs)
@@ -25,5 +25,5 @@
                        #false)
             e
             (if! (same? (evaluate-in! kind e) (quote! found)) (first (evaluate-in! values e)) (raise e)))))
-(display "first prime over 500: " (first-over 500 primes)) (newline)
-(display (string-join (map integer-to-string (list 1 2 3)) ", ")) (newline)
+(display "first prime over 500: " (first-over 500 primes)) (display "\n")
+(display (string-join (map integer-to-string (list 1 2 3)) ", ")) (display "\n")

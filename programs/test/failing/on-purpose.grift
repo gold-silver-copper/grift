@@ -44,7 +44,7 @@
 
 (test! "failing shows what it displayed"
   (display "seen " 42)
-  (newline)
+  (display "\n")
   (display "after")
   (expect-equal! 1 2))
 
@@ -65,7 +65,7 @@
   (expect-equal! left-behind 1))
 
 (test! "so this one sees nothing"
-  (expect-false! (binds!? (current-context) left-behind)))
+  (expect-false! (binds? (current-context) (quote! left-behind))))
 
 (test! "passes after the failures"
   (expect-equal! (add 2 2) 4))

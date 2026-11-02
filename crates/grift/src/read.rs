@@ -1,5 +1,6 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
+use crate::evaluate::integer;
 use crate::heap::Object;
 use crate::{Error, Grift, K, Value, push};
 use std::ops::Range;
@@ -69,8 +70,7 @@ fn parse_error(src: &str, at: usize) -> Error {
     let before = src.get(..at).unwrap_or_default();
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
-    let place = [line, column].map(|n| Value::Integer(i64::try_from(n).unwrap_or(i64::MAX)));
-    Error::new(K::ParseError, &place)
+    Error::new(K::ParseError, &[integer(line), integer(column)])
 }
 
 fn delimiter(c: char) -> bool {
@@ -108,6 +108,10 @@ impl<T> Grift<T> {
         from: usize,
     ) -> Result<Option<(Value, Range<usize>)>, Error> {
         let mut cur = Cursor { src, at: from };
+        // A first line starting with `#!` reads as a comment, so a script can run itself.
+        if from == 0 && src.starts_with("#!") {
+            cur.at = src.find('\n').unwrap_or(src.len());
+        }
         cur.skip_space();
         let start = cur.at;
         let mut open: Vec<List> = Vec::new();
@@ -190,8 +194,8 @@ impl<T> Grift<T> {
     /// if it has a `.` or an exponent, as Rust reads them.
     fn atom(&mut self, token: &str) -> Option<Result<Value, Error>> {
         let v = match token {
-            "#true" => Value::True,
-            "#false" => Value::False,
+            "#true" => Value::Boolean(true),
+            "#false" => Value::Boolean(false),
             "#inert" => Value::Inert,
             "#ignore" => Value::Ignore,
             _ if token.starts_with('#') => Value::Float(float_name(token)?),

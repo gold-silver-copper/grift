@@ -210,8 +210,7 @@
                    square-root sine cosine tangent exponential natural-logarithm floor ceiling round
                    truncate absolute-value power integer-to-float float-to-integer
                    string-byte-length string-byte byte-substring string-append code-point-to-string
-                   symbol-to-string string-to-symbol integer-to-string string-to-integer
-                   float-to-string string-to-float read-form)))
+                   string-to-symbol integer-to-string string-to-integer string-to-float read-form)))
 
 ; Each form of `text` in turn, from byte `at`, with `each` given the form, its start and the
 ; text.
@@ -237,15 +236,6 @@
   (lambda! parts
     ((evaluate-in! write standard-error) (apply string-append parts))))
 
-; A first line `#!/usr/bin/env grift` read as an empty line, as the runner reads it, so lines keep
-; their numbers.
-(define! without-script-line
-  (lambda! (text)
-    (if! (string-starts-with? text "#!")
-      (let! ((end (string-search text "\n" 0)))
-        (if! (same? end ()) "" (byte-substring text end (string-byte-length text))))
-      text)))
-
 ; The runner's operations, for the program's top-level context as the runner binds them in
 ; grift's: each host operation becomes a primitive of the interpreter, and so does each operation
 ; of a context one gives (a file, standard input, a finished process).
@@ -260,14 +250,14 @@
       (#true v))))
 (define! runner-names
   (quote! (standard-input standard-error open-file create-file run-process environment-variable
-           exit newline)))
+           exit)))
 
 ; Runs the program in `path` with `arguments`: each top-level form in the program's context, a
 ; child of the root. An error stops it, reported with the form it happened in and the forms it
 ; passed.
 (define! run
   (lambda! (path arguments)
-    (let! ((text (without-script-line (read-file path))) (top (context root)))
+    (let! ((text (read-file path)) (top (context root)))
       (bind top program-marker #true)
       (for-each (lambda! (name) (bind top name (host (evaluate name (current-context))))) runner-names)
       (bind top (quote! (display command-line-arguments)) (list (native meta-display) arguments))

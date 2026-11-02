@@ -11,7 +11,7 @@
 ; - A list that doesn't is broken: its head stays after the `(`, and so do its first operands,
 ;   each laid out by the same rule; every other element goes on a line of its own.
 ;   - An operative's body (a head symbol ending in `!` but not `!?`) is indented 2 from the `(`.
-;     `vau!`, `define-in!` and `catch!` keep two operands on the first line, `sequence!` and
+;     `vau!` and `catch!` keep two operands on the first line, `sequence!` and
 ;     `conditional!` none, and every other operative one.
 ;   - A call (any other symbol at the head) keeps its first argument after the head and lines up
 ;     the rest under it.
@@ -159,7 +159,7 @@
     (let! (((kind text #ignore) head) (name (if! (same? kind (quote! atom)) text "")))
       (conditional!
         ((and!? (string-ends-with? name "!") (not? (string-ends-with? name "!?")))
-         (list (if! (member? name (list "vau!" "define-in!" "catch!"))
+         (list (if! (member? name (list "vau!" "catch!"))
                  2
                  (if! (member? name (list "sequence!" "conditional!")) 0 1))
                (add start 2)))
@@ -243,8 +243,8 @@
               items)
     (when! (pair? items) (new-line out 0))))
 
-; Reading. A text may start with a `#!` line, which the runner skips and so does this: the offset
-; where the forms start.
+; Reading. A text may start with a `#!` line, which read-form skips and this keeps as it is: the
+; offset where the forms start.
 (define! forms-start (lambda! (text) (if! (string-starts-with? text "#!") (line-end text 0) 0)))
 ; Every form of text after offset i, as read-form reads them, printed: a parse-error if one
 ; doesn't read.
@@ -382,7 +382,7 @@
                                  (lambda! (text formatted)
                                    (if! (equal? text formatted)
                                      #true
-                                     (sequence! (display path) (newline) #false)))))))
+                                     (sequence! (display path) (display "\n") #false)))))))
   ((equal? (first arguments) "--write")
    (over-files (rest arguments)
                (lambda! (path)

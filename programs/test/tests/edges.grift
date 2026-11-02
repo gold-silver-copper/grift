@@ -16,7 +16,6 @@
     (expect-error! type-error (integer-to-string 1.0))
     (expect-error! type-error (float-to-integer 1))
     (expect-error! type-error (integer-to-float 1.0))
-    (expect-error! type-error (float-to-string 1))
     (expect-error! type-error (read-form 1 0))
     (expect-error! type-error (read-form "a" "b"))
     (expect-error! type-error (code-point-to-string "a")))
@@ -59,10 +58,10 @@
 
 (group! "empty and odd shapes"
   (test! "bodies may be empty"
-    (expect-true! (inert? (sequence!)))
-    (expect-true! (inert? ((lambda! ()))))
-    (expect-true! (inert? (let! ())))
-    (expect-true! (inert? (catch! (first 1) e))))
+    (expect-true! (same? #inert (sequence!)))
+    (expect-true! (same? #inert ((lambda! ()))))
+    (expect-true! (same? #inert (let! ())))
+    (expect-true! (same? #inert (catch! (first 1) e))))
   (test! "required operands aren't"
     (expect-error! arity-error (finally!))
     (expect-error! arity-error (catch! 1))
@@ -71,8 +70,6 @@
     (expect-error! arity-error (vau! ()))
     (expect-error! arity-error (first))
     (expect-error! arity-error (add 1)))
-  (test! "binds!? of no symbols is #true"
-    (expect-true! (binds!? (context))))
   (test! "lambda! with one symbol takes all its arguments"
     (expect-equal! ((lambda! all all) 1 2) (list 1 2)))
   (test! "a dotted tree"
@@ -112,8 +109,8 @@
 
 (group! "numbers in text"
   (test! "negative zero and the extremes read back"
-    (expect-same! (first (read-form (float-to-string -0.0) 0)) -0.0)
-    (expect-same! (first (read-form (float-to-string 1e300) 0)) 1e300)
+    (expect-same! (first (read-form (value-to-string -0.0) 0)) -0.0)
+    (expect-same! (first (read-form (value-to-string 1e300) 0)) 1e300)
     (expect-equal! (string-to-integer (integer-to-string -9223372036854775808))
                    -9223372036854775808))
   (test! "too big an integer doesn't read"

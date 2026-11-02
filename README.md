@@ -43,13 +43,13 @@ square                                      ; => #[applicative #[operative (x) #
 here                                        ; prints its own names: #[context ... here ...]
 (evaluate (quote! (add 1 2)) here)          ; evaluate needs a context
 (define! n 0)
-((lambda! () (define-in! here n (add n 1))))   ; define-in! binds in a given context
+((lambda! () (bind here (quote! n) (add n 1)))) ; bind binds in a given context
 (names here)                                ; the names defined at top level, sorted
 built-in-names                              ; every primitive and library name
-(finally! (first 1) (define-in! here n 0))  ; the cleanup runs, then the error goes on
+(finally! (first 1) (bind here (quote! n) 0)) ; the cleanup runs, then the error goes on
 (catch! (first 1) e (evaluate-in! kind e))  ; => type-error; e binds kind, values, trace
 (raise (error (quote! my-kind) 1 2))        ; error makes one, raise raises it
-(binds!? here n first nope)                 ; => #false: nope isn't bound
+(binds? here (quote! nope))                 ; => #false: nope isn't bound
 (read-form " (add 1 2) x" 0)                ; => ((add 1 2) 1 10): the form, its start and end
 (value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
 (string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
@@ -59,16 +59,14 @@ The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup call-wi
 context bind names pair first rest same? select type-of add subtract multiply divide remainder
 less-than? power square-root sine cosine tangent exponential natural-logarithm floor ceiling round
 truncate absolute-value integer-to-float float-to-integer string-byte-length string-byte
-byte-substring string-append code-point-to-string symbol-to-string string-to-symbol
-integer-to-string string-to-integer float-to-string string-to-float read-form value-to-string`. The
-library adds
-`define! quote! list if! sequence! lambda! current-context evaluate-in! not? empty-list? boolean?
-inert? ignore? integer? float? symbol? pair? string? context? operative? applicative? and!? or!?
-apply any? all? map for-each when! conditional! let! finally! catch! define-in! error length append
-reverse equal? greater-than? less-than-or-equal? greater-than-or-equal? minimum maximum
-find-association member? binds!? binds? filter fold range string-search string-starts-with?
-string-ends-with? string-split string-join string-trim string-pad-left string-pad-right
-string-to-lowercase built-in-names`.
+byte-substring string-append code-point-to-string string-to-symbol integer-to-string
+string-to-integer string-to-float read-form value-to-string`. The library adds
+`define! quote! list if! lambda! sequence! when! conditional! let! finally! catch! current-context
+evaluate-in! not? empty-list? boolean? integer? float? symbol? pair? string? context? operative?
+applicative? and!? or!? apply any? all? map for-each error length append reverse equal? greater-than?
+less-than-or-equal? greater-than-or-equal? minimum maximum find-association member? binds?
+symbol-to-string filter fold range string-search string-starts-with? string-ends-with? string-split
+string-join string-trim string-pad-left string-pad-right string-to-lowercase built-in-names`.
 
 ## The runner
 
@@ -78,8 +76,8 @@ cargo run --release < program.grift               # runs stdin
 rlwrap cargo run --release                        # interactive: prints each result
 ```
 
-`grift SCRIPT ARGUMENT...` runs the script; a first line starting with `#!` is skipped, so
-`#!/usr/bin/env grift` makes a script a command. With no script it reads the program from stdin,
+`grift SCRIPT ARGUMENT...` runs the script; `#!/usr/bin/env grift` makes it a command, since the
+reader takes a first line starting with `#!` as a comment. With no script it reads the program from stdin,
 and when stdin is a terminal it evaluates each complete input and prints its result. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in:
 `stdin: type-error #[primitive select] 1 in (if! 1 2 3)`. It exits with 0, 1 on a grift error or
@@ -91,7 +89,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 
 | Operation | Meaning |
 |---|---|
-| `(display v ...)`, `(newline)` | Writes to stdout: strings without quotes, everything else as it prints. |
+| `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest. A program read from stdin can't read it again (`closed`). |
 | `standard-error` | A context of operations: `(write string)`, as a file's, to stderr: a message before `(exit 2)`, say. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `close`, and `path`. |
@@ -209,35 +207,8 @@ fn main() -> Result<(), Error> {
   collects.
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
-files, and C-g interrupts a runaway command.
-
-### Host API changes, before and after (2026-11-01, the guide and the new names)
-
-```rust,ignore
-// before
-g.define("twice", twice)?;
-let v = g.eval(&mut state, "(car (cons 1 2))")?;
-let s = g.make_string("hi")?;
-let p = g.cons(s, Value::Nil)?;
-if let Some((car, cdr)) = g.uncons(p) { /* ... */ }
-if let Some(text) = g.string(v) { /* ... */ }
-match v { Value::Int(n) => {} Value::Sym(s) => {} Value::Env(r) => {} _ => {} }
-report(e.code, &e.values, &e.at);
-// after
-let f = g.host_function("twice", twice)?; // bound nowhere yet: define it, or keep it private
-g.define("twice", f)?;
-let v = g.evaluate(&mut state, "(first (pair 1 2))")?;
-let s = g.string("hi")?;
-let p = g.pair(s, Value::EmptyList)?;
-if let Some((first, rest)) = g.as_pair(p) { /* ... */ }
-if let Some(text) = g.as_str(v) { /* ... */ }
-match v { Value::Integer(n) => {} Value::Float(x) => {} Value::Symbol(s) => {} Value::Context(r) => {} _ => {} }
-report(e.kind, &e.values, e.trace());
-```
-
-`HostFn` is `HostFunction`, `Prim` is `Primitive`, `Ref` is `Reference`, and `Value`'s variants
-are spelled out: `EmptyList`, `Integer`, `Float` (new), `Symbol`, `String`, `Context`,
-`Operative`, `Applicative`, `Primitive`. `Value` is `PartialEq` but no longer `Eq` (floats).
+files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
+with its own `test.sh`, and the gate runs them all.
 
 ## Inside
 

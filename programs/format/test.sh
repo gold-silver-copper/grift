@@ -26,9 +26,9 @@ comment_places() {
            if (c != "") { sub(/[ \t]+$/, "", c); print (code == "" ? "O " : "T ") c } }' "$1"
 }
 
-# 1. Every .grift file in the repo reads back to the same forms, and formatting twice changes nothing.
+# 1. The library's, the runner's, the editor's and format's own .grift files each read back to the same forms, and formatting twice changes nothing.
 cd "$repo"
-for f in $( (git ls-files '*.grift'; ls programs/format/*.grift programs/format/tests/*.grift) | sort -u); do
+for f in $( (git ls-files 'crates/*.grift' 'examples/*.grift'; ls programs/format/*.grift programs/format/tests/*.grift) | sort -u); do
     case $f in programs/format/tests/bad.grift | programs/format/tests/stray.grift) continue ;; esac
     out="$work/$(echo "$f" | tr / _)"
     if ! $format "$f" > "$out.1"; then fail "1 $f: format failed"; continue; fi

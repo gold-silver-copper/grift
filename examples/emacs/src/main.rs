@@ -1,7 +1,6 @@
 //! An Emacs-style editor whose editor is grift code. The host gives grift bytes and files only:
-//! a key as a byte, writes to the terminal, the terminal's size, reading and writing a file, and
-//! the conversions between strings and code points. The buffer, redisplay, the keymap, the
-//! minibuffer and every command live in `editor.grift`.
+//! a key as a byte, writes to the terminal, the terminal's size, reading and writing a file. The
+//! buffer, redisplay, the keymap, the minibuffer and every command live in `editor.grift`.
 //!
 //! A thread reads the terminal while grift runs, so C-g stops a command that never returns:
 //! it sets grift's interrupt flag, and the command ends with the error `interrupted`.
@@ -46,10 +45,6 @@ impl Host {
 }
 
 type G = Grift<Host>;
-
-fn text(g: &G, v: Value) -> Option<String> {
-    g.as_str(v).map(String::from)
-}
 
 /// `(key)`: the next byte from the terminal, after showing what was written. The input thread
 /// sets the interrupt flag before it passes a C-g on. A C-g that finds the flag still set
@@ -104,7 +99,7 @@ fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [path] = args else {
         return Err(g.error("arity-error", args));
     };
-    let Some(name) = text(g, *path) else {
+    let Some(name) = g.as_str(*path).map(String::from) else {
         return Err(g.error("type-error", args));
     };
     match std::fs::read_to_string(&name) {
@@ -126,45 +121,6 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
         Ok(()) => Ok(Value::Inert),
         Err(e) => Err(file_error(g, *path, &e)),
     }
-}
-
-/// `(string-to-code-points s)`: the string's characters as a list of code points.
-fn string_to_code_points(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    let [s] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    let Some(s) = text(g, *s) else {
-        return Err(g.error("type-error", args));
-    };
-    let mut list = Value::EmptyList;
-    for c in s.chars().rev() {
-        list = g.pair(Value::Integer(i64::from(u32::from(c))), list)?;
-    }
-    Ok(list)
-}
-
-/// `(code-points-to-string list)`: the string of a list of code points.
-fn code_points_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    let [list] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    let mut s = String::new();
-    let mut rest = *list;
-    while let Some((c, next)) = g.as_pair(rest) {
-        let ch = match c {
-            Value::Integer(n) => u32::try_from(n).ok().and_then(char::from_u32),
-            _ => None,
-        };
-        match ch {
-            Some(ch) => s.push(ch),
-            None => return Err(g.error("type-error", &[c])),
-        }
-        rest = next;
-    }
-    if rest != Value::EmptyList {
-        return Err(g.error("type-error", args));
-    }
-    g.string(&s)
 }
 
 /// A `fmt::Write` into a string that stops at `ERROR_TEXT_MAX` bytes.
@@ -200,10 +156,6 @@ fn describe(g: &G, e: &Error) -> String {
     out.0
 }
 
-fn is(g: &mut G, e: &Error, kind: &str) -> bool {
-    g.symbol(kind).is_ok_and(|k| k == e.kind)
-}
-
 /// Calls the editor's function `name` with string arguments (`None` for `()`).
 fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<Value, Error> {
     let f = g.evaluate(h, name)?;
@@ -217,14 +169,12 @@ fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<V
     g.call(h, f, &values)
 }
 
-const HOST: [(&str, HostFunction<Host>); 7] = [
+const HOST: [(&str, HostFunction<Host>); 5] = [
     ("key", key),
     ("terminal-write", terminal_write),
     ("terminal-size", terminal_size),
     ("read-file", read_file),
     ("write-file", write_file),
-    ("string-to-code-points", string_to_code_points),
-    ("code-points-to-string", code_points_to_string),
 ];
 
 /// Runs the editor until it quits or input ends. An error before the first key (the file can't
@@ -237,7 +187,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
     loop {
         let e = match entered {
             Ok(_) => return Ok(()),
-            Err(e) if is(g, &e, "end-of-input") => return Ok(()),
+            Err(e) if g.symbol("end-of-input").is_ok_and(|k| k == e.kind) => return Ok(()),
             Err(e) => e,
         };
         let text = describe(g, &e);

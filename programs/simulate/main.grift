@@ -305,7 +305,7 @@
                  (string-append "departure teller " (integer-to-string (evaluate-in! number (evaluate-in! subject event)))))
                "  line " (integer-to-string (evaluate-in! line-length bank))
                ", free tellers " (integer-to-string (length (evaluate-in! free-tellers bank))))
-      (newline))))
+      (display "\n"))))
 
 ; run: handles the events in order until none is left, printing the first `trace` of them.
 (define! run
@@ -363,7 +363,7 @@
       (lambda! (label value . theory)
         (display (string-pad-right label 16) (string-pad-left value 12))
         (when! (pair? theory) (display "    " (first theory)))
-        (newline)))
+        (display "\n")))
     (define! use (lambda! (busy) (if! (same? now 0.0) 0.0 (divide busy now))))
     (define! (predicted-wait predicted-line predicted-use)
       (if! (same? prediction ())
@@ -373,11 +373,11 @@
                 (string-append "predicted " (float-to-fixed line-length 2))
                 (string-append "predicted " (percent teller-use))))))
     (display (integer-to-string (evaluate-in! tellers config)) " tellers, "
-             (float-to-string (evaluate-in! arrival-rate config)) " arrivals a minute, "
-             (float-to-string (evaluate-in! service-rate config)) " served a minute by each teller, open "
-             (float-to-string (evaluate-in! duration config)) " minutes, seed "
+             (value-to-string (evaluate-in! arrival-rate config)) " arrivals a minute, "
+             (value-to-string (evaluate-in! service-rate config)) " served a minute by each teller, open "
+             (value-to-string (evaluate-in! duration config)) " minutes, seed "
              (integer-to-string (evaluate-in! seed config)))
-    (newline)
+    (display "\n")
     (row "events" (integer-to-string (evaluate-in! handled bank)))
     (row "customers" (integer-to-string served))
     (row "last left at" (minutes now))

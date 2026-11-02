@@ -20,7 +20,7 @@
     (expect-output! (show-stack (stack-with 1 2)) "2 1 \n"))
   (test! "what it exits with"
     (expect-equal! (catch! (stop-if-empty (stack-with)) e (evaluate-in! values e)) (list 4))
-    (expect-true! (inert? (stop-if-empty (stack-with 1)))))
+    (expect-true! (same? #inert (stop-if-empty (stack-with 1)))))
   (group! "with shared setup"
     (define! shared (stack-with 1))
     (test! "sees the group's definitions"
@@ -43,7 +43,7 @@
 
 (test! "load! in a test binds in the test only"
   (load! "../examples/stack.grift")
-  (expect-true! (binds!? (current-context) make-stack))
+  (expect-true! (binds? (current-context) (quote! make-stack)))
   (expect-true! (member? (quote! make-stack) (names (current-context)))))
 
 ; A computed name whose text is written further on doesn't move the lines of the forms between.

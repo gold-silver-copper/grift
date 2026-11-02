@@ -1,2 +1,2 @@
 (define! deep (lambda! (n) (if! (same? n 0) 0 (add 1 (deep (subtract n 1))))))
-(display (deep (string-to-integer (first command-line-arguments)))) (newline)
+(display (deep (string-to-integer (first command-line-arguments)))) (display "\n")

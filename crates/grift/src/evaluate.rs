@@ -9,7 +9,7 @@
 
 use crate::heap::{Bindings, Object, Operative, Seen};
 use crate::read::float_name;
-use crate::{Error, Grift, Host, K, Reference, Symbol, Value, boxed, formatted, push};
+use crate::{Error, Grift, Host, K, Reference, Symbol, Value, boxed, push};
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
 /// fewest and most operands it takes.
@@ -77,11 +77,9 @@ primitives! {
     ByteSubstring "byte-substring" 3 3;
     StringAppend "string-append" 0 usize::MAX;
     CodePointToString "code-point-to-string" 1 1;
-    SymbolToString "symbol-to-string" 1 1;
     StringToSymbol "string-to-symbol" 1 1;
     IntegerToString "integer-to-string" 1 1;
     StringToInteger "string-to-integer" 1 1;
-    FloatToString "float-to-string" 1 1;
     StringToFloat "string-to-float" 1 1;
     ReadForm "read-form" 2 2;
     ValueToString "value-to-string" 1 1;
@@ -98,53 +96,35 @@ pub(crate) enum Mode {
     Host(Host, usize),
 }
 
-/// A continuation frame: what to do with the value being returned. `at` is the combination
-/// of the program the frame belongs to ([`Reference::NONE`] for none), where an error is
+/// A continuation frame: what to do with the value being returned, the context it happens in, and
+/// the combination of the program it belongs to ([`Reference::NONE`] for none), where an error is
 /// reported.
 #[derive(Clone, Copy)]
-enum Frame {
+struct Frame {
+    what: What,
+    context: Reference,
+    at: Reference,
+}
+
+#[derive(Clone, Copy)]
+enum What {
     /// Evaluate the remaining forms of one `evaluate` call; with none left, pass the value on.
-    /// `outer` is the location of the evaluation this one runs inside (a host function's
-    /// call), kept here so the collector sees it until it is restored; `at` is the form
-    /// being evaluated.
-    Top {
-        rest: Value,
-        context: Reference,
-        outer: Reference,
-        at: Reference,
-    },
+    Forms { rest: Value },
     /// The value is the combiner of a combination with these operands.
-    Combine {
-        operands: Value,
-        context: Reference,
-        at: Reference,
-    },
-    /// The value is an argument of `combiner`; arguments so far are on the argument stack
-    /// from `base`.
+    Combine { operands: Value },
+    /// The value is an argument of `combiner`; arguments so far are on the argument stack from
+    /// `base`.
     Arguments {
         combiner: Value,
-        context: Reference,
         rest: Value,
         base: usize,
-        at: Reference,
     },
     /// When the evaluation above ends, by a value or an error, call the combiner `cleanup` with
-    /// no arguments in `context`; `arguments` is the argument stack's height to go back to.
-    Cleanup {
-        cleanup: Value,
-        context: Reference,
-        arguments: usize,
-        at: Reference,
-    },
-    /// When an error leaves the evaluation above, call `handler` in `context` with it as a
-    /// value instead; `arguments` is the argument stack's height to go back to. A value passes
-    /// through.
-    Handler {
-        handler: Value,
-        context: Reference,
-        arguments: usize,
-        at: Reference,
-    },
+    /// no arguments; `base` is the argument stack's height to go back to.
+    Cleanup { cleanup: Value, base: usize },
+    /// When an error leaves the evaluation above, call `handler` with it as a value instead;
+    /// `base` is the argument stack's height to go back to. A value passes through.
+    Handler { handler: Value, base: usize },
     /// The cleanup above ran after this value: deliver it.
     Deliver(Value),
     /// The cleanup above ran after an error, the last one waiting: raise it again.
@@ -154,57 +134,16 @@ enum Frame {
 impl Frame {
     fn values(self) -> [Value; 4] {
         let empty = Value::EmptyList;
-        match self {
-            Frame::Top {
-                rest,
-                context,
-                outer,
-                at,
-            } => [
-                rest,
-                Value::Context(context),
-                Value::Pair(outer),
-                Value::Pair(at),
-            ],
-            Frame::Combine {
-                operands,
-                context,
-                at,
-            } => [operands, Value::Context(context), Value::Pair(at), empty],
-            Frame::Arguments {
-                combiner,
-                context,
-                rest,
-                at,
-                ..
-            } => [combiner, Value::Context(context), rest, Value::Pair(at)],
-            Frame::Cleanup {
-                cleanup,
-                context,
-                at,
-                ..
-            } => [cleanup, Value::Context(context), Value::Pair(at), empty],
-            Frame::Handler {
-                handler,
-                context,
-                at,
-                ..
-            } => [handler, Value::Context(context), Value::Pair(at), empty],
-            Frame::Deliver(v) => [v, empty, empty, empty],
-            Frame::Raise => [empty; 4],
-        }
-    }
-
-    /// The combination of the program the frame belongs to, or [`Reference::NONE`].
-    fn at(self) -> Reference {
-        match self {
-            Frame::Top { at, .. }
-            | Frame::Combine { at, .. }
-            | Frame::Arguments { at, .. }
-            | Frame::Cleanup { at, .. }
-            | Frame::Handler { at, .. } => at,
-            Frame::Deliver(_) | Frame::Raise => Reference::NONE,
-        }
+        let (a, b) = match self.what {
+            What::Forms { rest: v }
+            | What::Combine { operands: v }
+            | What::Cleanup { cleanup: v, .. }
+            | What::Handler { handler: v, .. }
+            | What::Deliver(v) => (v, empty),
+            What::Arguments { combiner, rest, .. } => (combiner, rest),
+            What::Raise => (empty, empty),
+        };
+        [a, b, Value::Context(self.context), Value::Pair(self.at)]
     }
 }
 
@@ -241,11 +180,6 @@ fn type_error(p: Primitive, v: Value) -> Error {
     Error::new(K::TypeError, &[Value::Primitive(p), v])
 }
 
-#[inline]
-fn boolean(b: bool) -> Value {
-    if b { Value::True } else { Value::False }
-}
-
 impl<T> Grift<T> {
     /// Evaluates the list `forms` in `context`, in order. Reentrant: a host function may call
     /// `evaluate`, which runs on top of the current frames and leaves them as it found them.
@@ -255,14 +189,8 @@ impl<T> Grift<T> {
         forms: Value,
         context: Reference,
     ) -> Result<Value, Error> {
-        let outer = self.machine.here;
-        let top = Frame::Top {
-            rest: forms,
-            context,
-            outer,
-            at: Reference::NONE,
-        };
-        self.start(state, &[top], Mode::Return(Value::Inert))
+        let top = What::Forms { rest: forms };
+        self.start(state, &[(top, context)], Mode::Return(Value::Inert))
     }
 
     /// Calls combiner `f` with `arguments` as Kernel's `apply` does: an applicative's
@@ -277,43 +205,39 @@ impl<T> Grift<T> {
         let context = self
             .heap
             .alloc(Object::Context(None, Bindings::default()))?;
-        let frames = [
-            Frame::Top {
-                rest: Value::EmptyList,
-                context,
-                outer: self.machine.here,
-                at: Reference::NONE,
-            },
-            Frame::Combine {
-                operands,
-                context,
-                at: Reference::NONE,
-            },
-        ];
-        self.start(Some(state), &frames, Mode::Return(f))
+        let call = What::Combine { operands };
+        self.start(Some(state), &[(call, context)], Mode::Return(f))
     }
 
     /// Runs the machine on top of the current frames from `mode`, with `frames` pushed, until
-    /// they are all gone; then everything is as it was, whatever the outcome.
+    /// they are all gone; then everything is as it was, whatever the outcome. The first frame
+    /// pushed holds where the machine was, so the collector sees it until it is restored.
     fn start(
         &mut self,
         state: Option<&mut T>,
-        frames: &[Frame],
+        frames: &[(What, Reference)],
         mode: Mode,
     ) -> Result<Value, Error> {
         let m = &mut self.machine;
-        let (floor, arguments, raised, here) =
+        let (base, arguments, raised, here) =
             (m.frames.len(), m.arguments.len(), m.raised.len(), m.here);
-        let result = frames
-            .iter()
-            .try_for_each(|&f| push(&mut self.machine.frames, f))
-            .and_then(|()| self.run(state, mode, floor));
+        let held = What::Deliver(Value::EmptyList);
+        let result = self.frame(held, Reference::NONE, here).and_then(|()| {
+            frames
+                .iter()
+                .try_for_each(|&(what, context)| self.frame(what, context, Reference::NONE))
+        });
+        let result = result.and_then(|()| self.run(state, mode, base + 1));
         let m = &mut self.machine;
-        m.frames.truncate(floor);
+        m.frames.truncate(base);
         m.arguments.truncate(arguments);
         m.raised.truncate(raised);
         m.here = here;
         result
+    }
+
+    fn frame(&mut self, what: What, context: Reference, at: Reference) -> Result<(), Error> {
+        push(&mut self.machine.frames, Frame { what, context, at })
     }
 
     fn run(
@@ -370,82 +294,58 @@ impl<T> Grift<T> {
                 if !library && !is_combiner(combiner) {
                     self.machine.here = r;
                 }
-                let at = self.machine.here;
-                push(
-                    &mut self.machine.frames,
-                    Frame::Combine {
-                        operands,
-                        context,
-                        at,
-                    },
-                )?;
+                self.frame(What::Combine { operands }, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
             }
             Mode::Evaluate(x, _) => Mode::Return(x),
-            Mode::Return(v) => match self.machine.frames.pop() {
-                None => Mode::Return(v),
-                Some(Frame::Top {
-                    rest: Value::Pair(r),
-                    context,
-                    outer,
-                    ..
-                }) => {
-                    let (form, rest) = self.pair_at(r)?;
-                    let at = match form {
-                        Value::Pair(f) => f,
-                        _ => Reference::NONE,
-                    };
-                    let top = Frame::Top {
+            Mode::Return(v) => {
+                let Some(Frame { what, context, at }) = self.machine.frames.pop() else {
+                    return Ok(Mode::Return(v));
+                };
+                match what {
+                    What::Forms {
+                        rest: Value::Pair(r),
+                    } => {
+                        let (form, rest) = self.pair_at(r)?;
+                        let at = match form {
+                            Value::Pair(f) => f,
+                            _ => Reference::NONE,
+                        };
+                        self.frame(What::Forms { rest }, context, at)?;
+                        self.machine.here = Reference::NONE;
+                        Mode::Evaluate(form, context)
+                    }
+                    What::Forms { .. } => Mode::Return(v),
+                    What::Combine { operands } => {
+                        self.machine.here = at;
+                        self.combine(v, operands, context)?
+                    }
+                    What::Arguments {
+                        combiner,
                         rest,
-                        context,
-                        outer,
-                        at,
-                    };
-                    push(&mut self.machine.frames, top)?;
-                    self.machine.here = Reference::NONE;
-                    Mode::Evaluate(form, context)
+                        base,
+                    } => {
+                        self.machine.here = at;
+                        push(&mut self.machine.arguments, v)?;
+                        self.next_argument(combiner, context, rest, base)?
+                    }
+                    What::Cleanup { cleanup, .. } => {
+                        self.machine.here = at;
+                        self.frame(What::Deliver(v), Reference::NONE, Reference::NONE)?;
+                        self.call_thunk(cleanup, context, at)?
+                    }
+                    What::Handler { .. } => {
+                        self.machine.here = at;
+                        Mode::Return(v)
+                    }
+                    What::Deliver(v) => Mode::Return(v),
+                    What::Raise => {
+                        // The error already says where it happened, or that it can't: not here.
+                        self.machine.here = Reference::NONE;
+                        return Err(self.machine.raised.pop().unwrap_or_else(Error::oom));
+                    }
                 }
-                Some(Frame::Top { .. }) => Mode::Return(v),
-                Some(Frame::Combine {
-                    operands,
-                    context,
-                    at,
-                }) => {
-                    self.machine.here = at;
-                    self.combine(v, operands, context)?
-                }
-                Some(Frame::Arguments {
-                    combiner,
-                    context,
-                    rest,
-                    base,
-                    at,
-                }) => {
-                    self.machine.here = at;
-                    push(&mut self.machine.arguments, v)?;
-                    self.next_argument(combiner, context, rest, base)?
-                }
-                Some(Frame::Cleanup {
-                    cleanup,
-                    context,
-                    at,
-                    ..
-                }) => {
-                    self.machine.here = at;
-                    push(&mut self.machine.frames, Frame::Deliver(v))?;
-                    self.call_thunk(cleanup, context, at)?
-                }
-                Some(Frame::Handler { at, .. }) => {
-                    self.machine.here = at;
-                    Mode::Return(v)
-                }
-                Some(Frame::Deliver(v)) => Mode::Return(v),
-                Some(Frame::Raise) => {
-                    // The error already says where it happened, or that it can't: not here.
-                    self.machine.here = Reference::NONE;
-                    return Err(self.machine.raised.pop().unwrap_or_else(Error::oom));
-                }
-            },
+            }
             Mode::Host(..) => return Err(Error::new(K::NotACombiner, &[])),
         })
     }
@@ -458,42 +358,32 @@ impl<T> Grift<T> {
     fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
         locate(&mut e, self.machine.here);
         while self.machine.frames.len() > floor {
-            let Some(frame) = self.machine.frames.pop() else {
+            let Some(Frame { what, context, at }) = self.machine.frames.pop() else {
                 break;
             };
-            match frame {
-                Frame::Cleanup {
-                    cleanup,
-                    context,
-                    arguments,
-                    at,
-                } => {
+            match what {
+                What::Cleanup { cleanup, base } => {
                     locate(&mut e, at);
-                    self.machine.arguments.truncate(arguments);
+                    self.machine.arguments.truncate(base);
                     self.machine.here = at;
                     push(&mut self.machine.raised, e)?;
-                    push(&mut self.machine.frames, Frame::Raise)?;
+                    self.frame(What::Raise, Reference::NONE, Reference::NONE)?;
                     return self.call_thunk(cleanup, context, at);
                 }
-                Frame::Handler {
-                    handler,
-                    context,
-                    arguments,
-                    at,
-                } if !limit(e.kind) => {
-                    self.machine.arguments.truncate(arguments);
+                What::Handler { handler, base } if !limit(e.kind) => {
+                    self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    match self.handle(&e, handler, context, arguments, at) {
+                    match self.handle(&e, handler, context) {
                         Ok(mode) => return Ok(mode),
                         Err(oom) => e = oom,
                     }
                 }
                 // The cleanup's error replaces the one waiting, unless that one is a limit.
-                Frame::Raise => match self.machine.raised.pop() {
+                What::Raise => match self.machine.raised.pop() {
                     Some(waiting) if limit(waiting.kind) && !limit(e.kind) => e = waiting,
                     _ => {}
                 },
-                frame => locate(&mut e, frame.at()),
+                _ => locate(&mut e, at),
             }
         }
         Err(e)
@@ -501,14 +391,7 @@ impl<T> Grift<T> {
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
     /// `values` and `trace`.
-    fn handle(
-        &mut self,
-        e: &Error,
-        handler: Value,
-        context: Reference,
-        base: usize,
-        at: Reference,
-    ) -> Result<Mode, Error> {
+    fn handle(&mut self, e: &Error, handler: Value, context: Reference) -> Result<Mode, Error> {
         let (values, trace) = (self.list(&e.values)?, self.list(&e.trace)?);
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
@@ -516,22 +399,8 @@ impl<T> Grift<T> {
         fields.insert(K::Values.into(), values);
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
-        let combiner = match handler {
-            Value::Applicative(r) => self.unwrapped(r)?,
-            h => h,
-        };
-        let rest = Value::EmptyList;
-        push(
-            &mut self.machine.frames,
-            Frame::Arguments {
-                combiner,
-                context,
-                rest,
-                base,
-                at,
-            },
-        )?;
-        Ok(Mode::Return(v))
+        let operands = self.list(&[v])?;
+        self.combine(handler, operands, context)
     }
 
     fn collect(&mut self, mode: Mode) -> Result<(), Error> {
@@ -620,17 +489,12 @@ impl<T> Grift<T> {
         match rest {
             Value::Pair(r) => {
                 let (x, rest) = self.pair_at(r)?;
-                let at = self.machine.here;
-                push(
-                    &mut self.machine.frames,
-                    Frame::Arguments {
-                        combiner,
-                        context,
-                        rest,
-                        base,
-                        at,
-                    },
-                )?;
+                let arguments = What::Arguments {
+                    combiner,
+                    rest,
+                    base,
+                };
+                self.frame(arguments, context, self.machine.here)?;
                 Ok(Mode::Evaluate(x, context))
             }
             Value::EmptyList => self.apply(combiner, context, base),
@@ -688,18 +552,10 @@ impl<T> Grift<T> {
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let (lo, hi) = p.arity();
         if given.len() < lo || given.len() > hi {
-            let mut values = Vec::new();
-            values
-                .try_reserve_exact(given.len() + 1)
-                .map_err(|_| Error::oom())?;
-            values.push(Value::Primitive(p));
-            values.extend_from_slice(given);
-            return Err(Error {
-                kind: K::ArityError.into(),
-                values,
-                trace: Vec::new(),
-                seen: Seen::default(),
-            });
+            let mut e = Error::new(K::ArityError, given);
+            push(&mut e.values, Value::Primitive(p))?;
+            e.values.rotate_right(1);
+            return Err(e);
         }
         let n = given.len();
         let mut a = [Value::EmptyList; 3];
@@ -717,13 +573,8 @@ impl<T> Grift<T> {
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)
             }
-            P::Wrap => match x {
-                Value::Operative(_)
-                | Value::Applicative(_)
-                | Value::Primitive(_)
-                | Value::Host(_) => Value::Applicative(self.heap.alloc(Object::Applicative(x))?),
-                _ => return Err(type_error(p, x)),
-            },
+            P::Wrap if !is_combiner(x) => return Err(type_error(p, x)),
+            P::Wrap => Value::Applicative(self.heap.alloc(Object::Applicative(x))?),
             P::Unwrap => match x {
                 Value::Applicative(r) => self.unwrapped(r)?,
                 _ => return Err(type_error(p, x)),
@@ -746,14 +597,9 @@ impl<T> Grift<T> {
             P::Bind => match x {
                 Value::Context(c) => {
                     self.check_parameters(y, Value::Ignore)?;
-                    let Object::Context(_, bindings) = self.heap.get_mut(c)? else {
-                        return Err(Error::new(K::StaleValue, &[x]));
-                    };
-                    let mut bindings = std::mem::take(bindings);
+                    let mut bindings = std::mem::take(self.bindings_mut(c)?);
                     let matched = self.match_tree(&mut bindings, y, z);
-                    if let Object::Context(_, b) = self.heap.get_mut(c)? {
-                        *b = bindings;
-                    }
+                    *self.bindings_mut(c)? = bindings;
                     matched?;
                     Value::Inert
                 }
@@ -774,10 +620,10 @@ impl<T> Grift<T> {
                 }
                 _ => return Err(type_error(p, x)),
             },
-            P::Same => boolean(self.same(x, y)),
+            P::Same => Value::Boolean(self.same(x, y)),
             P::Select => match x {
-                Value::True => y,
-                Value::False => z,
+                Value::Boolean(true) => y,
+                Value::Boolean(false) => z,
                 _ => return Err(type_error(p, x)),
             },
             P::TypeOf => Value::Symbol(type_of(x).into()),
@@ -802,14 +648,8 @@ impl<T> Grift<T> {
             P::EvaluateWithCleanup if !is_combiner(z) => return Err(type_error(p, z)),
             P::EvaluateWithCleanup => match y {
                 Value::Context(c) => {
-                    let (arguments, at) = (base, self.machine.here);
-                    let cleanup = Frame::Cleanup {
-                        cleanup: z,
-                        context: c,
-                        arguments,
-                        at,
-                    };
-                    push(&mut self.machine.frames, cleanup)?;
+                    let cleanup = What::Cleanup { cleanup: z, base };
+                    self.frame(cleanup, c, self.machine.here)?;
                     return Ok(Mode::Evaluate(x, c));
                 }
                 _ => return Err(type_error(p, y)),
@@ -819,13 +659,7 @@ impl<T> Grift<T> {
                     return Err(type_error(p, v));
                 }
                 let at = self.machine.here;
-                let handler = Frame::Handler {
-                    handler: y,
-                    context,
-                    arguments: base,
-                    at,
-                };
-                push(&mut self.machine.frames, handler)?;
+                self.frame(What::Handler { handler: y, base }, context, at)?;
                 return self.call_thunk(x, context, at);
             }
             P::Raise => {
@@ -837,9 +671,7 @@ impl<T> Grift<T> {
                 }
                 return Err(e);
             }
-            P::StringByteLength => {
-                Value::Integer(i64::try_from(self.text(p, x)?.len()).unwrap_or(i64::MAX))
-            }
+            P::StringByteLength => integer(self.text(p, x)?.len()),
             P::StringByte => {
                 let (s, i) = (self.text(p, x)?, integer_of(p, y)?);
                 let byte = usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i));
@@ -882,23 +714,12 @@ impl<T> Grift<T> {
                 let c = c.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x]))?;
                 self.string(c.encode_utf8(&mut [0; 4]))?
             }
-            P::SymbolToString => match x {
-                Value::Symbol(s) => {
-                    let name = boxed(self.name(s))?;
-                    Value::String(self.heap.alloc(Object::String(name))?)
-                }
-                _ => return Err(type_error(p, x)),
-            },
             P::StringToSymbol => {
                 let name = boxed(self.text(p, x)?)?;
                 Value::Symbol(self.symbol(&name)?)
             }
             P::IntegerToString => {
-                let s = formatted(format_args!("{}", integer_of(p, x)?))?;
-                Value::String(self.heap.alloc(Object::String(s))?)
-            }
-            P::FloatToString => {
-                float_of(p, x)?;
+                integer_of(p, x)?;
                 self.printed(x)?
             }
             P::ValueToString => self.printed(x)?,
@@ -931,12 +752,7 @@ impl<T> Grift<T> {
                     read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
                 match read? {
                     Some((form, place)) => {
-                        let offset = |i| i64::try_from(i).map(Value::Integer);
-                        let (start, end) = (offset(place.start), offset(place.end));
-                        let (Ok(start), Ok(end)) = (start, end) else {
-                            return Err(Error::oom());
-                        };
-                        self.list(&[form, start, end])?
+                        self.list(&[form, integer(place.start), integer(place.end)])?
                     }
                     None => Value::EmptyList,
                 }
@@ -948,14 +764,7 @@ impl<T> Grift<T> {
     /// Calls combiner `f` with no arguments in `context`.
     fn call_thunk(&mut self, f: Value, context: Reference, at: Reference) -> Result<Mode, Error> {
         let operands = Value::EmptyList;
-        push(
-            &mut self.machine.frames,
-            Frame::Combine {
-                operands,
-                context,
-                at,
-            },
-        )?;
+        self.frame(What::Combine { operands }, context, at)?;
         Ok(Mode::Return(f))
     }
 
@@ -965,9 +774,7 @@ impl<T> Grift<T> {
         let Value::Context(r) = e else {
             return Err(bad());
         };
-        let Object::Context(_, fields) = self.heap.get(r)? else {
-            return Err(bad());
-        };
+        let (_, fields) = self.context_at(r)?;
         let field = |k: K| fields.get(&k.into()).copied().ok_or_else(bad);
         let Value::Symbol(kind) = field(K::Kind)? else {
             return Err(bad());
@@ -1065,36 +872,26 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut work = std::mem::take(&mut self.machine.work);
         work.clear();
-        let result = self.match_with(&mut work, bindings, tree, value);
+        let mut result = push(&mut work, (tree, value));
+        while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
+            result = match (t, v) {
+                (Value::Symbol(s), _) => bindings
+                    .try_reserve(1)
+                    .map(|()| {
+                        bindings.insert(s, v);
+                    })
+                    .map_err(|_| Error::oom()),
+                (Value::Ignore, _) | (Value::EmptyList, Value::EmptyList) => Ok(()),
+                (Value::Pair(t), Value::Pair(v)) => self.pair_at(t).and_then(|(ta, tb)| {
+                    let (va, vb) = self.pair_at(v)?;
+                    push(&mut work, (tb, vb))?;
+                    push(&mut work, (ta, va))
+                }),
+                _ => Err(Error::new(K::ArityError, &[tree, value])),
+            };
+        }
         self.machine.work = work;
         result
-    }
-
-    fn match_with(
-        &self,
-        work: &mut Vec<(Value, Value)>,
-        bindings: &mut Bindings,
-        tree: Value,
-        value: Value,
-    ) -> Result<(), Error> {
-        let mismatch = || Error::new(K::ArityError, &[tree, value]);
-        push(work, (tree, value))?;
-        while let Some((t, v)) = work.pop() {
-            match (t, v) {
-                (Value::Symbol(s), _) => {
-                    bindings.try_reserve(1).map_err(|_| Error::oom())?;
-                    bindings.insert(s, v);
-                }
-                (Value::Ignore, _) | (Value::EmptyList, Value::EmptyList) => {}
-                (Value::Pair(t), Value::Pair(v)) => {
-                    let ((ta, tb), (va, vb)) = (self.pair_at(t)?, self.pair_at(v)?);
-                    push(work, (tb, vb))?;
-                    push(work, (ta, va))?;
-                }
-                _ => return Err(mismatch()),
-            }
-        }
-        Ok(())
     }
 
     /// Binds `s` in `context` itself, replacing an existing binding there.
@@ -1104,19 +901,29 @@ impl<T> Grift<T> {
         s: Symbol,
         v: Value,
     ) -> Result<(), Error> {
-        let Object::Context(_, bindings) = self.heap.get_mut(context)? else {
-            return Err(Error::new(K::StaleValue, &[Value::Context(context)]));
-        };
+        let bindings = self.bindings_mut(context)?;
         bindings.try_reserve(1).map_err(|_| Error::oom())?;
         bindings.insert(s, v);
         Ok(())
     }
 
+    fn bindings_mut(&mut self, context: Reference) -> Result<&mut Bindings, Error> {
+        match self.heap.get_mut(context)? {
+            Object::Context(_, bindings) => Ok(bindings),
+            _ => Err(Error::new(K::StaleValue, &[Value::Context(context)])),
+        }
+    }
+
+    fn context_at(&self, context: Reference) -> Result<(Option<Reference>, &Bindings), Error> {
+        match self.heap.get(context)? {
+            Object::Context(parent, bindings) => Ok((*parent, bindings)),
+            _ => Err(Error::new(K::StaleValue, &[Value::Context(context)])),
+        }
+    }
+
     fn lookup(&self, mut context: Reference, s: Symbol) -> Result<Value, Error> {
         loop {
-            let Object::Context(parent, bindings) = self.heap.get(context)? else {
-                return Err(Error::new(K::StaleValue, &[Value::Context(context)]));
-            };
+            let (parent, bindings) = self.context_at(context)?;
             if let Some(&v) = bindings.get(&s) {
                 return Ok(v);
             }
@@ -1126,9 +933,7 @@ impl<T> Grift<T> {
 
     /// The symbols bound in `context` itself, sorted by name.
     pub(crate) fn names_of(&self, context: Reference) -> Result<Vec<Value>, Error> {
-        let Object::Context(_, bindings) = self.heap.get(context)? else {
-            return Err(Error::new(K::StaleValue, &[Value::Context(context)]));
-        };
+        let (_, bindings) = self.context_at(context)?;
         let mut names = Vec::new();
         names
             .try_reserve_exact(bindings.len())
@@ -1173,6 +978,11 @@ fn locate(e: &mut Error, r: Reference) {
     }
 }
 
+/// A length or offset as a grift integer.
+pub(crate) fn integer(n: usize) -> Value {
+    Value::Integer(i64::try_from(n).unwrap_or(i64::MAX))
+}
+
 fn integer_of(p: Primitive, v: Value) -> Result<i64, Error> {
     match v {
         Value::Integer(n) => Ok(n),
@@ -1198,7 +1008,7 @@ fn is_combiner(v: Value) -> bool {
 fn type_of(v: Value) -> K {
     match v {
         Value::EmptyList => K::EmptyList,
-        Value::True | Value::False => K::Boolean,
+        Value::Boolean(_) => K::Boolean,
         Value::Inert => K::Inert,
         Value::Ignore => K::Ignore,
         Value::Integer(_) => K::Integer,
@@ -1228,7 +1038,7 @@ fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
             }
             P::Divide => a.checked_div(b),
             P::Remainder => a.checked_rem(b),
-            _ => return Ok(boolean(a < b)),
+            _ => return Ok(Value::Boolean(a < b)),
         },
         (Value::Float(a), Value::Float(b)) => {
             return Ok(Value::Float(match p {
@@ -1237,7 +1047,7 @@ fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
                 P::Multiply => a * b,
                 P::Divide => a / b,
                 P::Remainder => a % b,
-                _ => return Ok(boolean(a < b)),
+                _ => return Ok(Value::Boolean(a < b)),
             }));
         }
         (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(p, y)),

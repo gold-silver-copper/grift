@@ -1,0 +1,4 @@
+(start! hall)
+(place! hall (title "Hall"))
+(item! lamp (called "a lamp") (in hall))
+(place! hall (title "Another hall"))

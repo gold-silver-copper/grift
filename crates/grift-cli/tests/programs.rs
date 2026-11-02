@@ -33,7 +33,10 @@ fn every_program_passes_its_own_test() {
                     if !out.status.success() {
                         let text = String::from_utf8_lossy(&out.stdout);
                         let error = String::from_utf8_lossy(&out.stderr);
-                        failed.lock().unwrap().push(format!("{name:?}:\n{text}\n{error}"));
+                        failed
+                            .lock()
+                            .unwrap()
+                            .push(format!("{name:?}:\n{text}\n{error}"));
                     }
                 }
             });

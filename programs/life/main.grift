@@ -188,7 +188,7 @@
       (shown row (subtract x 1) (pair (cell-text (string-byte row x)) out)))))
 (define! print-grid
   (lambda! (grid)
-    (for-each (lambda! (row) (display (shown row (subtract (string-byte-length row) 2) ())) (newline))
+    (for-each (lambda! (row) (display (shown row (subtract (string-byte-length row) 2) ())) (display "\n"))
               grid)))
 
 ; Runs from generation `n` up to `last`, printing each unless only the last is wanted. `seen`
@@ -199,8 +199,8 @@
     (let! ((final (evaluate-in! final options))
            (key (string-to-symbol (string-join grid "\n"))))
       (when! (not? final)
-        (when! (less-than? 0 n) (newline))
-        (display "generation " n) (newline)
+        (when! (less-than? 0 n) (display "\n"))
+        (display "generation " n) (display "\n")
         (print-grid grid))
       (conditional!
         ((binds? seen key)
@@ -211,7 +211,7 @@
                       ": a still life"
                       (string-append ": a cycle of period " (integer-to-string (subtract n earlier))))
                     "; stopping")
-           (newline)))
+           (display "\n")))
         ((same? n last) (when! final (print-grid grid)))
         (#true
          (bind seen key n)

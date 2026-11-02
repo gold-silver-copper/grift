@@ -3,25 +3,25 @@
 (group! "context"
   (test! "a new one is empty; with a parent it reads through"
     (define! parent (context))
-    (define-in! parent a 1)
+    (bind parent (quote! a) 1)
     (define! child (context parent))
     (expect-equal! (names child) ())
     (expect-equal! (evaluate-in! a child) 1))
   (test! "a child changes only its own"
     (define! parent (context))
-    (define-in! parent a 1)
+    (bind parent (quote! a) 1)
     (define! child (context parent))
-    (define-in! child a 2)
+    (bind child (quote! a) 2)
     (expect-equal! (evaluate-in! a child) 2)
     (expect-equal! (evaluate-in! a parent) 1))
   (test! "names are its own, sorted"
     (define! c (context))
-    (define-in! c (zebra apple) (list 1 2))
+    (bind c (quote! (zebra apple)) (list 1 2))
     (expect-equal! (names c) (quote! (apple zebra))))
   (test! "with no parent, nothing is bound"
     (expect-error! unbound-symbol (evaluate (quote! list) (context)))))
 
-(group! "bind and define-in!"
+(group! "bind"
   (test! "bind matches a tree"
     (define! c (context))
     (bind c (quote! (a (b . d))) (list 1 (pair 2 3)))
@@ -33,17 +33,16 @@
     (bind c (quote! (#ignore a)) (list 1 2))
     (expect-equal! (names c) (quote! (a)))))
 
-(group! "binds!? and binds?"
-  (test! "the operative doesn't evaluate the symbols; binds? does"
+(group! "binds?"
+  (test! "both operands are evaluated"
     (define! c (context))
-    (define-in! c a 1)
-    (expect-true! (binds!? c a))
-    (expect-false! (binds!? c a b))
+    (bind c (quote! a) 1)
+    (expect-false! (binds? c (quote! b)))
     (expect-true! (binds? c (string-to-symbol "a"))))
   (test! "through parents"
     (define! c (context))
-    (define-in! c a 1)
-    (expect-true! (binds!? (context c) a)))
+    (bind c (quote! a) 1)
+    (expect-true! (binds? (context c) (quote! a))))
   (test! "not a symbol or not a context is a type-error"
     (expect-error! type-error (binds? 1 (quote! a)))
     (expect-error! type-error (binds? (context) 1))))
@@ -51,7 +50,7 @@
 (group! "evaluate"
   (test! "evaluate-in! calls in the context, with operands where you are"
     (define! record (context))
-    (define-in! record double (lambda! (x) (add x x)))
+    (bind record (quote! double) (lambda! (x) (add x x)))
     (define! here 4)
     (expect-equal! ((evaluate-in! double record) here) 8))
   (test! "everything but symbols and pairs evaluates to itself"

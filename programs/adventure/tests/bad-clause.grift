@@ -1,0 +1,6 @@
+; A clause place! doesn't know: the error names the form and the line.
+(start! hall)
+(place! hall
+  (title "Hall")
+  (exits (north library))
+  (smell "dust"))

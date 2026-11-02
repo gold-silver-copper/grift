@@ -1,0 +1,15 @@
+; A door on an exit that isn't there, unlocked by something that isn't an item, and a rule
+; about an item that doesn't exist; and no start!.
+(place! hall
+  (title "Hall")
+  (description "A hall.")
+  (exits (north library)))
+(place! library
+  (title "Library")
+  (description "Books.")
+  (exits (south hall)))
+(door! oak-door
+  (called "an oak door")
+  (between hall east library south)
+  (key brass-key))
+(on! (use lantern oak-door) (say "Light."))

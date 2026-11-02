@@ -19,7 +19,7 @@
       ((and!? (empty-list? a) (empty-list? b)) (exit 0))
       ((or!? (empty-list? a) (empty-list? b) (not? (equal? (first a) (first b))))
        (display "differ: " (if! (pair? a) (first a) "end") " / " (if! (pair? b) (first b) "end"))
-       (newline)
+       (display "\n")
        (exit 1))
       (#true (compare (rest a) (rest b))))))
 (compare (all-forms old) (all-forms new))

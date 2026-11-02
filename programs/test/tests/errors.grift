@@ -21,7 +21,7 @@
     (expect-equal! (catch! (first 1) e (caught-kind e)) (quote! type-error)))
   (test! "the error has no parent: it binds only its three fields"
     (expect-equal! (catch! (first 1) e (names e)) (quote! (kind trace values)))
-    (expect-false! (catch! (first 1) e (binds!? e list))))
+    (expect-false! (catch! (first 1) e (binds? e (quote! list)))))
   (test! "the trace is the combinations, innermost first, without those in tail position"
     (define! inner (lambda! () (add 1 (raise (error (quote! deep))))))
     (expect-equal! (catch! (list (inner)) e (evaluate-in! trace e))

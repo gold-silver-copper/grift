@@ -1,0 +1,26 @@
+look
+north
+north
+up
+examine logbook
+take key
+take logbook
+down
+west
+unlock the green door with the iron key
+west
+take oil can
+take crank
+inventory
+east
+south
+east
+north
+up
+save walkthrough.sav
+use crank on winch
+drop logbook
+load walkthrough.sav
+inventory
+oil winch with oil can
+turn crank

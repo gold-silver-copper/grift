@@ -1,0 +1,4 @@
+(start! hall)
+(place! hall
+  (title "Hall")
+  (exits (northwest library)))

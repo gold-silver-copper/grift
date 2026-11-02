@@ -49,7 +49,7 @@
 (group! "for-each"
   (test! "runs in order and gives #inert"
     (expect-output! (for-each display (list 1 2 3)) "123")
-    (expect-true! (inert? (for-each (lambda! (x) x) (list 1))))))
+    (expect-true! (same? #inert (for-each (lambda! (x) x) (list 1))))))
 
 (group! "filter"
   (test! "keeps the elements in order"

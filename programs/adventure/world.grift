@@ -1,0 +1,134 @@
+; Gannet Holm: a small island in a salt marsh. The ferry left you on the jetty and won't come
+; back until the island's bell rings, and the bell's winch has not turned in years.
+
+(start! jetty)
+
+(place! jetty
+  (title "The jetty")
+  (description "Salt-grey planks run out over the mudflats. The ferry that left you here is a smudge on the horizon; it won't turn back until the island's bell rings. A path climbs north into the dunes.")
+  (exits (north dunes))
+  (holds driftwood))
+
+(place! dunes
+  (title "Among the dunes")
+  (description "Marram grass hisses in the wind. The path forks: south to the jetty, north to a low cottage, east onto boards across the salt marsh.")
+  (exits (south jetty) (north cottage) (east marsh)))
+
+(place! cottage
+  (title "The keeper's cottage")
+  (description "A cold room that smells of tar. A ladder leads up into a loft, a green door is set in the west wall, and the way out is south.")
+  (exits (south dunes) (up loft) (west workshop)))
+
+(place! loft
+  (title "The loft")
+  (description "Under the eaves: gull feathers, torn nets and a keeper's bunk. The ladder goes down.")
+  (exits (down cottage))
+  (holds logbook))
+
+(place! workshop
+  (title "The workshop")
+  (description "Benches, vices and jars of screws, all furred with dust. The green door leads east.")
+  (exits (east cottage)))
+
+(place! marsh
+  (title "The salt marsh")
+  (description "Boards laid over black mud. Redshanks pipe somewhere out of sight. The boards lead west to the dunes and north to the bell tower.")
+  (exits (west dunes) (north tower)))
+
+(place! tower
+  (title "The foot of the bell tower")
+  (description "Stone, ivy and a spiral stair going up into the dark. The marsh lies south.")
+  (exits (south marsh) (up gallery)))
+
+(place! gallery
+  (title "The bell gallery")
+  (description "Wind howls through the open arches. The great bell hangs over a winch whose square socket waits for a handle. Stairs lead down.")
+  (exits (down tower)))
+
+(item! driftwood
+  (called "a piece of driftwood")
+  (description "Bleached and smooth. Good for nothing much.")
+  (words driftwood wood))
+
+(item! logbook
+  (called "the keeper's logbook")
+  (description "The last page reads: \"Winch seized again. Oil it before you put the crank to it, or you'll strip the gears. Spare key under the bunk.\"")
+  (words logbook log book))
+
+(item! iron-key
+  (called "an iron key")
+  (description "Heavy and black, with a green thread tied through its bow.")
+  (words key iron)
+  (in loft))
+
+(item! oil-can
+  (called "an oil can")
+  (description "Dented, and half full of thick green oil.")
+  (words oil can oilcan)
+  (in workshop))
+
+(item! crank
+  (called "a crank handle")
+  (description "An iron handle bent twice, with a square end.")
+  (words crank handle)
+  (in workshop))
+
+(item! winch
+  (called "a rusted winch")
+  (description "Gears, a drum of chain running up to the bell, and a square socket for a handle.")
+  (words winch gears socket)
+  (in gallery)
+  (fixed))
+
+(item! bell
+  (called "the great bell")
+  (description "Bronze gone green, as big as a rowing boat. Only the winch can swing it.")
+  (words bell)
+  (in gallery)
+  (fixed))
+
+(door! green-door
+  (called "a green door")
+  (description "Planks painted green long ago, with a keyhole of black iron.")
+  (words door green)
+  (between cottage west workshop east)
+  (key iron-key))
+
+; The puzzle: the winch takes oil, then the crank. In the other order the crank does nothing.
+
+(verb! (oil grease) (thing preposition other)
+  (say "You have nothing to oil it with."))
+
+(verb! (turn wind crank) (thing preposition other)
+  (say "Nothing here turns."))
+
+(verb! (ring) (thing preposition other)
+  (say "The bell is far too heavy to swing by hand. The winch might do it."))
+
+(define! oil-the-winch
+  (lambda! ()
+    (if! (not? (carrying!? oil-can))
+      (say "You have nothing to oil it with.")
+      (if! (flagged!? winch-oiled)
+        (say "The gears already drip with oil.")
+        (sequence!
+          (flag! winch-oiled)
+          (say "You work green oil into every gear until the rust weeps. The winch looks ready to turn."))))))
+
+(define! crank-the-winch
+  (lambda! ()
+    (conditional!
+      ((not? (carrying!? crank)) (say "The socket wants a handle, and you have none."))
+      ((not? (flagged!? winch-oiled))
+       (say "You fit the crank and heave. The seized gears don't move, and the crank slips out. Something about oil, the logbook said."))
+      (#true
+       (move! crank nowhere)
+       (finish! "You fit the crank and lean on it. The gears groan, catch, and turn; the chain runs, and the great bell swings out over the marsh. BOOM. BOOM. Far out on the water, the ferry turns for home.")))))
+
+(on! (use oil-can winch) (oil-the-winch))
+(on! (oil winch oil-can) (oil-the-winch))
+(on! (oil winch) (oil-the-winch))
+(on! (use crank winch) (crank-the-winch))
+(on! (turn crank) (if! (same? (location) (quote! gallery)) (crank-the-winch) (say "You turn the handle in the air. Nothing happens.")))
+(on! (turn winch) (crank-the-winch))
+(on! (ring bell) (say "The bell is far too heavy to swing by hand. The winch might do it."))

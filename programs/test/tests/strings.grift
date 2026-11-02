@@ -78,8 +78,8 @@
     (expect-error! parse-error (string-to-integer "4x"))
     (expect-error! parse-error (string-to-integer "99999999999999999999")))
   (test! "floats read back"
-    (expect-equal! (float-to-string 1.0) "1.0")
-    (expect-equal! (float-to-string #infinity) "#infinity")
+    (expect-equal! (value-to-string 1.0) "1.0")
+    (expect-equal! (value-to-string #infinity) "#infinity")
     (expect-equal! (string-to-float "1") 1.0)
     (expect-equal! (string-to-float "inf") #infinity)
     (expect-error! parse-error (string-to-float "one")))

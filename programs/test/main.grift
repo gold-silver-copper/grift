@@ -24,8 +24,8 @@
 ;
 ; A test's forms run in a new child of the context its test! is in, so what it defines is gone
 ; afterwards. An expectation that fails is recorded and the test goes on; a form that raises ends
-; its test. A test no expectation ran in fails: it has checked nothing. In a test, `display` and
-; `newline` are kept and shown only if it fails, `exit` raises `exit-called` with the status, and
+; its test. A test no expectation ran in fails: it has checked nothing. In a test, `display` is
+; kept and shown only if it fails, `exit` raises `exit-called` with the status, and
 ; `command-line-arguments` is empty. Limits can't be caught (`interrupted`, `out-of-memory`), so a
 ; test that raises one ends the run, reported, with status 1. A test that never ends is not noticed:
 ; grift has no timer, so run the whole thing under `timeout`.
@@ -36,7 +36,7 @@
 (define! language (context))
 (for-each (lambda! (name) (bind language name (evaluate name (current-context)))) given-names)
 
-; The state of the run. Only these change, each by a define-in! on `top`.
+; The state of the run. Only these change, each by a bind on `top`.
 (define! top (current-context))
 (define! patterns ())            ; the texts of --name
 (define! paths ())               ; the files, last first
@@ -57,7 +57,7 @@
 (define! failed-tests ())        ; "file:line  name" of each failed test, last first
 (define! load-failures 0)
 
-(define! say (lambda! strings (apply display strings) (newline)))
+(define! say (lambda! strings (apply display strings) (display "\n")))
 (define! say-indented (lambda! (line) (say "     " line)))
 
 (define! say-error
@@ -124,13 +124,13 @@
       (list (field label (value-to-string result)))
       (pair (field label (string-append "raised " (error-text result))) (trace-lines result)))))
 
-(define! fail (lambda! (lines) (define-in! top failures (pair lines failures))))
+(define! fail (lambda! (lines) (bind top (quote! failures) (pair lines failures))))
 
 ; Every expectation starts here: outside a test nothing would record it.
 (define! expecting
   (lambda! ()
     (when! (empty-list? running) (misuse (quote! expectation-outside-test)))
-    (define-in! top expectations (add expectations 1))))
+    (bind top (quote! expectations) (add expectations 1))))
 
 ; Whether two outcomes of attempt hold by holds?; if not, records a failure.
 (define! check
@@ -150,19 +150,19 @@
     (expecting)
     (check holds? expression (attempt expression caller) (attempt expected-form caller))))
 
-(define-in! language expect-equal!
+(bind language (quote! expect-equal!)
   (vau! (expression expected) caller (compare equal? expression expected caller)))
 
-(define-in! language expect-same!
+(bind language (quote! expect-same!)
   (vau! (expression expected) caller (compare same? expression expected caller)))
 
-(define-in! language expect-true!
+(bind language (quote! expect-true!)
   (vau! (expression) caller (compare same? expression #true caller)))
 
-(define-in! language expect-false!
+(bind language (quote! expect-false!)
   (vau! (expression) caller (compare same? expression #false caller)))
 
-(define-in! language expect-near!
+(bind language (quote! expect-near!)
   (vau! (expression expected tolerance) caller
     (let! ((allowed (evaluate tolerance caller)))
       (compare (lambda! (a b)
@@ -173,7 +173,7 @@
                expected
                caller))))
 
-(define-in! language expect-error!
+(bind language (quote! expect-error!)
   (vau! (kind expression) caller
     (sequence!
       (expecting)
@@ -186,14 +186,14 @@
 (define! captured-text (lambda! () (apply string-append (reverse captured))))
 
 ; expect-output! keeps what its expression displays apart from the rest of the test's output.
-(define-in! language expect-output!
+(bind language (quote! expect-output!)
   (vau! (expression expected) caller
     (sequence!
       (expecting)
       (let! ((before captured))
-        (define-in! top captured ())
+        (bind top (quote! captured) ())
         (let! (((fine? result) (attempt expression caller)) (output (captured-text)))
-          (define-in! top captured before)
+          (bind top (quote! captured) before)
           (check same?
                  expression
                  (if! fine? (list #true output) (list #false result))
@@ -202,23 +202,17 @@
 ; In a test, output is kept for its failure; between tests it goes out.
 (define! display-text (lambda! (v) (if! (string? v) v (value-to-string v))))
 
-(define-in! language display
+(bind language (quote! display)
   (lambda! values
     (if! (empty-list? running)
       (apply display values)
-      (define-in! top captured (append (reverse (map display-text values)) captured)))))
-
-(define-in! language newline
-  (lambda! ()
-    (if! (empty-list? running)
-      (newline)
-      (define-in! top captured (pair "\n" captured)))))
+      (bind top (quote! captured) (append (reverse (map display-text values)) captured)))))
 
 ; A test can't end the run, and one that calls a program's main can see the status.
-(define-in! language exit
+(bind language (quote! exit)
   (lambda! (status) (raise (error (quote! exit-called) status))))
 
-(define-in! language command-line-arguments ())
+(bind language (quote! command-line-arguments) ())
 
 (define! full-name
   (lambda! (name) (string-join (reverse (pair name group-names)) " / ")))
@@ -228,16 +222,16 @@
 ; A name that was computed stays at that place.
 (define! advance-to
   (lambda! (offset)
-    (define-in! top current-line
+    (bind top (quote! current-line)
       (add current-line (lines-between current-text current-offset offset)))
-    (define-in! top current-offset offset)))
+    (bind top (quote! current-offset) offset)))
 
 (define! advance-to-name
   (lambda! (name)
     (let! ((at (string-search current-text (value-to-string name) current-offset)))
       (when! (and!? (integer? at) (less-than? at current-form-end)) (advance-to at)))))
 
-(define-in! language test!
+(bind language (quote! test!)
   (vau! (name . forms) caller
     (let! ((text (evaluate name caller)))
       (when! (pair? running) (misuse (quote! test-inside-test) text))
@@ -247,14 +241,14 @@
         (when! (binds? seen key) (misuse (quote! test-name-twice) full))
         (bind seen key #true)
         (advance-to-name text)
-        (define-in! top tests
+        (bind top (quote! tests)
           (pair (list full current-file current-line forms caller) tests))))))
 
 ; A form of a file or a group that raises is a failure of the file, and the forms after it still
 ; load.
 (define! form-failed
   (lambda! (form result)
-    (define-in! top load-failures (add load-failures 1))
+    (bind top (quote! load-failures) (add load-failures 1))
     (say current-file ":" (integer-to-string current-line) "  when loading ... FAIL")
     (for-each say-indented
               (pair (field "expression" (value-to-string form)) (outcome-lines "actual" result)))))
@@ -264,12 +258,12 @@
     (let! ((result (attempt form where)))
       (when! (not? (first result)) (form-failed form result)))))
 
-(define-in! language group!
+(bind language (quote! group!)
   (vau! (name . forms) caller
     (let! ((before group-names) (where (context caller)))
-      (define-in! top group-names (pair (evaluate name caller) group-names))
+      (bind top (quote! group-names) (pair (evaluate name caller) group-names))
       (for-each (lambda! (form) (evaluate-form form where)) forms)
-      (define-in! top group-names before))))
+      (bind top (quote! group-names) before))))
 
 ; The file's text. An error here has no trace, so the failure doesn't list the runner's own forms.
 (define! read-file
@@ -291,26 +285,17 @@
       (when! (pair? found)
         (let! (((form start end) found))
           (advance-to start)
-          (define-in! top current-form-end end)
+          (bind top (quote! current-form-end) end)
           (evaluate-one form where)
           (load-forms end where evaluate-one))))))
-
-; A file's first line can be #!, which only the runner skips.
-(define! first-form-offset
-  (lambda! (text)
-    (let! ((newline-at (string-search text "\n" 0)))
-      (conditional!
-        ((not? (string-starts-with? text "#!")) 0)
-        ((integer? newline-at) newline-at)
-        (#true (string-byte-length text))))))
 
 (define! load-text
   (lambda! (path text where evaluate-one)
     (let! ((before (list current-file current-text current-offset current-line current-form-end)))
-      (define-in! top (current-file current-text current-offset current-line)
+      (bind top (quote! (current-file current-text current-offset current-line))
         (list path text 0 1))
-      (finally! (load-forms (first-form-offset text) where evaluate-one)
-        (define-in! top (current-file current-text current-offset current-line current-form-end)
+      (finally! (load-forms 0 where evaluate-one)
+        (bind top (quote! (current-file current-text current-offset current-line current-form-end))
           before)))))
 
 (define! load-file
@@ -325,7 +310,7 @@
         path
         (string-join (reverse (pair path (rest (reverse parts)))) "/")))))
 
-(define-in! language load!
+(bind language (quote! load!)
   (vau! (path) caller
     (load-file (path-from current-file (evaluate path caller)) caller evaluate)))
 
@@ -335,7 +320,7 @@
   (lambda! (path)
     (catch! (load-file path (context language) evaluate-form)
             e
-            (define-in! top load-failures (add load-failures 1))
+            (bind top (quote! load-failures) (add load-failures 1))
             (say path "  when loading ... FAIL")
             (say-indented (field "actual" (string-append "raised " (error-text e)))))))
 
@@ -363,10 +348,10 @@
       (fail (list "no expectation ran: this test checks nothing")))
     (if! (empty-list? failures)
       (sequence!
-        (define-in! top passed (add passed 1))
+        (bind top (quote! passed) (add passed 1))
         (say "ok"))
       (sequence!
-        (define-in! top failed-tests (pair (place-of name file line) failed-tests))
+        (bind top (quote! failed-tests) (pair (place-of name file line) failed-tests))
         (say "FAIL")
         (for-each (lambda! (lines) (for-each say-indented lines)) (reverse failures))
         (say-output)))))
@@ -383,21 +368,21 @@
 
 (define! run-test
   (lambda! ((name file line forms where))
-    (define-in! top current-file file)
-    (define-in! top failures ())
-    (define-in! top expectations 0)
-    (define-in! top captured ())
+    (bind top (quote! current-file) file)
+    (bind top (quote! failures) ())
+    (bind top (quote! expectations) 0)
+    (bind top (quote! captured) ())
     ; Before it runs, so the last line names a test that never ends.
     (display (place-of name file line) " ... ")
-    (define-in! top running (list name file line))
+    (bind top (quote! running) (list name file line))
     (run-forms forms (context where))
-    (define-in! top running ())
+    (bind top (quote! running) ())
     (finish-test name file line)))
 
 (define! say-summary
   (lambda! (selected-count)
     (when! (pair? failed-tests)
-      (newline)
+      (display "\n")
       (say "failed:")
       (for-each say-indented (reverse failed-tests)))
     (say (integer-to-string passed) " passed, "
@@ -432,18 +417,18 @@
       (let! (((argument . more) arguments))
         (conditional!
           ((same? argument "--list")
-           (define-in! top listing #true)
+           (bind top (quote! listing) #true)
            (parse-arguments more))
           ((same? argument "--name")
            (if! (pair? more)
              (sequence!
-               (define-in! top patterns (pair (first more) patterns))
+               (bind top (quote! patterns) (pair (first more) patterns))
                (parse-arguments (rest more)))
              (usage-error "--name needs a text")))
           ((string-starts-with? argument "-")
            (usage-error (string-append "no option " argument)))
           (#true
-           (define-in! top paths (pair argument paths))
+           (bind top (quote! paths) (pair argument paths))
            (parse-arguments more)))))))
 
 (parse-arguments command-line-arguments)

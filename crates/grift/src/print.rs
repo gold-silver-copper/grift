@@ -57,8 +57,8 @@ impl<T> Grift<T> {
             };
             match v {
                 Value::EmptyList => out.write_str("()")?,
-                Value::True => out.write_str("#true")?,
-                Value::False => out.write_str("#false")?,
+                Value::Boolean(true) => out.write_str("#true")?,
+                Value::Boolean(false) => out.write_str("#false")?,
                 Value::Inert => out.write_str("#inert")?,
                 Value::Ignore => out.write_str("#ignore")?,
                 Value::Integer(n) => write!(out, "{n}")?,
@@ -70,10 +70,11 @@ impl<T> Grift<T> {
                 Value::Symbol(s) => out.write_str(self.name(s))?,
                 Value::Primitive(p) => write!(out, "#[primitive {}]", p.name())?,
                 Value::Host(h) => {
-                    out.write_str("#[host ")?;
-                    let name = self.hosts.get(h.0 as usize).map(|&(s, _)| Value::Symbol(s));
-                    push(&mut todo, Item::Text("]"))?;
-                    push(&mut todo, Item::Value(name.unwrap_or(Value::EmptyList)))?;
+                    let name = self
+                        .hosts
+                        .get(h.0 as usize)
+                        .map_or("", |&(s, _)| self.name(s));
+                    write!(out, "#[host {name}]")?;
                 }
                 Value::Context(r) if self.heap.get(r).is_err() => out.write_str("#[stale]")?,
                 Value::Context(r) => {

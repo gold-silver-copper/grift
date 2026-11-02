@@ -246,7 +246,7 @@
   (lambda! (source)
     (let! ((form (read-formula source)))
       (evaluate form functions)
-      (define-in! sheet function-sources (append function-sources (list source))))))
+      (bind sheet (quote! function-sources) (append function-sources (list source))))))
 
 ; ---------------------------------------------------------------------------------------------
 ; Showing values. A float shows two decimals.
@@ -256,7 +256,7 @@
   (lambda! (x)
     (conditional!
       ; A not-a-number fails this test too.
-      ((not? (less-than-or-equal? (absolute-value x) 1e15)) (float-to-string x))
+      ((not? (less-than-or-equal? (absolute-value x) 1e15)) (value-to-string x))
       (#true (let! ((hundredths (float-to-integer (round (multiply x 100.0))))
                     (size (if! (less-than? hundredths 0) (subtract 0 hundredths) hundredths)))
                (string-append (if! (less-than? hundredths 0) "-" "")
@@ -381,14 +381,14 @@
                  e
                  (sequence! (display "define failed: " (evaluate-in! kind e))
                             (for-each (lambda! (v) (display " " v)) (evaluate-in! values e))
-                            (newline))))
+                            (display "\n"))))
         ((same? command "print") (print-grid))
         ((same? command "save")
          (catch! (save-sheet (if! (same? argument "") sheet-path argument))
                  e
                  (sequence! (display "save failed: " (evaluate-in! kind e))
                             (for-each (lambda! (v) (display " " v)) (evaluate-in! values e))
-                            (newline))))
+                            (display "\n"))))
         (#true (display "unknown command: " command " (set, clear, show, define, print, save, quit)\n"))))))
 
 (define! command-loop

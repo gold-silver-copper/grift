@@ -511,10 +511,10 @@
                   (if! (if! (same? more ()) #true (if! (same? (rest more) ()) (same? (first (first more)) "") #false))
                     ()
                     (pair "  " (pieces more (rest widths) (rest right))))))
-           (line (lambda! (cells) (display (apply string-append (pieces cells widths right))) (newline))))
+           (line (lambda! (cells) (display (apply string-append (pieces cells widths right))) (display "\n"))))
       (line header)
       (display (string-join (map (lambda! (width) (repeat "-" width)) widths) "  "))
-      (newline)
+      (display "\n")
       (for-each line cells))))
 
 ; csv-field: a value as a CSV field. A string is quoted when it holds a comma, a quote or a line
@@ -529,7 +529,7 @@
 
 (define! print-csv
   (lambda! ((columns . rows))
-    (let! ((line (lambda! (values) (display (string-join (map csv-field values) ",")) (newline))))
+    (let! ((line (lambda! (values) (display (string-join (map csv-field values) ",")) (display "\n"))))
       (line (map symbol-to-string columns))
       (for-each (lambda! (row) (line (row-values columns row))) rows))))
 

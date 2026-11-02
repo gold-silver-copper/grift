@@ -13,18 +13,18 @@
 (group! "when!"
   (test! "the body if true, #inert if false"
     (expect-equal! (when! #true 1 2) 2)
-    (expect-true! (inert? (when! #false 1))))
+    (expect-true! (same? #inert (when! #false 1))))
   (test! "an empty body is #inert, no test an arity-error"
-    (expect-true! (inert? (when! #true)))
+    (expect-true! (same? #inert (when! #true)))
     (expect-error! arity-error (when!))))
 
 (group! "conditional!"
   (test! "the first true clause"
     (expect-equal! (conditional! (#false 1) (#true 2) (#true 3)) 2))
   (test! "#inert if none is true, or no clauses, or an empty body"
-    (expect-true! (inert? (conditional! (#false 1))))
-    (expect-true! (inert? (conditional!)))
-    (expect-true! (inert? (conditional! (#true)))))
+    (expect-true! (same? #inert (conditional! (#false 1))))
+    (expect-true! (same? #inert (conditional!)))
+    (expect-true! (same? #inert (conditional! (#true)))))
   (test! "a clause that isn't a pair is an arity-error"
     (expect-error! arity-error (conditional! 1)))
   (test! "a test that isn't a boolean is a type-error"

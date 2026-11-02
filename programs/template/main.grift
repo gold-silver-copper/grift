@@ -298,7 +298,7 @@
         (conditional!
           ((string? value) value)
           ((integer? value) (integer-to-string value))
-          ((float? value) (float-to-string value))
+          ((float? value) (value-to-string value))
           ((symbol? value) (symbol-to-string value))
           (#true (fail file line "can't insert " (describe value) "; only strings, numbers and symbols go in text")))))
 
@@ -361,7 +361,7 @@
     (define! load-data
       (lambda! (path top)
         (let! ((text (read-file path)) (data (context top)))
-          (define-in! data record!
+          (bind data (quote! record!)
             (vau! fields caller
               (let! ((record (context)))
                 (for-each (lambda! ((name value)) (bind record name (evaluate value caller))) fields)

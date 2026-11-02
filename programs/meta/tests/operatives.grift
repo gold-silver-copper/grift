@@ -1,21 +1,21 @@
 ; An operative sees its operands unevaluated and the caller's context, as grift's do.
 (define! operands-of (vau! operands #ignore operands))
-(display "operands: " (operands-of (add 1 2) x "s")) (newline)
+(display "operands: " (operands-of (add 1 2) x "s")) (display "\n")
 
 ; It evaluates them where the caller is: here, inside a function with its own x.
 (define! twice! (vau! (form) caller (list (evaluate form caller) (evaluate form caller))))
 (define! x 1)
-(display "twice!: " ((lambda! (x) (twice! (add x 1))) 41)) (newline)
+(display "twice!: " ((lambda! (x) (twice! (add x 1))) 41)) (display "\n")
 
 ; And can bind in the caller's own context, not the one it was made in.
 (define! set-caller! (vau! (name value) caller (bind caller name (evaluate value caller))))
 (define! inside
   (lambda! ()
     (set-caller! y 7)
-    (list y (binds!? (current-context) y))))
-(display "bound in the caller: " (inside) ", at top level: " (binds!? (current-context) y)) (newline)
+    (list y (binds? (current-context) (quote! y)))))
+(display "bound in the caller: " (inside) ", at top level: " (binds? (current-context) (quote! y))) (display "\n")
 
 ; wrap makes an applicative of an operative: its operands are evaluated first; unwrap undoes it.
 (define! quoted-sum (wrap (vau! (a b) #ignore (add a b))))
-(display "wrapped: " (quoted-sum (add 1 1) 3) ", unwrapped: " ((unwrap list) (add 1 1) 3)) (newline)
-(display "printed: " vau! " " lambda! " " (operative? if!) " " (applicative? first)) (newline)
+(display "wrapped: " (quoted-sum (add 1 1) 3) ", unwrapped: " ((unwrap list) (add 1 1) 3)) (display "\n")
+(display "printed: " vau! " " lambda! " " (operative? if!) " " (applicative? first)) (display "\n")

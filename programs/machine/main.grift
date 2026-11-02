@@ -827,7 +827,7 @@
 (define! assemble-command
   (lambda! (path)
     (for-each list-row (assemble path))
-    (newline)
+    (display "\n")
     (for-each list-name (names defined-names))))
 
 (define! load-rows

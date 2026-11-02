@@ -286,7 +286,7 @@
   (lambda! (target command)
     (when! (same? command ()) (fail "a command for " target " has no words"))
     (display (string-join (map shown command) " "))
-    (newline)
+    (display "\n")
     (when! (not? dry-run?)
       (let! ((p (catch! (apply run-process command)
                         e
@@ -298,7 +298,7 @@
         (display (evaluate-in! output p))
         ((evaluate-in! write standard-error) (evaluate-in! error-output p))
         (when! (not? (same? status 0))
-          (if! (inert? status)
+          (if! (same? #inert status)
             (fail "the command for " target " was killed by a signal")
             (fail "the command for " target " failed with status " (integer-to-string status))))))))
 
@@ -370,7 +370,7 @@
       (for-each (lambda! (goal)
                   (when! (not? (build goal () ()))
                     (display "build: " goal " is up to date.")
-                    (newline)))
+                    (display "\n")))
                 goals))))
 
 (catch! (main)

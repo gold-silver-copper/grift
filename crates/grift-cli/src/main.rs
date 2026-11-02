@@ -1,12 +1,10 @@
-//! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments; a
-//! first line starting with `#!` is skipped, so a script can run itself. With no script it reads
-//! the program from stdin; when stdin is a terminal it evaluates each complete input and prints
-//! the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
+//! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments. With no
+//! script it reads the program from stdin; when stdin is a terminal it evaluates each complete
+//! input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
 //! failed output, 2 on a usage error or unreadable input, or what the program gave `exit`. A
 //! closed stdout (a broken pipe) ends the run quietly.
 //!
-//! For scripting, the program gets a small fixed set of operations: `display` and `newline`,
-//! `standard-input`, `standard-error`, `open-file`, `create-file` and `run-process` (contexts of
+//! For scripting, the program gets a small fixed set of operations: `display`, `standard-input`, `standard-error`, `open-file`, `create-file` and `run-process` (contexts of
 //! operations, made by `runner.grift`), `command-line-arguments`, `environment-variable` and
 //! `exit`.
 
@@ -97,14 +95,6 @@ fn put(g: &mut G, values: &[Value], raw: bool, end: &str) -> Result<Value, Error
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     put(g, args, true, "")
-}
-
-/// `(newline)`.
-fn newline(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    match args {
-        [] => put(g, args, true, "\n"),
-        _ => Err(g.error("arity-error", args)),
-    }
 }
 
 /// The one string argument, or a `type-error` or an `arity-error`.
@@ -398,9 +388,8 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
 }
 
 /// The host functions the program gets by name.
-const PUBLIC: [(&str, HostFunction<Runner>); 4] = [
+const PUBLIC: [(&str, HostFunction<Runner>); 3] = [
     ("display", display),
-    ("newline", newline),
     ("environment-variable", environment_variable),
     ("exit", exit),
 ];
@@ -507,18 +496,13 @@ fn main() -> ExitCode {
             std::fs::read_to_string(&path),
         ),
     };
-    let mut text = match text {
+    let text = match text {
         Ok(text) => text,
         Err(e) => {
             eprintln!("grift: {name}: {e}");
             return ExitCode::from(2);
         }
     };
-    // `#!/usr/bin/env grift` reads as an empty first line, so lines keep their numbers.
-    if text.starts_with("#!") {
-        let end = text.find('\n').unwrap_or(text.len());
-        text.replace_range(..end, "");
-    }
     let done = g.evaluate(&mut r, &text);
     match (ended(&r), done) {
         (Some(status), _) => status,
