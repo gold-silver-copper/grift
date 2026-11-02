@@ -258,12 +258,17 @@
               (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
       (raise (error (quote! type-error) (quote! binds?) (if! (context? c) symbol c))))))
 
-; symbol-to-string: the printer writes a symbol as its name.
+; symbol-to-string, float-to-string: the printer's text, refusing any other type.
 (define! symbol-to-string
   (lambda! (s)
     (if! (symbol? s)
       (value-to-string s)
       (raise (error (quote! type-error) (quote! symbol-to-string) s)))))
+(define! float-to-string
+  (lambda! (f)
+    (if! (float? f)
+      (value-to-string f)
+      (raise (error (quote! type-error) (quote! float-to-string) f)))))
 
 ; Not in Kernel, each asked for by three or more programs: filter, fold, range.
 (define! filter

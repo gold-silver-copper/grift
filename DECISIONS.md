@@ -573,3 +573,10 @@ name's uses; the PR has each name's decision.
 - **G-92. The editor's conversions between strings and code points are grift** (G-57). Its host gives bytes
   and files only. Loading and saving a file use `string-split` and `string-join`, so only the line being
   edited is decoded.
+
+## The owner on G-85, 2026-11-02
+- **G-93. `float-to-string` stays** (amends G-85; the owner). It is library code beside
+  `symbol-to-string`: the printer's text for a float, and a `type-error` for anything else, so a program
+  that means a float says so. The owner confirmed the other two removals that touched names they had
+  chosen or used: `define-in!` (for `bind` with the parameters quoted) and `newline` (for
+  `(display "\n")`).

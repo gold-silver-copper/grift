@@ -907,6 +907,7 @@ fn strings_by_byte_offsets() {
             ("(string-byte-length (quote! a))", "type-error"),
             ("(string-append \"a\" 1)", "type-error"),
             ("(symbol-to-string \"a\")", "type-error"),
+            ("(float-to-string 1)", "type-error"),
             ("(integer-to-string \"1\")", "type-error"),
         ],
     );
@@ -965,6 +966,8 @@ fn floats_read_back_as_they_print() {
             "(integer? 1000)",
             "(same? (string-to-float \"1\") 1.0)",
             "(same? (value-to-string 1.0) \"1.0\")",
+            "(same? (float-to-string 1.0) \"1.0\")",
+            "(same? (float-to-string -2.5e-7) (value-to-string -2.5e-7))",
             "(same? (string-to-float \"inf\") #infinity)",
             "(same? (string-to-integer \"-42\") -42)",
             "(same? (integer-to-string -42) \"-42\")",

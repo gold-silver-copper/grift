@@ -135,6 +135,7 @@ All are applicatives except `vau!`.
 | `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
 | `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. |
 | `(symbol-to-string s)` | A symbol's name. |
+| `(float-to-string f)` | A float's printed text, which reads back as the same float: `(float-to-string 1.0)` is `"1.0"`. Anything else is a `type-error`. |
 | `(string-search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. A `start` out of range or off a character boundary is a `range-error`. |
 | `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)` | Whether `s` starts or ends with those bytes. |
 | `(string-split text separator)`, `(string-join strings separator)` | The parts of `text` between the separators, empty ones too, so `(string-split "a,,b" ",")` is `("a" "" "b")` and `(string-split "" ",")` is `("")`; an empty separator is a `range-error`. The strings with the separator between them. `string-join` undoes `string-split`. |
