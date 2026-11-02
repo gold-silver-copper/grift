@@ -1,197 +1,242 @@
 # The grift language
 
-grift follows the Revised⁻¹ Report on the Kernel Programming Language (R-1RK, [05-07.pdf](../05-07.pdf))
-in its evaluation model and names, with a much smaller set of combiners. Section numbers below
+The reference: every value, primitive, library form and error kind. [`VISION.md`](VISION.md) says
+what grift is and why; [`DECISIONS.md`](../DECISIONS.md) records each decision. grift follows the
+Revised⁻¹ Report on the Kernel Programming Language (R-1RK, [05-07.pdf](../05-07.pdf)) in its
+evaluation model, with grift's own names and a smaller set of combiners; section numbers below
 are R-1RK's.
+
+## Names
+
+A name says what the thing does in grift. Words are joined with dashes and spelled out. A
+combiner that gets its operands unevaluated (an operative) ends in `!`; one that returns a
+boolean ends in `?`, an operative one in `!?`. A constructor is named after what it makes, a
+conversion spells out `to`, and arithmetic and comparison are words. Only bindings change, and
+the combiners that change anything are `define!`, `define-in!` and `bind`. An operative's context
+parameter is called `caller` by convention.
+
+Kernel's names, and grift's before 2026-11-01, against grift's:
+
+| Kernel / before | grift |
+|---|---|
+| `$vau` `$lambda` `$define!` `$quote` `$sequence` | `vau!` `lambda!` `define!` `quote!` `sequence!` |
+| `$if` (both branches), `$when` | `if!` (the alternative is optional) |
+| `$cond` | `conditional!` |
+| `$let`, `$let*`, `$letrec*` | `let!` (binds in order in one new context) |
+| `$and?` `$or?` | `and!?` `or!?` |
+| `$set!` | `define-in!` |
+| `$remote-eval` | `evaluate-in!` |
+| `$binds?` | `binds!?` |
+| `$unwind-protect`, `eval-protected` | `finally!`, `evaluate-with-cleanup` |
+| `guard` | `catch!`, on the primitive `call-with-handler` |
+| `error` (raised at once) | `error` makes an error; `raise` raises it |
+| error fields `code` `values` `at` | `kind` `values` `trace` |
+| `bind!` | `bind` |
+| `eval` `make-environment` `get-current-environment` | `evaluate` `context` `current-context` |
+| `bindings` `ground-names` `environment?` | `names` `built-in-names` `context?` |
+| `cons` `car` `cdr` `null?` | `pair` `first` `rest` `empty-list?` |
+| `eq?` `equal?` `=?` | `same?` `equal?` |
+| `+` `-` `*` `div` `mod` | `add` `subtract` `multiply` `divide` `remainder` |
+| `<?` and the rest | `less-than?` `greater-than?` `less-than-or-equal?` `greater-than-or-equal?` |
+| `min` `max` `assoc` | `minimum` `maximum` `find-association` |
+| `string-length` `substring` | `string-byte-length` `byte-substring` |
+| `number->string` `symbol->string` `string->symbol` `code-point->string` | `integer-to-string` `symbol-to-string` `string-to-symbol` `code-point-to-string` |
+| `#t` `#f` | `#true` `#false` |
+| environment, ground environment, formals | context, built-in context, parameters |
 
 ## Evaluation
 
-- A symbol evaluates to its binding, looked up through the environment and its ancestors; an
-  unbound symbol is the error `unbound-symbol` carrying the symbol.
+- A symbol evaluates to its binding, looked up through the context and its parents; an unbound
+  symbol is the error `unbound-symbol` carrying the symbol.
 - A pair `(c . operands)` is a combination. `c` is evaluated to a combiner. An **operative**
-  receives the operands unevaluated, with the caller's environment. An **applicative** evaluates
-  the operands left to right and passes the list of results to the combiner it wraps.
+  receives the operands unevaluated, with the caller's context. An **applicative** evaluates the
+  operands left to right and passes the list of results to the combiner it wraps.
 - Everything else evaluates to itself, `()` included.
-- A compound operative's body, `eval`, and a `guard`'s handler are evaluated as tail calls: a
-  loop through `$if`, `$sequence`, `$cond`, `$let`, `$let*`, `$when` or `$lambda` bodies runs in
-  constant space.
-- There are no limits on time, depth or memory besides those of the allocator and the OS, and
-  the host's: it can interrupt an evaluation (`interrupted`).
+- A compound operative's body, `evaluate`, and a `catch!`'s handler are evaluated as tail calls:
+  a loop through `if!`, `sequence!`, `conditional!`, `let!` or `lambda!` bodies runs in constant
+  space.
+- There is no truthiness: the tests of `if!`, `conditional!`, `and!?` and `or!?`, and the
+  arguments of `not?` and `select`, must be booleans; anything else is a `type-error`.
+- There are no limits on time, depth or memory besides those of the allocator and the OS, and the
+  host's: it can interrupt an evaluation (`interrupted`).
 
 ## Values
 
 | Value | Written | `type-of` |
 |---|---|---|
-| the empty list | `()` | `null` |
-| booleans | `#t` `#f` | `boolean` |
-| inert, the value of forms with nothing to say | `#inert` | `inert` |
-| ignore, the formal that binds nothing | `#ignore` | `ignore` |
-| integers, 64-bit, checked | `42` `-7` | `integer` |
-| symbols, interned, case-sensitive | `foo` `$if` `<?` | `symbol` |
+| the empty list | `()` | `empty-list` |
+| booleans | `#true` `#false` | `boolean` |
+| inert, the value of a form with nothing useful to return | `#inert` | `inert` |
+| ignore, the parameter that binds nothing | `#ignore` | `ignore` |
+| integers, 64-bit; overflow is an error | `42` `-7` | `integer` |
+| floats, 64-bit IEEE | `1.5` `-0.0` `1e300` `#infinity` `#-infinity` `#not-a-number` | `float` |
+| symbols, interned, case-sensitive | `foo` `if!` `less-than?` | `symbol` |
 | pairs, immutable | `(1 . 2)` `(1 2 3)` | `pair` |
-| strings, immutable atoms; escapes `\\` `\"` `\n` `\t` and `\xHEX;` (a Unicode scalar value, as R7RS) | `"hi\x1b;"` | `string` |
-| environments | `#[environment]` | `environment` |
-| operatives | `#[operative (x) env body]`, `#[primitive $vau]`, `#[host name]` | `operative` |
-| applicatives | `#[applicative #[operative (x) #ignore (* x x)]]` | `applicative` |
+| strings, immutable, addressed by byte; escapes `\\` `\"` `\n` `\t` and `\xHEX;` (a Unicode scalar value) | `"hi\x1b;"` | `string` |
+| contexts | `#[context a b]` (its own names, sorted) | `context` |
+| operatives | `#[operative (x) caller body]`, `#[primitive vau!]`, `#[host name]` | `operative` |
+| applicatives | `#[applicative #[operative (x) #ignore (multiply x x)]]` | `applicative` |
 
+A number starts with a digit, after an optional sign: it is an integer if it is one, else a float
+if it has a `.` or an exponent, as Rust reads them (`1.`, `2e5`); anything else that starts so,
+such as `99999999999999999999` or `1.2.3`, is a `parse-error`. A float prints in Rust's shortest
+form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it always reads back as the same float.
 `;` starts a comment to the end of the line.
 
 ## Primitives (Rust)
 
-All are applicatives except `$vau`.
+All are applicatives except `vau!`.
 
 | Combiner | Meaning |
 |---|---|
-| `($vau formals eformal body)` | An operative closing over the current environment (4.10.3). `formals` is a tree of symbols, `#ignore`, `()` and pairs, with no symbol twice; `eformal` is a symbol not in it, or `#ignore`. Checked when the operative is made (`bad-formals`). A call binds them in a new child of that environment and evaluates `body` as a tail call. |
-| `(wrap c)`, `(unwrap a)` | The applicative around combiner `c`; the combiner inside applicative `a` (4.10.4–5). |
-| `(eval x env)` | Evaluates `x` in `env`, as a tail call (4.8.3). |
-| `(eval-protected x env cleanup)` | Evaluates `x` in `env`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving, unless that one is `interrupted` or `out-of-memory`, which go on. Not a tail call. |
-| `(make-environment)`, `(make-environment parent)` | A new empty environment, with no parent or one (4.8.4). |
-| `(bind! env formals value)` | Matches the tree `formals` to `value` and binds its symbols in `env` itself, replacing bindings there. Returns `#inert`. The matching of `$define!` (4.9.1) as an applicative. |
-| `(bindings env)` | The symbols bound in `env` itself, sorted by name. |
-| `(cons a d)`, `(car p)`, `(cdr p)` | Pairs (4.6.3, 5.4.1). |
-| `(eq? a b)` | Identity; integers, symbols and strings compare by value (4.2.1). |
-| `(select b x y)` | `x` if `b` is `#t`, `y` if `#f`; a `type-error` otherwise. |
+| `(vau! parameters context-parameter body)` | An operative closing over the current context (4.10.3). `parameters` is a tree of symbols, `#ignore`, `()` and pairs, with no symbol twice; `context-parameter` is a symbol not in it, or `#ignore`. Checked when the operative is made (`parameter-error`). A call binds them in a new child of that context and evaluates `body` as a tail call. |
+| `(wrap c)`, `(unwrap a)` | The applicative around combiner `c`; the combiner inside applicative `a` (4.10.4–5). Wrapping an applicative wraps it again. |
+| `(evaluate x c)` | Evaluates `x` in context `c`, as a tail call (4.8.3). |
+| `(context)`, `(context parent)` | A new empty context, with no parent or one (4.8.4). |
+| `(bind c parameters value)` | Matches the tree `parameters` to `value` and binds its symbols in context `c` itself, replacing bindings there. Returns `#inert`. The matching of `define!` (4.9.1) as an applicative. |
+| `(names c)` | The symbols bound in context `c` itself (not its parents), sorted by name. |
+| `(pair a b)`, `(first p)`, `(rest p)` | A new pair; its two halves (4.6.3, 5.4.1). |
+| `(same? a b)` | Identity for pairs, contexts and combiners; equality of value for integers, symbols and strings; the same stored bits for floats. Values of different types are never the same (4.2.1, `eq?`). |
+| `(select b x y)` | `x` if `b` is `#true`, `y` if `#false`; a `type-error` otherwise. An applicative, so both `x` and `y` are evaluated; `if!` uses it to pick an expression. |
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
-| `(+ a b)`, `(- a b)`, `(* a b)`, `(div a b)`, `(mod a b)`, `(<? a b)` | Binary integer arithmetic; `div` rounds toward negative infinity and `mod` is what it leaves, with `b`'s sign: in exact arithmetic `b × (div a b) + (mod a b)` is `a` (12.5.8). `mod` fits wherever its result does, even where evaluating that identity would overflow. |
-| `(error code value ...)` | Stops evaluation; the host gets `Err` with `code` (a symbol) and the values, unless a `guard` catches it. |
-| `(guard thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as a new environment, with no parent, binding `code`, `values` (the list of the error's values) and `at` (the list of where it happened, see Errors); its value is `guard`'s, as a tail call. `interrupted` and `out-of-memory` are never caught. |
-| `(raise e)` | Raises again the error a guard caught, given the environment its handler got: the same code, values and locations, with none for the `raise` itself; like any error, it then gains the combinations it passes on its way out. So a handler can pass on an error it doesn't want and it still says where it happened. |
-| `(string-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
-| `(substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
+| `(add a b)`, `(subtract a b)`, `(multiply a b)`, `(divide a b)`, `(remainder a b)` | Of two integers or two floats; mixing them is a `type-error`. On integers, Rust's checked arithmetic: `divide` and `remainder` are Rust's `/` and `%`, truncating toward zero, so `(remainder -7 2)` is `-1`; dividing by 0 is `division-by-zero`, and a result beyond 64 bits, `(divide -9223372036854775808 -1)` included, is `overflow`. On floats, IEEE: `(divide 1.0 0.0)` is `#infinity`. |
+| `(less-than? a b)` | Whether `a < b`, of two integers or two floats; with `#not-a-number`, `#false`. |
+| `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` `(absolute-value x)`, `(power x y)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) `trunc` `abs` and `powf`, of floats only. Results may differ slightly between platforms, as in Rust. |
+| `(integer-to-float n)`, `(float-to-integer x)` | Rust's `as`: the nearest float; the integer part, saturating at the ends of the 64-bit range, and 0 for `#not-a-number`. |
+| `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving, unless that one is `interrupted` or `out-of-memory`, which go on. Not a tail call. |
+| `(call-with-handler thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as a new context with no parent, binding `kind` (a symbol), `values` (a list) and `trace` (a list, see Errors); its value is `call-with-handler`'s, as a tail call. `interrupted` and `out-of-memory` are never caught. |
+| `(raise e)` | Raises the error `e`, a context binding `kind`, `values` and `trace` as `error` makes and a handler gets. A new error (an empty trace) happens at the `raise`; a caught one keeps its trace, with nothing added for the `raise` itself. Like any error, it then gains the combinations it passes on its way out. Anything else is a `type-error`. |
+| `(string-byte-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
+| `(byte-substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
 | `(string-append s ...)` | The strings joined. |
-| `(code-point->string n)` | The string of the one character whose Unicode code point is `n`; a `range-error` for a surrogate or past `#x10FFFF`. |
-| `(symbol->string sym)`, `(string->symbol s)` | A symbol's name; the symbol named `s`, interned. |
-| `(number->string n)` | Integer `n` in decimal. |
+| `(code-point-to-string n)` | The string of the one character whose Unicode code point is `n`; a `range-error` for a surrogate or past `#x10FFFF`. |
+| `(symbol-to-string sym)`, `(string-to-symbol s)` | A symbol's name; the symbol named `s`, interned. |
+| `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
+| `(float-to-string x)`, `(string-to-float s)` | Rust's `to_string` (`Display`) and `parse::<f64>`, which undo each other: `(float-to-string 1.0)` is `"1"`, `(float-to-string #not-a-number)` is `"NaN"`, and `(string-to-float "inf")` is `#infinity`. A string Rust can't read as a float is a `parse-error`. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
 
 | Combiner | Meaning |
 |---|---|
-| `($define! formals expression)` | Evaluates `expression` and matches `formals` to it in the current environment (4.9.1). Returns `#inert`. |
-| `($quote x)` | `x`, unevaluated. |
+| `(define! parameters expression)` | Evaluates `expression` and matches `parameters` to it in the current context (4.9.1). Returns `#inert`. |
+| `(quote! x)` | `x`, unevaluated. |
 | `(list x ...)` | The list of the arguments (5.2.1). |
-| `($if test consequent alternative)` | Both branches required; `test` must give a boolean (4.5.2). |
-| `($sequence x ...)` | Each in turn; the last one's value, `#inert` for none (5.1.1). |
-| `($lambda formals body ...)` | `(wrap ($vau formals #ignore body))`; several body forms become `($sequence form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
-| `(get-current-environment)` | The environment it is called in (6.7.2). |
-| `($remote-eval o e)` | Evaluates `o`, as a tail call, in the environment `e` evaluates to (6.7.9); `($remote-eval code e)` reads a field of a record such as a caught error. |
-| `(not? b)`, `($and? x ...)`, `($or? x ...)` | Booleans; `$and?` and `$or?` stop early and evaluate the last operand as a tail call (6.1). |
-| `(null? x)`, `(pair? x)`, `(symbol? x)`, `(string? x)`, `(integer? x)`, `(environment? x)` | Type predicates of one value (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
-| `(=? a b)`, `(min a b)`, `(max a b)` | Integer equality, the smaller, the larger (12.5.2, 12.5.13). |
-| `(apply a args)` | Calls applicative `a`'s combiner on the list `args`, in a new empty environment (5.5.1). |
+| `(if! test consequent)`, `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call; without an alternative, a false test gives `#inert` (4.5.2). More operands are an `arity-error`. |
+| `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). |
+| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become `(sequence! form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
+| `(current-context)` | The context it is called in (6.7.2). |
+| `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
+| `(not? b)`, `(and!? x ...)`, `(or!? x ...)` | Booleans (6.1). `and!?` and `or!?` evaluate left to right and stop early; every operand they evaluate must give a boolean, the last one included, so it isn't a tail call. |
+| `(empty-list? x)` `(boolean? x)` `(inert? x)` `(ignore? x)` `(integer? x)` `(float? x)` `(symbol? x)` `(pair? x)` `(string? x)` `(context? x)` `(operative? x)` `(applicative? x)` | A predicate for each type `type-of` gives (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
+| `(apply a arguments)` | Calls applicative `a`'s combiner on the list `arguments`, in a new empty context (5.5.1). |
 | `(map a list)`, `(for-each a list)` | The list of `a` applied to each element; `a` on each in turn, giving `#inert` (5.9.1, 6.9.1). |
-| `($let ((formals expression) ...) body ...)` | Binds in a new environment, then evaluates the body (5.10.1). |
-| `($let* ((formals expression) ...) body ...)` | As `$let`, each binding seeing the ones before (6.7.4). |
-| `($cond (test body ...) ...)` | The body of the first true test; `#inert` if none is true (5.6.1). |
-| `($when test body ...)` | The body if `test` is true, else `#inert`; `$if` needs both branches. |
-| `($set! env formals value)` | Matches `formals` to `value` in the environment `env` evaluates to, as `$define!` does in the current one (6.8.1). `$define!` inside a function binds locally; this changes a binding where it lives. |
-| `($unwind-protect body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on unchanged, to a `guard` or the host. The cleanup can't stop the error; `guard` can. |
-| `($binds? env symbol ...)` | Whether each symbol is bound in the environment `env` evaluates to, or one of its ancestors (6.7.1). The symbols aren't evaluated. |
+| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is (5.6.1). |
+| `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.5). A binding that isn't `(parameters expression)` is an `arity-error`. |
+| `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on unchanged, to a `catch!` or the host. |
+| `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted` and `out-of-memory` are never caught. |
+| `(define-in! c parameters value)` | Matches `parameters` to `value` in the context `c` evaluates to, as `define!` does in the current one (6.8.1, `$set!`). `define!` inside a function binds locally; this binds where you say. |
+| `(error kind value ...)` | A new error: a context with no parent binding `kind`, `values` (the list of the values) and an empty `trace`. It raises nothing; `raise` does. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
-| `(equal? a b)` | Structural equality of pairs, `eq?` otherwise (6.6.1). |
-| `(assoc x alist)`, `(member? x list)` | The first pair whose car is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
-| `ground-names` | The list of every name above, bound when the library is loaded. |
+| `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
+| `(greater-than? a b)`, `(less-than-or-equal? a b)`, `(greater-than-or-equal? a b)` | The rest of the comparisons, as Rust's `>`, `<=`, `>=` (12.5.1). |
+| `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two integers or two floats (12.5.13). |
+| `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
+| `(binds!? c symbol ...)` | Whether each symbol is bound in the context `c` evaluates to or one of its parents (6.7.1). The symbols aren't evaluated. |
+| `built-in-names` | The list of every name above and every primitive's, bound when the library is loaded. |
 
-Programs run in the **top-level environment**, a child of the ground environment. Defining a
-name at top level shadows the library's binding without changing what the library itself uses.
-The ground environment itself is out of reach, so no program can change it.
+Programs run in the **top-level context**, a child of the **built-in context**. Defining a name at
+top level shadows the library's binding without changing what the library itself uses. The
+built-in context itself is out of reach, so no program can change it.
 
 ## Errors
 
-Every error stops evaluation and goes to the innermost `guard` around it, or to the host, as a
-code, the values involved, and where it happened: the combinations of the program being
-evaluated, innermost first, each once, out to the top-level form (the library's own code and
-code built around a combiner value are skipped). A combination in tail position has finished
-when the next one starts, so it isn't listed. Cleanups (`$unwind-protect`) run on the way out.
+Every error stops evaluation and goes to the innermost `catch!` around it, or to the host, as a
+kind, the values involved, and a trace: the combinations of the program being evaluated,
+innermost first, each once, out to the top-level form (the library's own code and code built
+around a combiner value are skipped). A combination in tail position has finished when the next
+one starts, so it isn't listed. Cleanups (`finally!`) run on the way out.
 
 ```lisp
-($define! check ($lambda (x) ($if (integer? x) x (error ($quote not-int) x))))
-($define! run ($lambda (x) (+ 1 (check x))))
-(run ($quote a))   ; not-int a in (error ($quote not-int) x)
-                   ;   from (+ 1 (check x))
-                   ;   from (run ($quote a))
+(define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x)))))
+(define! run (lambda! (x) (add 1 (check x))))
+(run (quote! a))   ; not-integer a in (raise (error (quote! not-integer) x))
+                   ;   from (add 1 (check x))
+                   ;   from (run (quote! a))
 ```
 
-**Cleanup and catching.** `$unwind-protect` runs cleanup as an error passes and lets it go on:
-the body's work is undone or recorded, and the error still stops the program. `guard` stops it:
-after the cleanups inside have run, its handler gets the error as a value and decides what
-happens next, for a program that must go on after a mistake (an interpreter after a guest's
-error, a batch after one bad input, a test of an error case):
-
-The handler gets the error as a record, an environment of its own binding `code`, `values` and
-`at`; `$remote-eval` reads one:
+**Cleanup and catching.** `finally!` runs cleanup as an error passes and lets it go on. `catch!`
+stops it: after the cleanups inside have run, its handler gets the error as a context, a record
+binding `kind`, `values` and `trace`, and decides what happens next.
 
 ```lisp
-(guard ($lambda () (run ($quote a)))
-       ($lambda (e) (list ($remote-eval code e) ($remote-eval values e))))   ; => (not-int (a))
-(guard ($lambda () (car 1))
-       ($lambda (e) ($if (eq? ($remote-eval code e) ($quote type-error)) 0 (raise e))))   ; => 0
+(catch! (run (quote! a)) e (list (evaluate-in! kind e) (evaluate-in! values e)))   ; => (not-integer (a))
+(catch! (first 1) e (if! (same? (evaluate-in! kind e) (quote! type-error)) 0 (raise e)))   ; => 0
 ```
 
 **What can be caught.** Errors about the program can: the primitives', the library's, a host
-function's, and the program's own `error`. Limits set by the host or the machine can't:
-`interrupted` (the host's) and `out-of-memory` (the allocator's) go on through every guard to
-the host, running cleanups on the way, so a `guard` in a loop can't swallow C-g; an error in one
-of those cleanups doesn't replace them. Whether an error is a limit goes by its code: a program
-that raises `interrupted` itself, or a host function that reports `out-of-memory`, isn't caught
-either.
+function's, and the program's own. Limits set by the host or the machine can't: `interrupted`
+(the host's) and `out-of-memory` (the allocator's) go on through every `catch!` to the host,
+running cleanups on the way, so a `catch!` in a loop can't swallow C-g; an error in one of those
+cleanups doesn't replace them. Whether an error is a limit goes by its kind: a program that raises
+`interrupted` itself, or a host function that reports `out-of-memory`, isn't caught either.
 
-**Early exit** is a `guard` and an error code of the program's own; there is no separate escape:
+**Early exit** is `catch!` and a kind of error of the program's own; there is no other escape:
 
 ```lisp
-($define! first-even
-  ($lambda (xs)
-    (guard ($lambda () (for-each ($lambda (x) ($when (eq? (mod x 2) 0) (error ($quote found) x))) xs) #f)
-           ($lambda (e) ($if (eq? ($remote-eval code e) ($quote found)) (car ($remote-eval values e)) (raise e))))))
+(define! first-even
+  (lambda! (xs)
+    (catch! (sequence! (for-each (lambda! (x) (if! (same? (remainder x 2) 0) (raise (error (quote! found) x)))) xs)
+                       #false)
+            e
+            (if! (same? (evaluate-in! kind e) (quote! found)) (first (evaluate-in! values e)) (raise e)))))
 (first-even (list 1 3 4 5))   ; => 4
 ```
 
-| Code | When | Values |
+| Kind | When | Values |
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
-| `type-error` | a primitive got the wrong kind of value; an improper operand list | the primitive and the value |
-| `arity-error` | a primitive got the wrong number of operands; a formals tree didn't match | the primitive and the operands; or the formals and the value |
+| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list | the primitive and the value |
+| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
-| `bad-formals` | a malformed formals tree, a symbol twice, or a bad environment formal | the tree or formal |
-| `overflow` | arithmetic beyond 64 bits | the primitive and the operands |
-| `division-by-zero` | `div` by 0 | the operands |
+| `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
+| `overflow` | integer arithmetic beyond 64 bits | the primitive and the operands |
+| `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
+| `range-error` | a string offset off a character boundary or out of range; a code point that isn't one | the primitive and the operands |
+| `parse-error` | text that doesn't read: a program (unfinished text fails at its end), or a string given `string-to-integer` or `string-to-float` | the line and column; or the primitive and the string |
 | `out-of-memory` | the allocator refused | none |
-| `parse-error` | the text doesn't read; unfinished text fails at its end | line and column |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `interrupted` | the host set its interrupt flag | none |
-| `range-error` | a string offset off a character boundary or out of range; a code point that isn't one | the primitive and the operands |
-| any symbol | a program called `error` | the values given |
+| any symbol | a program raised an error it made | the values given |
 
-## Deviations from R-1RK, and why
+The runner adds its own kinds; [the README](../README.md#the-runner) lists them.
 
-- **One special primitive.** `$if`, `$define!` and `$sequence` are primitive in Kernel; here they
-  are library code over `$vau`, `select`, `bind!` and `eval`. Everything that can be grift code
+## Where grift differs from R-1RK, and why
+
+- **One special primitive.** `if!`, `define!` and `sequence!` are primitive in Kernel; here they
+  are library code over `vau!`, `select`, `bind` and `evaluate`. Everything that can be grift code
   is grift code.
-- **No continuations, no `$let/cc`.** Kernel catches errors with guarded continuations; grift
-  has `guard`, which calls a handler with the error as a value and can't re-enter anything, and
-  `$unwind-protect` (not in Kernel), which runs cleanup as an error passes, the exit half of
-  Kernel's guards. `$binds?` is derived from `guard` as R-1RK derives it from its error
+- **grift's own names** (the table above): Kernel's `$` became the `!` suffix, and Kernel's
+  mutation `!` became the verb itself (`define-in!`, `bind`).
+- **`if!`'s alternative is optional**, and `let!` is the one binding form, `$letrec*`'s meaning.
+- **No truthiness and no continuations.** Kernel catches errors with guarded continuations; grift
+  has `catch!` on `call-with-handler`, which calls a handler with the error as a context and can't
+  re-enter anything, and `finally!` on `evaluate-with-cleanup` (not in Kernel), the exit half of
+  Kernel's guards. `binds!?` is derived with `catch!` as R-1RK derives `$binds?` from its error
   continuation.
-- **Integers only:** no numeric tower, no rationals or reals, no characters, vectors, ports or
-  promises. Overflow is an error, not a bignum.
-- **Binary arithmetic and comparison.** `+`, `*`, `<?`, `=?`, `min` and `max` take two
-  operands; Kernel's take any number. The type predicates take one value; Kernel's any number.
-- **`div` floors.** R-1RK defines it for real arguments; for integers it is the floor of the
-  quotient, so `(div -7 2)` is `-4`.
-- **Strings are immutable,** and `eq?` compares them by content, like integers. R-1RK has no
+- **Numbers are Rust's:** one integer type, 64-bit and checked, and 64-bit floats, which never
+  mix implicitly; no numeric tower, no rationals, characters, vectors, ports or promises.
+  `divide` and `remainder` truncate, as Rust's `/` and `%` do.
+- **Binary arithmetic and comparison.** `add`, `multiply`, `less-than?`, `minimum` and the rest
+  take two operands; Kernel's take any number. The type predicates take one value.
+- **Strings are immutable,** and `same?` compares them by content, like integers. R-1RK has no
   strings; grift's offsets count bytes of UTF-8, so `string-byte` is O(1), and there is no
   character type: a code point is an integer.
-- **`apply` has one form,** `(apply a args)`, with a new empty environment: Kernel's default,
-  made the only form so nothing is optional. `map` and `for-each` take one list.
-- **`make-environment` takes at most one parent.**
-- **`bind!` and `bindings`** are new: `bind!` is the matching of `$define!` as an applicative, so
-  `$define!` can be library code; `bindings` lets a program, or an agent, list what exists.
-- **`ground-names`** lists the ground environment's names; the ground itself stays out of reach,
-  as in Kernel.
-- **New, not in Kernel:** `$when` (one-armed `$if`), `reverse`, `$unwind-protect` and
-  `eval-protected`, `guard`, `string?` and the string primitives (R-1RK has no strings).
-- **`$lambda` keeps the symbol `$sequence`** in a body of several forms, so the body prints as
+- **`apply` has one form,** `(apply a arguments)`, with a new empty context; `map` and `for-each`
+  take one list. `context` takes at most one parent.
+- **New, not in Kernel:** `bind` (the matching of `define!` as an applicative, so `define!` can be
+  library code), `names` and `built-in-names` (a program, or an agent, lists what exists),
+  `select`, `type-of` and the predicates for floats, operatives and applicatives, `error`,
+  `raise`, `catch!`, `finally!`, `reverse`, and the string and float primitives.
+- **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as
   written. It is looked up where the body runs, like any other name in it.
-- **Printing a combiner shows its parameters and body.**
-- **No `$` sigil rule:** `$` starting an operative's name is a convention, not checked.
+- **Printing a combiner shows its parameters and body; a context shows its names.**

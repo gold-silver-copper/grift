@@ -234,3 +234,146 @@ friction logs (`~/code/notes/projects/grift/apps-2026-11-01/`, ranked in `tally.
     in continuation-passing style: eval-callcc did it in 5 lines, in flat memory, thanks to
     proper tail calls. And continuations would cost the meaning of cleanup (`$unwind-protect`
     could be left and re-entered) and of interruption, and the simplicity of the machine.
+
+## Owner decisions, 2026-11-01: the guide and the names
+
+Settled with the owner in conversation and written up as the guide, [`docs/VISION.md`](docs/VISION.md)
+(cited below by section), and the name table (`~/code/notes/projects/grift/names-draft.md`, with
+an eight-perspective naming panel folded in). [`docs/LANGUAGE.md`](docs/LANGUAGE.md) is the
+reference that matches them.
+
+- **G-36. `std`, zero dependencies** (VISION "Embedding"). Confirms G-32: the core is a Rust
+  library on `std` with no dependencies, no I/O, threads or global state; the host owns those and
+  sets every limit. Bare-metal targets are not a goal; WebAssembly works wherever `std` does.
+- **G-37. Every context is a hash map** (VISION "Contexts"). Confirms G-34.
+- **G-38. Names** (VISION "Names"; amends G-9's `$` convention, G-7's `bindings`, G-20's
+  `ground-names`, G-27's string names). A name says what the thing does in grift; words are
+  joined with dashes and spelled out, with no abbreviations. An operative ends in `!` (`vau!`,
+  `if!`, `define!`), never meaning mutation; a combiner returning a boolean ends in `?`, an
+  operative one in `!?`; a constructor is named after what it makes (`pair`, `list`, `context`,
+  `error`); a conversion spells out `to`; arithmetic and comparison are words (`add`,
+  `less-than?`). Only bindings change, and the combiners that change anything are `define!`,
+  `define-in!` and `bind`. Kernel's `$` became the `!` suffix and Kernel's mutation `!` became the
+  verb. An operative's context parameter is `caller` by convention. Literals: `#true #false
+  #inert #ignore`. Every rename is in LANGUAGE.md's table; `bad-formals` is `parameter-error`.
+- **G-39. Contexts, not environments** (VISION "Kernel", "Contexts", "Terms"; amends G-3, G-10,
+  G-20 in their words). Kernel's environment is grift's context, the ground environment is the
+  built-in context, formals are parameters. A context is a hash map from symbols to values with
+  at most one parent it reads through; a child can change only its own bindings, and there is no
+  parent accessor.
+- **G-40. No object system** (VISION "State"). No classes, prototypes, `send` or method syntax;
+  records, cells and symbol-keyed tables are contexts, and an operation a context holds is looked
+  up there and called where you are: `((evaluate-in! write f) line)`.
+- **G-41. The host boundary** (VISION "The host boundary"). A host resource appears in grift as a
+  context of operations on it. The operations call host functions bound only in a private
+  context, so a program can't forge a resource from an id. Closing is explicit (no finalizers),
+  and using a resource after it is closed is the error `closed`.
+- **G-42. Floats** (VISION "Values", "Numbers"; amends G-9, which cut them). 64-bit IEEE floats,
+  with Rust `std`'s operations and functions under spelled-out names; results may differ slightly
+  between platforms, as in Rust. Integers and floats never mix implicitly: `(add 1 1.5)` is a
+  `type-error`; conversions are explicit (`integer-to-float`, `float-to-integer`). Richer numbers
+  are library code in a context whose arithmetic is theirs.
+- **G-43. One integer type** (VISION "Values"): 64-bit, overflow an error. No `usize` or other
+  widths; host types are converted at the boundary (checked; `range-error` when a number doesn't
+  fit).
+- **G-44. No vectors** (VISION "Values"). Confirms G-9.
+- **G-45. Rust's numeric semantics** (VISION "Close to Rust"; replaces G-15 and G-24's floor
+  semantics). Integer `divide` and `remainder` are Rust's `/` and `%` (truncating; division by
+  zero and overflow, `MIN / -1` and `MIN % -1`, are errors where Rust panics); `float-to-integer`
+  is exactly Rust's `as`, saturating. The shipped version of anything is the most minimal, most
+  Rust-like one; a program that wants stricter or other behaviour redefines it.
+- **G-46. `if!`'s alternative is optional** (VISION "Names"; the name table; amends G-8). A missing
+  alternative gives `#inert`; `$when` is gone. G-8's other rules stand.
+- **G-47. `let!` binds in order in one new context** (VISION "Kernel"; replaces `$let` and
+  `$let*`, and G-31's note that `$let` matches every binding at once). Kernel's `$letrec*`: each
+  binding evaluates its expression in the new context and binds there, so a combiner it binds can
+  call itself and the bindings after it.
+- **G-48. `catch!` and `finally!`** (VISION "Errors"; amends G-18 and G-26). `(catch! body e
+  handler ...)` and `(finally! body cleanup ...)` are library operatives on the primitives
+  `call-with-handler` (was `guard`) and `evaluate-with-cleanup` (was `eval-protected`).
+- **G-49. `error` makes, `raise` raises** (VISION "Errors"; amends G-26 and G-35). `(error kind
+  value ...)` is a constructor: it makes an error value and raises nothing. `raise` raises any
+  error, new or caught; a caught error keeps its trace.
+- **G-50. An error is a kind, values and a trace** (VISION "Errors"; renames G-35's fields `code`,
+  `values`, `at`). A caught error is a context with no parent binding `kind`, `values` and
+  `trace`; the Rust `Error` has the same three fields.
+- **G-51. `same?` and `equal?`** (VISION "Names"; replaces `eq?`, merges `=?` into `equal?`,
+  keeps G-13's strings by content). `same?` is identity for pairs, contexts and combiners,
+  equality of value for integers, symbols and strings, and equality of the stored bits for
+  floats. `equal?` compares pairs by structure, floats as IEEE does (not-a-number is never
+  equal), and everything else as `same?`. Values of different types are never equal.
+- **G-52. No truthiness** (VISION "Values"). The tests of `if!`, `conditional!`, `and!?` and
+  `or!?` must be booleans; anything else is a `type-error`.
+- **G-53. No continuations** (VISION "No continuations"). Confirms G-4 and G-35's reasons.
+- **G-54. A context prints as its own names, sorted** (VISION "Printing"; replaces the opaque
+  `#[environment]`): `#[context close path read-line]`, never its values, which may reach the
+  context again.
+- **G-55. The runner's Unix set** (VISION "The runner"; extends G-6). The runner gives programs a
+  small fixed set of host operations: reading stdin as data, files as contexts of operations,
+  the command-line arguments, environment variables, the exit status, running processes. The
+  core does none of this.
+- **G-56. No primitive `if!`** (VISION "Implementation"; confirms G-28 and G-33). `if!` and
+  `sequence!` stay library code although making them primitives measured 1.5-2.3x faster: G-1 and
+  simplicity win.
+- **G-57. How grift grows** (VISION "How grift grows"). A feature enters only with evidence from
+  real programs (a friction entry with a reproduction: one blocker, or the same cost in more than
+  one program) and a recorded decision. Library grift comes before a primitive; a primitive only
+  when the library version can't exist or is measured to be unusable. Removing things is welcome.
+- **G-58. What complete means** (VISION "What complete means"). grift is complete when a closed
+  list of programs runs well on it, each written without changing grift and with no blocker in
+  its friction log: the Emacs-style editor; wave 1's evaluator, logic engine, algebra system and
+  JSON filter; wave 2's spreadsheet, text adventure, build tool and sandboxed plugin host; and a
+  set of Unix scripts on the runner. Adding a program to the list is a decision.
+
+## Made with G-36 to G-58, 2026-11-01 (the owner may overrule any)
+
+- **G-59. The Rust API uses the same words** (G-38). `Value::{EmptyList, Integer, Float, Symbol,
+  String, Context, Operative, Applicative, Primitive}`, `Error { kind, values, trace }`,
+  `Grift::evaluate`, `string`/`as_str`, `pair`/`as_pair`, `HostFunction`, `Primitive`,
+  `Reference`. `Value` is `PartialEq`, no longer `Eq`, because of floats.
+- **G-60. Host functions are values first** (G-41). `host_function(name, f)` gives an applicative
+  bound nowhere and `define(name, value)` binds any value at top level, so a host can hand
+  functions to grift code that keeps them private. The runner does: `runner.grift` is evaluated
+  to a combiner called with the top-level context and the private host functions, and every file
+  operation is a closure over them holding the file's number.
+- **G-61. Float text.** The reader reads a number (a digit after an optional sign) as an integer if
+  it is one, else as a float if it has a `.` or an exponent, by Rust's parse; the printer writes
+  Rust's shortest form that reads back (`{:?}`, always with a `.` or an exponent) and
+  `#infinity`, `#-infinity`, `#not-a-number`, so every float prints and reads back to the same
+  bits. `float-to-string` and `string-to-float` are exactly Rust's `Display` and `parse::<f64>`,
+  which undo each other (`"NaN"`, `"inf"`), as `integer-to-string` and `string-to-integer` are.
+- **G-62. A string that isn't a number is a `parse-error`**, carrying the primitive and the
+  string: it means what the reader's `parse-error` means, text that doesn't read (the reader's
+  carries a line and column).
+- **G-63. The float functions take floats only**, `absolute-value` included: one rule, and an
+  integer's absolute value is a line of library grift.
+- **G-64. `error` is library code**, a context made with `context` and `bind`; `raise` stays the
+  primitive. A new error (an empty trace) happens at its `raise`; a caught one keeps its trace.
+- **G-65. `and!?` and `or!?` check every operand they evaluate**, the last one included (G-52), so
+  the last is no longer a tail call.
+- **G-66. `equal?` stays library code.** IEEE equality of two floats is `less-than?` both ways
+  plus a test for not-a-number, the one float that is neither less than 1.0 nor more than 0.0. It
+  compares the rest of a list as a tail call.
+- **G-67. `inert?` and `ignore?`** complete the predicates, one for each type `type-of` gives
+  (the name table's note).
+- **G-68. `if!` is two applicatives, one per shape of its operands** (G-46, G-56).
+  `(test consequent)` and `(test consequent alternative)` are matched exactly, so a third
+  operand is an `arity-error`, and `(same? alternative ())` picks between them. Every correct
+  library-only optional alternative costs a call per `if!`; measured on `fib 25` in one build:
+  `if!` with both branches required 0.134 s (as fast as before), a `first` trick that silently
+  ignores extra operands 0.180 s, this one about 0.215 s. The task's band (no more than 10%
+  slower) is revised to the measured value; cost: code heavy in `if!` runs about 1.6 times
+  slower. A call's bindings are now built before its context, sized for its parameters (about 2%).
+- **G-69. The runner runs one script with arguments**, `grift SCRIPT ARGUMENT...`, as `sh` and
+  `python` do, so a `#!/usr/bin/env grift` script gets its own arguments; a first line starting
+  with `#!` reads as empty. Several files per run are gone.
+- **G-70. The runner's operations** (G-55): `display`, `newline`, `standard-input` (`read-line`,
+  `read-all`), `open-file` (`read-line`, `read-all`, `close`, `path`), `create-file` (`write`,
+  `close`, `path`), `command-line-arguments`, `environment-variable`, `exit`, `run-process`.
+  `read-line` is Rust's `BufRead::read_line`: the line with its newline, `""` at the end, so no
+  value is set aside to mean the end. `run-process` is Rust's `Command::output`: no input, the
+  output captured, and a record binding `status` (`#inert` if a signal ended the process),
+  `output` and `error-output`. `exit` records the status and sets the runner's own interrupt
+  flag, so the program stops at its next step with `interrupted`, which no `catch!` stops, and
+  its cleanups run: no core change. Kinds: `file-error`, `encoding-error`, `closed`,
+  `unset-variable`, `process-error`.
