@@ -2,7 +2,7 @@
 //! pair only refers to older values), and a context prints only its names, so it ends.
 
 use crate::heap::Object;
-use crate::{Error, Growing, Grift, Value};
+use crate::{Error, Grift, Growing, Value};
 use std::fmt::{self, Write};
 
 enum Item {

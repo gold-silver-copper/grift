@@ -930,9 +930,13 @@ impl<T> Grift<T> {
                 let read =
                     read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
                 match read? {
-                    Some((form, next)) => {
-                        let next = i64::try_from(next).map_err(|_| Error::oom())?;
-                        self.pair(form, Value::Integer(next))?
+                    Some((form, place)) => {
+                        let offset = |i| i64::try_from(i).map(Value::Integer);
+                        let (start, end) = (offset(place.start), offset(place.end));
+                        let (Ok(start), Ok(end)) = (start, end) else {
+                            return Err(Error::oom());
+                        };
+                        self.list(&[form, start, end])?
                     }
                     None => Value::EmptyList,
                 }

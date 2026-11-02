@@ -115,7 +115,7 @@ All are applicatives except `vau!`.
 | `(symbol-to-string sym)`, `(string-to-symbol s)` | A symbol's name; the symbol named `s`, interned. |
 | `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
 | `(float-to-string x)`, `(string-to-float s)` | The float's printed text, so it reads back as the same float: `(float-to-string 1.0)` is `"1.0"`, `(float-to-string #infinity)` is `"#infinity"`. Rust's `parse::<f64>` and the three `#` names, which undo each other for every float but a not-a-number, whose sign and payload are lost: `(string-to-float "1")` is `1.0`, `(string-to-float "inf")` is `#infinity`. A string that reads as neither is a `parse-error`. |
-| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the pair `(form . next)`, where `next` is the offset right after the form; `()` if only space and comments are left, so a form that is `()` gives `(() . next)`. It evaluates nothing. Text that doesn't read is a `parse-error` with the line and column in the whole text; an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
+| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with the line and column in the whole text; an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
 | `(value-to-string v)` | The text the printer writes for `v`, combiners and contexts as they print (see Values): `(value-to-string (list 1.0 "a"))` is `"(1.0 \"a\")"`. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
@@ -218,7 +218,7 @@ cleanups doesn't replace them. Whether an error is a limit goes by its kind: a p
 | `overflow` | integer arithmetic beyond 64 bits | the primitive and the operands |
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
 | `range-error` | a string offset off a character boundary or out of range; a code point that isn't one; an empty separator given `string-split` | the primitive and the operands; or `string-split` and the separator |
-| `parse-error` | text that doesn't read: a program or `read-form`'s text (unfinished text fails at its end), or a string given `string-to-integer` or `string-to-float` | the line and column; or the primitive and the string |
+| `parse-error` | text that doesn't read: a program or `read-form`'s text (unfinished text fails at its end), or a string given `string-to-integer` or `string-to-float` | the line and the column, which counts characters from 1; or the primitive and the string |
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `interrupted` | the host set its interrupt flag | none |

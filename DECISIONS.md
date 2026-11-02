@@ -463,15 +463,18 @@ ways each) written on grift at 27c2aa4 without changing it, ranked in
 - **G-77. `read-form`** (G-38: a verb and what it reads, beside the runner's `read-line` and
   `read-all`; agents typed `read` first, which says nothing about one form, and `string-to-value`, but
   the operation takes an offset and gives more than a conversion would). `(read-form text offset)` is
-  `(form . next)`, or `()` when only space and comments are left: a form is always in a pair, so the
+  `(form start end)`, or `()` when only space and comments are left: a form is always in a list, so the
   end can't be mistaken for one, and no value is set aside. One reader: `Grift::read` loops over the
-  same function, so the two can't disagree. The offset is in bytes as everywhere and must be on a
-  character boundary. `next` is right after the form, not past the space after it, so a program can
-  keep a form's text and count lines up to it. A `parse-error` keeps its values, the line and column,
-  now counted from the start of the whole text when the error happens, so reading costs nothing per
-  form for the length of the text before it; the primitive lends the string's text to the reader for
-  the call for the same reason. Not added: `Grift::read_form` for hosts, and a start offset for the
-  form.
+  same function, so the two can't disagree. The offsets are in bytes as everywhere, and the one given
+  must be on a character boundary. `start` was added to the form and the offset after it after porting
+  build-data: a form's line is where it starts, so with the end alone a program skipped space and
+  comments itself, by its own idea of whitespace, and a form feed gave a wrong line. It also makes the
+  form's own text one `byte-substring`. A `parse-error` keeps its values, the line and column, now
+  counted from the start of the whole text when the error happens, so reading costs nothing per form
+  for the length of the text before it; the primitive lends the string's text to the reader for the
+  call for the same reason. Reading 40,000 forms, 1.5 MB, takes 0.17 s, against 10-63 µs a byte for the
+  programs' readers. Not added: `Grift::read_form` for hosts, and a reason in a `parse-error` (tally
+  core 6, not chosen for this change).
 - **G-78. `value-to-string`; `float-to-string` is the printer's** (amends G-61). `value-to-string`
   is what `Grift::write` writes, as a string. `float-to-string` now gives a float's printed text, so
   `(float-to-string 1.0)` is `"1.0"`, not the integer's text, and any float's text reads back as a float

@@ -1363,7 +1363,10 @@ fn unwinding_and_checking_parameters_search_nothing() {
     let good = format!("((wrap vau!) (quote! ({})) #ignore 1)", names.join(" "));
     assert!(g.evaluate(&mut (), &good).is_ok());
     assert!(start.elapsed() < LINEAR, "{:?}", start.elapsed());
-    let twice = format!("((wrap vau!) (quote! ({} p000000)) #ignore 1)", names.join(" "));
+    let twice = format!(
+        "((wrap vau!) (quote! ({} p000000)) #ignore 1)",
+        names.join(" ")
+    );
     fails(&mut g, &[(twice.as_str(), "parameter-error")]);
 }
 
@@ -1409,7 +1412,11 @@ fn read_form_is_the_program_reader() {
              (let! ((read (read-form text at)))
                (if! (empty-list? read)
                  ()
-                 (pair (first read) (forms text (rest read)))))))",
+                 (let! (((form start end) read))
+                   ; The text between its offsets is the form's, and reads back as the form.
+                   (if! (equal? (first (read-form (byte-substring text start end) 0)) form)
+                     (pair form (forms text end))
+                     (raise (error (quote! not-the-form) form))))))))",
     )
     .unwrap();
     // Form by form, it reads what the program reader reads.
@@ -1429,11 +1436,12 @@ fn read_form_is_the_program_reader() {
     holds(
         &mut g,
         &[
-            // The form and the offset right after it; a form that is () from the end of the text.
-            "(equal? (read-form \"  (add 1 2.5) x\" 0) (quote! ((add 1 2.5) . 13)))",
-            "(equal? (read-form \"  (add 1 2.5) x\" 13) (quote! (x . 15)))",
-            "(equal? (read-form \"é x\" 2) (quote! (x . 4)))",
-            "(equal? (read-form \"()\" 0) (quote! (() . 2)))",
+            // The form, where it starts past space and comments, and the offset right after it; a
+            // form that is () from the end of the text.
+            "(equal? (read-form \"  (add 1 2.5) x\" 0) (quote! ((add 1 2.5) 2 13)))",
+            "(equal? (read-form \"  (add 1 2.5) x\" 13) (quote! (x 14 15)))",
+            "(equal? (read-form \"é x\" 2) (quote! (x 3 4)))",
+            "(equal? (read-form \"; é\\n\\xc;\\xa0; ()\" 0) (quote! (() 9 11)))",
             "(empty-list? (read-form \"() \" 2))",
             "(empty-list? (read-form \"\" 0))",
             // It evaluates nothing, and what it reads evaluates as written.
@@ -1442,13 +1450,25 @@ fn read_form_is_the_program_reader() {
         ],
     );
     // A parse-error says the line and column in the whole text, as the program reader's does.
-    for bad in [")", "(a", "\n  (a . )", "\"é\n", "(a\n#nope)", "1.2.3", "(. a)", "\"\\q\""] {
+    for bad in [
+        ")",
+        "(a",
+        "\n  (a . )",
+        "\"é\n",
+        "(a\n#nope)",
+        "1.2.3",
+        "(. a)",
+        "\"\\q\"",
+    ] {
         let whole = g.read(bad).unwrap_err();
         assert_eq!(kind(&mut g, &whole), "parse-error");
         let one = g
             .evaluate(&mut (), &format!("(read-form {} 0)", literal(bad)))
             .unwrap_err();
-        assert_eq!((kind(&mut g, &one), one.values), ("parse-error".into(), whole.values));
+        assert_eq!(
+            (kind(&mut g, &one), one.values),
+            ("parse-error".into(), whole.values)
+        );
     }
     let e = g
         .evaluate(&mut (), "(read-form \"a\\nb\\n)\" 4)")
@@ -1467,14 +1487,12 @@ fn read_form_is_the_program_reader() {
     // The text is all there afterwards, whatever the outcome.
     holds(
         &mut g,
-        &[
-            "(sequence!
+        &["(sequence!
                (define! t \"(a) (\")
                (read-form t 0)
                (catch! (read-form t 3) #ignore #inert)
                (catch! (read-form t 9) #ignore #inert)
-               (same? t \"(a) (\"))",
-        ],
+               (same? t \"(a) (\"))"],
     );
 }
 
@@ -1530,7 +1548,10 @@ fn member_and_find_association_cost_what_a_loop_by_hand_does() {
         ("(find-association 9 ps)", "(find-by-hand 9 ps)"),
     ] {
         let ((steps, _), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
-        assert!(steps <= by_hand_steps, "{form}: {steps} against {by_hand_steps}");
+        assert!(
+            steps <= by_hand_steps,
+            "{form}: {steps} against {by_hand_steps}"
+        );
     }
     holds(
         &mut g,

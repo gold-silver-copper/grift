@@ -2,6 +2,7 @@
 
 use crate::heap::Object;
 use crate::{Error, Grift, K, Value, push};
+use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, and where a dotted tail stands.
 struct List {
@@ -92,21 +93,23 @@ impl<T> Grift<T> {
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
         let mut forms = List::new();
         let mut at = 0;
-        while let Some((form, next)) = self.read_form(src, at)? {
+        while let Some((form, place)) = self.read_form(src, at)? {
             self.add(&mut forms, form)?;
-            at = next;
+            at = place.end;
         }
         Ok(forms.head)
     }
 
-    /// Reads the form after byte offset `start` of `src`, a character boundary: the form and the
-    /// offset right after it, or `None` if only space and comments are left.
+    /// Reads the form after byte offset `from` of `src`, a character boundary: the form and where
+    /// it is, or `None` if only space and comments are left.
     pub(crate) fn read_form(
         &mut self,
         src: &str,
-        start: usize,
-    ) -> Result<Option<(Value, usize)>, Error> {
-        let mut cur = Cursor { src, at: start };
+        from: usize,
+    ) -> Result<Option<(Value, Range<usize>)>, Error> {
+        let mut cur = Cursor { src, at: from };
+        cur.skip_space();
+        let start = cur.at;
         let mut open: Vec<List> = Vec::new();
         loop {
             cur.skip_space();
@@ -147,7 +150,7 @@ impl<T> Grift<T> {
                 }
             };
             let Some(list) = open.last_mut() else {
-                return Ok(Some((datum, cur.at)));
+                return Ok(Some((datum, start..cur.at)));
             };
             if list.dot == Dot::Done {
                 return Err(fail());

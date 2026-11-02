@@ -50,7 +50,7 @@ built-in-names                              ; every primitive and library name
 (catch! (first 1) e (evaluate-in! kind e))  ; => type-error; e binds kind, values, trace
 (raise (error (quote! my-kind) 1 2))        ; error makes one, raise raises it
 (binds!? here n first nope)                 ; => #false: nope isn't bound
-(read-form "(add 1 2) x" 0)                 ; => ((add 1 2) . 9): the form and the offset after it
+(read-form " (add 1 2) x" 0)                ; => ((add 1 2) 1 10): the form, its start and end
 (value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
 (string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
 ```
