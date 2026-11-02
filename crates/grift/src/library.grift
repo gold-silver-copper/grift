@@ -392,8 +392,18 @@
              (pair (first xs) (taken (rest xs) (subtract i 1) n))))))
      (list
        (lambda! (xs index) (at (quote! element-at) xs index))
-       (lambda! (xs) (at (quote! second) xs 1))
-       (lambda! (xs) (at (quote! third) xs 2))
+       ; second and third take the list apart themselves, as (first (rest xs)) would, and walk it
+       ; again with at only to say why they can't.
+       (lambda! (xs)
+         (if! (same? xs ())
+           (at (quote! second) xs 1)
+           (if! (same? (rest xs) ()) (at (quote! second) xs 1) (first (rest xs)))))
+       (lambda! (xs)
+         (if! (same? xs ())
+           (at (quote! third) xs 2)
+           (if! (same? (rest xs) ())
+             (at (quote! third) xs 2)
+             (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
        (lambda! (xs)
          (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
        (lambda! (xs n) (taken xs (counted (quote! take) n) n))

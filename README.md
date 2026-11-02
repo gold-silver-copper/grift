@@ -50,23 +50,30 @@ built-in-names                              ; every primitive and library name
 (catch! (first 1) e (evaluate-in! kind e))  ; => type-error; e binds kind, values, trace
 (raise (error (quote! my-kind) 1 2))        ; error makes one, raise raises it
 (binds? here (quote! nope))                 ; => #false: nope isn't bound
+(lookup here (quote! nope) 0)               ; => 0: a lookup with a default; unbind removes one
+(catch-kind! (first 1) type-error e 0)      ; => 0; any other kind goes on
+(sort (list 3 1 2) less-than?)              ; => (1 2 3), stable
+(element-at (list 1 2 3) 2)                 ; => 3; take, drop, second, third, last
 (read-form " (add 1 2) x" 0)                ; => ((add 1 2) 1 10): the form, its start and end
 (value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
 (string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
 ```
 
 The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup call-with-handler raise
-context bind names pair first rest same? select type-of add subtract multiply divide remainder
-less-than? power square-root sine cosine tangent exponential natural-logarithm floor ceiling round
-truncate absolute-value integer-to-float float-to-integer string-byte-length string-byte
-byte-substring string-append code-point-to-string string-to-symbol integer-to-string
-string-to-integer string-to-float read-form value-to-string`. The library adds
-`define! quote! list if! lambda! sequence! when! conditional! let! finally! catch! current-context
-evaluate-in! not? empty-list? boolean? integer? float? symbol? pair? string? context? operative?
-applicative? and!? or!? apply any? all? map for-each error length append reverse equal? greater-than?
-less-than-or-equal? greater-than-or-equal? minimum maximum find-association member? binds?
-symbol-to-string filter fold range string-search string-starts-with? string-ends-with? string-split
-string-join string-trim string-pad-left string-pad-right string-to-lowercase built-in-names`.
+context bind unbind lookup names pair first rest same? select type-of add subtract multiply divide
+remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
+square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
+integer-to-float float-to-integer string-byte-length string-byte byte-substring string-append
+code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
+value-to-string`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
+let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? boolean? integer?
+float? symbol? pair? string? context? operative? applicative? and!? or!? apply any? all? map
+for-each error length append reverse equal? greater-than? less-than-or-equal?
+greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
+symbol-to-string float-to-string filter fold range sort element-at second third last take drop
+string-search string-starts-with? string-ends-with? string-split string-join string-trim
+string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase
+built-in-names`.
 
 ## The runner
 
@@ -90,11 +97,16 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | Operation | Meaning |
 |---|---|
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
-| `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest. A program read from stdin can't read it again (`closed`). |
-| `standard-error` | A context of operations: `(write string)`, as a file's, to stderr: a message before `(exit 2)`, say. |
-| `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `close`, and `path`. |
-| `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `close`, and `path`. |
+| `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
+| `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a list of integers 0-255, `()` at the end. A program read from stdin can't read it again (`closed`). |
+| `standard-output`, `standard-error` | Contexts of operations: `(write string)`, and `(write-bytes bytes)`, a list of integers 0-255, as a file's, to stdout or stderr. |
+| `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
+| `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `(write-bytes bytes)`, `close`, and `path`. |
+| `(read-file path)` | The file's whole text. |
+| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded, at first the script, else the current directory. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. An error while it runs has the file and the form's line in its trace, as a string: `from "lib/table.grift:12"`; a combiner the file defined, failing after the load, has only its combinations, as any combiner's error does. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
+| `script-path` | The script's path, as given; unbound when the program is stdin. |
+| `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
 | `(environment-variable name)` | Its value, a string; `unset-variable` when it has none. |
 | `(exit status)` | Ends the run with `status`, 0 to 255. The program stops at its next step, as when the host interrupts it: no `catch!` can keep it going, and its cleanups run. |
 | `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it), `output` and `error-output` (what it wrote, as strings). |
@@ -105,7 +117,8 @@ program reaches a file only through a context it was given; closing is explicit,
 after it is closed is the error `closed`. The runner's error kinds: `file-error` (the path and the
 system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the path),
 `unset-variable` (the name), `process-error` (the program and the message), `output-error`,
-`stdout-closed`.
+`stdout-closed`. A write to stdout through `standard-output` that finds it closed ends the run
+quietly, as `display` does.
 
 ```lisp
 #!/usr/bin/env grift
@@ -212,7 +225,7 @@ with its own `test.sh`, and the gate runs them all.
 
 ## Inside
 
-One crate, about 1,800 lines of Rust: values and a heap that is a growable `Vec` of slots
+One crate, about 2,100 lines of Rust: values and a heap that is a growable `Vec` of slots
 (`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and

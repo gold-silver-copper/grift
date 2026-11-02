@@ -49,7 +49,8 @@ There is no truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and
 booleans, and anything else is a type error. Nothing is guessed for a missing branch either: `if!`
 needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers
 and floats never mix implicitly: `(add 1 1.5)` is a type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
-and no vector type. Host types are not grift values: the host converts at the boundary (checked;
+and no vector type. Bytes that aren't UTF-8 text, read from a file or standard input or written
+to one, are a list of integers 0-255, not a new value: strings stay UTF-8 text. Host types are not grift values: the host converts at the boundary (checked;
 `range-error` when a number doesn't fit) or gives grift a context of operations.
 
 ## Numbers
@@ -78,7 +79,7 @@ follows `lambda!`: both name the abstraction they make).
 - Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`), as
   in fuxth.
 - Only bindings change, so the combiners that change anything are a short, complete list of verbs
-  about bindings: `define!` and `bind`.
+  about bindings: `define!`, `bind` and `unbind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
 became the verb itself. Equality is `same?` and `equal?`: `same?` is identity for pairs, contexts
 and combiners, equality of value for integers, symbols and strings, and equality of the stored bits
@@ -94,9 +95,11 @@ code from the host or from other code in the same interpreter; an embedder runni
 isolates it itself, for example in its own process.
 
 ## State
-Only bindings change: a context gains a binding or has one replaced, and no other value ever
+Only bindings change: a context gains, replaces or loses a binding, and no other value ever
 changes. You can change only a context you hold; a child never gives access to change its parent
-(there is no parent accessor). Records, cells and symbol-keyed tables are contexts. There is no
+(there is no parent accessor). That is why there is no `set!`: `define!` binds in the context it
+is evaluated in, so in a body it makes a local, and changing an outer binding means holding that
+context and binding there, `(bind here (quote! counter) (add counter 1))`. Records, cells and symbol-keyed tables are contexts. There is no
 object system: no classes, prototypes, `send` or method syntax, only contexts. To call an operation
 a context holds, look it up there and call it where you are: `((evaluate-in! write f) line)`
 evaluates `line` in your context, not in `f`.
@@ -116,8 +119,9 @@ from an id. Closing is explicit (no finalizers), and using it after that is the 
 ## The runner
 The `grift` runner is a Unix tool: it runs a script or stdin, prints data to stdout and diagnostics
 to stderr, and exits 0, 1 on an error, 2 on a usage error. It gives programs a small, fixed set of
-host operations: reading stdin as data, writing to stderr, files (as contexts of operations), the
-command-line arguments, environment variables, the exit status, and running processes.
+host operations: reading stdin as data, writing to stderr, files (as contexts of operations, as
+text or as bytes), loading another file's forms, the command-line arguments and the script's
+path, environment variables, two clocks, the exit status, and running processes.
 
 ## Implementation
 The implementation stays small and uniform: one evaluation step for every kind of form, one

@@ -181,11 +181,13 @@ lookup whatever the number of cases, where `conditional!` tests its clauses in o
 
 **What the library forms cost.** `if!` is one library operative; the forms with a body walk their
 operands in grift, so in a loop run per byte or per node each costs a few `if!`s. Measured with the
-runner's `elapsed-nanoseconds` (release, one run, 200,000 calls; `crates/grift` at this version), on
-top of a loop of one `if!` and a call, 0.57 µs a turn: one more `if!` 0.48 µs, `sequence!` of two
-1.5 µs, `let!` of one binding 2.5 µs, `and!?` of two 2.2 µs, `catch!` with no error 2.0 µs,
-`conditional!` of three clauses, the last true, 3.9 µs. Nested `if!`s are the cheapest branch; the
-others read better where speed doesn't matter.
+runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a
+loop of one `if!` and a call, 0.49 µs a turn: another `if!` 0.35 µs, `sequence!` of two forms 1.6 µs,
+`let!` of one binding 2.5 µs, `and!?` of two 2.3 µs, `catch!` with no error 0.5 µs more than the
+`sequence!` around it, and `conditional!` of three clauses, the last one true, 3.1 µs more than the
+same choice in two nested `if!`s. A library combiner such as `second` costs a call, about 0.9 µs,
+where `(first (rest x))` costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read
+better where speed doesn't matter.
 
 ## Errors
 
