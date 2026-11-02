@@ -1,7 +1,7 @@
 //! The printer, with an explicit stack. Pairs can't form cycles (they are immutable, and a
-//! pair only refers to older values), and environments are printed opaquely, so it ends.
+//! pair only refers to older values), and a context prints only its names, so it ends.
 
-use crate::heap::Obj;
+use crate::heap::Object;
 use crate::{Grift, Value};
 use std::fmt::{self, Write};
 
@@ -14,7 +14,8 @@ enum Item {
 
 impl<T> Grift<T> {
     /// Writes `v` as grift would read it back, where it can be read back. Combiners show their
-    /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive car]]`.
+    /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive first]]`;
+    /// a context shows its own names, sorted: `#[context a b]`.
     pub fn write(&self, v: Value, out: &mut dyn Write) -> fmt::Result {
         let mut todo = Vec::new();
         let push = |todo: &mut Vec<Item>, it| {
@@ -32,7 +33,7 @@ impl<T> Grift<T> {
                     out.write_str(s)?;
                     continue;
                 }
-                Item::Tail(Value::Nil) => {
+                Item::Tail(Value::EmptyList) => {
                     out.write_char(')')?;
                     continue;
                 }
@@ -48,31 +49,45 @@ impl<T> Grift<T> {
                 Item::Value(v) => v,
             };
             match v {
-                Value::Nil => out.write_str("()")?,
-                Value::True => out.write_str("#t")?,
-                Value::False => out.write_str("#f")?,
+                Value::EmptyList => out.write_str("()")?,
+                Value::True => out.write_str("#true")?,
+                Value::False => out.write_str("#false")?,
                 Value::Inert => out.write_str("#inert")?,
                 Value::Ignore => out.write_str("#ignore")?,
-                Value::Int(n) => write!(out, "{n}")?,
-                Value::Sym(s) => out.write_str(self.name(s))?,
-                Value::Env(_) => out.write_str("#[environment]")?,
-                Value::Prim(p) => write!(out, "#[primitive {}]", p.name())?,
+                Value::Integer(n) => write!(out, "{n}")?,
+                Value::Float(f) if f.is_nan() => out.write_str("#not-a-number")?,
+                Value::Float(f) if f == f64::INFINITY => out.write_str("#infinity")?,
+                Value::Float(f) if f == f64::NEG_INFINITY => out.write_str("#-infinity")?,
+                // Rust's shortest form that reads back, always with a `.` or an exponent.
+                Value::Float(f) => write!(out, "{f:?}")?,
+                Value::Symbol(s) => out.write_str(self.name(s))?,
+                Value::Primitive(p) => write!(out, "#[primitive {}]", p.name())?,
                 Value::Host(h) => {
                     out.write_str("#[host ")?;
-                    let name = self.hosts.get(h.0 as usize).map(|&(s, _)| Value::Sym(s));
+                    let name = self.hosts.get(h.0 as usize).map(|&(s, _)| Value::Symbol(s));
                     push(&mut todo, Item::Text("]"))?;
-                    push(&mut todo, Item::Value(name.unwrap_or(Value::Nil)))?;
+                    push(&mut todo, Item::Value(name.unwrap_or(Value::EmptyList)))?;
                 }
-                Value::Pair(r) | Value::Str(r) | Value::Op(r) | Value::App(r) => {
+                Value::Context(r) if self.heap.get(r).is_err() => out.write_str("#[stale]")?,
+                Value::Context(r) => {
+                    let names = self.names_of(r).map_err(|_| fmt::Error)?;
+                    out.write_str("#[context")?;
+                    for name in names {
+                        out.write_char(' ')?;
+                        self.write(name, out)?;
+                    }
+                    out.write_char(']')?;
+                }
+                Value::Pair(r) | Value::String(r) | Value::Operative(r) | Value::Applicative(r) => {
                     match self.heap.get(r) {
-                        Ok(Obj::Pair(a, d)) => {
+                        Ok(Object::Pair(a, b)) => {
                             if opens {
                                 out.write_char('(')?;
                             }
-                            push(&mut todo, Item::Tail(*d))?;
+                            push(&mut todo, Item::Tail(*b))?;
                             push(&mut todo, Item::Value(*a))?;
                         }
-                        Ok(Obj::Str(s)) => {
+                        Ok(Object::String(s)) => {
                             out.write_char('"')?;
                             for c in s.chars() {
                                 match c {
@@ -86,9 +101,9 @@ impl<T> Grift<T> {
                             }
                             out.write_char('"')?;
                         }
-                        Ok(Obj::Op(op)) => {
+                        Ok(Object::Operative(op)) => {
                             out.write_str("#[operative ")?;
-                            let parts = [op.formals, op.eformal, op.body];
+                            let parts = [op.parameters, op.context_parameter, op.body];
                             push(&mut todo, Item::Text("]"))?;
                             for (i, part) in parts.into_iter().enumerate().rev() {
                                 push(&mut todo, Item::Value(part))?;
@@ -97,7 +112,7 @@ impl<T> Grift<T> {
                                 }
                             }
                         }
-                        Ok(Obj::App(c)) => {
+                        Ok(Object::Applicative(c)) => {
                             out.write_str("#[applicative ")?;
                             push(&mut todo, Item::Text("]"))?;
                             push(&mut todo, Item::Value(*c))?;

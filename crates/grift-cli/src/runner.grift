@@ -1,0 +1,35 @@
+; The runner's operations on files, standard input and processes. main.rs evaluates this, in a
+; private child of the built-in context, to a combiner it calls with the top-level context and its
+; host functions, which are bound nowhere else.
+; Every operation a program gets is a closure over them, holding the number of its file: a
+; program reaches a file only through the context it was given, and can't name one by its
+; number.
+(lambda! (top open-host create-host read-line-host read-all-host write-host close-host run-host)
+  ; A new context binding `names` to `values`.
+  (define! operations
+    (lambda! (names values)
+      (let! ((c (context)))
+        (bind c names values)
+        c)))
+  (define! reader
+    (lambda! (path file)
+      (operations (quote! (path read-line read-all close))
+                  (list path
+                        (lambda! () (read-line-host file))
+                        (lambda! () (read-all-host file))
+                        (lambda! () (close-host file))))))
+  (define! writer
+    (lambda! (path file)
+      (operations (quote! (path write close))
+                  (list path
+                        (lambda! (text) (write-host file text))
+                        (lambda! () (close-host file))))))
+  (define-in! top (standard-input open-file create-file run-process)
+    (list (operations (quote! (read-line read-all))
+                      (list (lambda! () (read-line-host 0)) (lambda! () (read-all-host 0))))
+          (lambda! (path) (reader path (open-host path)))
+          (lambda! (path) (writer path (create-host path)))
+          ; The record of a finished process: its status, output and error output.
+          (lambda! (program . arguments)
+            (operations (quote! (status output error-output))
+                        (apply run-host (pair program arguments)))))))

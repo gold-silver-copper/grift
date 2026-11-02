@@ -1,11 +1,13 @@
 ; The editor, in grift. The host (main.rs) gives it bytes and files only:
-;   (key)                  the next byte typed, as an integer
-;   (term-write s ...)     strings to the terminal, shown when the next key is read
-;   (term-size)            (rows columns)
-;   (read-file path)       the file's text, () if it doesn't exist
-;   (write-file path s)    replaces the file with the string's bytes
-;   (string->codes s) (codes->string codes) (string->symbol s) (value->string v)
-;   (read-string s)        the forms in s, read, not evaluated
+;   (key)                          the next byte typed, as an integer
+;   (terminal-write s ...)         strings to the terminal, shown when the next key is read
+;   (terminal-size)                (rows columns)
+;   (read-file path)               the file's text, () if it doesn't exist
+;   (write-file path s)            replaces the file with the string's bytes
+;   (string-to-code-points s)      the string's characters, as a list of code points
+;   (code-points-to-string list)   the other way
+;   (value-to-string v)            the printed form of any value
+;   (string-to-forms s)            the forms in s, read, not evaluated
 ; The host starts the editor with (editor-main file message) and, after an error stopped a
 ; command, goes on with (editor-recover message). C-g while a command runs interrupts it.
 ; Everything else is here: the buffer, redisplay, keys and keymaps, the minibuffer, the
@@ -14,694 +16,737 @@
 
 ; --- Helpers the library doesn't have ---------------------------------------------------------
 
-; The top-level environment, where the editor's state lives.
-($define! editor-env (get-current-environment))
-
-($define! <=? ($lambda (a b) (not? (<? b a))))
+; The top-level context, where the editor's state lives.
+(define! editor-context (current-context))
 
 ; (reverse-onto xs ys): xs reversed, in front of ys.
-($define! reverse-onto
-  ($lambda (xs ys) ($if (null? xs) ys (reverse-onto (cdr xs) (cons (car xs) ys)))))
+(define! reverse-onto
+  (lambda! (xs ys) (if! (empty-list? xs) ys (reverse-onto (rest xs) (pair (first xs) ys)))))
 
-($define! take
-  ($lambda (xs n)
-    ($if ($or? (null? xs) (<? n 1)) () (cons (car xs) (take (cdr xs) (- n 1))))))
+(define! take
+  (lambda! (xs n)
+    (if! (or!? (empty-list? xs) (less-than? n 1)) () (pair (first xs) (take (rest xs) (subtract n 1))))))
 
-($define! drop ($lambda (xs n) ($if ($or? (null? xs) (<? n 1)) xs (drop (cdr xs) (- n 1)))))
+(define! drop
+  (lambda! (xs n) (if! (or!? (empty-list? xs) (less-than? n 1)) xs (drop (rest xs) (subtract n 1)))))
 
-($define! make-list
-  ($lambda (n x) ($if (<? n 1) () (cons x (make-list (- n 1) x)))))
+; A string of n spaces.
+(define! spaces
+  (lambda! (n) (if! (less-than? n 1) "" (string-append " " (spaces (subtract n 1))))))
 
-($define! string-length ($lambda (s) (length (string->codes s))))
+; How many characters a string has: string-byte-length counts bytes.
+(define! code-point-count (lambda! (s) (length (string-to-code-points s))))
 
-($define! string-append
-  ($lambda strings (codes->string (apply append (map string->codes strings)))))
-
-; (string-join strings separator)
-($define! string-join
-  ($lambda (strings sep)
-    ($if (null? strings)
+(define! string-join
+  (lambda! (strings separator)
+    (if! (empty-list? strings)
       ""
       (apply string-append
-        (cons (car strings) (apply append (map ($lambda (s) (list sep s)) (cdr strings))))))))
+        (pair (first strings)
+              (apply append (map (lambda! (s) (list separator s)) (rest strings))))))))
 
-($define! number->string
-  ($lambda (n)
-    ($define! digits
-      ($lambda (n acc)
-        ($if (<? n 10)
-          (cons (+ 48 n) acc)
-          (digits (div n 10) (cons (+ 48 (mod n 10)) acc)))))
-    (codes->string ($if (<? n 0) (cons 45 (digits (- 0 n) ())) (digits n ())))))
-
-; (split-codes codes c): the runs of codes between each c, as lists.
-($define! split-codes
-  ($lambda (codes c)
-    ($define! loop
-      ($lambda (cs run runs)
-        ($if (null? cs)
-          (reverse (cons (reverse run) runs))
-          ($if (eq? (car cs) c)
-            (loop (cdr cs) () (cons (reverse run) runs))
-            (loop (cdr cs) (cons (car cs) run) runs)))))
-    (loop codes () ())))
+; (split-code-points code-points c): the runs of code points between each c, as lists. It
+; runs once for each character of a file opened, so it uses if!: conditional! was 2.8 times
+; slower here.
+(define! split-code-points
+  (lambda! (code-points c)
+    (define! loop
+      (lambda! (remaining run runs)
+        (if! (empty-list? remaining)
+          (reverse (pair (reverse run) runs))
+          (if! (same? (first remaining) c)
+            (loop (rest remaining) () (pair (reverse run) runs))
+            (loop (rest remaining) (pair (first remaining) run) runs)))))
+    (loop code-points () ())))
 
 ; The text of a file as its lines, without the newlines: "a\nb\n" is ("a" "b" "").
-($define! text->lines
-  ($lambda (text) (map codes->string (split-codes (string->codes text) 10))))
+(define! text-to-lines
+  (lambda! (text) (map code-points-to-string (split-code-points (string-to-code-points text) 10))))
 
-($define! csi "\x1b;[")
+; A terminal control sequence: ESC [ and s.
+(define! control-sequence (lambda! (s) (string-append "\x1b;[" s)))
 
 ; --- Buffers ------------------------------------------------------------------------------------
-; A buffer is an environment holding its fields. Point splits the current line into `before`
+; A buffer is a context holding its fields. Point splits the current line into `before`
 ; (nearest first) and `after`, both lists of code points; the other lines are strings, `above`
 ; nearest first and `below`. `row` is the current line's number from 0, `top` the first line
 ; in the window. `keymap` is the buffer's own keymap, looked up before the global one. `undo`
-; lists the states before each change, latest first.
+; lists the states before each change, latest first. (evaluate-in! row b) reads a field.
 
-($define! make-buffer
-  ($lambda (name file lines)
-    ($define! b (make-environment))
-    (bind! b ($quote (name file above before after below row top keymap modified undo))
-      (list name file () () (string->codes (car lines)) (cdr lines) 0 0 (make-environment) #f ()))
+(define! buffer
+  (lambda! (name file lines)
+    (define! b (context))
+    (bind b (quote! (name file above before after below row top keymap modified undo))
+      (list name file () () (string-to-code-points (first lines)) (rest lines) 0 0 (context)
+            #false ()))
     b))
 
-; ($field buffer name), ($b name), ($b! name value): the fields of a buffer and of the current
-; buffer.
-($define! $field ($vau (b name) env (eval name (eval b env))))
-($define! $b ($vau (name) #ignore (eval name current-buffer)))
-($define! $b! ($vau (name value) env (bind! current-buffer name (eval value env))))
+; (field! name) and (define-field! name value): a field of the current buffer.
+(define! field! (vau! (name) #ignore (evaluate name current-buffer)))
+(define! define-field!
+  (vau! (name value) caller (bind current-buffer name (evaluate value caller))))
 
-($define! buffer-line ($lambda (b) (codes->string (reverse-onto ($field b before) ($field b after)))))
-($define! line-string ($lambda () (buffer-line current-buffer)))
-($define! current-column ($lambda () (length ($b before))))
+(define! buffer-line
+  (lambda! (b)
+    (code-points-to-string (reverse-onto (evaluate-in! before b) (evaluate-in! after b)))))
+(define! line-string (lambda! () (buffer-line current-buffer)))
+(define! current-column (lambda! () (length (field! before))))
 
-; Makes `s` the current line with point at column `col`, or at its end if it is shorter.
-($define! enter-line
-  ($lambda (s col)
-    ($define! split
-      ($lambda (before after n)
-        ($if ($or? (=? n 0) (null? after))
+; Makes `s` the current line with point at `column`, or at its end if it is shorter.
+(define! enter-line
+  (lambda! (s column)
+    (define! split
+      (lambda! (before after n)
+        (if! (or!? (same? n 0) (empty-list? after))
           (list before after)
-          (split (cons (car after) before) (cdr after) (- n 1)))))
-    ($let (((before after) (split () (string->codes s) col)))
-      ($b! before before)
-      ($b! after after))))
+          (split (pair (first after) before) (rest after) (subtract n 1)))))
+    (let! (((before after) (split () (string-to-code-points s) column)))
+      (define-field! before before)
+      (define-field! after after))))
 
-($define! line-down
-  ($lambda (col)
-    ($b! above (cons (line-string) ($b above)))
-    (enter-line (car ($b below)) col)
-    ($b! below (cdr ($b below)))
-    ($b! row (+ ($b row) 1))))
+(define! line-down
+  (lambda! (column)
+    (define-field! above (pair (line-string) (field! above)))
+    (enter-line (first (field! below)) column)
+    (define-field! below (rest (field! below)))
+    (define-field! row (add (field! row) 1))))
 
-($define! line-up
-  ($lambda (col)
-    ($b! below (cons (line-string) ($b below)))
-    (enter-line (car ($b above)) col)
-    ($b! above (cdr ($b above)))
-    ($b! row (- ($b row) 1))))
+(define! line-up
+  (lambda! (column)
+    (define-field! below (pair (line-string) (field! below)))
+    (enter-line (first (field! above)) column)
+    (define-field! above (rest (field! above)))
+    (define-field! row (subtract (field! row) 1))))
 
-($define! insert-codes
-  ($lambda (codes)
-    ($when (pair? codes)
-      ($if (eq? (car codes) 10)
-        (newline)
-        ($b! before (cons (car codes) ($b before))))
-      (insert-codes (cdr codes)))))
+(define! insert-code-points
+  (lambda! (code-points)
+    (if! (pair? code-points)
+      (sequence!
+        (if! (same? (first code-points) 10)
+          (newline)
+          (define-field! before (pair (first code-points) (field! before))))
+        (insert-code-points (rest code-points))))))
 
-($define! buffer-text
-  ($lambda ()
-    ($define! lines (reverse-onto ($b above) (cons (line-string) ($b below))))
+(define! buffer-text
+  (lambda! ()
+    (define! lines (reverse-onto (field! above) (pair (line-string) (field! below))))
     ; Joined from the last line back, so each line is copied once.
-    ($define! join
-      ($lambda (rev acc)
-        ($if (null? rev)
-          acc
-          (join (cdr rev) (reverse-onto (reverse (string->codes (car rev))) (cons 10 acc))))))
-    ($define! rev (reverse lines))
-    (codes->string (join (cdr rev) (string->codes (car rev))))))
+    (define! join
+      (lambda! (reversed done)
+        (if! (empty-list? reversed)
+          done
+          (join (rest reversed)
+                (reverse-onto (reverse (string-to-code-points (first reversed))) (pair 10 done))))))
+    (define! reversed (reverse lines))
+    (code-points-to-string (join (rest reversed) (string-to-code-points (first reversed))))))
 
-($define! text-changed #f)
-($define! set-modified ($lambda () ($b! modified #t) ($set! editor-env text-changed #t)))
+(define! text-changed #false)
+(define! set-modified
+  (lambda! () (define-field! modified #true) (define-in! editor-context text-changed #true)))
 
 ; A buffer's state for undo. Lines and line halves are immutable lists and strings, so a state
 ; shares everything with the buffer and costs five pairs.
-($define! buffer-state
-  ($lambda (b) (list ($field b above) ($field b before) ($field b after) ($field b below) ($field b row))))
+(define! buffer-state
+  (lambda! (b)
+    (list (evaluate-in! above b) (evaluate-in! before b) (evaluate-in! after b)
+          (evaluate-in! below b) (evaluate-in! row b))))
 
 ; --- Display ------------------------------------------------------------------------------------
 
-($define! message-text "")
-($define! message ($lambda (s) ($set! editor-env message-text s)))
+(define! message-text "")
+(define! message (lambda! (s) (define-in! editor-context message-text s)))
 
 ; The buffer in the window, and the minibuffer while one is being read (else ()).
-($define! window-buffer ())
-($define! current-buffer ())
-($define! minibuffer ())
+(define! window-buffer ())
+(define! current-buffer ())
+(define! minibuffer ())
 
 ; The columns a character takes on the terminal: 2 for East Asian wide characters and most
 ; emoji, 1 for the rest. A tab goes to the next multiple of 8.
-($define! wide-ranges
+(define! wide-ranges
   (list (list 4352 4447) (list 11904 42191) (list 44032 55203) (list 63744 64255)
         (list 65072 65103) (list 65280 65376) (list 65504 65510) (list 127744 129791)
         (list 131072 262141)))
 
-($define! char-width
-  ($lambda (c)
-    ($define! wide?
-      ($lambda (ranges)
-        ($cond ((null? ranges) #f)
-               (($and? (<=? (car (car ranges)) c) (<=? c (car (cdr (car ranges))))) #t)
-               (#t (wide? (cdr ranges))))))
-    ($if ($and? (<? 4351 c) (wide? wide-ranges)) 2 1)))
+(define! character-width
+  (lambda! (c)
+    (define! wide?
+      (lambda! (ranges)
+        (conditional!
+          ((empty-list? ranges) #false)
+          ((and!? (less-than-or-equal? (first (first ranges)) c)
+                  (less-than-or-equal? c (first (rest (first ranges)))))
+           #true)
+          (#true (wide? (rest ranges))))))
+    (if! (and!? (less-than? 4351 c) (wide? wide-ranges)) 2 1)))
 
-; The terminal column after `codes`, written from column 0.
-($define! display-column
-  ($lambda (codes)
-    ($define! loop
-      ($lambda (codes col)
-        ($if (null? codes)
-          col
-          (loop (cdr codes)
-                ($if (eq? (car codes) 9) (+ col (- 8 (mod col 8))) (+ col (char-width (car codes))))))))
-    (loop codes 0)))
+; The terminal column after `code-points`, written from column 0. Columns are never negative,
+; so remainder is the tab stop's distance.
+(define! display-column
+  (lambda! (code-points)
+    (define! loop
+      (lambda! (code-points column)
+        (if! (empty-list? code-points)
+          column
+          (loop (rest code-points)
+                (if! (same? (first code-points) 9)
+                  (add column (subtract 8 (remainder column 8)))
+                  (add column (character-width (first code-points))))))))
+    (loop code-points 0)))
 
-($define! goto ($lambda (row col) (term-write csi (number->string row) ";" (number->string col) "H")))
+(define! move-cursor
+  (lambda! (row column)
+    (terminal-write
+      (control-sequence (string-append (integer-to-string row) ";" (integer-to-string column) "H")))))
 
-($define! show-row ($lambda (row s) (goto row 1) (term-write csi "2K" s)))
+(define! show-row
+  (lambda! (row s) (move-cursor row 1) (terminal-write (control-sequence "2K") s)))
 
-($define! show-rows
-  ($lambda (row lines n)
-    ($when (<? 0 n)
-      (show-row row ($if (null? lines) "" (car lines)))
-      (show-rows (+ row 1) ($if (null? lines) () (cdr lines)) (- n 1)))))
+(define! show-rows
+  (lambda! (row lines n)
+    (if! (less-than? 0 n)
+      (sequence!
+        (show-row row (if! (empty-list? lines) "" (first lines)))
+        (show-rows (add row 1) (if! (empty-list? lines) () (rest lines)) (subtract n 1))))))
 
-($define! mode-line
-  ($lambda (b cols)
-    ($define! s
+(define! mode-line
+  (lambda! (b columns)
+    (define! s
       (string-append
-        ($if ($field b modified) "-**- " "---- ")
-        ($field b name)
-        "   L" (number->string (+ ($field b row) 1))
-        "   C" (number->string (length ($field b before)))))
-    (string-append s (codes->string (make-list (- cols (string-length s)) 32)))))
+        (if! (evaluate-in! modified b) "-**- " "---- ")
+        (evaluate-in! name b)
+        "   L" (integer-to-string (add (evaluate-in! row b) 1))
+        "   C" (integer-to-string (length (evaluate-in! before b)))))
+    (string-append s (spaces (subtract columns (code-point-count s))))))
 
-($define! redisplay
-  ($lambda ()
-    ($define! (rows cols) (term-size))
-    ($define! height (max 1 (- rows 2)))
-    ($define! w window-buffer)
-    ($define! row ($field w row))
-    ; Scroll so the current line is in the window, recentring when it leaves.
-    ($when ($or? (<? row ($field w top)) (<=? (+ ($field w top) height) row))
-      (bind! w ($quote top) (max 0 (- row (div height 2)))))
-    ($define! above-shown (- row ($field w top)))
-    ($define! lines
-      (reverse-onto (take ($field w above) above-shown)
-        (cons (buffer-line w) (take ($field w below) (- height (+ above-shown 1))))))
-    (term-write csi "?25l")
+(define! redisplay
+  (lambda! ()
+    (define! (rows columns) (terminal-size))
+    (define! height (maximum 1 (subtract rows 2)))
+    (define! window window-buffer)
+    (define! row (evaluate-in! row window))
+    ; Scroll so the current line is in the window, recentring when it leaves. Rows and height
+    ; are positive, so divide rounds down.
+    (if! (or!? (less-than? row (evaluate-in! top window))
+               (less-than-or-equal? (add (evaluate-in! top window) height) row))
+      (bind window (quote! top) (maximum 0 (subtract row (divide height 2)))))
+    (define! above-shown (subtract row (evaluate-in! top window)))
+    (define! lines
+      (reverse-onto (take (evaluate-in! above window) above-shown)
+        (pair (buffer-line window)
+              (take (evaluate-in! below window) (subtract height (add above-shown 1))))))
+    (terminal-write (control-sequence "?25l"))
     (show-rows 1 lines height)
-    (goto (- rows 1) 1)
-    (term-write csi "7m" (mode-line w cols) csi "0m")
-    ($if (null? minibuffer)
-      ($sequence
+    (move-cursor (subtract rows 1) 1)
+    (terminal-write (control-sequence "7m") (mode-line window columns) (control-sequence "0m"))
+    (if! (empty-list? minibuffer)
+      (sequence!
         (show-row rows message-text)
-        (goto (+ above-shown 1)
-              (+ (min (display-column (reverse ($field w before))) (- cols 1)) 1)))
-      ($sequence
-        (show-row rows (string-append ($field minibuffer prompt) (buffer-line minibuffer)))
-        (goto rows (+ (display-column (append (string->codes ($field minibuffer prompt))
-                                              (reverse ($field minibuffer before))))
-                      1))))
-    (term-write csi "?25h")))
+        (move-cursor (add above-shown 1)
+                     (add (minimum (display-column (reverse (evaluate-in! before window)))
+                                   (subtract columns 1))
+                          1)))
+      (sequence!
+        (show-row rows (string-append (evaluate-in! prompt minibuffer) (buffer-line minibuffer)))
+        (move-cursor rows
+                     (add (display-column
+                            (append (string-to-code-points (evaluate-in! prompt minibuffer))
+                                    (reverse (evaluate-in! before minibuffer))))
+                          1))))
+    (terminal-write (control-sequence "?25h"))))
 
 ; --- Keys ---------------------------------------------------------------------------------------
 ; An event is a code point (an integer) for a character, or a symbol: C-a, M-x, RET, DEL, up...
 ; The terminal's bytes are decoded here: ESC starts a meta key or an escape sequence, and the
 ; bytes of a UTF-8 character are put together.
 
-($define! control-key
-  ($lambda (b)
-    ($cond ((=? b 13) ($quote RET))
-           ((=? b 9) ($quote TAB))
-           ((=? b 0) ($quote C-SPC))
-           ((<? b 27) (string->symbol (string-append "C-" (codes->string (list (+ b 96))))))
-           (#t (string->symbol (string-append "C-" (codes->string (list (+ b 64)))))))))
+(define! control-key
+  (lambda! (b)
+    (conditional!
+      ((same? b 13) (quote! RET))
+      ((same? b 9) (quote! TAB))
+      ((same? b 0) (quote! C-SPC))
+      ((less-than? b 27) (string-to-symbol (string-append "C-" (code-point-to-string (add b 96)))))
+      (#true (string-to-symbol (string-append "C-" (code-point-to-string (add b 64))))))))
 
-($define! read-utf8
-  ($lambda (b)
-    ($define! more
-      ($lambda (n v) ($if (=? n 0) v (more (- n 1) (+ (* v 64) (- (key) 128))))))
-    ($cond ((<? b 192) b)
-           ((<? b 224) (more 1 (- b 192)))
-           ((<? b 240) (more 2 (- b 224)))
-           (#t (more 3 (- b 240))))))
+; The code point of a UTF-8 character whose first byte is b, reading the bytes after it.
+(define! decode-character
+  (lambda! (b)
+    (define! more
+      (lambda! (n v)
+        (if! (same? n 0) v (more (subtract n 1) (add (multiply v 64) (subtract (key) 128))))))
+    (conditional!
+      ((less-than? b 192) b)
+      ((less-than? b 224) (more 1 (subtract b 192)))
+      ((less-than? b 240) (more 2 (subtract b 224)))
+      (#true (more 3 (subtract b 240))))))
 
-($define! decode-byte
-  ($lambda (b)
-    ($cond ((<? b 32) (control-key b))
-           ((=? b 127) ($quote DEL))
-           ((<? b 128) b)
-           (#t (read-utf8 b)))))
+(define! decode-byte
+  (lambda! (b)
+    (conditional!
+      ((less-than? b 32) (control-key b))
+      ((same? b 127) (quote! DEL))
+      ((less-than? b 128) b)
+      (#true (decode-character b)))))
 
 ; The bytes of an escape sequence after ESC [ or ESC O, up to its final byte.
-($define! escape-sequences
-  (list (list "A" ($quote up)) (list "B" ($quote down)) (list "C" ($quote right))
-        (list "D" ($quote left)) (list "H" ($quote home)) (list "F" ($quote end))
-        (list "1~" ($quote home)) (list "4~" ($quote end)) (list "3~" ($quote deletechar))
-        (list "5~" ($quote prior)) (list "6~" ($quote next))))
+(define! escape-sequences
+  (list (list "A" (quote! up)) (list "B" (quote! down)) (list "C" (quote! right))
+        (list "D" (quote! left)) (list "H" (quote! home)) (list "F" (quote! end))
+        (list "1~" (quote! home)) (list "4~" (quote! end)) (list "3~" (quote! deletechar))
+        (list "5~" (quote! prior)) (list "6~" (quote! next))))
 
-($define! read-sequence
-  ($lambda (codes)
-    ($define! b (key))
-    ($if ($and? (<=? 64 b) (<=? b 126))
-      ($sequence
-        ($define! s (codes->string (reverse (cons b codes))))
-        ($define! found
-          ($lambda (table)
-            ($cond ((null? table) (string->symbol (string-append "ESC-[" s)))
-                   ((eq? (car (car table)) s) (car (cdr (car table))))
-                   (#t (found (cdr table))))))
-        (found escape-sequences))
-      (read-sequence (cons b codes)))))
+(define! read-escape-sequence
+  (lambda! (code-points)
+    (define! b (key))
+    (if! (and!? (less-than-or-equal? 64 b) (less-than-or-equal? b 126))
+      (sequence!
+        (define! s (code-points-to-string (reverse (pair b code-points))))
+        (define! found (find-association s escape-sequences))
+        (if! (empty-list? found)
+          (string-to-symbol (string-append "ESC-[" s))
+          (first (rest found))))
+      (read-escape-sequence (pair b code-points)))))
 
-($define! read-event
-  ($lambda ()
-    ($define! b (key))
-    ($if (=? b 27)
-      ($sequence
-        ($define! b2 (key))
-        ($if ($or? (=? b2 91) (=? b2 79))
-          (read-sequence ())
-          (string->symbol (string-append "M-" (key-name (decode-byte b2))))))
+(define! read-event
+  (lambda! ()
+    (define! b (key))
+    (if! (same? b 27)
+      (sequence!
+        (define! second (key))
+        (if! (or!? (same? second 91) (same? second 79))
+          (read-escape-sequence ())
+          (string-to-symbol (string-append "M-" (key-name (decode-byte second))))))
       (decode-byte b))))
 
-($define! key-name
-  ($lambda (ev)
-    ($cond ((=? 32 ($if (integer? ev) ev 0)) "SPC")
-           ((integer? ev) (codes->string (list ev)))
-           (#t (value->string ev)))))
+(define! key-name
+  (lambda! (event)
+    (conditional!
+      ((same? event 32) "SPC")
+      ((integer? event) (code-point-to-string event))
+      (#true (value-to-string event)))))
 
-($define! key-symbol
-  ($lambda (ev) ($if (integer? ev) (string->symbol (codes->string (list ev))) ev)))
+(define! key-symbol
+  (lambda! (event) (if! (integer? event) (string-to-symbol (code-point-to-string event)) event)))
 
-($define! keys-description
-  ($lambda (events) (string-join (map key-name events) " ")))
+(define! keys-description
+  (lambda! (events) (string-join (map key-name events) " ")))
 
 ; --- Keymaps ------------------------------------------------------------------------------------
-; A keymap is an environment binding key symbols to command names (symbols) or to keymaps
-; (prefix keys). Commands are looked up by name when run, so redefining one takes effect.
+; A keymap is a context binding key symbols to command names (symbols) or to keymaps (prefix
+; keys). Commands are looked up by name when run, so redefining one takes effect.
 
-($define! global-map (make-environment))
+(define! global-map (context))
 
-($define! lookup-key
-  ($lambda (map ev)
-    ($define! k (key-symbol ev))
-    ($if (member? k (bindings map)) (eval k map) #f)))
+(define! lookup-key
+  (lambda! (keymap event)
+    (define! k (key-symbol event))
+    (if! (member? k (names keymap)) (evaluate k keymap) #false)))
 
-; (kbd "C-x C-s") is (C-x C-s).
-($define! kbd
-  ($lambda (s)
-    (map ($lambda (codes) (string->symbol (codes->string codes)))
-         (split-codes (string->codes s) 32))))
+; (string-to-keys "C-x C-s") is (C-x C-s).
+(define! string-to-keys
+  (lambda! (s)
+    (map (lambda! (code-points) (string-to-symbol (code-points-to-string code-points)))
+         (split-code-points (string-to-code-points s) 32))))
 
-; (define-key map "C-x C-s" ($quote save-buffer))
-($define! define-key
-  ($lambda (map keys command)
-    ($define! walk
-      ($lambda (map keys)
-        ($if (null? (cdr keys))
-          (bind! map (car keys) command)
-          ($sequence
-            ($define! sub (lookup-key map (car keys)))
-            ($when (not? (environment? sub))
-              ($define! sub (make-environment))
-              (bind! map (car keys) sub))
-            (walk sub (cdr keys))))))
-    (walk map (kbd keys))))
+; (define-key keymap "C-x C-s" (quote! save-buffer))
+(define! define-key
+  (lambda! (keymap keys command)
+    (define! walk
+      (lambda! (keymap keys)
+        (if! (empty-list? (rest keys))
+          (bind keymap (first keys) command)
+          (sequence!
+            (define! sub (lookup-key keymap (first keys)))
+            (if! (not? (context? sub))
+              (sequence!
+                (define! sub (context))
+                (bind keymap (first keys) sub)))
+            (walk sub (rest keys))))))
+    (walk keymap (string-to-keys keys))))
 
-($define! global-set-key ($lambda (keys command) (define-key global-map keys command)))
+(define! global-set-key (lambda! (keys command) (define-key global-map keys command)))
 
 ; --- The command loop ---------------------------------------------------------------------------
 
-($define! last-command-event ())
-($define! this-command ())
-($define! last-command ())
-($define! exit-flag #f)
+(define! last-command-event ())
+(define! this-command ())
+(define! last-command ())
+(define! exit-flag #false)
 
 ; Runs a command. If it changed the text, the buffer's state from before goes on its undo list;
 ; a run of typed characters is undone as one.
-($define! run-command
-  ($lambda (command)
-    ($define! b current-buffer)
-    ($define! state (buffer-state b))
-    ($set! editor-env this-command command)
-    ($set! editor-env text-changed #f)
-    ($if (symbol? command)
-      (eval (list command) editor-env)
+(define! run-command
+  (lambda! (command)
+    (define! b current-buffer)
+    (define! state (buffer-state b))
+    (define-in! editor-context this-command command)
+    (define-in! editor-context text-changed #false)
+    (if! (symbol? command)
+      (evaluate (list command) editor-context)
       (command))
-    ($when ($and? text-changed
-                  (not? (eq? command ($quote undo)))
-                  (not? ($and? (eq? command ($quote self-insert-command))
-                               (eq? last-command ($quote self-insert-command)))))
-      (bind! b ($quote undo) (cons state ($field b undo))))
-    ($set! editor-env text-changed #f)
-    ($set! editor-env last-command this-command)))
+    (if! (and!? text-changed
+                (not? (same? command (quote! undo)))
+                (not? (and!? (same? command (quote! self-insert-command))
+                             (same? last-command (quote! self-insert-command)))))
+      (bind b (quote! undo) (pair state (evaluate-in! undo b))))
+    (define-in! editor-context text-changed #false)
+    (define-in! editor-context last-command this-command)))
 
-; Runs the key sequence that starts with event `ev`, looked up in `map`; `keys` are the events
+; Runs the key sequence that starts with `event`, looked up in `keymap`; `keys` are the events
 ; so far, latest first.
-($define! dispatch
-  ($lambda (map ev keys)
-    ($define! binding (lookup-key map ev))
-    ($cond ((environment? binding)
-            (message (string-append (keys-description (reverse keys)) "-"))
-            (redisplay)
-            ($define! next (read-event))
-            (message "")
-            (dispatch binding next (cons next keys)))
-           ((eq? binding #f)
-            ($if ($and? (integer? ev) (null? (cdr keys)))
-              (run-command ($quote self-insert-command))
-              (message (string-append (keys-description (reverse keys)) " is undefined"))))
-           (#t (run-command binding)))))
+(define! dispatch
+  (lambda! (keymap event keys)
+    (define! binding (lookup-key keymap event))
+    (conditional!
+      ((context? binding)
+       (message (string-append (keys-description (reverse keys)) "-"))
+       (redisplay)
+       (define! next (read-event))
+       (message "")
+       (dispatch binding next (pair next keys)))
+      ((same? binding #false)
+       (if! (and!? (integer? event) (empty-list? (rest keys)))
+         (run-command (quote! self-insert-command))
+         (message (string-append (keys-description (reverse keys)) " is undefined"))))
+      (#true (run-command binding)))))
 
-($define! command-step
-  ($lambda ()
+(define! command-step
+  (lambda! ()
     (redisplay)
-    ($define! ev (read-event))
+    (define! event (read-event))
     (message "")
-    ($set! editor-env last-command-event ev)
-    (dispatch ($if (eq? (lookup-key ($b keymap) ev) #f) global-map ($b keymap)) ev (list ev))))
+    (define-in! editor-context last-command-event event)
+    (dispatch (if! (same? (lookup-key (field! keymap) event) #false) global-map (field! keymap))
+              event
+              (list event))))
 
 ; Reads and runs commands until one sets exit-flag.
-($define! command-loop
-  ($lambda ()
+(define! command-loop
+  (lambda! ()
     (command-step)
-    ($if exit-flag ($set! editor-env exit-flag #f) (command-loop))))
+    (if! exit-flag (define-in! editor-context exit-flag #false) (command-loop))))
 
 ; --- The minibuffer -----------------------------------------------------------------------------
 
-($define! minibuffer-map (make-environment))
+(define! minibuffer-map (context))
 
 ; The buffer and minibuffer come back however the reading ends: with RET, or with an error or
 ; C-g that goes on to the host.
-($define! read-from-minibuffer
-  ($lambda (prompt)
-    ($define! outer-buffer current-buffer)
-    ($define! outer-minibuffer minibuffer)
-    ($define! mb (make-buffer "*minibuffer*" () (list "")))
-    (bind! mb ($quote (keymap prompt)) (list minibuffer-map prompt))
-    ($set! editor-env (minibuffer current-buffer) (list mb mb))
-    ($unwind-protect
-      ($sequence (command-loop) (line-string))
-      ($set! editor-env (current-buffer minibuffer exit-flag) (list outer-buffer outer-minibuffer #f)))))
+(define! read-from-minibuffer
+  (lambda! (prompt)
+    (define! outer-buffer current-buffer)
+    (define! outer-minibuffer minibuffer)
+    (define! reading (buffer "*minibuffer*" () (list "")))
+    (bind reading (quote! (keymap prompt)) (list minibuffer-map prompt))
+    (define-in! editor-context (minibuffer current-buffer) (list reading reading))
+    (finally!
+      (sequence! (command-loop) (line-string))
+      (define-in! editor-context (current-buffer minibuffer exit-flag)
+        (list outer-buffer outer-minibuffer #false)))))
 
-($define! exit-minibuffer ($lambda () ($set! editor-env exit-flag #t)))
+(define! exit-minibuffer (lambda! () (define-in! editor-context exit-flag #true)))
 
 ; --- Starting and recovering --------------------------------------------------------------------
 
-($define! find-file-noselect
-  ($lambda (file)
-    ($define! text ($if (null? file) () (read-file file)))
-    (make-buffer ($if (null? file) "*scratch*" file) file
-      ($if (null? text) (list "") (text->lines text)))))
+(define! find-file-noselect
+  (lambda! (file)
+    (define! text (if! (empty-list? file) () (read-file file)))
+    (buffer (if! (empty-list? file) "*scratch*" file) file
+      (if! (empty-list? text) (list "") (text-to-lines text)))))
 
-($define! quit-flag #f)
+(define! quit-flag #false)
 
-($define! editor-main
-  ($lambda (file text)
-    ($set! editor-env window-buffer (find-file-noselect file))
-    ($set! editor-env current-buffer window-buffer)
-    (message text)
+(define! editor-main
+  (lambda! (file text)
+    (define-in! editor-context window-buffer (find-file-noselect file))
+    (define-in! editor-context current-buffer window-buffer)
+    ; An empty text keeps what the init file put in the echo area.
+    (if! (not? (same? text "")) (message text))
     (main-loop)))
 
-($define! main-loop
-  ($lambda () (command-step) ($if quit-flag #inert (main-loop))))
+(define! main-loop
+  (lambda! () (command-step) (if! quit-flag #inert (main-loop))))
 
 ; After an error stopped a command: the error in the echo area, and on. What a command set
-; for a while (the minibuffer) its $unwind-protect has put back.
-($define! editor-recover ($lambda (text) (message text) (main-loop)))
+; for a while (the minibuffer) its finally! has put back.
+(define! editor-recover (lambda! (text) (message text) (main-loop)))
 
 ; --- Commands -----------------------------------------------------------------------------------
 
-($define! self-insert-command
-  ($lambda () ($b! before (cons last-command-event ($b before))) (set-modified)))
+(define! self-insert-command
+  (lambda! () (define-field! before (pair last-command-event (field! before))) (set-modified)))
 
-($define! newline
-  ($lambda ()
-    ($b! above (cons (codes->string (reverse ($b before))) ($b above)))
-    ($b! before ())
-    ($b! row (+ ($b row) 1))
+(define! newline
+  (lambda! ()
+    (define-field! above (pair (code-points-to-string (reverse (field! before))) (field! above)))
+    (define-field! before ())
+    (define-field! row (add (field! row) 1))
     (set-modified)))
 
-($define! forward-char
-  ($lambda ()
-    ($cond ((pair? ($b after))
-            ($b! before (cons (car ($b after)) ($b before)))
-            ($b! after (cdr ($b after))))
-           ((pair? ($b below)) (line-down 0))
-           (#t (message "End of buffer")))))
+(define! forward-char
+  (lambda! ()
+    (conditional!
+      ((pair? (field! after))
+       (define-field! before (pair (first (field! after)) (field! before)))
+       (define-field! after (rest (field! after))))
+      ((pair? (field! below)) (line-down 0))
+      (#true (message "End of buffer")))))
 
-($define! backward-char
-  ($lambda ()
-    ($cond ((pair? ($b before))
-            ($b! after (cons (car ($b before)) ($b after)))
-            ($b! before (cdr ($b before))))
-           ((pair? ($b above)) (line-up 1000000000))
-           (#t (message "Beginning of buffer")))))
+(define! backward-char
+  (lambda! ()
+    (conditional!
+      ((pair? (field! before))
+       (define-field! after (pair (first (field! before)) (field! after)))
+       (define-field! before (rest (field! before))))
+      ((pair? (field! above)) (line-up 1000000000))
+      (#true (message "Beginning of buffer")))))
 
 ; The column C-n and C-p aim for: kept while they repeat.
-($define! goal-column 0)
-($define! set-goal
-  ($lambda ()
-    ($when (not? (member? last-command ($quote (next-line previous-line))))
-      ($set! editor-env goal-column (current-column)))))
+(define! goal-column 0)
+(define! set-goal
+  (lambda! ()
+    (if! (not? (member? last-command (quote! (next-line previous-line))))
+      (define-in! editor-context goal-column (current-column)))))
 
-($define! next-line
-  ($lambda ()
+(define! next-line
+  (lambda! ()
     (set-goal)
-    ($if (pair? ($b below)) (line-down goal-column) (message "End of buffer"))))
+    (if! (pair? (field! below)) (line-down goal-column) (message "End of buffer"))))
 
-($define! previous-line
-  ($lambda ()
+(define! previous-line
+  (lambda! ()
     (set-goal)
-    ($if (pair? ($b above)) (line-up goal-column) (message "Beginning of buffer"))))
+    (if! (pair? (field! above)) (line-up goal-column) (message "Beginning of buffer"))))
 
-($define! beginning-of-line
-  ($lambda () ($b! after (reverse-onto ($b before) ($b after))) ($b! before ())))
+(define! beginning-of-line
+  (lambda! ()
+    (define-field! after (reverse-onto (field! before) (field! after)))
+    (define-field! before ())))
 
-($define! end-of-line
-  ($lambda () ($b! before (reverse-onto ($b after) ($b before))) ($b! after ())))
+(define! end-of-line
+  (lambda! ()
+    (define-field! before (reverse-onto (field! after) (field! before)))
+    (define-field! after ())))
 
-($define! beginning-of-buffer
-  ($lambda ()
-    ($define! lines (reverse-onto ($b above) (cons (line-string) ($b below))))
-    ($b! above ())
-    ($b! row 0)
-    ($b! below (cdr lines))
-    (enter-line (car lines) 0)))
+(define! beginning-of-buffer
+  (lambda! ()
+    (define! lines (reverse-onto (field! above) (pair (line-string) (field! below))))
+    (define-field! above ())
+    (define-field! row 0)
+    (define-field! below (rest lines))
+    (enter-line (first lines) 0)))
 
-($define! end-of-buffer
-  ($lambda ()
-    ($define! lines (reverse-onto ($b below) (cons (line-string) ($b above))))
-    ($b! row (+ ($b row) (length ($b below))))
-    ($b! below ())
-    ($b! above (cdr lines))
-    ($b! before (reverse (string->codes (car lines))))
-    ($b! after ())))
+(define! end-of-buffer
+  (lambda! ()
+    (define! lines (reverse-onto (field! below) (pair (line-string) (field! above))))
+    (define-field! row (add (field! row) (length (field! below))))
+    (define-field! below ())
+    (define-field! above (rest lines))
+    (define-field! before (reverse (string-to-code-points (first lines))))
+    (define-field! after ())))
 
-($define! delete-backward-char
-  ($lambda ()
-    ($cond ((pair? ($b before)) ($b! before (cdr ($b before))) (set-modified))
-           ((pair? ($b above))
-            ($b! before (reverse (string->codes (car ($b above)))))
-            ($b! above (cdr ($b above)))
-            ($b! row (- ($b row) 1))
-            (set-modified))
-           (#t (message "Beginning of buffer")))))
+(define! delete-backward-char
+  (lambda! ()
+    (conditional!
+      ((pair? (field! before)) (define-field! before (rest (field! before))) (set-modified))
+      ((pair? (field! above))
+       (define-field! before (reverse (string-to-code-points (first (field! above)))))
+       (define-field! above (rest (field! above)))
+       (define-field! row (subtract (field! row) 1))
+       (set-modified))
+      (#true (message "Beginning of buffer")))))
 
-($define! delete-char
-  ($lambda ()
-    ($cond ((pair? ($b after)) ($b! after (cdr ($b after))) (set-modified))
-           ((pair? ($b below))
-            ($b! after (string->codes (car ($b below))))
-            ($b! below (cdr ($b below)))
-            (set-modified))
-           (#t (message "End of buffer")))))
+(define! delete-char
+  (lambda! ()
+    (conditional!
+      ((pair? (field! after)) (define-field! after (rest (field! after))) (set-modified))
+      ((pair? (field! below))
+       (define-field! after (string-to-code-points (first (field! below))))
+       (define-field! below (rest (field! below)))
+       (set-modified))
+      (#true (message "End of buffer")))))
 
 ; The last killed text, as code points (10 for a newline). Kills in a row add to it.
-($define! kill-ring ())
+(define! kill-ring ())
 
-($define! kill-line
-  ($lambda ()
-    ($define! killed
-      ($cond ((pair? ($b after))
-              ($define! text ($b after))
-              ($b! after ())
-              text)
-             ((pair? ($b below))
-              ($b! after (string->codes (car ($b below))))
-              ($b! below (cdr ($b below)))
-              (list 10))
-             (#t (message "End of buffer") ())))
-    ($when (pair? killed)
-      ($set! editor-env kill-ring ($if (eq? last-command ($quote kill-line)) (append kill-ring killed) killed))
-      (set-modified))))
+(define! kill-line
+  (lambda! ()
+    (define! killed
+      (conditional!
+        ((pair? (field! after))
+         (define! text (field! after))
+         (define-field! after ())
+         text)
+        ((pair? (field! below))
+         (define-field! after (string-to-code-points (first (field! below))))
+         (define-field! below (rest (field! below)))
+         (list 10))
+        (#true (message "End of buffer") ())))
+    (if! (pair? killed)
+      (sequence!
+        (define-in! editor-context kill-ring
+          (if! (same? last-command (quote! kill-line)) (append kill-ring killed) killed))
+        (set-modified)))))
 
-($define! insert-tab ($lambda () (insert-codes (list 9)) (set-modified)))
+(define! insert-tab (lambda! () (insert-code-points (list 9)) (set-modified)))
 
-($define! yank ($lambda () (insert-codes kill-ring) (set-modified)))
+(define! yank (lambda! () (insert-code-points kill-ring) (set-modified)))
 
-($define! undo
-  ($lambda ()
-    ($if (null? ($b undo))
+(define! undo
+  (lambda! ()
+    (if! (empty-list? (field! undo))
       (message "No further undo information")
-      ($sequence
-        ($define! (above before after below row) (car ($b undo)))
-        (bind! current-buffer ($quote (above before after below row undo))
-          (list above before after below row (cdr ($b undo))))
+      (sequence!
+        (define! (above before after below row) (first (field! undo)))
+        (bind current-buffer (quote! (above before after below row undo))
+          (list above before after below row (rest (field! undo))))
         (set-modified)
         (message "Undo")))))
 
-($define! save-buffer
-  ($lambda ()
-    ($when (null? ($b file))
-      ($b! file (read-from-minibuffer "File to save in: "))
-      ($b! name ($b file)))
-    (write-file ($b file) (buffer-text))
-    ($b! modified #f)
-    (message (string-append "Wrote " ($b file)))))
+(define! save-buffer
+  (lambda! ()
+    (if! (empty-list? (field! file))
+      (sequence!
+        (define-field! file (read-from-minibuffer "File to save in: "))
+        (define-field! name (field! file))))
+    (write-file (field! file) (buffer-text))
+    (define-field! modified #false)
+    (message (string-append "Wrote " (field! file)))))
 
-($define! save-buffers-kill-emacs
-  ($lambda ()
-    ($when ($or? (not? ($field window-buffer modified))
-                 (equal? (read-from-minibuffer "Modified buffer; quit anyway? (yes or no) ") "yes"))
-      ($set! editor-env quit-flag #t))))
+(define! save-buffers-kill-emacs
+  (lambda! ()
+    (if! (or!? (not? (evaluate-in! modified window-buffer))
+               (equal? (read-from-minibuffer "Modified buffer; quit anyway? (yes or no) ") "yes"))
+      (define-in! editor-context quit-flag #true))))
 
-($define! keyboard-quit ($lambda () (error ($quote quit))))
+(define! keyboard-quit (lambda! () (raise (error (quote! quit)))))
 
-($define! recenter ($lambda () (term-write csi "2J") (bind! window-buffer ($quote top) -1000)))
+(define! recenter
+  (lambda! () (terminal-write (control-sequence "2J")) (bind window-buffer (quote! top) -1000)))
 
-($define! execute-extended-command
-  ($lambda () (run-command (string->symbol (read-from-minibuffer "M-x ")))))
+(define! execute-extended-command
+  (lambda! () (run-command (string-to-symbol (read-from-minibuffer "M-x ")))))
 
-($define! eval-expression
-  ($lambda ()
-    ($define! forms (read-string (read-from-minibuffer "Eval: ")))
-    (message (value->string (eval (cons $sequence forms) editor-env)))))
+(define! eval-expression
+  (lambda! ()
+    (define! forms (string-to-forms (read-from-minibuffer "Eval: ")))
+    (message (value-to-string (evaluate (pair (quote! sequence!) forms) editor-context)))))
 
 ; --- Help ---------------------------------------------------------------------------------------
 
-($define! previous-buffer ())
-($define! help-map (make-environment))
+(define! previous-buffer ())
+(define! help-map (context))
 
 ; Shows `text` in the *Help* buffer, long lines broken at the window's width; q goes back.
-($define! show-help
-  ($lambda (text)
-    ($define! width (max 10 (car (cdr (term-size)))))
-    ($define! wrap
-      ($lambda (codes)
-        ($if (<? (length codes) (+ width 1))
-          (list (codes->string codes))
-          (cons (codes->string (take codes width))
-                (wrap (drop codes width))))))
-    ($define! lines (apply append (map wrap (split-codes (string->codes text) 10))))
-    ($define! help (make-buffer "*Help*" () lines))
-    (bind! help ($quote keymap) help-map)
+(define! show-help
+  (lambda! (text)
+    (define! width (maximum 10 (first (rest (terminal-size)))))
+    (define! break-line
+      (lambda! (code-points)
+        (if! (less-than? (length code-points) (add width 1))
+          (list (code-points-to-string code-points))
+          (pair (code-points-to-string (take code-points width))
+                (break-line (drop code-points width))))))
+    (define! lines (apply append (map break-line (split-code-points (string-to-code-points text) 10))))
+    (define! help (buffer "*Help*" () lines))
+    (bind help (quote! keymap) help-map)
     (switch-to help)
     (message "q to go back")))
 
-($define! switch-to
-  ($lambda (b)
-    ($set! editor-env previous-buffer window-buffer)
-    ($set! editor-env window-buffer b)
-    ($set! editor-env current-buffer b)))
+(define! switch-to
+  (lambda! (b)
+    (define-in! editor-context previous-buffer window-buffer)
+    (define-in! editor-context window-buffer b)
+    (define-in! editor-context current-buffer b)))
 
-($define! other-buffer
-  ($lambda ()
-    ($if (null? previous-buffer) (message "No other buffer") (switch-to previous-buffer))))
+(define! other-buffer
+  (lambda! ()
+    (if! (empty-list? previous-buffer) (message "No other buffer") (switch-to previous-buffer))))
 
-($define! describe-function
-  ($lambda ()
-    ($define! name (read-from-minibuffer "Describe function: "))
-    (show-help (string-append name " is " (value->string (eval (string->symbol name) editor-env))))))
+(define! describe-function
+  (lambda! ()
+    (define! name (read-from-minibuffer "Describe function: "))
+    (show-help
+      (string-append name " is "
+                     (value-to-string (evaluate (string-to-symbol name) editor-context))))))
 
-; The bindings of `map` under `prefix` (a list of key symbols), as lines.
-($define! binding-lines
-  ($lambda (keymap prefix)
+; The bindings of `keymap` under `prefix` (a list of key symbols), as lines.
+(define! binding-lines
+  (lambda! (keymap prefix)
     (apply append
-      (map ($lambda (k)
-             ($define! b (eval k keymap))
-             ($define! keys (append prefix (list k)))
-             ($if (environment? b)
-               (binding-lines b keys)
-               ($sequence
-                 ($define! name (keys-description keys))
-                 (list (string-append name (codes->string (make-list (max 1 (- 16 (string-length name))) 32))
-                                      (value->string b))))))
-           (bindings keymap)))))
+      (map (lambda! (k)
+             (define! binding (evaluate k keymap))
+             (define! keys (append prefix (list k)))
+             (if! (context? binding)
+               (binding-lines binding keys)
+               (sequence!
+                 (define! name (keys-description keys))
+                 (list (string-append name (spaces (maximum 1 (subtract 16 (code-point-count name))))
+                                      (value-to-string binding))))))
+           (names keymap)))))
 
-($define! describe-bindings
-  ($lambda ()
+(define! describe-bindings
+  (lambda! ()
     (show-help (string-join (append (list "Key             Binding" "")
                                     (binding-lines global-map ())
                                     (list "" "In the minibuffer:")
                                     (binding-lines minibuffer-map ()))
                             "\n"))))
 
-($define! describe-key
-  ($lambda ()
+(define! describe-key
+  (lambda! ()
     (message "Describe key: ")
     (redisplay)
-    ($define! describe
-      ($lambda (map keys)
-        ($define! b (lookup-key map (car keys)))
-        ($if (environment? b)
-          (describe b (cons (read-event) keys))
-          ($sequence
-            ($define! name (keys-description (reverse keys)))
-            ($cond ((eq? b #f) (message (string-append name " is undefined")))
-                   (#t (show-help (string-append name " runs " (value->string b) "\n\n"
-                                                 (value->string b) " is "
-                                                 (value->string (eval b editor-env))))))))))
+    (define! describe
+      (lambda! (keymap keys)
+        (define! binding (lookup-key keymap (first keys)))
+        (if! (context? binding)
+          (describe binding (pair (read-event) keys))
+          (sequence!
+            (define! name (keys-description (reverse keys)))
+            (if! (same? binding #false)
+              (message (string-append name " is undefined"))
+              (show-help (string-append name " runs " (value-to-string binding) "\n\n"
+                                        (value-to-string binding) " is "
+                                        (value-to-string (evaluate binding editor-context)))))))))
     (describe global-map (list (read-event)))))
 
 ; --- Bindings -----------------------------------------------------------------------------------
 
-(global-set-key "C-f" ($quote forward-char))
-(global-set-key "right" ($quote forward-char))
-(global-set-key "C-b" ($quote backward-char))
-(global-set-key "left" ($quote backward-char))
-(global-set-key "C-n" ($quote next-line))
-(global-set-key "down" ($quote next-line))
-(global-set-key "C-p" ($quote previous-line))
-(global-set-key "up" ($quote previous-line))
-(global-set-key "C-a" ($quote beginning-of-line))
-(global-set-key "home" ($quote beginning-of-line))
-(global-set-key "C-e" ($quote end-of-line))
-(global-set-key "end" ($quote end-of-line))
-(global-set-key "M-<" ($quote beginning-of-buffer))
-(global-set-key "M->" ($quote end-of-buffer))
-(global-set-key "RET" ($quote newline))
-(global-set-key "C-j" ($quote newline))
-(global-set-key "DEL" ($quote delete-backward-char))
-(global-set-key "C-d" ($quote delete-char))
-(global-set-key "deletechar" ($quote delete-char))
-(global-set-key "TAB" ($quote insert-tab))
-(global-set-key "C-k" ($quote kill-line))
-(global-set-key "C-y" ($quote yank))
-(global-set-key "C-_" ($quote undo))
-(global-set-key "C-x u" ($quote undo))
-(global-set-key "C-g" ($quote keyboard-quit))
-(global-set-key "C-l" ($quote recenter))
-(global-set-key "C-x C-s" ($quote save-buffer))
-(global-set-key "C-x C-c" ($quote save-buffers-kill-emacs))
-(global-set-key "C-x b" ($quote other-buffer))
-(global-set-key "M-x" ($quote execute-extended-command))
-(global-set-key "M-:" ($quote eval-expression))
-(global-set-key "C-h f" ($quote describe-function))
-(global-set-key "C-h b" ($quote describe-bindings))
-(global-set-key "C-h k" ($quote describe-key))
-(define-key minibuffer-map "RET" ($quote exit-minibuffer))
-(define-key help-map "q" ($quote other-buffer))
+(global-set-key "C-f" (quote! forward-char))
+(global-set-key "right" (quote! forward-char))
+(global-set-key "C-b" (quote! backward-char))
+(global-set-key "left" (quote! backward-char))
+(global-set-key "C-n" (quote! next-line))
+(global-set-key "down" (quote! next-line))
+(global-set-key "C-p" (quote! previous-line))
+(global-set-key "up" (quote! previous-line))
+(global-set-key "C-a" (quote! beginning-of-line))
+(global-set-key "home" (quote! beginning-of-line))
+(global-set-key "C-e" (quote! end-of-line))
+(global-set-key "end" (quote! end-of-line))
+(global-set-key "M-<" (quote! beginning-of-buffer))
+(global-set-key "M->" (quote! end-of-buffer))
+(global-set-key "RET" (quote! newline))
+(global-set-key "C-j" (quote! newline))
+(global-set-key "DEL" (quote! delete-backward-char))
+(global-set-key "C-d" (quote! delete-char))
+(global-set-key "deletechar" (quote! delete-char))
+(global-set-key "TAB" (quote! insert-tab))
+(global-set-key "C-k" (quote! kill-line))
+(global-set-key "C-y" (quote! yank))
+(global-set-key "C-_" (quote! undo))
+(global-set-key "C-x u" (quote! undo))
+(global-set-key "C-g" (quote! keyboard-quit))
+(global-set-key "C-l" (quote! recenter))
+(global-set-key "C-x C-s" (quote! save-buffer))
+(global-set-key "C-x C-c" (quote! save-buffers-kill-emacs))
+(global-set-key "C-x b" (quote! other-buffer))
+(global-set-key "M-x" (quote! execute-extended-command))
+(global-set-key "M-:" (quote! eval-expression))
+(global-set-key "C-h f" (quote! describe-function))
+(global-set-key "C-h b" (quote! describe-bindings))
+(global-set-key "C-h k" (quote! describe-key))
+(define-key minibuffer-map "RET" (quote! exit-minibuffer))
+(define-key help-map "q" (quote! other-buffer))

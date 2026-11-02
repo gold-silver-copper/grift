@@ -1,6 +1,6 @@
 //! An Emacs-style editor whose editor is grift code. The host gives grift bytes and files only:
 //! a key as a byte, writes to the terminal, the terminal's size, reading and writing a file,
-//! the conversions between strings and grift data, and the reader. The buffer, redisplay, the
+//! the conversions between strings and code points, printing a value, and the reader. The buffer, redisplay, the
 //! keymap, the minibuffer and every command live in `editor.grift`.
 //!
 //! A thread reads the terminal while grift runs, so C-g stops a command that never returns:
@@ -8,7 +8,7 @@
 //!
 //! `grift-emacs [--init INIT.grift] [FILE]`
 
-use grift::{Error, Grift, Value};
+use grift::{Error, Grift, HostFunction, Value};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
@@ -48,7 +48,7 @@ impl Host {
 type G = Grift<Host>;
 
 fn text(g: &G, v: Value) -> Option<String> {
-    g.string(v).map(String::from)
+    g.as_str(v).map(String::from)
 }
 
 /// `(key)`: the next byte from the terminal, after showing what was written. The input thread
@@ -66,15 +66,15 @@ fn key(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
         };
         if b != QUIT || STOP.swap(false, Ordering::Relaxed) {
             h.read += 1;
-            return Ok(Value::Int(i64::from(b)));
+            return Ok(Value::Integer(i64::from(b)));
         }
     }
 }
 
-/// `(term-write string ...)`: queues the strings for the terminal.
-fn term_write(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+/// `(terminal-write string ...)`: queues the strings for the terminal.
+fn terminal_write(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
     for &v in args {
-        match g.string(v) {
+        match g.as_str(v) {
             Some(s) => h.out.extend_from_slice(s.as_bytes()),
             None => return Err(g.error("type-error", &[v])),
         }
@@ -82,18 +82,18 @@ fn term_write(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
     Ok(Value::Inert)
 }
 
-/// `(term-size)`: the terminal's rows and columns, as a list.
-fn term_size(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+/// `(terminal-size)`: the terminal's rows and columns, as a list.
+fn terminal_size(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     if !args.is_empty() {
         return Err(g.error("arity-error", args));
     }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
-    let cols = g.cons(Value::Int(i64::from(cols)), Value::Nil)?;
-    g.cons(Value::Int(i64::from(rows)), cols)
+    let cols = g.pair(Value::Integer(i64::from(cols)), Value::EmptyList)?;
+    g.pair(Value::Integer(i64::from(rows)), cols)
 }
 
 fn file_error(g: &mut G, path: Value, e: &io::Error) -> Error {
-    match g.make_string(&e.to_string()) {
+    match g.string(&e.to_string()) {
         Ok(why) => g.error("file-error", &[path, why]),
         Err(e) => e,
     }
@@ -108,8 +108,8 @@ fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
         return Err(g.error("type-error", args));
     };
     match std::fs::read_to_string(&name) {
-        Ok(s) => g.make_string(&s),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Value::Nil),
+        Ok(s) => g.string(&s),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Value::EmptyList),
         Err(e) => Err(file_error(g, *path, &e)),
     }
 }
@@ -119,7 +119,7 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [path, contents] = args else {
         return Err(g.error("arity-error", args));
     };
-    let (Some(name), Some(s)) = (g.string(*path), g.string(*contents)) else {
+    let (Some(name), Some(s)) = (g.as_str(*path), g.as_str(*contents)) else {
         return Err(g.error("type-error", args));
     };
     match std::fs::write(name, s) {
@@ -128,31 +128,31 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     }
 }
 
-/// `(string->codes s)`: the string's characters as a list of code points.
-fn string_to_codes(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+/// `(string-to-code-points s)`: the string's characters as a list of code points.
+fn string_to_code_points(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [s] = args else {
         return Err(g.error("arity-error", args));
     };
     let Some(s) = text(g, *s) else {
         return Err(g.error("type-error", args));
     };
-    let mut list = Value::Nil;
+    let mut list = Value::EmptyList;
     for c in s.chars().rev() {
-        list = g.cons(Value::Int(i64::from(u32::from(c))), list)?;
+        list = g.pair(Value::Integer(i64::from(u32::from(c))), list)?;
     }
     Ok(list)
 }
 
-/// `(codes->string list)`: the string of a list of code points.
-fn codes_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+/// `(code-points-to-string list)`: the string of a list of code points.
+fn code_points_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [list] = args else {
         return Err(g.error("arity-error", args));
     };
     let mut s = String::new();
     let mut rest = *list;
-    while let Some((c, next)) = g.uncons(rest) {
+    while let Some((c, next)) = g.as_pair(rest) {
         let ch = match c {
-            Value::Int(n) => u32::try_from(n).ok().and_then(char::from_u32),
+            Value::Integer(n) => u32::try_from(n).ok().and_then(char::from_u32),
             _ => None,
         };
         match ch {
@@ -161,24 +161,13 @@ fn codes_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Err
         }
         rest = next;
     }
-    if rest != Value::Nil {
+    if rest != Value::EmptyList {
         return Err(g.error("type-error", args));
     }
-    g.make_string(&s)
+    g.string(&s)
 }
 
-/// `(string->symbol s)`.
-fn string_to_symbol(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    match args {
-        [s] => match text(g, *s) {
-            Some(s) => Ok(Value::Sym(g.symbol(&s)?)),
-            None => Err(g.error("type-error", args)),
-        },
-        _ => Err(g.error("arity-error", args)),
-    }
-}
-
-/// `(value->string v)`: the printed form of any value; strings print with quotes.
+/// `(value-to-string v)`: the printed form of any value; strings print with quotes.
 fn value_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [v] = args else {
         return Err(g.error("arity-error", args));
@@ -187,11 +176,11 @@ fn value_to_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Err
     if g.write(*v, &mut s).is_err() {
         return Err(g.error("out-of-memory", &[]));
     }
-    g.make_string(&s)
+    g.string(&s)
 }
 
-/// `(read-string s)`: the forms of `s`, read and not evaluated.
-fn read_string(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+/// `(string-to-forms s)`: the forms of `s`, read and not evaluated.
+fn string_to_forms(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     match args {
         [s] => match text(g, *s) {
             Some(src) => g.read(&src),
@@ -217,16 +206,16 @@ impl fmt::Write for Capped {
     }
 }
 
-/// An error as its code, values and where, written out now: the values may be collected by
-/// the next `eval`.
+/// An error as its kind, values and trace, written out now: the values may be collected by
+/// the next `evaluate`.
 fn describe(g: &G, e: &Error) -> String {
     let mut out = Capped(String::new());
-    let _ = g.write(Value::Sym(e.code), &mut out).and_then(|()| {
+    let _ = g.write(Value::Symbol(e.kind), &mut out).and_then(|()| {
         e.values.iter().try_for_each(|&v| {
             fmt::Write::write_str(&mut out, " ")?;
             g.write(v, &mut out)
         })?;
-        e.at.iter().enumerate().try_for_each(|(i, &at)| {
+        e.trace.iter().enumerate().try_for_each(|(i, &at)| {
             fmt::Write::write_str(&mut out, if i == 0 { " in " } else { " from " })?;
             g.write(at, &mut out)
         })
@@ -234,34 +223,33 @@ fn describe(g: &G, e: &Error) -> String {
     out.0
 }
 
-fn is(g: &mut G, e: &Error, code: &str) -> bool {
-    g.symbol(code).is_ok_and(|c| c == e.code)
+fn is(g: &mut G, e: &Error, kind: &str) -> bool {
+    g.symbol(kind).is_ok_and(|k| k == e.kind)
 }
 
 /// Calls the editor's function `name` with string arguments (`None` for `()`).
 fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<Value, Error> {
-    let f = g.eval(h, name)?;
+    let f = g.evaluate(h, name)?;
     let mut values = Vec::new();
     for a in args {
         values.push(match a {
-            Some(s) => g.make_string(s)?,
-            None => Value::Nil,
+            Some(s) => g.string(s)?,
+            None => Value::EmptyList,
         });
     }
     g.call(h, f, &values)
 }
 
-const HOST: [(&str, grift::HostFn<Host>); 10] = [
+const HOST: [(&str, HostFunction<Host>); 9] = [
     ("key", key),
-    ("term-write", term_write),
-    ("term-size", term_size),
+    ("terminal-write", terminal_write),
+    ("terminal-size", terminal_size),
     ("read-file", read_file),
     ("write-file", write_file),
-    ("string->codes", string_to_codes),
-    ("codes->string", codes_to_string),
-    ("string->symbol", string_to_symbol),
-    ("value->string", value_to_string),
-    ("read-string", read_string),
+    ("string-to-code-points", string_to_code_points),
+    ("code-points-to-string", code_points_to_string),
+    ("value-to-string", value_to_string),
+    ("string-to-forms", string_to_forms),
 ];
 
 /// Runs the editor until it quits or input ends. An error before the first key (the file can't
@@ -338,17 +326,21 @@ fn main() -> ExitCode {
     };
     g.set_interrupt_flag(&STOP);
     for (name, f) in HOST {
-        if g.define(name, f).is_err() {
+        if g
+            .host_function(name, f)
+            .and_then(|f| g.define(name, f))
+            .is_err()
+        {
             eprintln!("grift-emacs: out of memory");
             return ExitCode::FAILURE;
         }
     }
-    if let Err(e) = g.eval(&mut h, EDITOR) {
+    if let Err(e) = g.evaluate(&mut h, EDITOR) {
         eprintln!("grift-emacs: editor.grift: {}", describe(&g, &e));
         return ExitCode::FAILURE;
     }
     // An init file that fails is reported in the echo area, not fatal.
-    let init = match init.map(|src| g.eval(&mut h, &src)) {
+    let init = match init.map(|src| g.evaluate(&mut h, &src)) {
         Some(Err(e)) => format!("init: {}", describe(&g, &e)),
         _ => String::new(),
     };
