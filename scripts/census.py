@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Counts every built-in, library and runner name's uses in programs/, the editor, the library and
 the runner. A symbol counts where it is evaluated and not shadowed by the file's own binding
-(define!, lambda!/vau! parameters, let!, catch!); a symbol in (quote! ...) is data.
+(define!, lambda!/vau! parameters, let!, catch!, catch-kind!); a symbol in (quote! ...) and catch-kind!'s
+kind are data.
 
 usage: scripts/census.py RUNNER  (from the repository root; prints a Markdown table)
 """
 import glob, re, subprocess, sys
 
-RUNNER = "display environment-variable exit command-line-arguments standard-input \
-standard-error open-file create-file run-process".split()
-FIELDS = "read-line read-all write close path status output error-output kind values trace".split()
+RUNNER = "display display-error read-file environment-variable exit command-line-arguments \
+script-path standard-input standard-output standard-error open-file create-file run-process load \
+wall-clock-nanoseconds elapsed-nanoseconds".split()
+FIELDS = "read-line read-all read-bytes write write-bytes close path status output error-output \
+kind values trace".split()
 TOKEN = re.compile(r'\s+|;[^\n]*|"(?:\\.|[^"\\])*"?|[()]|[^\s();"]+', re.S)
 
 
@@ -80,6 +83,7 @@ SPECIAL = {
     "vau!": lambda x, scope, uses: function(x[:2], x[2:], scope, uses),
     "let!": let,
     "catch!": lambda x, scope, uses: (walk(x[0], scope, uses), function(x[1:2], x[2:], scope, uses)),
+    "catch-kind!": lambda x, scope, uses: (walk(x[0], scope, uses), function(x[2:3], x[3:], scope, uses)),
     "evaluate-in!": field,
 }
 

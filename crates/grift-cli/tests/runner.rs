@@ -153,7 +153,10 @@ fn a_program_cannot_reach_the_runner_s_host_functions() {
     "#;
     let (status, out, err) = script(&dir, program, &[], "");
     assert_eq!(status, Some(0), "{err}");
-    assert_eq!(out, "#true #[context close path read-all read-bytes read-line] ");
+    assert_eq!(
+        out,
+        "#true #[context close path read-all read-bytes read-line] "
+    );
 }
 
 #[test]
@@ -261,13 +264,21 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     let dir = scratch("load");
     std::fs::create_dir_all(dir.join("lib")).unwrap();
     // A relative path is relative to the file being loaded: lib/a.grift loads lib/b.grift.
-    std::fs::write(dir.join("lib/a.grift"), "(define! a 1)\n(load \"b.grift\")\n").unwrap();
+    std::fs::write(
+        dir.join("lib/a.grift"),
+        "(define! a 1)\n(load \"b.grift\")\n",
+    )
+    .unwrap();
     std::fs::write(
         dir.join("lib/b.grift"),
         "(define! loads (add loads 1))\n(define! b (lambda! (x) (add x a)))\n\n(define! c (first 2))\n",
     )
     .unwrap();
-    std::fs::write(dir.join("lib/bad.grift"), "(display \"ran\")\n(define! f\n  (lambda! (x)\n").unwrap();
+    std::fs::write(
+        dir.join("lib/bad.grift"),
+        "(display \"ran\")\n(define! f\n  (lambda! (x)\n",
+    )
+    .unwrap();
     let program = r#"
         (define! loads 0)
         (define! write-trace (lambda! (place) (display (value-to-string place) " ")))
@@ -292,7 +303,9 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     );
     // The trace says the file and the line of the form, between its combinations and the load.
     assert!(
-        err.contains(&format!("in (first 2)\n  from (define! c (first 2))\n  from \"{lib}/b.grift:4\"")),
+        err.contains(&format!(
+            "in (first 2)\n  from (define! c (first 2))\n  from \"{lib}/b.grift:4\""
+        )),
         "{err}"
     );
     assert!(err.ends_with("from (load \"lib/b.grift\")\n"), "{err}");
@@ -333,7 +346,10 @@ fn bytes_that_are_not_text_go_in_and_out() {
     let program = format!(
         "(display (catch! (read-file {copy:?}) e (evaluate-in! kind e)) (catch! (load {copy:?}) e (evaluate-in! kind e)))"
     );
-    assert_eq!(script(&dir, &program, &[], "").1, "encoding-errorencoding-error");
+    assert_eq!(
+        script(&dir, &program, &[], "").1,
+        "encoding-errorencoding-error"
+    );
 }
 
 #[test]
@@ -360,13 +376,24 @@ fn read_file_display_error_and_the_clocks() {
     let (text, wall) = out.rsplit_once(' ').unwrap();
     assert_eq!(text, "one\ntwo\nfile-error #true");
     let wall: u128 = wall.parse().unwrap();
-    assert!(wall >= before && wall - before < 60_000_000_000, "{wall} {before}");
+    assert!(
+        wall >= before && wall - before < 60_000_000_000,
+        "{wall} {before}"
+    );
 }
 
 #[test]
 fn a_parse_error_says_where_the_form_opened() {
     let dir = scratch("parse-error");
-    let (status, _, err) = script(&dir, "(display 1)\n(define! f\n  (lambda! (x)\n    (add x 1))\n", &[], "");
+    let (status, _, err) = script(
+        &dir,
+        "(display 1)\n(define! f\n  (lambda! (x)\n    (add x 1))\n",
+        &[],
+        "",
+    );
     assert_eq!(status, Some(1));
-    assert!(err.ends_with("script.grift: parse-error unclosed-list 2 1\n"), "{err}");
+    assert!(
+        err.ends_with("script.grift: parse-error unclosed-list 2 1\n"),
+        "{err}"
+    );
 }

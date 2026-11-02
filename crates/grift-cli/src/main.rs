@@ -68,7 +68,13 @@ impl<W: Write> fmt::Write for Sink<W> {
 }
 
 /// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes.
-fn put(g: &mut G, values: &[Value], raw: bool, end: &str, w: &mut dyn Write) -> Result<Value, Error> {
+fn put(
+    g: &mut G,
+    values: &[Value],
+    raw: bool,
+    end: &str,
+    w: &mut dyn Write,
+) -> Result<Value, Error> {
     let mut out = Sink { w, error: None };
     let mut written = values.iter().try_for_each(|&v| match g.as_str(v) {
         Some(s) if raw => fmt::Write::write_str(&mut out, s),
@@ -131,7 +137,13 @@ fn resolve_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Erro
 /// `(wall-clock-nanoseconds)`: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock,
 /// which may be set back.
 fn wall_clock_nanoseconds(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    nanoseconds(g, args, SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).ok())
+    nanoseconds(
+        g,
+        args,
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok(),
+    )
 }
 
 /// `(elapsed-nanoseconds)`: the nanoseconds since the run started, by a clock that never goes back.
@@ -447,9 +459,10 @@ fn ended(r: &Runner) -> Option<ExitCode> {
 fn unfinished(g: &mut G, e: &Error) -> bool {
     let reason = e.values.first().copied();
     g.symbol("parse-error").is_ok_and(|k| k == e.kind)
-        && ["unclosed-list", "unclosed-string"]
-            .iter()
-            .any(|&open| g.symbol(open).is_ok_and(|s| reason == Some(Value::Symbol(s))))
+        && ["unclosed-list", "unclosed-string"].iter().any(|&open| {
+            g.symbol(open)
+                .is_ok_and(|s| reason == Some(Value::Symbol(s)))
+        })
 }
 
 fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
@@ -527,7 +540,12 @@ const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
 ];
 
 /// Binds the runner's operations in the top-level context, and `script-path` if there is a script.
-fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: Option<&str>) -> Result<(), Error> {
+fn set_up(
+    g: &mut G,
+    r: &mut Runner,
+    arguments: &[String],
+    script: Option<&str>,
+) -> Result<(), Error> {
     for (name, f) in PUBLIC {
         let f = g.host_function(name, f)?;
         g.define(name, f)?;

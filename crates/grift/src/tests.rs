@@ -1100,7 +1100,11 @@ fn bitwise_operations_are_rusts() {
     let integers = [0, 1, -1, 6, -7, 0x5555, i64::MAX, i64::MIN];
     for a in integers {
         for b in integers {
-            for (name, rust) in [("bitwise-and", a & b), ("bitwise-or", a | b), ("bitwise-exclusive-or", a ^ b)] {
+            for (name, rust) in [
+                ("bitwise-and", a & b),
+                ("bitwise-or", a | b),
+                ("bitwise-exclusive-or", a ^ b),
+            ] {
                 let got = g.evaluate(&mut (), &format!("({name} {a} {b})"));
                 assert_eq!(got, Ok(Value::Integer(rust)), "({name} {a} {b})");
             }
@@ -1109,8 +1113,14 @@ fn bitwise_operations_are_rusts() {
         // where Rust's checked shift gives none, is overflow.
         for n in [0, 1, 13, 63, 64, -1, i64::MAX] {
             for (name, rust) in [
-                ("shift-left", u32::try_from(n).ok().and_then(|n| a.checked_shl(n))),
-                ("shift-right", u32::try_from(n).ok().and_then(|n| a.checked_shr(n))),
+                (
+                    "shift-left",
+                    u32::try_from(n).ok().and_then(|n| a.checked_shl(n)),
+                ),
+                (
+                    "shift-right",
+                    u32::try_from(n).ok().and_then(|n| a.checked_shr(n)),
+                ),
             ] {
                 let got = g.evaluate(&mut (), &format!("({name} {a} {n})"));
                 match (rust, got) {
@@ -1807,7 +1817,10 @@ fn a_parse_error_says_why_and_where() {
     // Each reason the reader has, and the line and column: of the `(` or `"` left open, wherever
     // the text ends, or else of what didn't read.
     for (text, want) in [
-        ("(define! f\n  (lambda! (x)\n    (add x 1)\n(f 2)", "unclosed-list 2 3"),
+        (
+            "(define! f\n  (lambda! (x)\n    (add x 1)\n(f 2)",
+            "unclosed-list 2 3",
+        ),
         ("(a (b) (c)", "unclosed-list 1 1"),
         ("(a \"bc\n\nd", "unclosed-string 1 4"),
         ("\"ab\\", "unclosed-string 1 1"),
@@ -1879,9 +1892,13 @@ fn lookup_and_unbind() {
     );
     // An unbound value can be reclaimed: the collector frees it, so the host's copy goes stale.
     let held = g
-        .evaluate(&mut (), "(sequence! (bind inner (quote! held) \"kept?\") held)")
+        .evaluate(
+            &mut (),
+            "(sequence! (bind inner (quote! held) \"kept?\") held)",
+        )
         .unwrap_or(Value::Inert);
-    g.evaluate(&mut (), "(evaluate (quote! held) inner)").unwrap();
+    g.evaluate(&mut (), "(evaluate (quote! held) inner)")
+        .unwrap();
     g.evaluate(
         &mut (),
         "(unbind inner (quote! held)) (length (map (lambda! (n) (list n)) (range 0 20000)))",
@@ -1918,7 +1935,10 @@ fn catch_kind_catches_one_kind_and_lets_the_rest_go_on_as_they_were() {
     fails(
         &mut g,
         &[
-            ("(catch-kind! (deep 1) (quote! type-error) e 0)", "type-error"),
+            (
+                "(catch-kind! (deep 1) (quote! type-error) e 0)",
+                "type-error",
+            ),
             ("(catch-kind! (deep 1) parse-error e 0)", "type-error"),
         ],
     );
@@ -1962,7 +1982,10 @@ fn sort_is_ordered_and_stable() {
             "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") string-less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
         ],
     );
-    assert!(took < Duration::from_secs(2), "sorting 10,000 took {took:?}");
+    assert!(
+        took < Duration::from_secs(2),
+        "sorting 10,000 took {took:?}"
+    );
     fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
     // string-less-than? is Rust's < on str, byte by byte.
     let words = ["", "a", "b", "ab", "abc", "B", "é", "e", "日本", "日"];

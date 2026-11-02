@@ -247,7 +247,9 @@ impl<T> Grift<T> {
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
                         match (cur.next(), c) {
                             (Some(';'), Some(c)) => c,
-                            (None, _) => return Err(parse_error(cur.src, start, K::UnclosedString)),
+                            (None, _) => {
+                                return Err(parse_error(cur.src, start, K::UnclosedString));
+                            }
                             _ => return Err(parse_error(cur.src, escape, K::BadEscape)),
                         }
                     }
