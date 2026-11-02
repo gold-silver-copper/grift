@@ -1,0 +1,25 @@
+; Exits 0 when the two files named on the command line read to the same forms, printed, and 1
+; with the first difference otherwise. A text may start with a #! line, which is skipped.
+(define! (old new) command-line-arguments)
+(define! read-file
+  (lambda! (path)
+    (let! ((file (open-file path)))
+      (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
+(define! forms
+  (lambda! (text i)
+    (let! ((read (read-form text i)))
+      (if! (empty-list? read)
+        ()
+        (let! (((form #ignore end) read)) (pair (value-to-string form) (forms text end)))))))
+(define! start (lambda! (text) (if! (string-starts-with? text "#!") (string-search text "\n" 0) 0)))
+(define! all-forms (lambda! (path) (let! ((text (read-file path))) (forms text (start text)))))
+(define! compare
+  (lambda! (a b)
+    (conditional!
+      ((and!? (empty-list? a) (empty-list? b)) (exit 0))
+      ((or!? (empty-list? a) (empty-list? b) (not? (equal? (first a) (first b))))
+       (display "differ: " (if! (pair? a) (first a) "end") " / " (if! (pair? b) (first b) "end"))
+       (newline)
+       (exit 1))
+      (#true (compare (rest a) (rest b))))))
+(compare (all-forms old) (all-forms new))

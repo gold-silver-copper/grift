@@ -1,0 +1,11 @@
+<html><head><title>Shop &amp; more</title></head><body>
+<h1>SHOP &amp; MORE</h1>
+<p>Hello, Ann &lt;ann@example.com&gt;! Likes &quot;quotes&quot;</p>
+<p>Raw: <b>new</b></p>
+<p>You are an admin.</p>
+<ul>
+  <li>1. Tea costs $4.50</li>
+  <li>2. Cake costs $12.00 (sale)</li>
+</ul>
+<footer>2 items</footer></body></html>
+[exit 0]

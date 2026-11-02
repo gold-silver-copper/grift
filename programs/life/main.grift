@@ -1,0 +1,224 @@
+#!/usr/bin/env grift
+; Conway's game of life on a bounded or wrapping grid.
+;   main.grift [--wrap] [--size WIDTHxHEIGHT] [--final] PATTERN-FILE GENERATIONS
+; prints generation 0 (the pattern) and each one after it, up to GENERATIONS, and stops early,
+; saying so, when a generation repeats an earlier one.
+;
+; A pattern file has a row of cells on each line, `.` dead and `#` alive; lines starting with `!`
+; are comments. The grid is a list of rows, each a string: grift has no vectors, but a string is
+; read by byte in constant time, so a row is the closest thing to an array of cells. A generation
+; is made row by row from the three rows around each, so no row is ever looked up by its number.
+; Speed shaped the cell loop (about 3 microseconds a cell): it uses only `if!` and function calls,
+; because `let!`, `conditional!` and `sequence!` each cost several times a call.
+
+(define! usage "usage: main.grift [--wrap] [--size WIDTHxHEIGHT] [--final] PATTERN-FILE GENERATIONS")
+(define! alive-byte 35)   ; #
+(define! dead-byte 46)    ; .
+
+; Writes "life: MESSAGE" to standard error and ends the run with `status`.
+(define! fail
+  (lambda! (status . message)
+    ((evaluate-in! write standard-error) (apply string-append (pair "life: " message)))
+    ((evaluate-in! write standard-error) "\n")
+    (exit status)))
+
+; `text` repeated `count` times.
+(define! repeat-string
+  (lambda! (text count) (apply string-append (map (lambda! (#ignore) text) (range 0 count)))))
+
+; The integer `text` names, or a usage error naming `what`.
+(define! read-count
+  (lambda! (text what)
+    (let! ((n (catch! (string-to-integer text) e
+                (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                  (fail 2 what " must be a whole number, not \"" text "\"")
+                  (raise e)))))
+      (if! (less-than? n 0) (fail 2 what " must not be negative, not " text) n))))
+
+; The options, a record: wrapping, final, size (() or (width height)), path and generations.
+(define! read-arguments
+  (lambda! (arguments)
+    (let! ((options (context))
+           (loop (lambda! (arguments positional)
+                   (conditional!
+                     ((empty-list? arguments) (reverse positional))
+                     ((equal? (first arguments) "--wrap")
+                      (bind options (quote! wrapping) #true)
+                      (loop (rest arguments) positional))
+                     ((equal? (first arguments) "--final")
+                      (bind options (quote! final) #true)
+                      (loop (rest arguments) positional))
+                     ((equal? (first arguments) "--size")
+                      (when! (empty-list? (rest arguments)) (fail 2 "--size needs WIDTHxHEIGHT\n" usage))
+                      (let! ((parts (string-split (first (rest arguments)) "x")))
+                        (when! (not? (same? (length parts) 2))
+                          (fail 2 "--size must be WIDTHxHEIGHT, not \"" (first (rest arguments)) "\""))
+                        (bind options (quote! size)
+                              (list (read-count (first parts) "the width")
+                                    (read-count (first (rest parts)) "the height"))))
+                      (loop (rest (rest arguments)) positional))
+                     ((string-starts-with? (first arguments) "--")
+                      (fail 2 "unknown option " (first arguments) "\n" usage))
+                     (#true (loop (rest arguments) (pair (first arguments) positional)))))))
+      (bind options (quote! (wrapping final size)) (list #false #false ()))
+      (let! ((positional (loop arguments ())))
+        (when! (not? (same? (length positional) 2)) (fail 2 usage))
+        (bind options (quote! (path generations))
+              (list (first positional) (read-count (first (rest positional)) "GENERATIONS")))
+        options))))
+
+; The text of the file at `path`, or an error naming it.
+(define! read-file
+  (lambda! (path)
+    (let! ((file (catch! (open-file path) e
+                   (if! (same? (evaluate-in! kind e) (quote! file-error))
+                     (fail 2 path ": " (first (rest (evaluate-in! values e))))
+                     (raise e)))))
+      (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
+
+; The rows of a pattern: its lines, without the comment lines that start with `!`, each checked
+; to be only `.` and `#`. An error names the file, the line and the column.
+(define! read-pattern
+  (lambda! (path text)
+    (let! ((lines (string-split text "\n"))
+           (check (lambda! (line number column)
+                    (when! (less-than? column (string-byte-length line))
+                      (let! ((byte (string-byte line column)))
+                        (if! (or!? (same? byte alive-byte) (same? byte dead-byte))
+                          (check line number (add column 1))
+                          (fail 1 path ":" (integer-to-string number)
+                                ":" (integer-to-string (add column 1))
+                                ": a cell is . or #, not \""
+                                (byte-substring line column (add column 1)) "\""))))))
+           (rows (lambda! (lines number found)
+                   (if! (empty-list? lines)
+                     (reverse found)
+                     (let! ((line (string-trim (first lines))))
+                       (if! (or!? (string-starts-with? line "!")
+                                  (and!? (same? line "") (empty-list? (rest lines))))
+                         (rows (rest lines) (add number 1) found)
+                         (sequence!
+                           (check line number 0)
+                           (rows (rest lines) (add number 1) (pair line found)))))))))
+      (rows lines 1 ()))))
+
+; Inside, a row holds its cells as bytes, 1 alive and 0 dead, so `string-byte` is the cell's
+; count, with one more cell at each end: dead, or when wrapping a copy of the cell at the other
+; end. Then every cell of the row has a left and a right neighbour, and the loop over cells has
+; no edges to test.
+(define! zero (code-point-to-string 0))
+(define! one (code-point-to-string 1))
+
+; The row of the cells `interior`, with its two end cells.
+(define! with-ends
+  (lambda! (interior wrapping)
+    (if! wrapping
+      (let! ((width (string-byte-length interior)))
+        (string-append (byte-substring interior (subtract width 1) width)
+                       interior
+                       (byte-substring interior 0 1)))
+      (string-append zero interior zero))))
+
+; The grid: the pattern's rows at the top left of a grid of `size`, or of the pattern's own size,
+; every row padded with dead cells to one width.
+(define! make-grid
+  (lambda! (path rows size wrapping)
+    (let! ((pattern-width (fold (lambda! (widest row) (maximum widest (string-byte-length row))) 0 rows))
+           (pattern-height (length rows))
+           ((width height) (if! (empty-list? size) (list pattern-width pattern-height) size))
+           (cells (lambda! (row)
+                    (apply string-append
+                           (map (lambda! (x) (if! (same? (string-byte row x) alive-byte) one zero))
+                                (range 0 (string-byte-length row)))))))
+      (when! (or!? (same? width 0) (same? height 0)) (fail 1 path ": the grid has no cells"))
+      (when! (or!? (less-than? width pattern-width) (less-than? height pattern-height))
+        (fail 1 path ": the pattern is "
+              (integer-to-string pattern-width) "x" (integer-to-string pattern-height)
+              ", larger than the grid, " (integer-to-string width) "x" (integer-to-string height)))
+      (map (lambda! (row) (with-ends row wrapping))
+           (append (map (lambda! (row)
+                          (string-append (cells row)
+                                         (repeat-string zero (subtract width (string-byte-length row)))))
+                        rows)
+                   (map (lambda! (#ignore) (repeat-string zero width)) (range pattern-height height)))))))
+
+; What a cell becomes, at the offset of the living cells among the nine around it, itself
+; included, plus 9 if it is alive itself: it lives with 3, or with 4 if it is one of them.
+(define! rule
+  (apply string-append (map (lambda! (i) (if! (member? i (list 3 12 13)) one zero)) (range 0 19))))
+(define! becomes (lambda! (i) (byte-substring rule i (add i 1))))
+
+; The next generation of `grid`. Each new row comes from the row and the rows above and below
+; it; above the top and below the bottom is a row of dead cells, or when wrapping the row at the
+; other edge.
+(define! step
+  (lambda! (grid wrapping)
+    (let! ((end (subtract (string-byte-length (first grid)) 1))
+           (dead-row (repeat-string zero (add end 1)))
+           ; The new row, cell by cell from the left; `left` and `middle` count the living cells
+           ; in the columns of the three rows at x - 1 and at x.
+           (next-row (lambda! (above row below)
+                       (let! ((column (lambda! (x)
+                                        (add (string-byte above x)
+                                             (add (string-byte row x) (string-byte below x)))))
+                              (cell (lambda! (x left middle right out)
+                                      (cells (add x 1) middle right
+                                             (pair (becomes (add (add left (add middle right))
+                                                                 (multiply 9 (string-byte row x))))
+                                                   out))))
+                              (cells (lambda! (x left middle out)
+                                       (if! (same? x end)
+                                         (with-ends (apply string-append (reverse out)) wrapping)
+                                         (cell x left middle (column (add x 1)) out)))))
+                         (cells 1 (column 0) (column 1) ()))))
+           (rows (lambda! (above (row . more) after-last)
+                   (pair (next-row above row (if! (empty-list? more) after-last (first more)))
+                         (if! (empty-list? more) () (rows row more after-last))))))
+      (if! wrapping
+        (rows (first (reverse grid)) grid (first grid))
+        (rows dead-row grid dead-row)))))
+
+; The text of a row, `.` and `#`, without its end cells: the shown cells from x leftwards,
+; collected onto `out`.
+(define! cell-text (lambda! (cell) (byte-substring ".#" cell (add cell 1))))
+(define! shown
+  (lambda! (row x out)
+    (if! (same? x 0)
+      (apply string-append out)
+      (shown row (subtract x 1) (pair (cell-text (string-byte row x)) out)))))
+(define! print-grid
+  (lambda! (grid)
+    (for-each (lambda! (row) (display (shown row (subtract (string-byte-length row) 2) ())) (newline))
+              grid)))
+
+; Runs from generation `n` up to `last`, printing each unless only the last is wanted. `seen`
+; maps each earlier grid, as a symbol of its text, to its generation, so a repeat is found in one
+; lookup however long the run.
+(define! run
+  (lambda! (grid n last options seen)
+    (let! ((final (evaluate-in! final options))
+           (key (string-to-symbol (string-join grid "\n"))))
+      (when! (not? final)
+        (when! (less-than? 0 n) (newline))
+        (display "generation " n) (newline)
+        (print-grid grid))
+      (conditional!
+        ((binds? seen key)
+         (let! ((earlier (evaluate key seen)))
+           (when! final (print-grid grid))
+           (display "generation " n " repeats generation " earlier
+                    (if! (same? earlier (subtract n 1))
+                      ": a still life"
+                      (string-append ": a cycle of period " (integer-to-string (subtract n earlier))))
+                    "; stopping")
+           (newline)))
+        ((same? n last) (when! final (print-grid grid)))
+        (#true
+         (bind seen key n)
+         (run (step grid (evaluate-in! wrapping options)) (add n 1) last options seen))))))
+
+(define! options (read-arguments command-line-arguments))
+(define! path (evaluate-in! path options))
+(run (make-grid path (read-pattern path (read-file path))
+                (evaluate-in! size options) (evaluate-in! wrapping options))
+     0 (evaluate-in! generations options) options (context))

@@ -1,0 +1,2 @@
+unclosed-tag.html:2: a {{ that is never closed with }}
+[exit 1]

@@ -1,0 +1,95 @@
+; raise, error, catch! and finally!, and the kinds in LANGUAGE.md's table.
+
+(define! caught-kind (lambda! (e) (evaluate-in! kind e)))
+
+(group! "error and raise"
+  (test! "error makes one and raises nothing"
+    (define! e (error (quote! mine) 1 2))
+    (expect-equal! (evaluate-in! kind e) (quote! mine))
+    (expect-equal! (evaluate-in! values e) (list 1 2))
+    (expect-equal! (evaluate-in! trace e) ()))
+  (test! "raise raises it"
+    (expect-error! mine (raise (error (quote! mine)))))
+  (test! "raising anything else is a type-error"
+    (expect-error! type-error (raise 1))))
+
+(group! "catch!"
+  (test! "the body's value if nothing is raised"
+    (expect-equal! (catch! 1 e 2) 1))
+  (test! "the handler's value if something is"
+    (expect-equal! (catch! (first 1) e 2) 2)
+    (expect-equal! (catch! (first 1) e (caught-kind e)) (quote! type-error)))
+  (test! "the error has no parent: it binds only its three fields"
+    (expect-equal! (catch! (first 1) e (names e)) (quote! (kind trace values)))
+    (expect-false! (catch! (first 1) e (binds!? e list))))
+  (test! "the trace is the combinations, innermost first, without those in tail position"
+    (define! inner (lambda! () (add 1 (raise (error (quote! deep))))))
+    (expect-equal! (catch! (list (inner)) e (evaluate-in! trace e))
+                   (quote! ((raise (error (quote! deep)))
+                            (add 1 (raise (error (quote! deep))))
+                            (list (inner))))))
+  (test! "raise passes a caught error on, keeping its trace"
+    (define! once (catch! (raise (error (quote! k))) e e))
+    (expect-equal! (catch! (raise once) e (evaluate-in! trace e))
+                   (evaluate-in! trace once)))
+  (test! "an early exit is a kind of the program's own"
+    (define! first-even
+      (lambda! (xs)
+        (catch! (sequence!
+                  (for-each (lambda! (x)
+                              (when! (same? (remainder x 2) 0)
+                                (raise (error (quote! found) x))))
+                            xs)
+                  #false)
+                e
+                (if! (same? (caught-kind e) (quote! found))
+                  (first (evaluate-in! values e))
+                  (raise e)))))
+    (expect-equal! (first-even (list 1 3 4 5)) 4)
+    (expect-false! (first-even (list 1 3)))))
+
+(group! "finally!"
+  (test! "the body's value, after the cleanups"
+    (expect-output! (finally! (display "body ") (display "one ") (display "two")) "body one two")
+    (expect-equal! (finally! 1 2 3) 1))
+  (test! "the cleanups run as an error passes, and it goes on"
+    (expect-output! (catch! (finally! (raise (error (quote! k))) (display "cleanup"))
+                            e
+                            (display (caught-kind e)))
+                    "cleanupk"))
+  (test! "an error in a cleanup replaces the one leaving"
+    (expect-error! second (finally! (raise (error (quote! first)))
+                                    (raise (error (quote! second))))))
+  (test! "cleanups inside run before the handler"
+    (expect-output! (catch! (finally! (first 1) (display "inside ")) e (display "handler"))
+                    "inside handler")))
+
+(group! "the kinds"
+  (test! "unbound-symbol carries the symbol"
+    (expect-equal! (catch! no-such-name e (evaluate-in! values e)) (list (quote! no-such-name))))
+  (test! "not-a-combiner"
+    (expect-error! not-a-combiner (1 2)))
+  (test! "overflow and division-by-zero"
+    (expect-error! overflow (add 9223372036854775807 1))
+    (expect-error! overflow (multiply 9223372036854775807 2))
+    (expect-error! overflow (divide -9223372036854775808 -1))
+    (expect-error! division-by-zero (divide 1 0))
+    (expect-error! division-by-zero (remainder 1 0)))
+  (test! "mixing integers and floats"
+    (expect-error! type-error (add 1 1.0))
+    (expect-error! type-error (less-than? 1 1.0))))
+
+(group! "the runner's kinds"
+  (test! "file-error names the path"
+    (expect-equal! (catch! (open-file "/no/such/file") e (first (evaluate-in! values e)))
+                   "/no/such/file"))
+  (test! "closed after close"
+    (define! f (create-file "/dev/null"))
+    ((evaluate-in! close f))
+    (expect-error! closed ((evaluate-in! write f) "x")))
+  (test! "unset-variable"
+    (expect-error! unset-variable (environment-variable "NO_SUCH_VARIABLE_HERE")))
+  (test! "process-error, and a process's record"
+    (expect-error! process-error (run-process "/no/such/program"))
+    (expect-equal! (evaluate-in! output (run-process "printf" "a")) "a")
+    (expect-equal! (evaluate-in! status (run-process "false")) 1)))

@@ -1,0 +1,7 @@
+; The bank of bank.grift kept open for 50,000 minutes: about 50,000 customers and 100,000 events,
+; long enough for the averages to settle near Erlang's prediction.
+(tellers 3)
+(arrival-rate 1.0)
+(service-rate 0.4)
+(duration 50000.0)
+(seed 42)

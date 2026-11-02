@@ -1,0 +1,399 @@
+#!/usr/bin/env grift
+; format: prints a grift source file re-indented in one style, keeping its comments.
+;
+;   main.grift FILE               the formatted text of FILE, on standard output
+;   main.grift --check FILE ...   the names of the files that would change; exit 1 if any
+;   main.grift --write FILE ...   rewrites each file that would change, in place
+;
+; The style, at a width of 100 columns:
+; - A list goes on one line when it holds no comment and fits, with the closing parentheses that
+;   follow it, within 100 columns.
+; - A list that doesn't is broken: its head stays after the `(`, and so do its first operands,
+;   each laid out by the same rule; every other element goes on a line of its own.
+;   - An operative's body (a head symbol ending in `!` but not `!?`) is indented 2 from the `(`.
+;     `vau!`, `define-in!` and `catch!` keep two operands on the first line, `sequence!` and
+;     `conditional!` none, and every other operative one.
+;   - A call (any other symbol at the head) keeps its first argument after the head and lines up
+;     the rest under it.
+;   - Any other list (data, or a combination whose head is itself a list) keeps only its first
+;     element on the first line and lines up the rest under it.
+; - A comment stays where it was: at the end of the line it ended, or on a line of its own,
+;   indented as the element after it. A comment last in a list puts the `)` on the next line.
+; - One blank line is kept where the text had one or more between two elements of a broken list,
+;   or between top-level forms; others are dropped. Trailing spaces go.
+; - Atoms (symbols, numbers, strings, constants) are kept exactly as written.
+; Formatting checks itself: the text it gives must read back to the same forms and keep the same
+; comments, in order, or nothing is printed or written and the file is named as a formatter bug.
+
+(define! width 100)
+
+; Text: offsets count bytes, as grift's strings do, and so do widths and columns, so a line with
+; characters of more than a byte may break before 100 characters, never after; error places count
+; characters, as read-form's do.
+; ASCII whitespace, as the reader skips it: space, and tab to return.
+(define! space-byte? (lambda! (b) (or!? (same? b 32) (and!? (less-than? 8 b) (less-than? b 14)))))
+; The number of characters in `s`: its bytes that don't continue a character.
+(define! text-width
+  (lambda! (s)
+    (let! ((end (string-byte-length s))
+           (count (lambda! (i n)
+                    (if! (same? i end)
+                      n
+                      (count (add i 1) (if! (continuation-byte? (string-byte s i)) n (add n 1)))))))
+      (count 0 0))))
+; Whether byte b continues a UTF-8 character (10xxxxxx).
+(define! continuation-byte? (lambda! (b) (same? (divide b 64) 2)))
+(define! spaces (lambda! (n) (string-pad-left "" n)))
+
+; The tree. Each item is a list (kind a b):
+;   (atom text ())             a symbol, number, constant or string, as written
+;   (lines text ())            a string with a newline in it, as written; never on one line
+;   (list flat children)       flat: the list on one line, or () when it holds a comment
+;   (comment text trailing?)   trailing?: #true when it ended a line that had something before it
+;   (blank () ())              a blank line between two items
+(define! blank-item (list (quote! blank) () ()))
+(define! kind-of first)
+(define! element? (lambda! (item) (member? (kind-of item) (quote! (atom lines list)))))
+(define! comment? (lambda! (item) (same? (kind-of item) (quote! comment))))
+(define! flat-text (lambda! (item) (first (rest item))))
+
+(define! list-item
+  (lambda! (children)
+    (let! ((elements (filter element? children))
+           (flat (if! (or!? (any? comment? children)
+                            (any? (lambda! (item) (not? (string? (flat-text item)))) elements))
+                   ()
+                   (string-append "(" (string-join (map flat-text elements) " ") ")"))))
+      (list (quote! list) flat children))))
+
+; The end of the string whose `"` is at offset i: the offset after its closing `"`, or past the
+; end of the text when it has none.
+(define! string-end
+  (lambda! (text i)
+    (let! ((end (string-byte-length text))
+           (loop (lambda! (i)
+                   (if! (greater-than-or-equal? i end)
+                     (add end 1)
+                     (let! ((b (string-byte text i)))
+                       (conditional!
+                         ((same? b 92) (loop (add i 2)))
+                         ((same? b 34) (add i 1))
+                         (#true (loop (add i 1)))))))))
+      (loop (add i 1)))))
+
+(define! atom-item
+  (lambda! (text)
+    (if! (and!? (same? (string-byte text 0) 34) (integer? (string-search text "\n" 0)))
+      (list (quote! lines) () text)
+      (list (quote! atom) text ()))))
+
+; The end of the atom or string at offset i, as read-form finds it. The one atom it doesn't read
+; alone is the `.` of a dotted list, one byte.
+(define! atom-end
+  (lambda! (text i)
+    (catch! (let! (((#ignore #ignore end) (read-form text i))) end) e
+      (if! (and!? (same? (evaluate-in! kind e) (quote! parse-error))
+                  (same? (string-byte text i) 46))
+        (add i 1)
+        (raise e)))))
+; The offset of the newline that ends the line at offset i, or the end of the text.
+(define! line-end
+  (lambda! (text i)
+    (let! ((at (string-search text "\n" i))) (if! (empty-list? at) (string-byte-length text) at))))
+
+; The items from offset i up to the `)` that closes them, or the end of the text, and the offset
+; of that `)` or end: (items offset). The text is known to read, so nothing here checks it.
+(define! read-items
+  (lambda! (text i)
+    (let! ((end (string-byte-length text))
+           (loop (lambda! (i newlines items)
+                   (if! (same? i end)
+                     (list (reverse items) i)
+                     (let! ((b (string-byte text i)))
+                       (conditional!
+                         ((same? b 10) (loop (add i 1) (add newlines 1) items))
+                         ((space-byte? b) (loop (add i 1) newlines items))
+                         ((same? b 41) (list (reverse items) i))
+                         (#true
+                          (let! ((before (if! (and!? (greater-than? newlines 1) (pair? items))
+                                           (pair blank-item items)
+                                           items)))
+                            (conditional!
+                              ((same? b 59)
+                               (let! ((j (line-end text i)))
+                                 (loop j
+                                       0
+                                       (pair (list (quote! comment)
+                                                   (string-trim (byte-substring text i j))
+                                                   (same? newlines 0))
+                                             before))))
+                              ((same? b 40)
+                               (let! (((children j) (read-items text (add i 1))))
+                                 (loop (add j 1) 0 (pair (list-item children) before))))
+                              (#true
+                               (let! ((j (atom-end text i)))
+                                 (loop j
+                                       0
+                                       (pair (atom-item (byte-substring text i j))
+                                             before)))))))))))))
+      (loop i 0 ()))))
+
+; Laying out: an output record holds the pieces written so far, newest first, and the column.
+(define! output
+  (lambda! () (let! ((out (context))) (bind out (quote! (pieces column)) (list () 0)) out)))
+(define! emit-at
+  (lambda! (out s column)
+    (bind out (quote! (pieces column)) (list (pair s (evaluate-in! pieces out)) column))))
+(define! emit (lambda! (out s) (emit-at out s (add (column-of out) (string-byte-length s)))))
+(define! new-line (lambda! (out indent) (emit-at out (string-append "\n" (spaces indent)) indent)))
+; A string with newlines in it ends at the column after its last one.
+(define! emit-lines
+  (lambda! (out s) (emit-at out s (string-byte-length (first (reverse (string-split s "\n")))))))
+(define! column-of (lambda! (out) (evaluate-in! column out)))
+(define! output-text (lambda! (out) (string-join (reverse (evaluate-in! pieces out)) "")))
+
+; How a broken list whose head is `head` lays out its operands, from a `(` at column `start`:
+; (operands-on-the-first-line indent).
+(define! shape
+  (lambda! (head start)
+    (let! (((kind text #ignore) head) (name (if! (same? kind (quote! atom)) text "")))
+      (conditional!
+        ((and!? (string-ends-with? name "!") (not? (string-ends-with? name "!?")))
+         (list (if! (member? name (list "vau!" "define-in!" "catch!"))
+                 2
+                 (if! (member? name (list "sequence!" "conditional!")) 0 1))
+               (add start 2)))
+        ((and!? (not? (same? name ""))
+                (not? (same? name "."))
+                ; Not a string, a # constant, or a number (nor a symbol starting with + or -).
+                (not? (member? (string-byte name 0)
+                               (quote! (34 35 43 45 48 49 50 51 52 53 54 55 56 57)))))
+         (list 1 (add start (add 2 (string-byte-length name)))))
+        (#true (list 0 (add start 1)))))))
+
+; Lays out one item at the current column, with `closers` characters to follow it on its line.
+(define! layout
+  (lambda! (out item closers)
+    (let! (((kind a children) item))
+      (conditional!
+        ((same? kind (quote! atom)) (emit out a))
+        ((same? kind (quote! lines)) (emit-lines out children))
+        ((and!? (string? a)
+                (less-than-or-equal? (add (column-of out) (add (string-byte-length a) closers))
+                                     width))
+         (emit out a))
+        (#true (layout-broken out children closers))))))
+
+(define! layout-broken
+  (lambda! (out children closers)
+    (let! ((start (column-of out)))
+      (emit out "(")
+      (if! (comment? (first children))
+        (sequence!
+          (emit out (flat-text (first children)))
+          (layout-rest out (rest children) (add start 1) closers #true))
+        (let! (((head . operands) children) ((count indent) (shape head start)))
+          (layout out head (if! (empty-list? operands) (add closers 1) 0))
+          (layout-first-line out operands count indent closers))))))
+
+; The first `count` operands, after the head on its line, then the rest.
+(define! layout-first-line
+  (lambda! (out items count indent closers)
+    (if! (and!? (greater-than? count 0) (pair? items) (element? (first items)))
+      (sequence!
+        (emit out " ")
+        (layout out (first items) (if! (empty-list? (rest items)) (add closers 1) 0))
+        (layout-first-line out (rest items) (subtract count 1) indent closers))
+      (layout-rest out items indent closers #false))))
+
+; The rest of a broken list's items, each on a line of its own at `indent`, and its `)`.
+; after-comment?: whether the last thing written was a comment, so the `)` can't follow it.
+(define! layout-rest
+  (lambda! (out items indent closers after-comment?)
+    (if! (empty-list? items)
+      (sequence! (when! after-comment? (new-line out indent)) (emit out ")"))
+      (let! ((((kind a b) . more) items))
+        (conditional!
+          ((same? kind (quote! blank))
+           (new-line out 0)
+           (layout-rest out more indent closers #false))
+          ((same? kind (quote! comment))
+           (if! b (emit out " ") (new-line out indent))
+           (emit out a)
+           (layout-rest out more indent closers #true))
+          (#true
+           (new-line out indent)
+           (layout out (first items) (if! (empty-list? more) (add closers 1) 0))
+           (layout-rest out more indent closers #false)))))))
+
+; The whole text's top-level items, from column 0, ending in a newline unless there are none.
+(define! layout-top
+  (lambda! (out items)
+    (for-each (lambda! ((kind a b))
+                (let! ()
+                  (conditional!
+                    ((same? kind (quote! blank)) (new-line out 0))
+                    ((same? kind (quote! comment))
+                     (when! (not? (empty-list? (evaluate-in! pieces out)))
+                       (if! b (emit out " ") (new-line out 0)))
+                     (emit out a))
+                    (#true
+                     (when! (not? (empty-list? (evaluate-in! pieces out))) (new-line out 0))
+                     (layout out (list kind a b) 0)))))
+              items)
+    (when! (pair? items) (new-line out 0))))
+
+; Reading. A text may start with a `#!` line, which the runner skips and so does this: the offset
+; where the forms start.
+(define! forms-start (lambda! (text) (if! (string-starts-with? text "#!") (line-end text 0) 0)))
+; Every form of text after offset i, as read-form reads them, printed: a parse-error if one
+; doesn't read.
+(define! printed-forms
+  (lambda! (text i)
+    (let! ((read (read-form text i)))
+      (if! (empty-list? read)
+        ()
+        (let! (((form #ignore end) read))
+          (pair (value-to-string form) (printed-forms text end)))))))
+; The comments of a tree's items, in order.
+(define! comments
+  (lambda! (items)
+    (fold (lambda! (found (kind a b))
+            (conditional!
+              ((same? kind (quote! comment)) (append found (list a)))
+              ((same? kind (quote! list)) (append found (comments b)))
+              (#true found)))
+          ()
+          items)))
+
+; The formatted text of `text`, read from `path`. A text that doesn't read is its parse-error,
+; raised before anything else is done.
+(define! format-text
+  (lambda! (path text)
+    (let! ((start (forms-start text))
+           (forms (printed-forms text start))
+           ((items #ignore) (read-items text start))
+           (out (output)))
+      (layout-top out items)
+      (let! ((formatted (string-append (byte-substring text 0 start)
+                                       (if! (same? start 0) "" "\n")
+                                       (output-text out)))
+             (again-start (forms-start formatted)))
+        (when! (not? (equal? (printed-forms formatted again-start) forms))
+          (raise (error (quote! formatter-changed-forms) path)))
+        (when! (not? (equal? (comments (first (read-items formatted again-start)))
+                             (comments items)))
+          (raise (error (quote! formatter-lost-comments) path)))
+        formatted))))
+
+; Files.
+(define! read-file
+  (lambda! (path)
+    (let! ((file (open-file path)))
+      (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
+(define! write-file
+  (lambda! (path text)
+    (let! ((file (create-file path)))
+      (finally! ((evaluate-in! write file) text) ((evaluate-in! close file))))))
+(define! complain (lambda! (text) ((evaluate-in! write standard-error) (string-append text "\n"))))
+
+; Where reading stopped, for a text that doesn't read. read-form reports an unfinished text at
+; its end; the place to look is the innermost `(` or `"` still open there, found here by a scan
+; that knows strings and comments: its offset, or () if nothing is open.
+(define! still-open
+  (lambda! (text i)
+    (let! ((end (string-byte-length text))
+           (loop (lambda! (i opens)
+                   (if! (greater-than-or-equal? i end)
+                     (if! (pair? opens) (first opens) ())
+                     (let! ((b (string-byte text i)))
+                       (conditional!
+                         ((same? b 59) (loop (line-end text i) opens))
+                         ((same? b 34)
+                          (let! ((j (string-end text i)))
+                            (if! (greater-than? j end) i (loop j opens))))
+                         ((same? b 40) (loop (add i 1) (pair i opens)))
+                         ((same? b 41) (loop (add i 1) (if! (pair? opens) (rest opens) ())))
+                         (#true (loop (add i 1) opens))))))))
+      (loop i ()))))
+; The line and column of byte offset `at`, counted from 1, the column in characters.
+(define! line-and-column
+  (lambda! (text at)
+    (let! ((lines (string-split (byte-substring text 0 at) "\n")))
+      (list (length lines) (add 1 (text-width (first (reverse lines))))))))
+(define! place-text
+  (lambda! ((line column)) (string-append (integer-to-string line) ":" (integer-to-string column))))
+; The message for a text that doesn't read, from read-form's (line column).
+(define! does-not-read
+  (lambda! (path text place)
+    (let! ((open (still-open text (forms-start text)))
+           (at-end? (equal? place (line-and-column text (string-byte-length text)))))
+      (string-append path
+                     ":"
+                     (place-text place)
+                     ": does not read"
+                     (if! (and!? at-end? (not? (empty-list? open)))
+                       (string-append (if! (same? (string-byte text open) 34)
+                                        "; the string at "
+                                        "; the list at ")
+                                      (place-text (line-and-column text open))
+                                      " is not closed")
+                       "")
+                     "; left as it is"))))
+
+; Formats the file at `path` and gives (text formatted) to `done`, or reports why it can't on
+; standard error and gives #false.
+(define! with-formatted
+  (lambda! (path done)
+    (catch! (let! ((text (read-file path)))
+              (catch! (done text (format-text path text)) e
+                (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                  (sequence! (complain (does-not-read path text (evaluate-in! values e))) #false)
+                  (raise e)))) e
+      (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
+        (conditional!
+          ((member? kind (quote! (file-error encoding-error)))
+           (complain (string-append path ": " (first (reverse values))))
+           #false)
+          ((member? kind (quote! (formatter-changed-forms formatter-lost-comments)))
+           (complain (string-append path
+                                    ": formatter bug, "
+                                    (symbol-to-string kind)
+                                    "; left as it is"))
+           #false)
+          (#true (raise e)))))))
+
+(define! usage
+  (lambda! () (complain "usage: main.grift FILE | --check FILE ... | --write FILE ...") (exit 2)))
+
+; Each file through `each`, which gives #true when the file is fine: exit 0 if all were, 1 if not.
+(define! over-files
+  (lambda! (paths each)
+    (when! (empty-list? paths) (usage))
+    (exit (if! (fold (lambda! (fine path) (if! (each path) fine #false)) #true paths) 0 1))))
+
+(define! arguments command-line-arguments)
+(conditional!
+  ((empty-list? arguments) (usage))
+  ((equal? (first arguments) "--check")
+   (over-files (rest arguments)
+               (lambda! (path)
+                 (with-formatted path
+                                 (lambda! (text formatted)
+                                   (if! (equal? text formatted)
+                                     #true
+                                     (sequence! (display path) (newline) #false)))))))
+  ((equal? (first arguments) "--write")
+   (over-files (rest arguments)
+               (lambda! (path)
+                 (with-formatted path
+                                 (lambda! (text formatted)
+                                   (when! (not? (equal? text formatted))
+                                     (write-file path formatted))
+                                   #true)))))
+  ((and!? (empty-list? (rest arguments)) (not? (string-starts-with? (first arguments) "-")))
+   (exit (if! (with-formatted (first arguments)
+                              (lambda! (text formatted) (display formatted) #true))
+           0
+           1)))
+  (#true (usage)))

@@ -1,0 +1,118 @@
+; Test cases for main.grift, each (name markdown expected-html), checked by
+;   grift programs/markdown/main.grift --test programs/markdown/tests.grift
+; The expected HTML is what CommonMark's reference renderers (cmark, commonmark.js) write, but
+; for "html escaped": raw HTML is escaped here, by design, where they pass it through.
+
+("atx headings"
+ "# One\n## Two ##\n###### Six\n####### seven\n#not a heading\n"
+ "<h1>One</h1>\n<h2>Two</h2>\n<h6>Six</h6>\n<p>####### seven\n#not a heading</p>\n")
+
+("setext headings"
+ "Title\n=====\n\nSub *title*\n---\n"
+ "<h1>Title</h1>\n<h2>Sub <em>title</em></h2>\n")
+
+("paragraphs"
+ "first line\nsame paragraph\n\n\nsecond paragraph\n"
+ "<p>first line\nsame paragraph</p>\n<p>second paragraph</p>\n")
+
+("emphasis and strong"
+ "*em* _em_ **strong** __strong__ ***both***\n"
+ "<p><em>em</em> <em>em</em> <strong>strong</strong> <strong>strong</strong> <em><strong>both</strong></em></p>\n")
+
+("nested emphasis"
+ "*an **inner** strong* and **an *inner* em**\n"
+ "<p><em>an <strong>inner</strong> strong</em> and <strong>an <em>inner</em> em</strong></p>\n")
+
+("emphasis that isn't"
+ "snake_case_name, 2 * 3 * 4, and a lone *star\n"
+ "<p>snake_case_name, 2 * 3 * 4, and a lone *star</p>\n")
+
+("inline code"
+ "use `(add 1 2)` or `` a ` b `` here, `<b>` too\n"
+ "<p>use <code>(add 1 2)</code> or <code>a ` b</code> here, <code>&lt;b&gt;</code> too</p>\n")
+
+("fenced code"
+ "```grift\n(define! x 1)\n\n(display \"<x>\")\n```\n"
+ "<pre><code class=\"language-grift\">(define! x 1)\n\n(display &quot;&lt;x&gt;&quot;)\n</code></pre>\n")
+
+("tilde fence and unclosed fence"
+ "~~~\n*not em*\n~~~\n\n```\nruns to the end\n"
+ "<pre><code>*not em*\n</code></pre>\n<pre><code>runs to the end\n</code></pre>\n")
+
+("indented code"
+ "para\n\n    code line\n      indented more\n\nafter\n"
+ "<p>para</p>\n<pre><code>code line\n  indented more\n</code></pre>\n<p>after</p>\n")
+
+("links"
+ "[grift](https://example.com/grift) and [titled](/a?b=1&c=2 \"The *title*\")\n"
+ "<p><a href=\"https://example.com/grift\">grift</a> and <a href=\"/a?b=1&amp;c=2\" title=\"The *title*\">titled</a></p>\n")
+
+("link text with markup, images, autolinks"
+ "[**bold** link](u) ![a cat](cat.png) <https://x.org/?q=1>\n"
+ "<p><a href=\"u\"><strong>bold</strong> link</a> <img src=\"cat.png\" alt=\"a cat\" /> <a href=\"https://x.org/?q=1\">https://x.org/?q=1</a></p>\n")
+
+("not links"
+ "[no target] and [broken](unclosed\n"
+ "<p>[no target] and [broken](unclosed</p>\n")
+
+("unordered list, tight"
+ "- one\n- two\n- three\n"
+ "<ul>\n<li>one</li>\n<li>two</li>\n<li>three</li>\n</ul>\n")
+
+("ordered list with start"
+ "3. three\n4. four\n"
+ "<ol start=\"3\">\n<li>three</li>\n<li>four</li>\n</ol>\n")
+
+("nested lists, two levels"
+ "- fruit\n  1. apple\n  2. pear\n- veg\n  * kale\n"
+ "<ul>\n<li>fruit\n<ol>\n<li>apple</li>\n<li>pear</li>\n</ol>\n</li>\n<li>veg\n<ul>\n<li>kale</li>\n</ul>\n</li>\n</ul>\n")
+
+("loose list"
+ "- one\n\n- two\n  continued\n\n  second paragraph\n"
+ "<ul>\n<li>\n<p>one</p>\n</li>\n<li>\n<p>two\ncontinued</p>\n<p>second paragraph</p>\n</li>\n</ul>\n")
+
+("list kinds don't mix"
+ "- a\n+ b\n1. c\n1) d\n"
+ "<ul>\n<li>a</li>\n</ul>\n<ul>\n<li>b</li>\n</ul>\n<ol>\n<li>c</li>\n</ol>\n<ol>\n<li>d</li>\n</ol>\n")
+
+("an ordered item past 1 continues a paragraph"
+ "The year was\n1986. A good year.\n"
+ "<p>The year was\n1986. A good year.</p>\n")
+
+("block quote"
+ "> quoted *text*\nlazy line\n>\n> - item\n"
+ "<blockquote>\n<p>quoted <em>text</em>\nlazy line</p>\n<ul>\n<li>item</li>\n</ul>\n</blockquote>\n")
+
+("nested block quote"
+ "> outer\n> > inner\n"
+ "<blockquote>\n<p>outer</p>\n<blockquote>\n<p>inner</p>\n</blockquote>\n</blockquote>\n")
+
+("html escaped"
+ "<div>a & b \"q\"</div>\n"
+ "<p>&lt;div&gt;a &amp; b &quot;q&quot;&lt;/div&gt;</p>\n")
+
+("backslash escapes and hard breaks"
+ "\\*not em\\* \\[x\\]\nline with two spaces  \nand a backslash\\\nend\n"
+ "<p>*not em* [x]\nline with two spaces<br />\nand a backslash<br />\nend</p>\n")
+
+("thematic breaks"
+ "above\n\n***\n- - -\n___\n"
+ "<p>above</p>\n<hr />\n<hr />\n<hr />\n")
+
+("a heading interrupts a paragraph, a list item too"
+ "text\n# heading\ntext\n- item\n"
+ "<p>text</p>\n<h1>heading</h1>\n<p>text</p>\n<ul>\n<li>item</li>\n</ul>\n")
+
+("empty input" "" "")
+
+("a short closer takes the delimiters nearest the text"
+ "**a* and ***b**\n"
+ "<p>*<em>a</em> and *<strong>b</strong></p>\n")
+
+("a destination in angle brackets"
+ "[a](<with space> \"t\")\n"
+ "<p><a href=\"with%20space\" title=\"t\">a</a></p>\n")
+
+("tabs in the indent, CRLF line ends"
+ "\tcode\xd;\ntext\xd;\n"
+ "<pre><code>code\n</code></pre>\n<p>text</p>\n")

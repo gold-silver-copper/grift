@@ -1,0 +1,2 @@
+(define! area (lambda! (w h) (multiply w hieght)))
+(display (area 2 3))

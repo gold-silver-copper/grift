@@ -1,0 +1,105 @@
+; The library's list names, as docs/LANGUAGE.md states them.
+
+(group! "list"
+  (test! "gives its arguments"
+    (expect-equal! (list 1 "a" (quote! b)) (quote! (1 "a" b)))
+    (expect-equal! (list) ()))
+  (test! "pair, first and rest take a pair apart"
+    (expect-equal! (first (pair 1 2)) 1)
+    (expect-equal! (rest (pair 1 2)) 2)
+    (expect-error! type-error (first ()))
+    (expect-error! type-error (rest 1))))
+
+(group! "length"
+  (test! "counts a list"
+    (expect-equal! (length ()) 0)
+    (expect-equal! (length (list 1 2 3)) 3))
+  (test! "refuses an improper list"
+    (expect-error! type-error (length (pair 1 2)))))
+
+(group! "append"
+  (test! "joins any number of lists"
+    (expect-equal! (append) ())
+    (expect-equal! (append (list 1)) (list 1))
+    (expect-equal! (append (list 1) () (list 2 3) (list 4)) (list 1 2 3 4)))
+  (test! "shares the last list"
+    (define! last-list (list 3 4))
+    (expect-same! (rest (rest (append (list 1 2) last-list))) last-list))
+  (test! "lets the last be anything, as Kernel's does"
+    (expect-equal! (append (list 1) 2) (pair 1 2))))
+
+(group! "reverse"
+  (test! "gives the opposite order"
+    (expect-equal! (reverse ()) ())
+    (expect-equal! (reverse (list 1 2 3)) (list 3 2 1))))
+
+(group! "map"
+  (test! "one list"
+    (expect-equal! (map (lambda! (x) (multiply x x)) (list 1 2 3)) (list 1 4 9))
+    (expect-equal! (map first ()) ()))
+  (test! "several lists of one length"
+    (expect-equal! (map add (list 1 2) (list 10 20)) (list 11 22))
+    (expect-equal! (map list (list 1 2) (list 3 4) (list 5 6)) (quote! ((1 3 5) (2 4 6)))))
+  (test! "lists of different lengths are a type-error"
+    (expect-error! type-error (map add (list 1 2) (list 1)))
+    (expect-error! type-error (map add (list 1) (list 1 2))))
+  (test! "a long list doesn't overflow anything"
+    (expect-equal! (length (map (lambda! (x) x) (range 0 100000))) 100000)))
+
+(group! "for-each"
+  (test! "runs in order and gives #inert"
+    (expect-output! (for-each display (list 1 2 3)) "123")
+    (expect-true! (inert? (for-each (lambda! (x) x) (list 1))))))
+
+(group! "filter"
+  (test! "keeps the elements in order"
+    (expect-equal! (filter integer? (list 1 "a" 2 #true 3)) (list 1 2 3))
+    (expect-equal! (filter integer? ()) ()))
+  (test! "the combiner must give booleans"
+    (expect-error! type-error (filter (lambda! (x) x) (list 1)))))
+
+(group! "fold"
+  (test! "goes from the left"
+    (expect-equal! (fold add 0 (list 1 2 3)) 6)
+    (expect-equal! (fold (lambda! (so-far x) (pair x so-far)) () (list 1 2 3)) (list 3 2 1))
+    (expect-equal! (fold add 7 ()) 7)))
+
+(group! "range"
+  (test! "is start up to, not including, end"
+    (expect-equal! (range 0 3) (list 0 1 2))
+    (expect-equal! (range -2 0) (list -2 -1)))
+  (test! "is empty when start isn't below end"
+    (expect-equal! (range 3 3) ())
+    (expect-equal! (range 5 1) ())))
+
+(group! "any? and all?"
+  (test! "any? on an empty list is #false, all? is #true"
+    (expect-false! (any? integer? ()))
+    (expect-true! (all? integer? ())))
+  (test! "stop at the answer"
+    (expect-true! (any? integer? (list "a" 1 (quote! never))))
+    (expect-false! (all? integer? (list 1 "a" 2)))
+    (expect-output! (any? (lambda! (x) (display x) (same? x 2)) (list 1 2 3)) "12")
+    (expect-output! (all? (lambda! (x) (display x) (same? x 1)) (list 1 2 3)) "12"))
+  (test! "the combiner must give booleans"
+    (expect-error! type-error (any? (lambda! (x) x) (list 1)))
+    (expect-error! type-error (all? (lambda! (x) x) (list 1)))))
+
+(group! "member? and find-association"
+  (test! "member? compares by equal?"
+    (expect-true! (member? (list 1 2) (list 0 (list 1 2))))
+    (expect-false! (member? 1 ()))
+    (expect-false! (member? 1 (list 1.0))))
+  (test! "not-a-number is a member of nothing"
+    (expect-false! (member? #not-a-number (list #not-a-number))))
+  (test! "find-association gives the first pair, or ()"
+    (expect-equal! (find-association "b" (quote! (("a" . 1) ("b" . 2) ("b" . 3)))) (pair "b" 2))
+    (expect-equal! (find-association 9 (quote! ((1 . 1)))) ())))
+
+(group! "apply"
+  (test! "calls with the list"
+    (expect-equal! (apply add (list 1 2)) 3)
+    (expect-equal! (apply list ()) ()))
+  (test! "the operative inside sees an empty context"
+    (define! seen (wrap (vau! () caller (names caller))))
+    (expect-equal! (apply seen ()) ())))

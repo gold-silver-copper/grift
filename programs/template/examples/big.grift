@@ -1,0 +1,5 @@
+; 5,000 rows for timing the hot path: a loop with paths, a filter, a test and escaping.
+(define! rows
+  (map (lambda! (i) (record! (id i) (name (string-append "item <" (integer-to-string i) ">")) (even (same? (remainder i 2) 0))))
+       (range 0 5000)))
+(define! double (lambda! (n) (multiply n 2)))

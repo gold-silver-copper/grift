@@ -1,0 +1,710 @@
+#!/usr/bin/env grift
+; markdown: reads Markdown on standard input and writes HTML to standard output, in the form
+; CommonMark's reference renderer writes it.
+;
+;   grift main.grift < FILE.md            converts FILE.md
+;   grift main.grift --test CASES.grift   checks each case (name markdown html) in CASES.grift
+;
+; Blocks: ATX and setext headings, paragraphs, fenced and indented code, block quotes, thematic
+; breaks, and lists (bullets - + *, ordered 1. and 1)) nested to any depth, tight or loose.
+; Inlines: emphasis and strong with * and _, code spans, links and images [text](url "title"),
+; autolinks <https://...>, backslash escapes and hard line breaks. Every <, >, & and " in the
+; text is escaped, raw HTML included: the output never carries markup the input didn't ask for.
+;
+; It renders as it reads, with no tree in between, except for one thing: whether a list is
+; tight (its paragraphs without <p>) is known only once the whole list is read, so a block reader
+; gives a paragraph as (paragraph . html) and the list or the document wraps it.
+
+; ---- Bytes and lines
+
+(define! code-of (lambda! (character) (string-byte character 0)))
+(define! space (code-of " "))
+(define! tab (code-of "\t"))
+(define! newline-byte (code-of "\n"))
+(define! hash (code-of "#"))
+(define! star (code-of "*"))
+(define! underscore (code-of "_"))
+(define! dash (code-of "-"))
+(define! plus (code-of "+"))
+(define! equals (code-of "="))
+(define! dot (code-of "."))
+(define! close-parenthesis (code-of ")"))
+(define! open-parenthesis (code-of "("))
+(define! greater (code-of ">"))
+(define! less (code-of "<"))
+(define! open-bracket (code-of "["))
+(define! close-bracket (code-of "]"))
+(define! backslash (code-of "\\"))
+(define! backtick (code-of "`"))
+(define! tilde (code-of "~"))
+(define! bang (code-of "!"))
+(define! double-quote (code-of "\""))
+(define! single-quote (code-of "'"))
+
+; The byte at i, or -1 past either end, so a scanner can look ahead without checking first.
+(define! byte-at
+  (lambda! (s i)
+    (if! (and!? (not? (less-than? i 0)) (less-than? i (string-byte-length s))) (string-byte s i) -1)))
+
+(define! between? (lambda! (low x high) (and!? (not? (less-than? x low)) (not? (less-than? high x)))))
+(define! digit? (lambda! (b) (between? 48 b 57)))
+; Letters, digits and every byte of a non-ASCII character: what `_` may not touch inside a word.
+(define! word-byte?
+  (lambda! (b) (or!? (digit? b) (between? 65 b 90) (between? 97 b 122) (less-than? 127 b))))
+(define! punctuation?
+  (lambda! (b) (or!? (between? 33 b 47) (between? 58 b 64) (between? 91 b 96) (between? 123 b 126))))
+(define! white? (lambda! (b) (or!? (same? b space) (same? b newline-byte) (same? b -1))))
+
+; The set of the bytes of a string, as a string of 256 bytes with "y" at each member's offset,
+; so a test is one string-byte: grift has no vector, and member? costs a call to equal? for each
+; element.
+(define! byte-set
+  (lambda! (characters)
+    (let! ((members (map (lambda! (i) (string-byte characters i)) (range 0 (string-byte-length characters)))))
+      (apply string-append (map (lambda! (b) (if! (member? b members) "y" "n")) (range 0 256))))))
+(define! in-set? (lambda! (set b) (if! (same? b -1) #false (same? (string-byte set b) 121))))
+
+; How many bytes b start s at offset at.
+(define! run-of
+  (lambda! (s at b)
+    (define! count (lambda! (i) (if! (same? (byte-at s i) b) (count (add i 1)) i)))
+    (subtract (count at) at)))
+
+(define! indent-of (lambda! (line) (run-of line 0 space)))
+(define! from-byte
+  (lambda! (s at)
+    (let! ((end (string-byte-length s))) (byte-substring s (minimum at end) end))))
+; line without up to n spaces in front.
+(define! drop-indent (lambda! (line n) (from-byte line (minimum n (indent-of line)))))
+(define! trim-start (lambda! (line) (from-byte line (indent-of line))))
+(define! blanks (byte-set "\t "))
+; Whether the line is only spaces and tabs. (string-trim would do, but costs 40 µs a line.)
+(define! blank?
+  (lambda! (line)
+    (define! end (string-byte-length line))
+    (define! walk
+      (lambda! (i)
+        (if! (same? i end) #true (if! (in-set? blanks (string-byte line i)) (walk (add i 1)) #false))))
+    (walk 0)))
+
+; The elements of xs before the first that f refuses, and the rest: (taken rest).
+(define! split-while
+  (lambda! (f xs)
+    (define! walk
+      (lambda! (xs taken)
+        (if! (and!? (pair? xs) (apply f (list (first xs))))
+          (walk (rest xs) (pair (first xs) taken))
+          (list (reverse taken) xs))))
+    (walk xs ())))
+
+; ---- HTML
+
+(define! html-specials (byte-set "&<>\""))
+(define! escape-html
+  ((lambda! ()
+     (define! entity
+       (lambda! (b)
+         (conditional! ((same? b 38) "&amp;") ((same? b 60) "&lt;") ((same? b 62) "&gt;") (#true "&quot;"))))
+     (define! parts
+       (lambda! (s from at end)
+         ; if! rather than conditional! in the loops over bytes: it costs a seventh as much.
+         (if! (same? at end)
+           (list (byte-substring s from end))
+           (if! (in-set? html-specials (string-byte s at))
+             (pair (byte-substring s from at) (pair (entity (string-byte s at)) (parts s (add at 1) (add at 1) end)))
+             (parts s from (add at 1) end)))))
+     (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
+
+; A URL with every byte outside the ones URLs keep as they are written %XX, as CommonMark's
+; renderers do; a % already followed by two hex digits stays.
+(define! url-keeps
+  (byte-set "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789;/?:@&=+$,-_.!~*'()#"))
+(define! hex-digits (byte-set "0123456789abcdefABCDEF"))
+(define! encode-url
+  (lambda! (url)
+    (define! hex (lambda! (n) (byte-substring "0123456789ABCDEF" n (add n 1))))
+    (define! parts
+      (lambda! (from at end)
+        (if! (same? at end)
+          (list (byte-substring url from end))
+          (let! ((b (string-byte url at)))
+            (if! (or!? (in-set? url-keeps b)
+                       (and!? (same? b 37) (in-set? hex-digits (byte-at url (add at 1)))
+                              (in-set? hex-digits (byte-at url (add at 2)))))
+              (parts from (add at 1) end)
+              ; Every byte of the character, whose first byte gives its length in UTF-8.
+              (let! ((next (add at (conditional! ((less-than? b 128) 1) ((less-than? b 224) 2)
+                                                 ((less-than? b 240) 3) (#true 4)))))
+                (pair (byte-substring url from at)
+                      (pair (apply string-append
+                                   (map (lambda! (i) (let! ((b (string-byte url i)))
+                                                       (string-append "%" (hex (divide b 16)) (hex (remainder b 16)))))
+                                        (range at next)))
+                            (parts next next end)))))))))
+    (escape-html (apply string-append (parts 0 0 (string-byte-length url))))))
+
+; Each line followed by a newline.
+(define! lines-text (lambda! (lines) (string-join (append lines (list "")) "\n")))
+
+; ---- Inlines
+
+; The offset of the next run of exactly n backticks at or after i in s, or ().
+(define! backtick-run
+  (lambda! (s i n)
+    (let! ((at (string-search s "`" i)))
+      (conditional!
+        ((same? at ()) ())
+        ((same? (run-of s at backtick) n) at)
+        (#true (backtick-run s (add at (run-of s at backtick)) n))))))
+
+; A code span's text: newlines become spaces, and one space is taken off each end when both
+; ends have one and it isn't all spaces.
+(define! code-span-text
+  (lambda! (code)
+    (let! ((flat (string-join (string-split code "\n") " ")) (size (string-byte-length flat)))
+      (if! (and!? (less-than? 1 size) (same? (string-byte flat 0) space)
+                  (same? (string-byte flat (subtract size 1)) space) (not? (blank? flat)))
+        (byte-substring flat 1 (subtract size 1))
+        flat))))
+
+; Where the delimiter run that closes emphasis opened at start (with size 1, 2 or 3 of byte b)
+; begins, or (). A closer is a run of at least size bytes b with no white space before it (and,
+; for _, no word after it); code spans and escapes are skipped, and a run of the other size opens
+; emphasis of its own that must close first, so *a **b** c* nests.
+(define! closing-run
+  (lambda! (s start b size)
+    (define! closes?
+      (lambda! (j r)
+        (and!? (less-than? start j) (not? (less-than? r size))
+               (not? (white? (byte-at s (subtract j 1))))
+               (or!? (not? (same? b underscore)) (not? (word-byte? (byte-at s (add j r))))))))
+    (define! look
+      (lambda! (j)
+        (let! ((c (byte-at s j)))
+          (conditional!
+            ((same? c -1) ())
+            ((same? c backslash) (look (add j 2)))
+            ((same? c backtick)
+              (let! ((n (run-of s j backtick)) (close (backtick-run s (add j n) n)))
+                (look (if! (same? close ()) (add j n) (add close n)))))
+            ((same? c b)
+              (let! ((r (run-of s j b)))
+                (conditional!
+                  ((and!? (same? size 1) (less-than? 1 r))
+                    (let! ((inner (closing-run s (add j 2) b 2)))
+                      (conditional! ((not? (same? inner ())) (look (add inner 2)))
+                                    ((closes? j r) j)
+                                    (#true (look (add j r))))))
+                  ((and!? (same? size 2) (same? r 1))
+                    (let! ((inner (closing-run s (add j 1) b 1)))
+                      (look (if! (same? inner ()) (add j 1) (add inner 1)))))
+                  ((closes? j r) j)
+                  (#true (look (add j r))))))
+            (#true (look (add j 1)))))))
+    (look start)))
+
+; Emphasis opened at `at`: (html next) or ().
+(define! emphasis-at
+  (lambda! (s at)
+    (let! ((b (string-byte s at))
+           (n (run-of s at b))
+           (opens? (and!? (not? (white? (byte-at s (add at n))))
+                          (or!? (not? (same? b underscore))
+                                (not? (word-byte? (byte-at s (subtract at 1)))))))
+           ; Emphasis of size bytes opens with the last of them; the ones before it are text.
+           (try (lambda! (size open close)
+                  (let! ((opener (add at (subtract n size)))
+                         (end (closing-run s (add opener size) b size)))
+                    (if! (same? end ())
+                      ()
+                      (list (string-append (byte-substring s at opener) open
+                                           (render-inline (byte-substring s (add opener size) end)) close)
+                            (add end size)))))))
+      (if! opens?
+        (let! ((three (if! (less-than? 2 n) (try 3 "<em><strong>" "</strong></em>") ()))
+               (two (if! (and!? (same? three ()) (less-than? 1 n)) (try 2 "<strong>" "</strong>") ())))
+          (conditional! ((pair? three) three)
+                        ((pair? two) two)
+                        (#true (try 1 "<em>" "</em>"))))
+        ()))))
+
+; The offset of the bracket closing the one at `at`, or (): nested brackets count, escapes and
+; code spans are skipped.
+(define! closing-bracket
+  (lambda! (s at)
+    (define! look
+      (lambda! (j depth)
+        (let! ((c (byte-at s j)))
+          (conditional!
+            ((same? c -1) ())
+            ((same? c backslash) (look (add j 2) depth))
+            ((same? c backtick)
+              (let! ((n (run-of s j backtick)) (close (backtick-run s (add j n) n)))
+                (look (if! (same? close ()) (add j n) (add close n)) depth)))
+            ((same? c open-bracket) (look (add j 1) (add depth 1)))
+            ((same? c close-bracket) (if! (same? depth 0) j (look (add j 1) (subtract depth 1))))
+            (#true (look (add j 1) depth))))))
+    (look (add at 1) 0)))
+
+; The destination and title in parentheses after a link's text, from the ( at `at`:
+; (destination title next), title "" if none, or () if it isn't one.
+(define! link-target
+  (lambda! (s at)
+    (define! skip-white (lambda! (j) (if! (and!? (white? (byte-at s j)) (not? (same? (byte-at s j) -1))) (skip-white (add j 1)) j)))
+    ; The end of a destination: no white space, parentheses balanced.
+    (define! destination-end
+      (lambda! (j depth)
+        (let! ((c (byte-at s j)))
+          (conditional!
+            ((white? c) j)
+            ((same? c backslash) (destination-end (add j 2) depth))
+            ((same? c open-parenthesis) (destination-end (add j 1) (add depth 1)))
+            ((same? c close-parenthesis) (if! (same? depth 0) j (destination-end (add j 1) (subtract depth 1))))
+            (#true (destination-end (add j 1) depth))))))
+    (let! ((start (skip-white (add at 1)))
+           (bracketed (if! (same? (byte-at s start) less) (string-search s ">" start) ()))
+           (end (if! (same? bracketed ()) (destination-end start 0) (add bracketed 1)))
+           (after (skip-white end))
+           (mark (byte-at s after)))
+      (conditional!
+        ((same? mark close-parenthesis) (list (byte-substring s start end) "" (add after 1)))
+        ((and!? (or!? (same? mark double-quote) (same? mark single-quote)) (less-than? start after))
+          (let! ((close (string-search s (code-point-to-string mark) (add after 1))))
+            (if! (same? close ())
+              ()
+              (let! ((last (skip-white (add close 1))))
+                (if! (same? (byte-at s last) close-parenthesis)
+                  (list (byte-substring s start end) (byte-substring s (add after 1) close) (add last 1))
+                  ())))))
+        (#true ())))))
+
+; A link, or with image #true an image, whose [ is at `at`: (html next) or ().
+(define! link-at
+  (lambda! (s at image)
+    (let! ((close (closing-bracket s at)))
+      (if! (or!? (same? close ()) (not? (same? (byte-at s (add close 1)) open-parenthesis)))
+        ()
+        (let! ((target (link-target s (add close 1))))
+          (if! (same? target ())
+            ()
+            (let! (((written title next) target)
+                   ; <destination> may hold spaces; the brackets aren't part of it.
+                   (destination (if! (and!? (string-starts-with? written "<") (string-ends-with? written ">"))
+                                  (byte-substring written 1 (subtract (string-byte-length written) 1))
+                                  written))
+                   (text (byte-substring s (add at 1) close))
+                   (title-attribute (if! (same? title "") "" (string-append " title=\"" (escape-html title) "\""))))
+              (list (if! image
+                      (string-append "<img src=\"" (encode-url destination) "\" alt=\"" (escape-html text) "\""
+                                     title-attribute " />")
+                      (string-append "<a href=\"" (encode-url destination) "\"" title-attribute ">"
+                                     (render-inline text) "</a>"))
+                    next))))))))
+
+; An autolink <scheme:...> at `at`: (html next) or ().
+(define! autolink-at
+  (lambda! (s at)
+    (let! ((close (string-search s ">" at)))
+      (if! (same? close ())
+        ()
+        (let! ((url (byte-substring s (add at 1) close)))
+          (if! (and!? (or!? (string-starts-with? url "http://") (string-starts-with? url "https://")
+                            (string-starts-with? url "mailto:"))
+                      (same? (string-search url " " 0) ())
+                      (same? (string-search url "<" 0) ()))
+            (list (string-append "<a href=\"" (encode-url url) "\">" (escape-html url) "</a>") (add close 1))
+            ()))))))
+
+; How many spaces come just before offset at, back to offset from.
+(define! spaces-before
+  (lambda! (s from at)
+    (if! (and!? (less-than? from at) (same? (string-byte s (subtract at 1)) space))
+      (add 1 (spaces-before s from (subtract at 1)))
+      0)))
+
+; The bytes where an inline construct can start.
+(define! inline-starts (byte-set "\\\n`*_[!<"))
+
+; The HTML of a paragraph's or heading's text.
+(define! render-inline
+  (lambda! (s)
+    (let! ((end (string-byte-length s))
+           ; out holds the HTML so far, last piece first; from is where the text not yet in it
+           ; starts. A construct that matches puts that text in, then its own HTML.
+           (scan
+             (lambda! (from at out)
+               (if! (same? at end)
+                 (pair (escape-html (byte-substring s from at)) out)
+                 (if! (not? (in-set? inline-starts (string-byte s at)))
+                 (scan from (add at 1) out)
+                 (let! ((c (string-byte s at))
+                        (put (lambda! (to html next)
+                               (scan next next (pair html (pair (escape-html (byte-substring s from to)) out)))))
+                        (construct (lambda! (found)
+                                     (if! (same? found ())
+                                       (scan from (add at 1) out)
+                                       (put at (first found) (first (rest found)))))))
+                   (conditional!
+                     ((same? c backslash)
+                       (let! ((next (byte-at s (add at 1))))
+                         (conditional!
+                           ((same? next newline-byte) (put at "<br />\n" (add at 2)))
+                           ((punctuation? next) (put at (escape-html (code-point-to-string next)) (add at 2)))
+                           (#true (scan from (add at 1) out)))))
+                     ((same? c newline-byte)
+                       (let! ((spaces (spaces-before s from at)))
+                         (put (subtract at spaces) (if! (less-than? 1 spaces) "<br />\n" "\n") (add at 1))))
+                     ((same? c backtick)
+                       (let! ((n (run-of s at backtick)) (close (backtick-run s (add at n) n)))
+                         (if! (same? close ())
+                           (scan from (add at n) out)
+                           (put at (string-append "<code>" (escape-html (code-span-text (byte-substring s (add at n) close)))
+                                                  "</code>")
+                                (add close n)))))
+                     ((or!? (same? c star) (same? c underscore)) (construct (emphasis-at s at)))
+                     ((same? c open-bracket) (construct (link-at s at #false)))
+                     ((and!? (same? c bang) (same? (byte-at s (add at 1)) open-bracket))
+                       (let! ((found (link-at s (add at 1) #true)))
+                         (if! (same? found ()) (scan from (add at 1) out) (put at (first found) (first (rest found))))))
+                     ((same? c less) (construct (autolink-at s at)))
+                     (#true (scan from (add at 1) out)))))))))
+      (apply string-append (reverse (scan 0 0 ()))))))
+
+; ---- Block starts
+
+; The level of an ATX heading line, 1 to 6, or 0 if it isn't one.
+(define! heading-level
+  (lambda! (line)
+    (let! ((at (indent-of line)) (level (run-of line at hash)) (after (byte-at line (add at level))))
+      (if! (and!? (less-than? at 4) (between? 1 level 6) (white? after)) level 0))))
+
+; An ATX heading's text: without the #s, and without a closing run of #s after a space.
+(define! heading-text
+  (lambda! (line level)
+    (let! ((text (string-trim (from-byte line (add (indent-of line) level))))
+           (size (string-byte-length text))
+           (hashes (lambda! (j) (if! (and!? (less-than? 0 j) (same? (string-byte text (subtract j 1)) hash))
+                                  (hashes (subtract j 1))
+                                  j)))
+           (start (hashes size)))
+      (conditional!
+        ((same? start 0) "")
+        ((same? start size) text)
+        ((same? (string-byte text (subtract start 1)) space) (string-trim (byte-substring text 0 start)))
+        (#true text)))))
+
+(define! heading
+  (lambda! (level html)
+    (let! ((tag (integer-to-string level)))
+      (string-append "<h" tag ">" html "</h" tag ">\n"))))
+
+; Whether the line is three or more of one of * - _, with spaces between allowed.
+(define! thematic-break?
+  (lambda! (line)
+    (let! ((at (indent-of line)) (b (byte-at line at))
+           (count (lambda! (i n)
+                    (let! ((c (byte-at line i)))
+                      (conditional! ((same? c -1) n)
+                                    ((same? c b) (count (add i 1) (add n 1)))
+                                    ((same? c space) (count (add i 1) n))
+                                    (#true 0))))))
+      (and!? (less-than? at 4) (member? b (list star dash underscore)) (less-than? 2 (count at 0))))))
+
+; 1 for a line of =, 2 for a line of -, under a paragraph; 0 otherwise.
+(define! setext-level
+  (lambda! (line)
+    (let! ((at (indent-of line)) (b (byte-at line at)))
+      (if! (and!? (less-than? at 4) (or!? (same? b equals) (same? b dash))
+                  (blank? (from-byte line (add at (run-of line at b)))))
+        (if! (same? b equals) 1 2)
+        0))))
+
+; A code fence's (indent mark size info), or ().
+(define! fence-of
+  (lambda! (line)
+    (let! ((at (indent-of line)) (b (byte-at line at)) (size (run-of line at b)))
+      (if! (and!? (less-than? at 4) (or!? (same? b backtick) (same? b tilde)) (less-than? 2 size))
+        (let! ((info (string-trim (from-byte line (add at size)))))
+          (if! (and!? (same? b backtick) (not? (same? (string-search info "`" 0) ())))
+            ()
+            (list at b size info)))
+        ()))))
+
+(define! quote-line?
+  (lambda! (line) (let! ((at (indent-of line))) (and!? (less-than? at 4) (same? (byte-at line at) greater)))))
+
+; A quoted line without its > and one space after it.
+(define! quote-content
+  (lambda! (line)
+    (let! ((at (add (indent-of line) 1)))
+      (from-byte line (if! (same? (byte-at line at) space) (add at 1) at)))))
+
+(define! digits-at (lambda! (s at) (if! (digit? (byte-at s at)) (add 1 (digits-at s (add at 1))) 0)))
+
+; A list item's marker, (ordered delimiter start column), where column is where the item's
+; content starts; or ().
+(define! list-marker
+  ((lambda! ()
+     (define! marker
+       (lambda! (line ordered delimiter start end)
+         (let! ((after (byte-at line end)) (spaces (run-of line end space)))
+           (conditional!
+             ((not? (white? after)) ())
+             ((or!? (blank? (from-byte line end)) (less-than? 4 spaces)) (list ordered delimiter start (add end 1)))
+             (#true (list ordered delimiter start (add end spaces)))))))
+     (lambda! (line)
+       (let! ((at (indent-of line)) (b (byte-at line at))
+              (digits (digits-at line at))
+              (delimiter (byte-at line (add at digits))))
+         (conditional!
+           ((less-than? 3 at) ())
+           ((member? b (list dash plus star)) (marker line #false b 1 (add at 1)))
+           ((and!? (between? 1 digits 9) (or!? (same? delimiter dot) (same? delimiter close-parenthesis)))
+             (marker line #true delimiter (string-to-integer (byte-substring line at (add at digits))) (add at (add digits 1))))
+           (#true ())))))))
+
+; Whether the line starts a block that ends a paragraph before it. A list item does if it isn't
+; empty and, when ordered, starts at 1.
+(define! block-starts (byte-set "#`~>*-_+0123456789"))
+(define! interrupts?
+  (lambda! (line)
+    (and!? (in-set? block-starts (byte-at line (indent-of line)))
+           (or!? (less-than? 0 (heading-level line)) (pair? (fence-of line)) (quote-line? line) (thematic-break? line)
+                 (let! ((marker (list-marker line)))
+                   (and!? (pair? marker)
+                          (let! (((ordered #ignore start column) marker))
+                            (and!? (not? (blank? (from-byte line column))) (or!? (not? ordered) (same? start 1))))))))))
+
+; ---- Blocks
+
+; Every block reader takes the lines from the one its block starts on, and gives
+; (piece lines-after), the piece a string of HTML or (paragraph . html).
+
+; The pieces of the blocks of lines, and whether a blank line separates two of them:
+; (pieces gap).
+(define! read-blocks
+  (lambda! (lines)
+    (define! walk
+      (lambda! (lines done blank-before gap)
+        (conditional!
+          ((same? lines ()) (list (reverse done) gap))
+          ((blank? (first lines)) (walk (rest lines) done #true gap))
+          (#true
+            (let! (((piece more) (read-block lines)))
+              (walk more (pair piece done) #false (or!? gap (and!? blank-before (pair? done)))))))))
+    (walk lines () #false #false)))
+
+(define! read-block
+  (lambda! (lines)
+    (let! ((line (first lines)) (fence (fence-of line)) (level (heading-level line)))
+      (conditional!
+        ((pair? fence) (read-fenced fence (rest lines)))
+        ((less-than? 0 level) (list (heading level (render-inline (heading-text line level))) (rest lines)))
+        ((less-than? 3 (indent-of line)) (read-indented lines))
+        ((thematic-break? line) (list "<hr />\n" (rest lines)))
+        ((quote-line? line) (read-quote lines))
+        ((pair? (list-marker line)) (read-list lines))
+        (#true (read-paragraph lines))))))
+
+(define! read-fenced
+  (lambda! ((indent mark size info) lines)
+    (define! closes?
+      (lambda! (line)
+        (let! ((at (indent-of line)) (n (run-of line at mark)))
+          (and!? (less-than? at 4) (not? (less-than? n size)) (blank? (from-byte line (add at n)))))))
+    (define! collect
+      (lambda! (lines body)
+        (conditional!
+          ((same? lines ()) (list (reverse body) ()))
+          ((closes? (first lines)) (list (reverse body) (rest lines)))
+          (#true (collect (rest lines) (pair (drop-indent (first lines) indent) body))))))
+    (let! (((body more) (collect lines ()))
+           (language (if! (same? info "") "" (first (string-split info " ")))))
+      (list (string-append "<pre><code"
+                           (if! (same? language "") "" (string-append " class=\"language-" (escape-html language) "\""))
+                           ">" (escape-html (lines-text body)) "</code></pre>\n")
+            more))))
+
+(define! read-indented
+  (lambda! (lines)
+    (let! (((body more) (split-while (lambda! (line) (or!? (blank? line) (less-than? 3 (indent-of line)))) lines))
+           ; Blank lines at the end belong to what follows.
+           ((trailing kept) (split-while blank? (reverse body))))
+      (list (string-append "<pre><code>"
+                           (escape-html (lines-text (map (lambda! (line) (drop-indent line 4)) (reverse kept))))
+                           "</code></pre>\n")
+            (append trailing more)))))
+
+; A block quote: its > lines, and lines that continue its last paragraph without a >.
+(define! read-quote
+  (lambda! (lines)
+    (define! collect
+      (lambda! (lines body)
+        (if! (same? lines ())
+          (list (reverse body) ())
+          (let! ((line (first lines)))
+            (conditional!
+              ((quote-line? line) (collect (rest lines) (pair (quote-content line) body)))
+              ((and!? (not? (blank? line)) (not? (blank? (first body))) (not? (interrupts? line)))
+                (collect (rest lines) (pair line body)))
+              (#true (list (reverse body) lines)))))))
+    (let! (((body more) (collect lines ())))
+      (list (string-append "<blockquote>\n" (blocks-html (first (read-blocks body)) #false) "</blockquote>\n")
+            more))))
+
+; A paragraph, or a setext heading when a line of = or - ends it.
+(define! read-paragraph
+  (lambda! (lines)
+    (define! collect
+      (lambda! (lines body)
+        (if! (same? lines ())
+          (list (reverse body) () 0)
+          (let! ((line (first lines)) (level (setext-level line)))
+            (conditional!
+              ((less-than? 0 level) (list (reverse body) (rest lines) level))
+              ((or!? (blank? line) (interrupts? line)) (list (reverse body) lines 0))
+              (#true (collect (rest lines) (pair line body))))))))
+    (let! (((body more level) (collect (rest lines) (list (first lines))))
+           (html (render-inline (string-trim (string-join (map trim-start body) "\n")))))
+      (list (if! (same? level 0) (pair (quote! paragraph) html) (heading level html)) more))))
+
+; A list: items whose marker is of one kind, each item the lines indented to its content column,
+; and lines that continue its paragraph. It is loose if a blank line separates two items, or two
+; blocks of one item.
+(define! read-list
+  (lambda! (lines)
+    (let! (((ordered delimiter start #ignore) (list-marker (first lines)))
+           (same-kind? (lambda! (line)
+                         (let! ((marker (list-marker line)))
+                           (and!? (pair? marker) (not? (thematic-break? line))
+                                  (same? (first marker) ordered) (same? (first (rest marker)) delimiter)))))
+           ; items: the bodies so far, last first; body: this item's lines, last first. Blank
+           ; lines at the end of an item go between it and what follows.
+           (collect
+             (lambda! (lines items body column loose)
+               (let! ((line (if! (pair? lines) (first lines) "")))
+                 (conditional!
+                   ((same? lines ()) (end-list items body loose ()))
+                   ((blank? line) (collect (rest lines) items (pair "" body) column loose))
+                   ((not? (less-than? (indent-of line) column))
+                     (collect (rest lines) items (pair (drop-indent line column) body) column loose))
+                   ((same-kind? line)
+                     (let! (((blanks kept) (split-while blank? body)))
+                       (begin-item lines (pair (reverse kept) items) (or!? loose (pair? blanks)))))
+                   ((and!? (not? (blank? (first body))) (not? (interrupts? line)))
+                     (collect (rest lines) items (pair (trim-start line) body) column loose))
+                   (#true (end-list items body loose lines))))))
+           (end-list
+             (lambda! (items body loose lines)
+               (let! (((blanks kept) (split-while blank? body)))
+                 (list (reverse (pair (reverse kept) items)) loose (append blanks lines)))))
+           (begin-item
+             (lambda! (lines items loose)
+               (let! ((line (first lines)) ((#ignore #ignore #ignore column) (list-marker line)))
+                 (collect (rest lines) items (list (from-byte line column)) column loose))))
+           ((items loose more) (begin-item lines () #false))
+           (read (map read-blocks items))
+           (tight (not? (or!? loose (any? (lambda! ((#ignore gap)) gap) read))))
+           (tag (if! ordered "ol" "ul")))
+      (list (string-append "<" tag (if! (and!? ordered (not? (same? start 1)))
+                                     (string-append " start=\"" (integer-to-string start) "\"")
+                                     "")
+                           ">\n"
+                           (apply string-append (map (lambda! ((pieces #ignore)) (item-html pieces tight)) read))
+                           "</" tag ">\n")
+            more))))
+
+; A piece as a block of its own.
+(define! block-html
+  (lambda! (piece) (if! (pair? piece) (string-append "<p>" (rest piece) "</p>\n") piece)))
+
+(define! blocks-html
+  (lambda! (pieces tight) (apply string-append (map block-html pieces))))
+
+; An item: in a tight list its paragraphs are bare text; every other block starts a line.
+(define! item-html
+  (lambda! (pieces tight)
+    (string-append
+      (fold (lambda! (html piece)
+              (if! (and!? tight (pair? piece))
+                (string-append html (rest piece))
+                (string-append html (if! (string-ends-with? html "\n") "" "\n") (block-html piece))))
+            "<li>" pieces)
+      "</li>\n")))
+
+; A line with the tabs in its indent made spaces, to the next multiple of 4, and without the
+; carriage return of a CRLF line end.
+(define! clean-line
+  (lambda! (line)
+    (define! expand
+      (lambda! (at column)
+        (let! ((b (byte-at line at)))
+          (if! (same? b space)
+            (expand (add at 1) (add column 1))
+            (if! (same? b tab)
+              (expand (add at 1) (multiply (add (divide column 4) 1) 4))
+              (string-append (string-pad-left "" column) (from-byte line at)))))))
+    (let! ((line (if! (in-set? blanks (byte-at line (indent-of line))) (expand 0 0) line))
+           (size (string-byte-length line)))
+      (if! (string-ends-with? line "\xd;") (byte-substring line 0 (subtract size 1)) line))))
+
+(define! markdown-to-html
+  (lambda! (text)
+    (let! ((lines (map clean-line (string-split text "\n")))
+           (lines (if! (string-ends-with? text "\n") (reverse (rest (reverse lines))) lines)))
+      (blocks-html (first (read-blocks lines)) #false))))
+
+; ---- Running
+
+(define! write-error (evaluate-in! write standard-error))
+
+; Reads every form of the file: here, each a test case (name markdown html). Text that doesn't
+; read ends the run with the file, line and column.
+(define! read-forms
+  (lambda! (path)
+    (let! ((file (open-file path))
+           (text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+           (walk (lambda! (at forms)
+                   (let! ((read (read-form text at)))
+                     (if! (same? read ())
+                       (reverse forms)
+                       (let! (((form #ignore end) read)) (walk end (pair form forms))))))))
+      (catch! (walk 0 ())
+              e
+              (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                (let! (((line column) (evaluate-in! values e)))
+                  (write-error (string-append path ":" (integer-to-string line) ":" (integer-to-string column)
+                                              ": doesn't read\n"))
+                  (exit 2))
+                (raise e))))))
+
+; Runs the cases, says which fail with what was expected and what came, and exits 1 if any did.
+(define! run-tests
+  (lambda! (path)
+    (let! ((cases (read-forms path))
+           (failures
+             (filter (lambda! ((name markdown expected))
+                       (let! ((actual (catch! (markdown-to-html markdown)
+                                              e
+                                              (string-append "raised " (value-to-string (evaluate-in! kind e)) " "
+                                                             (value-to-string (evaluate-in! values e))))))
+                         (if! (same? actual expected)
+                           #false
+                           (sequence!
+                             (display "FAIL " name "\n  markdown: " (value-to-string markdown)
+                                      "\n  expected: " (value-to-string expected)
+                                      "\n  actual:   " (value-to-string actual) "\n")
+                             #true))))
+                     cases)))
+      (display (integer-to-string (subtract (length cases) (length failures))) " of "
+               (integer-to-string (length cases)) " cases pass\n")
+      (exit (if! (same? failures ()) 0 1)))))
+
+(conditional!
+  ((same? command-line-arguments ())
+    (display (markdown-to-html ((evaluate-in! read-all standard-input)))))
+  ((and!? (same? (length command-line-arguments) 2) (same? (first command-line-arguments) "--test"))
+    (run-tests (first (rest command-line-arguments))))
+  (#true
+    (write-error "usage: main.grift < FILE.md, or main.grift --test CASES.grift\n")
+    (exit 2)))

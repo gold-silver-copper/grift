@@ -1,0 +1,301 @@
+#!/usr/bin/env grift
+; meta: a grift interpreter written in grift.
+;
+;   grift programs/meta/main.grift [--library PATH] FILE [ARGUMENT ...]
+;
+; runs FILE in an interpreted grift. The interpreter has its own evaluator and its own
+; contexts, and grift's primitives as its own (vau! makes its operatives, wrap its
+; applicatives); on top of them it loads grift's real library, crates/grift/src/library.grift,
+; unchanged, as grift itself does, so if!, define!, lambda!, let!, catch! and the rest are the
+; library's definitions running on this interpreter. Errors in the program are reported by the
+; interpreter, naming the program's own forms, and the program's tail calls run in constant
+; space because the interpreter's are tail calls in grift (see meta-evaluate).
+;
+; How interpreted values are kept:
+; - Data (numbers, strings, symbols, pairs, booleans) are grift's own values.
+; - A context is a grift context, used as a table: the interpreter binds in it with bind and
+;   looks a symbol up with evaluate. Its root is a context with no parent holding only the
+;   interpreter's primitives and the library, never grift's.
+; - An operative is a grift operative taking (operands context form), called with the operands
+;   unevaluated; an applicative is the grift applicative wrapping one, so wrap and unwrap are
+;   grift's. Every combiner the interpreted program can reach is made here.
+
+; An empty context to call combiners in; they ignore it.
+(define! bare (context))
+
+; The marker bound in the program's top-level context: a context binds it (through its parents)
+; only if it belongs to the program, not to the library, so traces leave the library out, as
+; grift's do. Its name has a space in it, so no program text can write it.
+(define! program-marker (string-to-symbol "meta program"))
+
+; The trace of the error passing now: the program forms it has come through, innermost first.
+; It is kept here, not in the error: grift's raise copies a caught error into a new context with
+; only kind, values and trace, so nothing added to it survives. Whoever catches an error takes
+; its trace and starts the next one empty.
+(define! passing (context))
+(bind passing (quote! trace) ())
+
+; Records that `form`, a program form evaluated in `c`, is one the passing error came through,
+; once, though both a primitive and the operand it is see it go.
+(define! trace-through
+  (lambda! (form c)
+    (let! ((trace (evaluate-in! trace passing)))
+      (when! (and!? (binds? c program-marker)
+                    (not? (and!? (pair? trace) (same? (first trace) form))))
+        (bind passing (quote! trace) (pair form trace))))))
+
+; The handler that records `form` and lets the error go on: call-with-handler with it is catch!
+; for the one case the interpreter needs, for less (catch! also makes a context
+; and binds the error's name in it for its handler forms).
+(define! passing-through
+  (lambda! (form c) (lambda! (e) (sequence! (trace-through form c) (raise e)))))
+
+; The trace of the error just caught, which ends its passing.
+(define! take-trace
+  (lambda! ()
+    (let! ((trace (evaluate-in! trace passing)))
+      (bind passing (quote! trace) ())
+      (reverse trace))))
+
+; meta-evaluate: x in the interpreted context c. A symbol is looked up in c and its parents; a
+; pair is a combination; everything else is itself. Each step that finishes the evaluation is a
+; tail call in grift (combine, the operative's body below, its meta-evaluate), so a tail call in
+; the program is one in grift and runs in constant space. Only a value the interpreter goes on
+; to use (a combination's head or one of its operands) is evaluated with grift's stack growing,
+; and only those are caught, to name the form an error came through.
+(define! meta-evaluate
+  (lambda! (x c) ((evaluate (type-of x) evaluators) x c)))
+
+; Each step dispatches on type-of through a table, one lookup and one call where tests with if!
+; would make several: if! and the type predicates are library code, in grift as here. A table
+; maps every type to `otherwise` but the ones given.
+(define! types
+  (quote! (symbol pair empty-list boolean inert ignore integer float string context operative
+           applicative)))
+(define! table
+  (lambda! (otherwise given values)
+    (let! ((t (context)))
+      (for-each (lambda! (type) (bind t type otherwise)) types)
+      (bind t given values)
+      t)))
+
+(define! itself (lambda! (x #ignore) x))
+(define! evaluators
+  (table itself (quote! (symbol pair))
+         (list evaluate (lambda! (x c) (combine (evaluate-inner (first x) c) (rest x) c x)))))
+
+; A value the interpreter uses: a combination is evaluated under a handler, which notes it in the
+; error's trace on the way out.
+(define! evaluate-inner
+  (lambda! (x c) ((evaluate (type-of x) inner-evaluators) x c)))
+(define! inner-evaluators
+  (table itself (quote! (symbol pair))
+         (list evaluate
+               (lambda! (x c)
+                 (call-with-handler (lambda! () (meta-evaluate x c)) (passing-through x c))))))
+
+; combine: an operative gets the operands unevaluated with the caller's context; an applicative
+; gets them evaluated, left to right, and passes them to the combiner it wraps.
+(define! combine
+  (lambda! (f operands c form)
+    ((evaluate (type-of f) combiners) f operands c form)))
+(define! combiners
+  (table (lambda! (f #ignore #ignore #ignore) (raise (error (quote! not-a-combiner) f)))
+         (quote! (operative applicative))
+         (list (lambda! (f operands c form) (evaluate (list f operands c form) bare))
+               (lambda! (f operands c form)
+                 (combine (unwrap f)
+                          (call-with-handler (lambda! () (evaluate-operands operands c))
+                                             (passing-through form c))
+                          c
+                          form)))))
+
+(define! evaluate-operands
+  (lambda! (operands c) ((evaluate (type-of operands) operand-lists) operands c)))
+(define! operand-lists
+  (table (lambda! (operands #ignore) (raise (error (quote! type-error) (quote! combine) operands)))
+         (quote! (pair empty-list))
+         (list (lambda! (operands c)
+                 (pair (meta-evaluate (first operands) c) (evaluate-operands (rest operands) c)))
+               itself)))
+
+; Calls the interpreted applicative f with the list `arguments`, in context c.
+(define! call
+  (lambda! (f arguments c form)
+    (if! (applicative? f)
+      (combine (unwrap f) arguments c form)
+      (raise (error (quote! type-error) f)))))
+
+; A new child of c with tree bound to value.
+(define! child
+  (lambda! (c tree value)
+    ((lambda! (local) (sequence! (bind local tree value) local)) (context c))))
+
+; vau!: an operative closing over the caller's context. Its parameters are checked when it is
+; made, as grift checks them (a grift vau! of the same parameters raises the same
+; parameter-error); a call binds them, and the context parameter, by bind's matching, in a new
+; child of that context, and evaluates the body there as a tail call.
+(define! meta-vau!
+  (vau! ((parameters context-parameter body) c #ignore) #ignore
+    (sequence!
+      (evaluate (list vau! parameters context-parameter #inert) bare)
+      (vau! (operands caller #ignore) #ignore
+        (run-body (child c parameters operands) context-parameter caller body)))))
+
+(define! run-body
+  (lambda! (local context-parameter caller body)
+    (bind local context-parameter caller)
+    (meta-evaluate body local)))
+
+; A primitive the interpreter takes from grift as it is: an applicative of its arguments. An
+; error it raises is traced to the program's combination that called it.
+(define! native
+  (lambda! (f)
+    (wrap (vau! (arguments c form) #ignore
+      (call-with-handler (lambda! () (apply f arguments)) (passing-through form c))))))
+
+; The primitives that run interpreted code: evaluate, and the two under catch! and finally!.
+(define! meta-evaluate-applicative
+  (wrap (vau! ((x c) #ignore #ignore) #ignore (meta-evaluate x c))))
+
+; call-with-handler: a caught error reaches the handler as grift's do, a context with no parent
+; binding kind, values and trace, the trace being the program forms the error passed.
+(define! meta-call-with-handler
+  (wrap (vau! ((thunk handler) c form) #ignore
+    (catch! (call thunk () c form)
+            e
+            (call handler (list (error-record e)) c form)))))
+
+(define! error-record
+  (lambda! (e)
+    (child (context) (quote! (kind values trace))
+           (list (evaluate-in! kind e) (evaluate-in! values e) (take-trace)))))
+
+(define! meta-evaluate-with-cleanup
+  (wrap (vau! ((x c cleanup) #ignore form) #ignore
+    (finally! (meta-evaluate x c) (call cleanup () c form)))))
+
+; The printer, for display and value-to-string: a combiner prints as its kind, since its source
+; is the interpreter's (the closure meta-vau! made), not the program's.
+(define! print
+  (lambda! (v)
+    (conditional!
+      ((operative? v)
+       (let! ((text (value-to-string v)))
+         (if! (string-starts-with? text "#[primitive") text "#[operative]")))
+      ((applicative? v) (string-append "#[applicative " (print (unwrap v)) "]"))
+      ((pair? v) (string-append "(" (print-list v) ")"))
+      (#true (value-to-string v)))))
+
+(define! print-list
+  (lambda! (v)
+    (conditional!
+      ((same? (rest v) ()) (print (first v)))
+      ((pair? (rest v)) (string-append (print (first v)) " " (print-list (rest v))))
+      (#true (string-append (print (first v)) " . " (print (rest v)))))))
+
+(define! meta-display
+  (lambda! values
+    (for-each (lambda! (v) (display (if! (string? v) v (print v)))) values)))
+
+; The interpreter's built-in context: its primitives, then the library, loaded into it as grift
+; loads its own.
+(define! root (context))
+(bind root (quote! (vau! evaluate call-with-handler evaluate-with-cleanup value-to-string))
+      (list meta-vau! meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
+            (native print)))
+(for-each (lambda! (name) (bind root name (native (evaluate name (current-context)))))
+          (quote! (wrap unwrap context bind names pair first rest same? select type-of raise
+                   add subtract multiply divide remainder less-than?
+                   square-root sine cosine tangent exponential natural-logarithm floor ceiling round
+                   truncate absolute-value power integer-to-float float-to-integer
+                   string-byte-length string-byte byte-substring string-append code-point-to-string
+                   symbol-to-string string-to-symbol integer-to-string string-to-integer
+                   float-to-string string-to-float read-form)))
+
+; Each form of `text` in turn, from byte `at`, with `each` given the form, its start and the
+; text.
+(define! each-form
+  (lambda! (text at each)
+    (let! ((read (read-form text at)))
+      (when! (not? (same? read ()))
+        (let! (((form start end) read))
+          (each form start)
+          (each-form text end each))))))
+
+(define! read-file
+  (lambda! (path)
+    (let! ((file (open-file path)) (text ((evaluate-in! read-all file))))
+      ((evaluate-in! close file))
+      text)))
+
+(define! line-of
+  (lambda! (text at)
+    (add 1 (length (filter (lambda! (i) (same? (string-byte text i) 10)) (range 0 at))))))
+
+(define! say
+  (lambda! parts
+    ((evaluate-in! write standard-error) (apply string-append parts))))
+
+; A first line `#!/usr/bin/env grift` read as an empty line, as the runner reads it, so lines keep
+; their numbers.
+(define! without-script-line
+  (lambda! (text)
+    (if! (string-starts-with? text "#!")
+      (let! ((end (string-search text "\n" 0)))
+        (if! (same? end ()) "" (byte-substring text end (string-byte-length text))))
+      text)))
+
+; The runner's operations, for the program's top-level context as the runner binds them in
+; grift's: each host operation becomes a primitive of the interpreter, and so does each operation
+; of a context one gives (a file, standard input, a finished process).
+(define! host
+  (lambda! (v)
+    (conditional!
+      ((applicative? v) (native (lambda! arguments (host (apply v arguments)))))
+      ((context? v)
+       (let! ((operations (context)))
+         (for-each (lambda! (name) (bind operations name (host (evaluate name v)))) (names v))
+         operations))
+      (#true v))))
+(define! runner-names
+  (quote! (standard-input standard-error open-file create-file run-process environment-variable
+           exit newline)))
+
+; Runs the program in `path` with `arguments`: each top-level form in the program's context, a
+; child of the root. An error stops it, reported with the form it happened in and the forms it
+; passed.
+(define! run
+  (lambda! (path arguments)
+    (let! ((text (without-script-line (read-file path))) (top (context root)))
+      (bind top program-marker #true)
+      (for-each (lambda! (name) (bind top name (host (evaluate name (current-context))))) runner-names)
+      (bind top (quote! (display command-line-arguments)) (list (native meta-display) arguments))
+      (each-form text 0
+        (lambda! (form start)
+          (catch! (meta-evaluate form top)
+                  e
+                  (sequence! (trace-through form top) (report path text start e) (exit 1))))))))
+
+(define! report
+  (lambda! (path text start e)
+    (let! ((trace (take-trace)))
+      (say "meta: " path ":" (integer-to-string (line-of text start)) ": "
+           (symbol-to-string (evaluate-in! kind e)) " " (print-list-or-empty (evaluate-in! values e))
+           "\n  in " (print (first trace)) "\n")
+      (for-each (lambda! (form) (say "  from " (print form) "\n")) (rest trace)))))
+
+(define! print-list-or-empty (lambda! (xs) (if! (same? xs ()) "" (print-list xs))))
+
+(define! (library . program)
+  (if! (and!? (pair? command-line-arguments) (same? (first command-line-arguments) "--library"))
+    (rest command-line-arguments)
+    (pair "crates/grift/src/library.grift" command-line-arguments)))
+
+(when! (not? (pair? program))
+  (say "usage: grift programs/meta/main.grift [--library PATH] FILE [ARGUMENT ...]\n")
+  (exit 2))
+
+(define! library-text (read-file library))
+(each-form library-text 0 (lambda! (form start) (meta-evaluate form root)))
+(run (first program) (rest program))

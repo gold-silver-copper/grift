@@ -1,0 +1,2 @@
+stray-end.html:2: {{/for}} with no {{#if}} or {{#for}} open
+[exit 1]

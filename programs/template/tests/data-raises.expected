@@ -1,0 +1,2 @@
+data-raises.grift:2: type-error #[primitive first] 1 in (first a)
+[exit 1]

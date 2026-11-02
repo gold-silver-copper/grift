@@ -1,0 +1,2 @@
+(define! g (lambda! (a b) a))
+(g 1)

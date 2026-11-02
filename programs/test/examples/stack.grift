@@ -1,0 +1,20 @@
+#!/usr/bin/env grift
+; A small program to test: a stack as a context, its contents a list. It prints when asked to.
+(define! make-stack
+  (lambda! ()
+    (let! ((items ()) (self (current-context)))
+      (define! push (lambda! (x) (define-in! self items (pair x items))))
+      (define! pop
+        (lambda! ()
+          (when! (empty-list? items) (raise (error (quote! stack-empty))))
+          (let! ((top-item (first items)))
+            (define-in! self items (rest items))
+            top-item)))
+      (define! size (lambda! () (length items)))
+      self)))
+(define! show-stack
+  (lambda! (stack)
+    (for-each (lambda! (x) (display x " ")) (evaluate-in! items stack))
+    (newline)))
+(define! stop-if-empty
+  (lambda! (stack) (when! (same? ((evaluate-in! size stack)) 0) (exit 4))))

@@ -1,0 +1,2 @@
+wrong-end.html:2: {{/if}} where {{/for}} from line 1 was expected
+[exit 1]

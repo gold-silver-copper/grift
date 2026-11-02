@@ -1,0 +1,2 @@
+(define! f (lambda! (n) (list (add n "one"))))
+(display (f 1))

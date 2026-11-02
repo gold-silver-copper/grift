@@ -1,0 +1,5 @@
+(type-error (#[primitive first] 5) ((first 5)))
+cleanup 3
+meta: programs/meta/tests/errors/caught.grift:3: not-a-combiner 5
+  in (5 6)
+exit 1

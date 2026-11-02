@@ -1,0 +1,2 @@
+if-not-boolean.html:3: {{#if}} needs #true or #false, not 3
+[exit 1]

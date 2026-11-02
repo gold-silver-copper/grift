@@ -1,0 +1,7 @@
+; A small branch on a weekday: three tellers, a customer a minute on average, each teller
+; serving 0.4 customers a minute (2.5 minutes each on average), open for eight hours.
+(tellers 3)
+(arrival-rate 1.0)
+(service-rate 0.4)
+(duration 480.0)
+(seed 42)

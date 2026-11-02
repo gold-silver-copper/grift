@@ -1,0 +1,254 @@
+#!/usr/bin/env grift
+; diff OLD NEW: prints how the lines of NEW differ from those of OLD as a unified diff, with three
+; lines of context, and exits 0 when the files are the same, 1 when they differ and 2 when one
+; can't be read.
+;
+; The edit script is a shortest one, found by Myers's greedy O(ND) algorithm ("An O(ND) Difference
+; Algorithm and Its Variations", 1986). grift has no vectors, so the algorithm's array V, indexed by
+; diagonal, is a list: the furthest point reached on each diagonal from -d to d, in order. Each
+; point carries what is left of both files from there and its own edit script so far, so no line is
+; ever looked up by number, and no trace of the old frontiers is kept for walking back.
+
+(define! context-size 3)
+
+; ---- Lines
+
+; The lines of the file at `path`, each with its newline; the last has none when the file doesn't
+; end in one. (read-line gives them so, and "" at the end.)
+(define! read-lines
+  (lambda! (path)
+    (let! ((file (open-file path))
+           (read-line (evaluate-in! read-line file))
+           (walk (lambda! (done)
+                   (let! ((line (read-line)))
+                     (if! (same? line "") (reverse done) (walk (pair line done)))))))
+      (finally! (walk ())
+                ((evaluate-in! close file))))))
+
+; ---- The shortest edit script
+;
+; A point on the edit graph is the list (x y old new script): x lines of the old file and y of the
+; new one are used up, `old` and `new` are the lines left, and `script` is the edits that got there,
+; last first, each (keep . line), (delete . line) or (insert . line). A diagonal no path reaches
+; yet has the point ().
+
+; The point after following equal lines from `point` as far as they go (Myers's snake).
+(define! slide
+  (lambda! (point)
+    (if! (empty-list? point)
+      ()
+      (let! (((x y old new script) point))
+        (if! (and!? (pair? old) (pair? new) (same? (first old) (first new)))
+          (slide (list (add x 1) (add y 1) (rest old) (rest new)
+                       (pair (pair (quote! keep) (first old)) script)))
+          point)))))
+
+; The point one deletion right of `point`, or () if no old line is left.
+(define! delete-from
+  (lambda! (point)
+    (if! (or!? (empty-list? point) (empty-list? (first (rest (rest point)))))
+      ()
+      (let! (((x y old new script) point))
+        (list (add x 1) y (rest old) new (pair (pair (quote! delete) (first old)) script))))))
+
+; The point one insertion down from `point`, or () if no new line is left.
+(define! insert-from
+  (lambda! (point)
+    (if! (or!? (empty-list? point) (empty-list? (first (rest (rest (rest point))))))
+      ()
+      (let! (((x y old new script) point))
+        (list x (add y 1) old (rest new) (pair (pair (quote! insert) (first new)) script))))))
+
+; Of two points on one diagonal, the one further along it, preferring the insertion on a tie.
+(define! further
+  (lambda! (right down)
+    (conditional!
+      ((empty-list? right) down)
+      ((empty-list? down) right)
+      ((less-than? (first down) (first right)) right)
+      (#true down))))
+
+(define! finished?
+  (lambda! (point)
+    (and!? (pair? point)
+           (empty-list? (first (rest (rest point))))
+           (empty-list? (first (rest (rest (rest point))))))))
+
+; The first finished point of `points`, or ().
+(define! finished-point
+  (lambda! (points)
+    (conditional!
+      ((empty-list? points) ())
+      ((finished? (first points)) (first points))
+      (#true (finished-point (rest points))))))
+
+; The edits that turn the lines `old` into the lines `new`, as few as there can be, in order.
+(define! edit-script
+  (lambda! (old new)
+    (let! ((search
+             (lambda! (frontier)
+               (let! ((done (finished-point frontier)))
+                 (if! (pair? done)
+                   (reverse (first (rest (rest (rest (rest done))))))
+                   ; Diagonal k of the next frontier is reached by a deletion from diagonal k - 1
+                   ; or an insertion from k + 1: neighbours in this frontier, padded with () at
+                   ; both ends.
+                   (search (map (lambda! (left right) (slide (further (delete-from left) (insert-from right))))
+                                (pair () frontier)
+                                (append frontier (list ())))))))))
+      (search (list (slide (list 0 0 old new ())))))))
+
+; ---- Hunks
+;
+; An edit annotated with where it is: (kind line old-number new-number), the numbers of the lines
+; it is at in each file, counting from 1; an insertion's old number is that of the old line after it,
+; a deletion's new number that of the new line after it.
+
+(define! number-edits
+  (lambda! (script)
+    (let! ((walk
+             (lambda! (script o n done)
+               (if! (empty-list? script)
+                 (reverse done)
+                 (let! (((kind . line) (first script)))
+                   (walk (rest script)
+                         (if! (same? kind (quote! insert)) o (add o 1))
+                         (if! (same? kind (quote! delete)) n (add n 1))
+                         (pair (list kind line o n) done)))))))
+      (walk script 1 1 ()))))
+
+(define! keep? (lambda! (edit) (same? (first edit) (quote! keep))))
+
+; The edits in runs, each a list of only kept lines or only changes, in order.
+(define! runs
+  (lambda! (edits)
+    (let! ((walk
+             (lambda! (edits run done)
+               (conditional!
+                 ((empty-list? edits) (reverse (if! (empty-list? run) done (pair (reverse run) done))))
+                 ((or!? (empty-list? run) (same? (keep? (first edits)) (keep? (first run))))
+                  (walk (rest edits) (pair (first edits) run) done))
+                 (#true (walk (rest edits) (list (first edits)) (pair (reverse run) done)))))))
+      (walk edits () ()))))
+
+; The first `n` elements of `xs`, or all of them if it is shorter.
+(define! take
+  (lambda! (xs n)
+    (if! (or!? (same? n 0) (empty-list? xs))
+      ()
+      (pair (first xs) (take (rest xs) (subtract n 1))))))
+
+; `xs` without its first `n` elements.
+(define! drop
+  (lambda! (xs n)
+    (if! (or!? (same? n 0) (empty-list? xs))
+      xs
+      (drop (rest xs) (subtract n 1)))))
+
+; The last `n` elements of `xs`.
+(define! take-last
+  (lambda! (xs n) (drop xs (maximum 0 (subtract (length xs) n)))))
+
+; The hunks: lists of edits, each holding changes with up to `context-size` kept lines around
+; them. Two changes closer than twice that share a hunk.
+(define! hunks
+  (lambda! (runs)
+    (let! ((walk
+             ; `before`: the kept lines just before; `hunk`: the open hunk's edits, last first.
+             (lambda! (runs before hunk done)
+               (conditional!
+                 ((empty-list? runs)
+                  (reverse (if! (empty-list? hunk) done (pair (reverse hunk) done))))
+                 ((not? (keep? (first (first runs))))
+                  (walk (rest runs) ()
+                        (append (reverse (first runs))
+                                (if! (empty-list? hunk) (reverse (take-last before context-size)) hunk))
+                        done))
+                 ((empty-list? hunk) (walk (rest runs) (first runs) () done))
+                 ((and!? (pair? (rest runs))
+                         (less-than-or-equal? (length (first runs)) (multiply 2 context-size)))
+                  (walk (rest runs) () (append (reverse (first runs)) hunk) done))
+                 (#true
+                  (walk (rest runs) (first runs) ()
+                        (pair (append (reverse hunk) (take (first runs) context-size)) done)))))))
+      (walk runs () () ()))))
+
+; ---- Printing
+
+; "-a,b" or "+c,d" for a hunk's lines in one file: where they start and how many there are; a
+; count of 1 is left out and an empty range starts at the line before it, as GNU diff does.
+(define! range-text
+  (lambda! (sign start count)
+    (string-append sign
+                   (integer-to-string (if! (same? count 0) (subtract start 1) start))
+                   (if! (same? count 1) "" (string-append "," (integer-to-string count))))))
+
+(define! count-of
+  (lambda! (kind hunk)
+    (length (filter (lambda! (edit) (or!? (keep? edit) (same? (first edit) kind))) hunk))))
+
+; The text of one line of a hunk, marked with `sign`.
+(define! line-text
+  (lambda! (sign line)
+    (if! (string-ends-with? line "\n")
+      (string-append sign line)
+      (string-append sign line "\n\\ No newline at end of file\n"))))
+
+; The lines of a hunk, each run of changes with its deletions before its insertions.
+(define! hunk-lines
+  (lambda! (hunk)
+    (let! ((sign (lambda! (edit) (conditional! ((keep? edit) " ")
+                                               ((same? (first edit) (quote! delete)) "-")
+                                               (#true "+"))))
+           (text (lambda! (edit) (line-text (sign edit) (first (rest edit)))))
+           (kind? (lambda! (kind) (lambda! (edit) (same? (first edit) kind)))))
+      (fold (lambda! (lines run)
+              (append lines
+                      (if! (keep? (first run))
+                        (map text run)
+                        (append (map text (filter (kind? (quote! delete)) run))
+                                (map text (filter (kind? (quote! insert)) run))))))
+            ()
+            (runs hunk)))))
+
+(define! hunk-text
+  (lambda! (hunk)
+    (let! (((#ignore #ignore old-start new-start) (first hunk)))
+      (apply string-append
+             (pair (string-append "@@ " (range-text "-" old-start (count-of (quote! delete) hunk))
+                                  " " (range-text "+" new-start (count-of (quote! insert) hunk))
+                                  " @@\n")
+                   (hunk-lines hunk))))))
+
+; ---- The command
+
+(define! fail
+  (lambda! (message)
+    ((evaluate-in! write standard-error) (string-append "diff: " message "\n"))
+    (exit 2)))
+
+; The lines of the file at `path`; a file that can't be read ends the run with status 2.
+(define! file-lines
+  (lambda! (path)
+    (catch! (read-lines path)
+            e
+            (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
+              (conditional!
+                ((same? kind (quote! file-error)) (fail (string-append path ": " (first (rest values)))))
+                ((same? kind (quote! encoding-error)) (fail (string-append path ": not UTF-8 text")))
+                (#true (raise e)))))))
+
+(define! diff
+  (lambda! (old-path new-path)
+    (let! ((script (edit-script (file-lines old-path) (file-lines new-path))))
+      (if! (all? keep? script)
+        (exit 0)
+        (sequence!
+          (display "--- " old-path "\n+++ " new-path "\n")
+          (for-each (lambda! (hunk) (display (hunk-text hunk)))
+                    (hunks (runs (number-edits script))))
+          (exit 1))))))
+
+(if! (same? (length command-line-arguments) 2)
+  (apply diff command-line-arguments)
+  (fail "usage: diff OLD NEW"))

@@ -1,0 +1,5 @@
+meta: programs/meta/tests/errors/type.grift:2: type-error #[primitive add] "one"
+  in (add n "one")
+  from (list (add n "one"))
+  from (display (f 1))
+exit 1

@@ -1,0 +1,18 @@
+; Forms that raise while the file loads: each is reported, and the rest of the file still loads.
+(define! broken (first 1))
+(test! "after a raising form"
+  (expect-true! #true))
+(test! "needs what didn't load"
+  (expect-equal! broken 1))
+(test! "a name twice"
+  (expect-true! #true))
+(test! "a name twice"
+  (expect-true! #false))
+(test! 42
+  (expect-true! #true))
+(expect-true! #true)
+(test! "a test in a test"
+  (test! "inner" (expect-true! #true)))
+(load! "no-such-file.grift")
+(test! "the last one"
+  (expect-true! #true))

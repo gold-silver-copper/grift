@@ -1,0 +1,6 @@
+; grift has no timer, so this runs until something outside stops it: test.sh uses timeout.
+(test! "before" (expect-true! #true))
+(test! "never ends"
+  (define! forever (lambda! () (forever)))
+  (forever))
+(test! "never runs" (expect-true! #true))

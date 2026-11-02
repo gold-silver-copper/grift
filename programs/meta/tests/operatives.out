@@ -1,0 +1,5 @@
+operands: ((add 1 2) x "s")
+twice!: (42 42)
+bound in the caller: (7 #true), at top level: #false
+wrapped: 5, unwrapped: ((add 1 1) 3)
+printed: #[operative] #[operative] #true #true

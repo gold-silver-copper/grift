@@ -1,0 +1,4 @@
+meta: programs/meta/tests/errors/unbound.grift:2: unbound-symbol hieght
+  in (multiply w hieght)
+  from (display (area 2 3))
+exit 1

@@ -1,0 +1,3 @@
+fib 15: 610
+counter: 3 other: 1
+unless! ran its body

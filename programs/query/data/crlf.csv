@@ -1,0 +1,6 @@
+item,qty,price
+"widget, large",10,2.5
+bolt,9,0.1
+
+nut,100,0.05
+"say ""hi""",9,1

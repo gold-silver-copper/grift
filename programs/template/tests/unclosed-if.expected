@@ -1,0 +1,2 @@
+unclosed-if.html:2: {{#for}} is never closed with {{/for}}
+[exit 1]

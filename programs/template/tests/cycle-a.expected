@@ -1,0 +1,2 @@
+cycle-b.html:1: include cycle: cycle-a.html includes cycle-b.html includes cycle-a.html
+[exit 1]

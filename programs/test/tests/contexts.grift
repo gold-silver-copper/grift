@@ -1,0 +1,75 @@
+; Contexts: the only mutable thing.
+
+(group! "context"
+  (test! "a new one is empty; with a parent it reads through"
+    (define! parent (context))
+    (define-in! parent a 1)
+    (define! child (context parent))
+    (expect-equal! (names child) ())
+    (expect-equal! (evaluate-in! a child) 1))
+  (test! "a child changes only its own"
+    (define! parent (context))
+    (define-in! parent a 1)
+    (define! child (context parent))
+    (define-in! child a 2)
+    (expect-equal! (evaluate-in! a child) 2)
+    (expect-equal! (evaluate-in! a parent) 1))
+  (test! "names are its own, sorted"
+    (define! c (context))
+    (define-in! c (zebra apple) (list 1 2))
+    (expect-equal! (names c) (quote! (apple zebra))))
+  (test! "with no parent, nothing is bound"
+    (expect-error! unbound-symbol (evaluate (quote! list) (context)))))
+
+(group! "bind and define-in!"
+  (test! "bind matches a tree"
+    (define! c (context))
+    (bind c (quote! (a (b . d))) (list 1 (pair 2 3)))
+    (expect-equal! (map (lambda! (n) (evaluate n c)) (names c)) (list 1 2 3)))
+  (test! "a tree that doesn't match is an arity-error"
+    (expect-error! arity-error (bind (context) (quote! (a b)) (list 1))))
+  (test! "#ignore binds nothing"
+    (define! c (context))
+    (bind c (quote! (#ignore a)) (list 1 2))
+    (expect-equal! (names c) (quote! (a)))))
+
+(group! "binds!? and binds?"
+  (test! "the operative doesn't evaluate the symbols; binds? does"
+    (define! c (context))
+    (define-in! c a 1)
+    (expect-true! (binds!? c a))
+    (expect-false! (binds!? c a b))
+    (expect-true! (binds? c (string-to-symbol "a"))))
+  (test! "through parents"
+    (define! c (context))
+    (define-in! c a 1)
+    (expect-true! (binds!? (context c) a)))
+  (test! "not a symbol or not a context is a type-error"
+    (expect-error! type-error (binds? 1 (quote! a)))
+    (expect-error! type-error (binds? (context) 1))))
+
+(group! "evaluate"
+  (test! "evaluate-in! calls in the context, with operands where you are"
+    (define! record (context))
+    (define-in! record double (lambda! (x) (add x x)))
+    (define! here 4)
+    (expect-equal! ((evaluate-in! double record) here) 8))
+  (test! "everything but symbols and pairs evaluates to itself"
+    (expect-equal! (evaluate 1 (context)) 1)
+    (expect-equal! (evaluate () (context)) ())
+    (expect-equal! (evaluate "a" (context)) "a")))
+
+(group! "built-in-names"
+  (test! "lists what exists"
+    (expect-true! (member? (quote! vau!) built-in-names))
+    (expect-true! (member? (quote! built-in-names) built-in-names))
+    (expect-false! (member? (quote! display) built-in-names)))
+  (test! "every name in it is bound"
+    (expect-true! (all? (lambda! (name) (binds? (current-context) name)) built-in-names))))
+
+(group! "type-of"
+  (test! "one for each kind"
+    (expect-equal! (map type-of (list () #true #inert #ignore 1 1.0 (quote! a) (pair 1 2) "s"
+                                      (context) (vau! () #ignore 1) (lambda! () 1)))
+                   (quote! (empty-list boolean inert ignore integer float symbol pair string
+                            context operative applicative)))))

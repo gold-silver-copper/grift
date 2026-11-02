@@ -1,0 +1,8 @@
+name,city,age,salary,note
+Ada,London,36,5200.50,"likes ""tea"", and cake"
+Bob,Paris,28,4100,
+Cleo,London,41,6100,"multi
+line"
+Dan,Berlin,28,3900.25,plain
+Eve,Paris,33,"4800",quoted number
+Finn,Berlin,52,7000,-

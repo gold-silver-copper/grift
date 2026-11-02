@@ -1,0 +1,894 @@
+#!/usr/bin/env grift
+; An assembler and a virtual machine for a toy CPU.
+;   main.grift assemble FILE.asm           prints a listing: addresses, bytes, source, names
+;   main.grift run [--trace] [--count] FILE.asm
+;                                          assembles FILE.asm, loads it at address 0 and runs it
+; The machine: eight 32-bit registers r0 to r7 (r7 is also sp), 65536 bytes of memory, a program
+; counter and the two values of the last comparison. Every instruction is four bytes: an opcode and
+; three bytes of operands. Words are little-endian. The language is described in README.md.
+
+(define! memory-size 65536)
+(define! word-size 4294967296)
+(define! sign-bit 2147483648)
+
+; ---- General helpers the library lacks
+
+; The symbol that keys a number in a context: grift has no vectors, so this is how a number indexes
+; anything in constant time.
+(define! name-of (lambda! (n) (string-to-symbol (integer-to-string n))))
+
+; The byte of text at offset `at`, or 0 past its end, so that a scanner needs no bounds checks.
+(define! byte-at
+  (lambda! (text at) (if! (less-than? at (string-byte-length text)) (string-byte text at) 0)))
+(define! text-from (lambda! (text at) (byte-substring text at (string-byte-length text))))
+
+; The bytes of a string as a list.
+(define! string-to-bytes
+  (lambda! (text)
+    (map (lambda! (at) (string-byte text at)) (range 0 (string-byte-length text)))))
+
+; n in lowercase hexadecimal, at least `width` digits.
+(define! hexadecimal
+  (lambda! (n width)
+    (let! ((digits
+             (lambda! (n width done)
+               (if! (and!? (same? n 0) (not? (less-than? 0 width)))
+                 done
+                 (let! ((digit (remainder n 16)))
+                   (digits (divide n 16)
+                           (subtract width 1)
+                           (string-append (byte-substring "0123456789abcdef" digit (add digit 1)) done)))))))
+      (digits n width ""))))
+
+; Writes the strings to standard error.
+(define! say
+  (lambda! parts ((evaluate-in! write standard-error) (apply string-append parts))))
+
+; Bitwise operations: grift has none. `f` combines two bits; stops when both numbers run out.
+(define! bitwise
+  (lambda! (f a b)
+    (if! (and!? (same? a 0) (same? b 0))
+      0
+      (add (f (remainder a 2) (remainder b 2))
+           (multiply 2 (bitwise f (divide a 2) (divide b 2)))))))
+(define! power-of-two
+  (lambda! (n) (if! (same? n 0) 1 (multiply 2 (power-of-two (subtract n 1))))))
+
+; ---- The instruction set
+;
+; One table: a mnemonic's opcode and operand shape for the assembler, and what it does for the
+; machine. Each operand kind takes bytes of the three: a register one, an immediate (signed 16 bits),
+; an address (unsigned 16 bits) and a memory operand (base register, signed 8-bit offset) two.
+
+(define! instruction-table (context))   ; mnemonic -> (opcode mnemonic shape)
+(define! descriptions (context))        ; opcode -> (opcode mnemonic shape)
+(define! executors (context))           ; opcode -> combiner (next a b c), giving the next pc
+(define! machine (context))             ; pc, count, left, right, and the output's partial character
+(define! memory (context))              ; address -> byte, bound when first written or read
+(define! registers (context))           ; number -> value, unsigned
+
+(define! machine-fault
+  (lambda! parts (raise (error (quote! machine-fault) (apply string-append parts)))))
+
+; An opcode nobody defined: every byte has an executor, so fetching any byte is an instruction.
+(for-each
+  (lambda! (opcode)
+    (bind executors (name-of opcode)
+      (lambda! (#ignore #ignore #ignore #ignore)
+        (machine-fault "illegal instruction, opcode " (integer-to-string opcode)))))
+  (range 0 256))
+
+; (instruction! mnemonic shape parameters body ...): the next opcode means this. The first opcode is
+; 1, so that running into zeroed memory is an illegal instruction.
+(bind machine (quote! next-opcode) 1)
+(define! instruction!
+  (vau! (mnemonic shape parameters . body) caller
+    (let! ((opcode (evaluate-in! next-opcode machine))
+           (row (list opcode mnemonic shape)))
+      (bind machine (quote! next-opcode) (add opcode 1))
+      (bind instruction-table mnemonic row)
+      (bind descriptions (name-of opcode) row)
+      (bind executors (name-of opcode)
+        (evaluate (pair (quote! lambda!) (pair parameters body)) caller)))))
+
+; Reading memory that was never written finds no binding: run-machine's handler then binds it to 0 and
+; runs the instruction again, as a page fault does, so nothing pays to zero 65536 bytes at the start.
+(define! read-byte (lambda! (address) (evaluate (name-of address) memory)))
+(define! write-byte
+  (lambda! (address byte)
+    (if! (less-than? address memory-size)
+      (bind memory (name-of address) byte)
+      (outside-memory address))))
+(define! outside-memory
+  (lambda! (address)
+    (machine-fault "address " (integer-to-string address) " is outside memory")))
+(define! read-word
+  (lambda! (address)
+    (add (read-byte address)
+         (multiply 256
+           (add (read-byte (add address 1))
+                (multiply 256
+                  (add (read-byte (add address 2))
+                       (multiply 256 (read-byte (add address 3))))))))))
+(define! write-word
+  (lambda! (address value)
+    (write-byte address (remainder value 256))
+    (write-byte (add address 1) (remainder (divide value 256) 256))
+    (write-byte (add address 2) (remainder (divide value 65536) 256))
+    (write-byte (add address 3) (divide value 16777216))))
+
+(define! register (lambda! (n) (evaluate (name-of n) registers)))
+; Reading a register that doesn't exist fails by itself, but binding one would make it.
+(define! set-register
+  (lambda! (n value)
+    (if! (less-than? n 8)
+      (bind registers (name-of n) value)
+      (machine-fault "no such register: " (integer-to-string n)))))
+
+; Registers hold 0 to 2^32-1. Arithmetic on them wraps, and grift's overflows are errors, so a product
+; is split to stay within 64 bits.
+(define! wrapped (lambda! (x) (remainder x word-size)))
+(define! wrapped-product
+  (lambda! (a b)
+    (wrapped (add (multiply 65536 (remainder (multiply (divide a 65536) b) 65536))
+                  (multiply (remainder a 65536) b)))))
+(define! signed (lambda! (x) (if! (less-than? x sign-bit) x (subtract x word-size))))
+(define! sixteen-bits (lambda! (low high) (add low (multiply 256 high))))
+; An immediate as a register value: negative ones are the top of the 32-bit range.
+(define! immediate
+  (lambda! (low high)
+    (let! ((value (sixteen-bits low high)))
+      (if! (less-than? value 32768) value (add value 4294901760)))))
+; A base register and a signed 8-bit offset as an address, wrapping as the hardware would; a negative
+; result is a huge address, which then is outside memory.
+(define! effective-address
+  (lambda! (base offset)
+    (wrapped (add (register base) (if! (less-than? offset 128) offset (add offset 4294967040))))))
+(define! push-word
+  (lambda! (value)
+    (let! ((top (wrapped (add (register 7) 4294967292))))
+      (write-word top value)
+      (set-register 7 top))))
+(define! nonzero
+  (lambda! (x) (if! (same? x 0) (machine-fault "division by zero") x)))
+
+; The output instruction writes bytes, but grift writes only strings, and a string is UTF-8: a byte
+; above 127 waits here for the rest of its character, and a byte that can't be part of one is a fault.
+; Each row of lead-bytes: the smallest lead byte, the largest, the bits to take off, the bytes to come,
+; and the smallest code point a character of that length may be.
+(define! lead-bytes (quote! ((194 223 192 1 128) (224 239 224 2 2048) (240 244 240 3 65536))))
+(bind machine (quote! (partial left-to-come smallest)) (list 0 0 0))
+(define! not-text
+  (lambda! (byte)
+    (machine-fault "byte " (integer-to-string byte) " can't be written: grift's output is UTF-8 text")))
+(define! write-output-byte
+  (lambda! (byte)
+    (let! ((to-come (evaluate-in! left-to-come machine)))
+      (conditional!
+        ((same? to-come 0)
+         (if! (less-than? byte 128) (display (code-point-to-string byte)) (start-character byte)))
+        ((or!? (less-than? byte 128) (less-than? 191 byte)) (not-text byte))
+        (#true
+         (let! ((value (add (multiply 64 (evaluate-in! partial machine)) (subtract byte 128))))
+           (bind machine (quote! partial) value)
+           (bind machine (quote! left-to-come) (subtract to-come 1))
+           (when! (same? to-come 1) (finish-character value byte))))))))
+(define! start-character
+  (lambda! (byte)
+    (let! ((rows (filter (lambda! ((low high . #ignore))
+                           (and!? (not? (less-than? byte low)) (not? (less-than? high byte))))
+                         lead-bytes)))
+      (when! (empty-list? rows) (not-text byte))
+      (let! ((((#ignore #ignore base to-come smallest)) rows))
+        (bind machine (quote! (partial left-to-come smallest))
+          (list (subtract byte base) to-come smallest))))))
+(define! finish-character
+  (lambda! (value byte)
+    (when! (less-than? value (evaluate-in! smallest machine)) (not-text byte))
+    (catch! (display (code-point-to-string value))
+            e
+            (if! (same? (evaluate-in! kind e) (quote! range-error)) (not-text byte) (raise e)))))
+
+(instruction! halt () (#ignore #ignore #ignore #ignore) (raise (error (quote! halted))))
+(instruction! nop () (next #ignore #ignore #ignore) next)
+(instruction! mov (register register) (next a b #ignore)
+  (set-register a (register b))
+  next)
+(instruction! li (register immediate) (next a b c)
+  (set-register a (immediate b c))
+  next)
+(instruction! la (register address) (next a b c)
+  (set-register a (sixteen-bits b c))
+  next)
+(instruction! add (register register register) (next a b c)
+  (set-register a (wrapped (add (register b) (register c))))
+  next)
+(instruction! addi (register immediate) (next a b c)
+  (set-register a (wrapped (add (register a) (immediate b c))))
+  next)
+(instruction! sub (register register register) (next a b c)
+  (set-register a (wrapped (add (subtract (register b) (register c)) word-size)))
+  next)
+(instruction! mul (register register register) (next a b c)
+  (set-register a (wrapped-product (register b) (register c)))
+  next)
+(instruction! div (register register register) (next a b c)
+  (set-register a (divide (register b) (nonzero (register c))))
+  next)
+(instruction! rem (register register register) (next a b c)
+  (set-register a (remainder (register b) (nonzero (register c))))
+  next)
+(instruction! and (register register register) (next a b c)
+  (set-register a (bitwise multiply (register b) (register c)))
+  next)
+(instruction! or (register register register) (next a b c)
+  (set-register a (bitwise maximum (register b) (register c)))
+  next)
+(instruction! xor (register register register) (next a b c)
+  (set-register a (bitwise (lambda! (x y) (remainder (add x y) 2)) (register b) (register c)))
+  next)
+(instruction! shl (register register register) (next a b c)
+  (let! ((amount (remainder (register c) 32)))
+    (set-register a (multiply (remainder (register b) (power-of-two (subtract 32 amount)))
+                              (power-of-two amount))))
+  next)
+(instruction! shr (register register register) (next a b c)
+  (set-register a (divide (register b) (power-of-two (remainder (register c) 32))))
+  next)
+(instruction! cmp (register register) (next a b #ignore)
+  (bind machine (quote! left) (register a))
+  (bind machine (quote! right) (register b))
+  next)
+(instruction! cmpi (register immediate) (next a b c)
+  (bind machine (quote! left) (register a))
+  (bind machine (quote! right) (immediate b c))
+  next)
+(instruction! jmp (address) (#ignore a b #ignore) (sixteen-bits a b))
+; A conditional jump compares the last cmp's two values; jlt and the like as signed, jb and jae as not.
+(define! compared?
+  (lambda! (holds?) (holds? (evaluate-in! left machine) (evaluate-in! right machine))))
+(define! compared-signed?
+  (lambda! (holds?)
+    (holds? (signed (evaluate-in! left machine)) (signed (evaluate-in! right machine)))))
+(instruction! jeq (address) (next a b #ignore) (if! (compared? same?) (sixteen-bits a b) next))
+(instruction! jne (address) (next a b #ignore) (if! (compared? same?) next (sixteen-bits a b)))
+(instruction! jlt (address) (next a b #ignore)
+  (if! (compared-signed? less-than?) (sixteen-bits a b) next))
+(instruction! jle (address) (next a b #ignore)
+  (if! (compared-signed? greater-than?) next (sixteen-bits a b)))
+(instruction! jgt (address) (next a b #ignore)
+  (if! (compared-signed? greater-than?) (sixteen-bits a b) next))
+(instruction! jge (address) (next a b #ignore)
+  (if! (compared-signed? less-than?) next (sixteen-bits a b)))
+(instruction! jb (address) (next a b #ignore) (if! (compared? less-than?) (sixteen-bits a b) next))
+(instruction! jae (address) (next a b #ignore) (if! (compared? less-than?) next (sixteen-bits a b)))
+(instruction! call (address) (next a b #ignore)
+  (push-word next)
+  (sixteen-bits a b))
+(instruction! ret () (#ignore #ignore #ignore #ignore)
+  (let! ((top (register 7)) (target (read-word top)))
+    (set-register 7 (wrapped (add top 4)))
+    target))
+(instruction! push (register) (next a #ignore #ignore)
+  (push-word (register a))
+  next)
+(instruction! pop (register) (next a #ignore #ignore)
+  (let! ((top (register 7)) (value (read-word top)))
+    (set-register 7 (wrapped (add top 4)))
+    (set-register a value))
+  next)
+(instruction! load (register memory) (next a b c)
+  (set-register a (read-word (effective-address b c)))
+  next)
+(instruction! store (register memory) (next a b c)
+  (write-word (effective-address b c) (register a))
+  next)
+(instruction! loadb (register memory) (next a b c)
+  (set-register a (read-byte (effective-address b c)))
+  next)
+(instruction! storeb (register memory) (next a b c)
+  (write-byte (effective-address b c) (remainder (register a) 256))
+  next)
+(instruction! out (register) (next a #ignore #ignore)
+  (write-output-byte (remainder (register a) 256))
+  next)
+
+; ---- The machine's loop
+
+(define! execute
+  (lambda! (pc)
+    ((evaluate (name-of (read-byte pc)) executors)
+     (add pc 4) (read-byte (add pc 1)) (read-byte (add pc 2)) (read-byte (add pc 3)))))
+
+; pc and count are in the arguments for speed, and copied out for run-machine to restart from.
+(define! step
+  (lambda! (pc count)
+    (bind machine (quote! pc) pc)
+    (bind machine (quote! count) count)
+    (step (execute pc) (add count 1))))
+
+(define! traced-step
+  (lambda! (pc count)
+    (bind machine (quote! pc) pc)
+    (bind machine (quote! count) count)
+    (trace-once pc count)
+    (traced-step (execute pc) (add count 1))))
+
+; An instruction restarted after a fault is traced once.
+(bind machine (quote! traced) -1)
+(define! trace-once
+  (lambda! (pc count)
+    (when! (not? (same? count (evaluate-in! traced machine)))
+      (let! ((line (trace-line pc)))
+        (bind machine (quote! traced) count)
+        (say line)))))
+(define! register-name
+  (lambda! (n) (if! (same? n 7) "sp" (string-append "r" (integer-to-string n)))))
+(define! trace-line
+  (lambda! (pc)
+    (string-append
+      (hexadecimal pc 4) "  "
+      (string-pad-right
+        (disassemble (read-byte pc) (read-byte (add pc 1)) (read-byte (add pc 2)) (read-byte (add pc 3)))
+        24)
+      (string-join
+        (map (lambda! (n) (string-append (register-name n) "=" (integer-to-string (register n))))
+             (range 0 8))
+        " ")
+      "  cmp=" (integer-to-string (evaluate-in! left machine))
+      "," (integer-to-string (evaluate-in! right machine))
+      "\n")))
+
+; The text of an instruction, from the table its assembly came from.
+(define! disassemble
+  (lambda! (opcode a b c)
+    (let! ((name (name-of opcode)))
+      (if! (binds? descriptions name)
+        (let! (((#ignore mnemonic shape) (evaluate name descriptions))
+               (parts (operand-texts shape (list a b c))))
+          (string-join
+            (if! (empty-list? parts)
+              (list (symbol-to-string mnemonic))
+              (list (symbol-to-string mnemonic) (string-join parts ", ")))
+            " "))
+        "illegal"))))
+(define! operand-texts
+  (lambda! (shape bytes)
+    (if! (empty-list? shape)
+      ()
+      (let! ((kind (first shape)) ((x . more) bytes))
+        (conditional!
+          ((same? kind (quote! register))
+           (pair (register-name x) (operand-texts (rest shape) more)))
+          ((same? kind (quote! immediate))
+           (pair (integer-to-string (signed (immediate x (first more))))
+                 (operand-texts (rest shape) (rest more))))
+          ((same? kind (quote! address))
+           (pair (string-append "0x" (hexadecimal (sixteen-bits x (first more)) 4))
+                 (operand-texts (rest shape) (rest more))))
+          (#true
+           (let! ((offset (first more)))
+             (pair (string-append "[" (register-name x)
+                                  (if! (less-than? offset 128) "+" "")
+                                  (integer-to-string (if! (less-than? offset 128) offset (subtract offset 256)))
+                                  "]")
+                   (operand-texts (rest shape) (rest more))))))))))
+
+; Runs until halt: the handler gets a halt or a fault. Reading a memory cell that has no binding yet
+; binds it to 0 and restarts the instruction, which has changed nothing yet: no instruction changes
+; anything before its last read. If the name is bound already, it wasn't memory the
+; instruction missed: it was a register that doesn't exist, the only other numbered thing unbound.
+(define! run-machine
+  (lambda! (loop)
+    (catch! (loop (evaluate-in! pc machine) (evaluate-in! count machine))
+            e
+            (let! ((kind (evaluate-in! kind e)))
+              (conditional!
+                ((same? kind (quote! halted)) #inert)
+                ((same? kind (quote! unbound-symbol))
+                 (zero-memory (first (evaluate-in! values e)) e)
+                 (run-machine loop))
+                (#true (raise e)))))))
+(define! zero-memory
+  (lambda! (name e)
+    (let! ((text (symbol-to-string name)))
+      (when! (not? (digit? (string-byte text 0))) (raise e))
+      (when! (binds? memory name) (machine-fault "no such register: " text))
+      (when! (not? (less-than? (string-to-integer text) memory-size)) (outside-memory (string-to-integer text)))
+      (bind memory name 0))))
+
+; ---- The assembler
+;
+; A line is any of: labels (`name:`), then a constant (`NAME = expression`), an instruction or a
+; directive (.byte .word .string .space). Pass one finds every name's value and the size of every
+; statement; pass two turns the statements into bytes. An error on a line doesn't stop either pass, so
+; one run reports them all, and the first on each line.
+
+(define! assembly (context))            ; here: the address now; hint: what's added to an undefined name
+(define! defined-names (context))       ; name -> value
+(define! defined-on (context))          ; name -> the line it was defined on
+(define! line-errors (context))         ; line number -> message
+(define! lines-of (context))            ; address -> (line number, source), for a fault's message
+
+(define! problem
+  (lambda! parts (raise (error (quote! assembly-error) (apply string-append parts)))))
+(define! here (lambda! () (evaluate-in! here assembly)))
+
+; Runs the thunk for the line; an assembly-error becomes that line's error, and the value `otherwise`.
+(define! on-line
+  (lambda! (number thunk otherwise)
+    (catch! (thunk)
+            e
+            (if! (same? (evaluate-in! kind e) (quote! assembly-error))
+              (sequence!
+                (when! (not? (binds? line-errors (name-of number)))
+                  (bind line-errors (name-of number) (first (evaluate-in! values e))))
+                otherwise)
+              (raise e)))))
+
+(define! letter?
+  (lambda! (byte)
+    (or!? (and!? (less-than? 96 byte) (less-than? byte 123))
+          (and!? (less-than? 64 byte) (less-than? byte 91))
+          (same? byte 95))))
+(define! digit? (lambda! (byte) (and!? (less-than? 47 byte) (less-than? byte 58))))
+(define! blank? (lambda! (byte) (or!? (same? byte 32) (same? byte 9))))
+
+; The offset after the letters and digits at `at`.
+(define! name-end
+  (lambda! (text at)
+    (let! ((byte (byte-at text at)))
+      (if! (or!? (letter? byte) (digit? byte)) (name-end text (add at 1)) at))))
+(define! skip-blanks
+  (lambda! (text at) (if! (blank? (byte-at text at)) (skip-blanks text (add at 1)) at)))
+
+; The offset after a string or character literal, from just after its opening quote.
+(define! literal-end
+  (lambda! (text at closing)
+    (let! ((byte (byte-at text at)))
+      (conditional!
+        ((not? (less-than? at (string-byte-length text))) (string-byte-length text))
+        ((same? byte 92) (literal-end text (add at 2) closing))
+        ((same? byte closing) (add at 1))
+        (#true (literal-end text (add at 1) closing))))))
+
+; The offset of the first `target` byte at or after `at` outside any literal, or the end of the text.
+(define! find-outside-literals
+  (lambda! (text at target)
+    (let! ((byte (byte-at text at)))
+      (conditional!
+        ((not? (less-than? at (string-byte-length text))) (string-byte-length text))
+        ((same? byte target) at)
+        ((or!? (same? byte 34) (same? byte 39))
+         (find-outside-literals text (literal-end text (add at 1) byte) target))
+        (#true (find-outside-literals text (add at 1) target))))))
+
+; The comma-separated operands of a statement, trimmed.
+(define! split-operands
+  (lambda! (text)
+    (let! ((comma (find-outside-literals text 0 44)))
+      (operands-at text comma))))
+(define! operands-at
+  (lambda! (text comma)
+    (conditional!
+      ((same? text "") ())
+      ((same? comma (string-byte-length text)) (list (string-trim text)))
+      (#true
+       (pair (string-trim (byte-substring text 0 comma))
+             (split-operands (text-from text (add comma 1))))))))
+
+; ---- Expressions: sums of products of numbers, characters, names and `.`, the address here.
+
+(define! read-expression
+  (lambda! (text)
+    (let! (((value end) (read-sum text 0)) (rest-at (skip-blanks text end)))
+      (if! (same? rest-at (string-byte-length text))
+        value
+        (problem "unexpected '" (text-from text rest-at) "' in the expression '" text "'")))))
+(define! read-sum
+  (lambda! (text at)
+    (let! (((value end) (read-product text at))) (read-more-sum text end value))))
+(define! read-more-sum
+  (lambda! (text at value)
+    (let! ((at (skip-blanks text at)) (byte (byte-at text at)))
+      (if! (or!? (same? byte 43) (same? byte 45))
+        (let! (((term end) (read-product text (add at 1))))
+          (read-more-sum text end (if! (same? byte 43) (add value term) (subtract value term))))
+        (list value at)))))
+(define! read-product
+  (lambda! (text at)
+    (let! (((value end) (read-factor text at))) (read-more-product text end value))))
+(define! read-more-product
+  (lambda! (text at value)
+    (let! ((at (skip-blanks text at)))
+      (if! (same? (byte-at text at) 42)
+        (let! (((factor end) (read-factor text (add at 1))))
+          (read-more-product text end (multiply value factor)))
+        (list value at)))))
+(define! read-factor
+  (lambda! (text at)
+    (let! ((at (skip-blanks text at)) (byte (byte-at text at)))
+      (conditional!
+        ((same? byte 45)
+         (let! (((value end) (read-factor text (add at 1)))) (list (subtract 0 value) end)))
+        ((same? byte 43) (read-factor text (add at 1)))
+        ((same? byte 46) (list (here) (add at 1)))
+        ((same? byte 39) (read-character text at))
+        ((digit? byte) (read-number text at))
+        ((letter? byte) (read-name text at))
+        (#true (problem "expected a number or a name in '" text "'"))))))
+(define! read-number
+  (lambda! (text at)
+    (let! ((end (name-end text at)) (word (byte-substring text at end)))
+      (list
+        (if! (string-starts-with? word "0x")
+          (hexadecimal-value word)
+          (catch! (string-to-integer word)
+                  e
+                  (problem "'" word "' isn't a number")))
+        end))))
+(define! hexadecimal-value
+  (lambda! (word)
+    (when! (same? word "0x") (problem "'0x' has no digits"))
+    (fold (lambda! (value byte) (add (multiply 16 value) (hexadecimal-digit byte word)))
+          0
+          (string-to-bytes (text-from word 2)))))
+(define! hexadecimal-digit
+  (lambda! (byte word)
+    (conditional!
+      ((digit? byte) (subtract byte 48))
+      ((and!? (less-than? 96 byte) (less-than? byte 103)) (subtract byte 87))
+      ((and!? (less-than? 64 byte) (less-than? byte 71)) (subtract byte 55))
+      (#true (problem "'" word "' isn't a number")))))
+; A character is what grift's reader makes of it between double quotes, so the escapes are grift's.
+(define! read-character
+  (lambda! (text at)
+    (let! ((end (literal-end text (add at 1) 39))
+           (inner (byte-substring text (add at 1) (subtract end 1))))
+      (when! (not? (same? (byte-at text (subtract end 1)) 39))
+        (problem "unfinished character " (byte-substring text at end)))
+      (let! ((bytes (string-to-bytes
+                      (if! (same? inner "\"") inner (read-string (string-append "\"" inner "\""))))))
+        (if! (same? (length bytes) 1)
+          (list (first bytes) end)
+          (problem "'" inner "' isn't one byte"))))))
+(define! read-name
+  (lambda! (text at)
+    (let! ((end (name-end text at))
+           (word (byte-substring text at end))
+           (name (string-to-symbol word)))
+      (if! (binds? defined-names name)
+        (list (evaluate name defined-names) end)
+        (problem "undefined name '" word "'" (evaluate-in! hint assembly))))))
+
+; The string a double-quoted literal means, by grift's reader. A literal is checked to be one form.
+(define! read-string
+  (lambda! (text)
+    (let! ((found (catch! (read-form text 0)
+                          e
+                          (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                            (problem "bad string " text)
+                            (raise e))))
+           ((value #ignore end) found))
+      (if! (and!? (string? value) (same? end (string-byte-length text)))
+        value
+        (problem "expected a string in double quotes, got " text)))))
+
+; ---- Parsing a line
+
+(define! register-names (quote! (("r0" 0) ("r1" 1) ("r2" 2) ("r3" 3) ("r4" 4) ("r5" 5) ("r6" 6) ("r7" 7) ("sp" 7))))
+(define! register-number
+  (lambda! (text)
+    (let! ((row (find-association text register-names)))
+      (if! (empty-list? row) () (first (rest row))))))
+
+; The line without its comment.
+(define! code-of
+  (lambda! (line)
+    (string-trim (byte-substring line 0 (find-outside-literals line 0 59)))))
+
+; (labels . rest): the labels at the start of the text, and what follows them.
+(define! split-labels
+  (lambda! (text labels)
+    (let! ((end (name-end text 0)))
+      (if! (and!? (less-than? 0 end)
+                  (not? (digit? (string-byte text 0)))
+                  (same? (byte-at text end) 58))
+        (split-labels (string-trim (text-from text (add end 1)))
+                      (pair (byte-substring text 0 end) labels))
+        (pair (reverse labels) text)))))
+
+(define! define-name
+  (lambda! (word value number)
+    (let! ((name (string-to-symbol word)))
+      (when! (not? (empty-list? (register-number word)))
+        (problem "'" word "' is a register, so it can't be a name"))
+      (when! (binds? defined-on name)
+        (problem "'" word "' is already defined on line "
+                 (integer-to-string (evaluate name defined-on))))
+      (bind defined-on name number)
+      (bind defined-names name value))))
+
+; The offset after the first word of a statement: up to a blank.
+(define! word-end
+  (lambda! (text at)
+    (if! (or!? (same? at (string-byte-length text)) (blank? (string-byte text at)))
+      at
+      (word-end text (add at 1)))))
+
+; ---- Pass one: the size of a statement, in bytes.
+
+(define! total
+  (lambda! (f xs) (fold (lambda! (sum x) (add sum (f x))) 0 xs)))
+(define! statement-size
+  (lambda! (word operands)
+    (conditional!
+      ((same? word ".byte") (length operands))
+      ((same? word ".word") (multiply 4 (length operands)))
+      ((same? word ".string")
+       (total (lambda! (text) (string-byte-length (read-string text))) operands))
+      ((same? word ".space")
+       (let! ((size (space-size word operands)))
+         (if! (less-than? size 0) (problem ".space can't be negative: " (integer-to-string size)) size)))
+      ((string-starts-with? word ".") (problem "unknown directive '" word "'"))
+      ((binds? instruction-table (string-to-symbol word)) 4)
+      (#true (problem "unknown instruction '" word "'")))))
+(define! space-size
+  (lambda! (word operands)
+    (if! (same? (length operands) 1)
+      (read-expression (first operands))
+      (problem word " takes one size"))))
+
+; The statement of a line: (number source address word operands), or () when it has none. Defines the
+; labels and constants and moves `here` on.
+(define! read-statement
+  (lambda! (number source)
+    (let! (((labels . text) (split-labels (code-of source) ())))
+      (for-each (lambda! (label) (define-name label (here) number)) labels)
+      (when! (not? (same? text ""))
+        (let! ((name-stop (name-end text 0)) (after-name (skip-blanks text name-stop)))
+          (if! (same? (byte-at text after-name) 61)
+            (read-constant (byte-substring text 0 name-stop) (text-from text (add after-name 1)) number)
+            (let! ((end (word-end text 0))
+                   (word (byte-substring text 0 end))
+                   (operands (split-operands (string-trim (text-from text end))))
+                   (size (statement-size word operands))
+                   (address (here)))
+              (when! (less-than? memory-size (add address size))
+                (problem "the program doesn't fit in " (integer-to-string memory-size) " bytes"))
+              (bind assembly (quote! here) (add address size))
+              (list number source address word operands))))))))
+; A constant's value is known now, so it can use only the names above it. Should it fail, its name is
+; still defined, so the lines that use it aren't errors too.
+(define! read-constant
+  (lambda! (word expression number)
+    (when! (or!? (same? word "") (digit? (string-byte word 0)))
+      (problem "'" word "' can't be a name"))
+    (define-name word 0 number)
+    (bind defined-names (string-to-symbol word) (read-expression (string-trim expression)))
+    #inert))
+
+(define! pass-one
+  (lambda! (lines number statements)
+    (if! (empty-list? lines)
+      (reverse statements)
+      (let! ((statement
+               (on-line number (lambda! () (read-statement number (first lines))) #inert)))
+        (pass-one (rest lines)
+                  (add number 1)
+                  (if! (pair? statement) (pair statement statements) statements))))))
+
+; ---- Pass two: the bytes of a statement.
+
+(define! bytes-of
+  (lambda! (value count)
+    (if! (same? count 0)
+      ()
+      (pair (remainder value 256) (bytes-of (divide value 256) (subtract count 1))))))
+(define! in-range
+  (lambda! (value low high what text)
+    (if! (or!? (less-than? value low) (less-than? high value))
+      (problem what " " text
+               (if! (same? text (integer-to-string value)) "" (string-append " = " (integer-to-string value)))
+               " doesn't fit: it must be from " (integer-to-string low) " to " (integer-to-string high))
+      value)))
+; A value as `count` bytes, negative ones as two's complement.
+(define! encode-value
+  (lambda! (text count low high what)
+    (let! ((value (in-range (read-expression text) low high what text)))
+      (bytes-of (if! (less-than? value 0) (add value (power-of-two (multiply 8 count))) value) count))))
+(define! encode-register
+  (lambda! (text)
+    (let! ((number (register-number text)))
+      (if! (empty-list? number)
+        (problem "expected a register (r0 to r7, or sp), got '" text "'")
+        number))))
+; [base], [base+offset] or [base-offset]; the offset is an expression.
+(define! encode-memory
+  (lambda! (text)
+    (let! ((size (string-byte-length text))
+           (inside (if! (and!? (string-starts-with? text "[") (string-ends-with? text "]"))
+                     (string-trim (byte-substring text 1 (subtract size 1)))
+                     (problem "expected a memory operand like [r1+4], got '" text "'")))
+           (end (name-end inside 0))
+           (offset (string-trim (text-from inside end))))
+      (when! (not? (same? offset ""))
+        (when! (not? (or!? (string-starts-with? offset "+") (string-starts-with? offset "-")))
+          (problem "expected + or - after the register in '" text "'")))
+      (pair (encode-register (byte-substring inside 0 end))
+            (if! (same? offset "")
+              (list 0)
+              (encode-value offset 1 -128 127 "the offset"))))))
+(define! encode-operand
+  (lambda! (kind text)
+    (conditional!
+      ((same? kind (quote! register)) (list (encode-register text)))
+      ((same? kind (quote! immediate)) (encode-value text 2 -32768 32767 "the immediate"))
+      ((same? kind (quote! address)) (encode-value text 2 0 65535 "the address"))
+      (#true (encode-memory text)))))
+(define! shape-text
+  (lambda! (shape)
+    (string-join (map symbol-to-string shape) ", ")))
+(define! pad-to-three
+  (lambda! (bytes) (append bytes (map (lambda! (#ignore) 0) (range (length bytes) 3)))))
+(define! encode-instruction
+  (lambda! (word operands)
+    (let! (((opcode #ignore shape) (evaluate (string-to-symbol word) instruction-table)))
+      (when! (not? (same? (length shape) (length operands)))
+        (problem word " takes " (integer-to-string (length shape)) " operands ("
+                 (shape-text shape) "), got " (integer-to-string (length operands))))
+      (pair opcode (pad-to-three (apply append (map encode-operand shape operands)))))))
+(define! encode-data
+  (lambda! (word operands)
+    (conditional!
+      ((same? word ".byte")
+       (apply append (map (lambda! (text) (encode-value text 1 -128 255 "the byte")) operands)))
+      ((same? word ".word")
+       (apply append
+         (map (lambda! (text) (encode-value text 4 -2147483648 4294967295 "the word")) operands)))
+      ((same? word ".string")
+       (apply append (map (lambda! (text) (string-to-bytes (read-string text))) operands)))
+      (#true ()))))
+; .space leaves memory as it is, which reads as zero.
+(define! encode-statement
+  (lambda! (word operands)
+    (if! (string-starts-with? word ".")
+      (encode-data word operands)
+      (encode-instruction word operands))))
+
+; A row of the listing: (address bytes number source).
+(define! pass-two
+  (lambda! (statements)
+    (bind assembly (quote! hint) "")
+    (map (lambda! ((number source address word operands))
+           (bind assembly (quote! here) address)
+           (list address
+                 (on-line number (lambda! () (encode-statement word operands)) ())
+                 number
+                 source))
+         statements)))
+
+; The assembled rows, or a report of every error and exit status 1.
+(define! assemble
+  (lambda! (path)
+    (let! ((lines (string-split (read-source path) "\n")))
+      (bind assembly (quote! here) 0)
+      (bind assembly (quote! hint) " (a constant or .space can use only the names above it)")
+      (let! ((rows (pass-two (pass-one lines 1 ()))))
+        (report-errors path lines)
+        rows))))
+(define! read-source
+  (lambda! (path)
+    (catch! (let! ((file (open-file path)) (text ((evaluate-in! read-all file))))
+              ((evaluate-in! close file))
+              text)
+            e
+            (if! (member? (evaluate-in! kind e) (quote! (file-error encoding-error)))
+              (sequence!
+                (say path ": " (last-of (evaluate-in! values e)) "\n")
+                (exit 2))
+              (raise e)))))
+;   A file-error's values are the path and the system's message; an encoding-error's, the path alone.
+(define! last-of (lambda! (xs) (first (reverse xs))))
+(define! report-errors
+  (lambda! (path lines)
+    (let! ((numbers (range 1 (add (length lines) 1)))
+           (found (filter (lambda! (number) (binds? line-errors (name-of number))) numbers)))
+      (for-each
+        (lambda! (number)
+          (say path ":" (integer-to-string number) ": " (evaluate (name-of number) line-errors) "\n"
+               "    " (string-trim (nth lines number)) "\n"))
+        found)
+      (when! (not? (empty-list? found)) (exit 1)))))
+(define! nth
+  (lambda! (xs number) (if! (same? number 1) (first xs) (nth (rest xs) (subtract number 1)))))
+
+; ---- Commands
+
+(define! hexadecimal-bytes
+  (lambda! (bytes) (string-join (map (lambda! (byte) (hexadecimal byte 2)) bytes) " ")))
+; At most the first eight bytes of a row; the listing is to read.
+(define! first-bytes
+  (lambda! (bytes n)
+    (if! (or!? (same? n 0) (empty-list? bytes))
+      ()
+      (pair (first bytes) (first-bytes (rest bytes) (subtract n 1))))))
+(define! list-row
+  (lambda! ((address bytes #ignore source))
+    (display (hexadecimal address 4) "  "
+             (string-pad-right (hexadecimal-bytes (first-bytes bytes 8)) 24)
+             (if! (less-than? 8 (length bytes)) "..  " "    ")
+             (string-trim source)
+             "\n")))
+(define! list-name
+  (lambda! (name)
+    (display (string-pad-right (symbol-to-string name) 16) " = "
+             (integer-to-string (evaluate name defined-names)) "\n")))
+(define! assemble-command
+  (lambda! (path)
+    (for-each list-row (assemble path))
+    (newline)
+    (for-each list-name (names defined-names))))
+
+(define! load-rows
+  (lambda! (rows)
+    (for-each
+      (lambda! ((address bytes number source))
+        (bind lines-of (name-of address) (list number source))
+        (for-each
+          (lambda! (at-byte) (write-byte (first at-byte) (rest at-byte)))
+          (map pair (range address (add address (length bytes))) bytes)))
+      rows)))
+
+(define! start-machine
+  (lambda! ()
+    (for-each (lambda! (n) (set-register n 0)) (range 0 7))
+    (set-register 7 memory-size)
+    (bind machine (quote! (pc count left right)) (list 0 0 0 0))))
+
+; The fault's line: where in the source, the instruction, what went wrong.
+(define! report-fault
+  (lambda! (path message)
+    (let! ((pc (evaluate-in! pc machine)) (name (name-of pc)))
+      (say path
+           (if! (binds? lines-of name)
+             (string-append ":" (integer-to-string (first (evaluate name lines-of))))
+             "")
+           ": machine fault at " (hexadecimal pc 4) ": " message "\n")
+      (exit 1))))
+(define! run-command
+  (lambda! (path trace? count?)
+    (load-rows (assemble path))
+    (start-machine)
+    (catch! (sequence!
+              (run-machine (if! trace? traced-step step))
+              (when! (not? (same? (evaluate-in! left-to-come machine) 0))
+                (machine-fault "the program halted in the middle of a UTF-8 character")))
+            e
+            (if! (same? (evaluate-in! kind e) (quote! machine-fault))
+              (report-fault path (first (evaluate-in! values e)))
+              (raise e)))
+    (when! count?
+      (say (integer-to-string (add 1 (evaluate-in! count machine))) " instructions\n"))))
+
+(define! usage
+  (lambda! ()
+    (say "usage: main.grift assemble FILE.asm\n       main.grift run [--trace] [--count] FILE.asm\n")
+    (exit 2)))
+(define! run-with-options
+  (lambda! (arguments trace? count?)
+    (conditional!
+      ((empty-list? arguments) (usage))
+      ((same? (first arguments) "--trace") (run-with-options (rest arguments) #true count?))
+      ((same? (first arguments) "--count") (run-with-options (rest arguments) trace? #true))
+      ((empty-list? (rest arguments)) (run-command (first arguments) trace? count?))
+      (#true (usage)))))
+(define! main
+  (lambda! (arguments)
+    (conditional!
+      ((empty-list? arguments) (usage))
+      ((and!? (same? (first arguments) "assemble") (same? (length arguments) 2))
+       (assemble-command (first (rest arguments))))
+      ((same? (first arguments) "run") (run-with-options (rest arguments) #false #false))
+      (#true (usage)))))
+(main command-line-arguments)

@@ -1,0 +1,6 @@
+3
+meta: programs/meta/tests/errors/raise.grift:5: not-integer a
+  in (raise (error (quote! not-integer) x))
+  from (add 1 (check x))
+  from (display (run (quote! a)))
+exit 1

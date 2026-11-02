@@ -1,0 +1,18 @@
+{{> header.html}}
+<h1>{{ title | upper }}</h1>
+<p>Hello, {{ user.name }}! {{ user.bio }}</p>
+<p>Raw: {{ banner | raw }}</p>
+{{#if user.admin}}
+<p>You are an admin.</p>
+{{#else}}
+<p>You are not an admin.</p>
+{{/if}}
+<ul>
+{{#for item i in items}}
+  <li>{{ i | add 1 }}. {{ item.name }} costs {{ item.price | money }}{{#if item.sale}} (sale){{/if}}</li>
+{{#else}}
+  <li>nothing</li>
+{{/for}}
+</ul>
+{{! the footer is shared }}
+{{> footer.html}}
