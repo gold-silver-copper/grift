@@ -922,6 +922,9 @@ fn floats_read_back_as_they_print() {
         );
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
     }
+    // A not-a-number of any sign reads back as a not-a-number.
+    let negative = show(&g, Value::Float(-f64::NAN));
+    assert!(float(&mut g, &negative).is_nan());
     holds(
         &mut g,
         &[

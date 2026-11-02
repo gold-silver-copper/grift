@@ -175,7 +175,8 @@ fn main() -> Result<(), Error> {
   `read(&mut self, &str) -> Result<Value, Error>` (the list of forms, nothing evaluated);
   `write(&self, Value, &mut dyn fmt::Write)`; `host_function(&mut self, &str, HostFunction<T>) ->
   Result<Value, Error>` (an applicative, bound nowhere); `define(&mut self, &str, Value)` (binds
-  in the top-level context); `symbol(&mut self, &str) -> Result<Symbol, Error>`; `string(&mut
+  in the top-level context); `context(&mut self) -> Result<Value, Error>` (a new child of the
+  built-in context, a private top level); `symbol(&mut self, &str) -> Result<Symbol, Error>`; `string(&mut
   self, &str)`, `pair(&mut self, Value, Value)`, both `-> Result<Value, Error>`; `as_str(&self,
   Value) -> Option<&str>`, `as_pair(&self, Value) -> Option<(Value, Value)>`; `error(&mut self,
   &str, &[Value]) -> Error`; `set_interrupt_flag(&mut self, &'static AtomicBool)`.
@@ -183,8 +184,8 @@ fn main() -> Result<(), Error> {
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
   context of operations on it, never as a number a program could forge. Keep the host functions
-  that take a resource's number private: don't `define` them; hand them to grift code that makes
-  the operations as closures over them, as the runner's
+  that take a resource's number private: don't `define` them; hand them to grift code, evaluated
+  in a private `context()`, that makes the operations as closures over them, as the runner's
   [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
   after it is closed is the error `closed`.
 - `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value> }`. `trace` lists the
