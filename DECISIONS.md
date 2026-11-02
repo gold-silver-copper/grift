@@ -566,7 +566,7 @@ name's uses; the PR has each name's decision.
   combination; so the frame's roots and location need no case per kind, and pushing one is a call. A nested
   evaluation's outer location goes in a frame below the floor, not in a field of each form frame. A handler
   is called through `combine`, as anything is. `Value::Boolean(bool)` replaces `True` and `False`. The
-  symbols the core names come from one table. Core Rust: 1,949 to about 1,700 lines, no change in `fib 25`.
+  symbols the core names come from one table. Core Rust: 1,949 to about 1,700 lines; `fib 25` about 4% slower (121 ms to 126 ms, medians of five), inside its band.
 - **G-91. `evaluate-with-cleanup` stays beside `call-with-handler`** (G-48). `finally!` over a handler
   that also saw limits could drop a primitive and two frames, but each cleanup would then copy the trace
   into a record and back, which G-76 removed, and every `catch!` would test for limits in grift.
