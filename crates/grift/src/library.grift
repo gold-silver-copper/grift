@@ -377,7 +377,11 @@
          (if! (same? xs ())
            (raise (error (quote! range-error) name index index))
            (first xs))))
-     (define! at (lambda! (name xs index) (element name (after name xs index index) index)))
+     ; n, if it is an integer: given the list in its place, the error names the combiner.
+     (define! counted
+       (lambda! (name n) (if! (integer? n) n (raise (error (quote! type-error) name n)))))
+     (define! at
+       (lambda! (name xs index) (element name (after name xs (counted name index) index) index)))
      (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
      (define! taken
        (lambda! (xs i n)
@@ -392,8 +396,8 @@
        (lambda! (xs) (at (quote! third) xs 2))
        (lambda! (xs)
          (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
-       (lambda! (xs n) (taken xs n n))
-       (lambda! (xs n) (after (quote! drop) xs n n))))))
+       (lambda! (xs n) (taken xs (counted (quote! take) n) n))
+       (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) n) n))))))
 
 ; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.

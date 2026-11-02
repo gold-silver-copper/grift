@@ -130,7 +130,8 @@ fn files_are_contexts_of_operations() {
     let (status, out, err) = script(&dir, program, &[path], "");
     assert_eq!(status, Some(0), "{err}");
     let want = format!(
-        "#[context close path write] {path}\n#[context close path read-all read-line]\n\
+        "#[context close path write write-bytes] {path}\n\
+         #[context close path read-all read-bytes read-line]\n\
          (\"one\\n\" \"two\\n\" \"\")\n(closed (\"{path}\"))\nclosed\nfile-error\n#false"
     );
     assert_eq!(out, want);
@@ -152,7 +153,7 @@ fn a_program_cannot_reach_the_runner_s_host_functions() {
     "#;
     let (status, out, err) = script(&dir, program, &[], "");
     assert_eq!(status, Some(0), "{err}");
-    assert_eq!(out, "#true #[context close path read-all read-line] ");
+    assert_eq!(out, "#true #[context close path read-all read-bytes read-line] ");
 }
 
 #[test]
@@ -253,4 +254,119 @@ fn a_script_counts_its_input() {
     assert!(out.starts_with("report: 3 5\n"), "{out}");
     assert_eq!(std::fs::read_to_string(report).unwrap(), "3 5\n");
     assert_eq!(script(&dir, program, &[report], "").0, Some(3));
+}
+
+#[test]
+fn load_runs_a_file_s_forms_where_it_is_called() {
+    let dir = scratch("load");
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    // A relative path is relative to the file being loaded: lib/a.grift loads lib/b.grift.
+    std::fs::write(dir.join("lib/a.grift"), "(define! a 1)\n(load \"b.grift\")\n").unwrap();
+    std::fs::write(
+        dir.join("lib/b.grift"),
+        "(define! loads (add loads 1))\n(define! b (lambda! (x) (add x a)))\n\n(define! c (first 2))\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("lib/bad.grift"), "(display \"ran\")\n(define! f\n  (lambda! (x)\n").unwrap();
+    let program = r#"
+        (define! loads 0)
+        (define! write-trace (lambda! (place) (display (value-to-string place) " ")))
+        (catch-kind! (load "lib/a.grift") type-error e (write-trace (last (evaluate-in! trace e))))
+        (display (b 1) " " loads " ")
+        ; Each load runs the file again; in a child context, its definitions are the child's.
+        (define! child (context (current-context)))
+        (catch! (evaluate (quote! (load "lib/b.grift")) child) #ignore #inert)
+        (display loads " " (evaluate (quote! loads) child) " ")
+        ; A file that doesn't read runs nothing, and says where the form opened.
+        (catch! (load "lib/bad.grift") e (sequence! (display (evaluate-in! values e)) (write-trace (second (evaluate-in! trace e)))))
+        (display (string-ends-with? script-path "script.grift"))
+        (load "lib/b.grift")
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    let lib = dir.join("lib");
+    let lib = lib.to_str().unwrap();
+    assert_eq!(status, Some(1));
+    assert_eq!(
+        out,
+        format!("\"{lib}/a.grift:2\" 2 1 1 2 (unclosed-list 3 3)\"{lib}/bad.grift\" #true")
+    );
+    // The trace says the file and the line of the form, between its combinations and the load.
+    assert!(
+        err.contains(&format!("in (first 2)\n  from (define! c (first 2))\n  from \"{lib}/b.grift:4\"")),
+        "{err}"
+    );
+    assert!(err.ends_with("from (load \"lib/b.grift\")\n"), "{err}");
+}
+
+#[test]
+fn bytes_that_are_not_text_go_in_and_out() {
+    let dir = scratch("bytes");
+    let every: Vec<u8> = (0..=255).collect();
+    let path = dir.join("bytes.grift");
+    // Standard input to standard output in pieces of 100 bytes, and to a file in one.
+    let program = r#"
+        (define! (copy) command-line-arguments)
+        (define! read (evaluate-in! read-bytes standard-input))
+        (define! put (evaluate-in! write-bytes standard-output))
+        (define! pass (lambda! (all) (let! ((bytes (read 100))) (if! (empty-list? bytes) all (sequence! (put bytes) (pass (append all bytes)))))))
+        (define! out (create-file copy))
+        ((evaluate-in! write-bytes out) (pass ()))
+        ((evaluate-in! close out))
+        (display-error (length ((evaluate-in! read-bytes (open-file copy)) 1000)) " "
+                       (catch! (put (list 256)) e (evaluate-in! kind e)))
+    "#;
+    std::fs::write(&path, program).unwrap();
+    let copy = dir.join("copy");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .args([path.to_str().unwrap(), copy.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&every).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.stdout, every);
+    assert_eq!(std::fs::read(&copy).unwrap(), every);
+    assert_eq!(out.stderr, b"256 range-error");
+    // A file that isn't text can't be read as text, but its bytes can be.
+    let program = format!(
+        "(display (catch! (read-file {copy:?}) e (evaluate-in! kind e)) (catch! (load {copy:?}) e (evaluate-in! kind e)))"
+    );
+    assert_eq!(script(&dir, &program, &[], "").1, "encoding-errorencoding-error");
+}
+
+#[test]
+fn read_file_display_error_and_the_clocks() {
+    let dir = scratch("read-file");
+    let path = dir.join("text");
+    std::fs::write(&path, "one\ntwo\n").unwrap();
+    let path = path.to_str().unwrap();
+    let program = r#"
+        (define! (path) command-line-arguments)
+        (display (read-file path) (catch! (read-file "no/such") e (evaluate-in! kind e)))
+        (display-error "wc: " path ": " 2 " " (list "a" 1.5) "\n")
+        (define! a (elapsed-nanoseconds))
+        (define! b (elapsed-nanoseconds))
+        (display " " (not? (less-than? b a)) " " (wall-clock-nanoseconds))
+    "#;
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let (status, out, err) = script(&dir, program, &[path], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(err, format!("wc: {path}: 2 (\"a\" 1.5)\n"));
+    let (text, wall) = out.rsplit_once(' ').unwrap();
+    assert_eq!(text, "one\ntwo\nfile-error #true");
+    let wall: u128 = wall.parse().unwrap();
+    assert!(wall >= before && wall - before < 60_000_000_000, "{wall} {before}");
+}
+
+#[test]
+fn a_parse_error_says_where_the_form_opened() {
+    let dir = scratch("parse-error");
+    let (status, _, err) = script(&dir, "(display 1)\n(define! f\n  (lambda! (x)\n    (add x 1))\n", &[], "");
+    assert_eq!(status, Some(1));
+    assert!(err.ends_with("script.grift: parse-error unclosed-list 2 1\n"), "{err}");
 }

@@ -1993,6 +1993,7 @@ fn list_access_by_index() {
             "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (take 11 10)))",
             "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
             "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
+            "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list (quote! take) xs))",
         ],
     );
     fails(
@@ -2001,6 +2002,7 @@ fn list_access_by_index() {
             ("(last ())", "range-error"),
             ("(third (list 1 2))", "range-error"),
             ("(element-at xs 1.0)", "type-error"),
+            ("(drop 2 xs)", "type-error"),
         ],
     );
 }

@@ -18,12 +18,12 @@ are R-1RK's.
 | `$and?` `$or?` | `and!?` `or!?` |
 | `$set!` | `bind`, with the parameters quoted |
 | `$remote-eval` | `evaluate-in!` |
-| `$binds?` | `binds?`, for one symbol, with both operands evaluated |
+| `$binds?` | `binds?`, for one symbol, with both operands evaluated; `lookup` |
 | `$unwind-protect`, `guard` | `finally!`, `catch!` |
 | `eval` `make-environment` `get-current-environment` | `evaluate` `context` `current-context` |
 | `cons` `car` `cdr` `null?` | `pair` `first` `rest` `empty-list?` |
 | `eq?` `equal?` `=?` | `same?` `equal?` |
-| `+` `-` `*` `div` `mod` | `add` `subtract` `multiply` `divide` `remainder` |
+| `+` `-` `*` `div` `mod` `abs` `expt` | `add` `subtract` `multiply` `divide` `remainder` `absolute-value` `power` |
 | `<?` and the rest | `less-than?` `greater-than?` `less-than-or-equal?` `greater-than-or-equal?` |
 | `min` `max` `assoc` | `minimum` `maximum` `find-association` |
 | `#t` `#f` | `#true` `#false` |
@@ -63,7 +63,7 @@ are R-1RK's.
 
 A number starts with a digit, after an optional sign: it is an integer if it is one, else a float
 if it has a `.` or an exponent, as Rust reads them (`1.`, `2e5`); anything else that starts so,
-such as `99999999999999999999` or `1.2.3`, is a `parse-error`. A float prints in Rust's shortest
+such as `99999999999999999999` or `1.2.3`, is a `parse-error` (`bad-number`). A float prints in Rust's shortest
 form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it reads back as the same float, bit
 for bit. Every not-a-number prints as `#not-a-number`, which reads back as Rust's `f64::NAN`: a
 not-a-number's sign and payload don't survive printing.
@@ -80,6 +80,8 @@ All are applicatives except `vau!`.
 | `(evaluate x c)` | Evaluates `x` in context `c`, as a tail call (4.8.3). |
 | `(context)`, `(context parent)` | A new empty context, with no parent or one (4.8.4). |
 | `(bind c parameters value)` | Matches the tree `parameters` to `value` and binds its symbols in context `c` itself, replacing bindings there. Returns `#inert`. The matching of `define!` (4.9.1) as an applicative. |
+| `(unbind c symbol)` | Removes the binding of `symbol` from context `c` itself, never a parent's: `#true` if there was one, `#false` if not. A lookup in `c` then finds a parent's binding of the name, if there is one, and the value, if nothing else holds it, is collected. The symbol itself stays: symbols are never freed, so a table keyed by computed symbols (`string-to-symbol`) grows the symbol table by each new name, about 50 bytes, for the life of the interpreter. |
+| `(lookup c symbol otherwise)` | The value `symbol` has in context `c` or the nearest parent binding it, as evaluating it there gives; `otherwise` if none does, where evaluating would be `unbound-symbol`. Both are evaluated, so `(lookup counts word 0)` reads a table with a default. |
 | `(names c)` | The symbols bound in context `c` itself (not its parents), sorted by name. |
 | `(pair a b)`, `(first p)`, `(rest p)` | A new pair; its two halves (4.6.3, 5.4.1). |
 | `(same? a b)` | Identity for pairs, contexts and combiners; equality of value for integers, symbols and strings; the same stored bits for floats. Values of different types are never the same (4.2.1, `eq?`). |
@@ -87,7 +89,8 @@ All are applicatives except `vau!`.
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
 | `(add a b)`, `(subtract a b)`, `(multiply a b)`, `(divide a b)`, `(remainder a b)` | Of two integers or two floats; mixing them is a `type-error`. On integers, Rust's checked arithmetic: `divide` and `remainder` are Rust's `/` and `%`, truncating toward zero, so `(remainder -7 2)` is `-1`; dividing by 0 is `division-by-zero`, and a result beyond 64 bits, `(divide -9223372036854775808 -1)` included, is `overflow`. On floats, IEEE: `(divide 1.0 0.0)` is `#infinity`. |
 | `(less-than? a b)` | Whether `a < b`, of two integers or two floats; with `#not-a-number`, `#false`. |
-| `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` `(absolute-value x)`, `(power x y)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) `trunc` `abs` and `powf`, of floats only. Results may differ slightly between platforms, as in Rust. |
+| `(bitwise-and a b)` `(bitwise-or a b)` `(bitwise-exclusive-or a b)` `(shift-left a n)` `(shift-right a n)` | Rust's `&` `\|` `^` `<<` `>>` on two integers: the bits shifted out are lost, as in Rust, and `shift-right` keeps the sign (`(shift-right -8 1)` is `-4`). A shift by an amount outside 0 to 63, where Rust's checked shift gives none, is `overflow`. |
+| `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) and `trunc`, of floats only. Results may differ slightly between platforms, as in Rust. `absolute-value` and `power` are the library's, below. |
 | `(integer-to-float n)`, `(float-to-integer x)` | Rust's `as`: the nearest float; the integer part, saturating at the ends of the 64-bit range, and 0 for `#not-a-number`. |
 | `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving, unless that one is `interrupted` or `out-of-memory`, which go on. Not a tail call. |
 | `(call-with-handler thunk handler)` | Calls `thunk` with no arguments and returns its value. If an error leaves it, the cleanups inside run first, then `handler` is called with the error as a new context with no parent, binding `kind` (a symbol), `values` (a list) and `trace` (a list, see Errors); its value is `call-with-handler`'s, as a tail call. `interrupted` and `out-of-memory` are never caught. |
@@ -99,14 +102,14 @@ All are applicatives except `vau!`.
 | `(string-to-symbol s)` | The symbol named `s`, interned. |
 | `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
 | `(string-to-float s)` | Rust's `parse::<f64>` and the three `#` names, so it reads what `value-to-string` writes for a float: `(string-to-float "1")` is `1.0`, `(string-to-float "inf")` is `#infinity`. A not-a-number's sign and payload are lost. A string that reads as neither is a `parse-error`. |
-| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with the line and column in the whole text; an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
+| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with why and where, in the whole text, as for a program (see Errors); an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
 | `(value-to-string v)` | The text the printer writes for `v`, combiners and contexts as they print (see Values): `(value-to-string (list 1.0 "a"))` is `"(1.0 \"a\")"`, and a float's text reads back as the same float. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
 
 | Combiner | Meaning |
 |---|---|
-| `(define! parameters expression)` | Evaluates `expression` and matches `parameters` to it in the current context (4.9.1). Returns `#inert`. |
+| `(define! parameters expression)` | Evaluates `expression` and matches `parameters` to it in the current context (4.9.1), Kernel's `$define!` and Scheme's internal `define`. Returns `#inert`. Inside a body that context is the call's own, so `define!` there makes a local and never changes an outer binding; see below the table. |
 | `(quote! x)` | `x`, unevaluated. |
 | `(list x ...)` | The list of the arguments (5.2.1). |
 | `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. |
@@ -122,31 +125,67 @@ All are applicatives except `vau!`.
 | `(filter a list)` | The elements for which `a` gives `#true`, in order; `a` must give booleans. |
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
+| `(sort list before?)` | The elements in the order `before?` gives, a combiner of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.1 s. |
+| `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
+| `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.5). A binding that isn't `(parameters expression)` is an `arity-error`. |
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on unchanged, to a `catch!` or the host. After `out-of-memory` a cleanup stops at its first allocation that fails, so it may do nothing. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted` and `out-of-memory` are never caught. |
+| `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had, as `(raise e)` in a `catch!` passes it on. A `kind` that isn't a symbol is a `type-error`. |
 | `(error kind value ...)` | A new error: a context with no parent binding `kind`, `values` (the list of the values) and an empty `trace`. It raises nothing; `raise` does. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
 | `(greater-than? a b)`, `(less-than-or-equal? a b)`, `(greater-than-or-equal? a b)` | The rest of the comparisons, as Rust's `>`, `<=`, `>=` (12.5.1). |
 | `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two integers or two floats (12.5.13). |
+| `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.7, 12.5.11). |
 | `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
-| `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. |
+| `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. It is `lookup` with a value no program holds as `otherwise`, so a `type-error` names `lookup`. |
 | `(symbol-to-string s)` | A symbol's name. |
 | `(float-to-string f)` | A float's printed text, which reads back as the same float: `(float-to-string 1.0)` is `"1.0"`. Anything else is a `type-error`. |
 | `(string-search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. A `start` out of range or off a character boundary is a `range-error`. |
 | `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)` | Whether `s` starts or ends with those bytes. |
 | `(string-split text separator)`, `(string-join strings separator)` | The parts of `text` between the separators, empty ones too, so `(string-split "a,,b" ",")` is `("a" "" "b")` and `(string-split "" ",")` is `("")`; an empty separator is a `range-error`. The strings with the separator between them. `string-join` undoes `string-split`. |
 | `(string-trim s)` | `s` without the ASCII whitespace at either end (space, tab, newline, form feed, return), as Rust's `trim_ascii`. |
-| `(string-pad-left s width)`, `(string-pad-right s width)` | `s` with spaces before it, after it, up to `width` bytes; `s` itself if it is that long already. |
+| `(string-less-than? a b)` | Whether `a` comes before `b` in byte order, as Rust's `<` on `str`: at the first byte where they differ, or the shorter first when one starts the other. |
+| `(string-repeat s count)` | `s` `count` times, as Rust's `str::repeat`; a count below 0 is a `range-error`. |
+| `(string-pad-left s width fill)`, `(string-pad-right s width fill)` | `s` with copies of `fill`, a string of one byte, before it, after it, up to `width` bytes; `s` itself if it is that long already: `(string-pad-left "7" 2 "0")` is `"07"`. A `fill` of any other length is a `range-error`. |
 | `(string-to-lowercase s)` | `s` with `A` to `Z` made `a` to `z` and every other byte as it is, as Rust's `to_ascii_lowercase`. |
 | `built-in-names` | The list of every name above and every primitive's, bound when the library is loaded. |
 
 Programs run in the **top-level context**, a child of the **built-in context**, which is out of
 reach. Defining a name at top level shadows the library's binding without changing what the library
 itself uses.
+
+**`define!` in a body makes a local.** A call evaluates its body in a new child of the context the
+combiner was made in, and `define!` binds in the context it is evaluated in, so inside a body it
+binds in the call's context, never in an outer one, and says nothing when the name is bound
+outside too. There is no `set!`: changing an outer binding means holding its context and binding
+there, as VISION "State" has it.
+
+```lisp
+(define! counter 0)
+(define! bump-wrong! (lambda! () (define! counter (add counter 1))))   ; a local, gone after the call
+(bump-wrong!)
+counter                                                               ; => 0
+(define! here (current-context))
+(define! bump! (lambda! () (bind here (quote! counter) (add counter 1))))
+(bump!)
+counter                                                               ; => 1
+```
+
+**Dispatch.** A context of combiners, looked up by a symbol, is the fast dispatch:
+`((evaluate (quote! add) operations) x)` or `((lookup operations name default) x)` costs one
+lookup whatever the number of cases, where `conditional!` tests its clauses in order.
+
+**What the library forms cost.** `if!` is one library operative; the forms with a body walk their
+operands in grift, so in a loop run per byte or per node each costs a few `if!`s. Measured with the
+runner's `elapsed-nanoseconds` (release, one run, 200,000 calls; `crates/grift` at this version), on
+top of a loop of one `if!` and a call, 0.57 µs a turn: one more `if!` 0.48 µs, `sequence!` of two
+1.5 µs, `let!` of one binding 2.5 µs, `and!?` of two 2.2 µs, `catch!` with no error 2.0 µs,
+`conditional!` of three clauses, the last true, 3.9 µs. Nested `if!`s are the cheapest branch; the
+others read better where speed doesn't matter.
 
 ## Errors
 
@@ -166,7 +205,7 @@ one starts, so it isn't listed. Cleanups (`finally!`) run on the way out.
 
 ```lisp
 (catch! (run (quote! a)) e (list (evaluate-in! kind e) (evaluate-in! values e)))   ; => (not-integer (a))
-(catch! (first 1) e (if! (same? (evaluate-in! kind e) (quote! type-error)) 0 (raise e)))   ; => 0
+(catch-kind! (first 1) type-error e 0)                                  ; => 0
 ```
 
 **What can be caught.** Errors about the program can: the primitives', the library's, a host
@@ -195,10 +234,17 @@ can't swallow C-g; an error in one of those cleanups doesn't replace them. Wheth
 | `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
-| `overflow` | integer arithmetic beyond 64 bits | the primitive and the operands |
+| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the primitive and the operands |
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
-| `range-error` | a string offset off a character boundary or out of range; a code point that isn't one; an empty separator given `string-split` | the primitive and the operands; or `string-split` and the separator |
-| `parse-error` | text that doesn't read: a program or `read-form`'s text (unfinished text fails at its end), or a string given `string-to-integer` or `string-to-float` | the line and the column, which counts characters from 1; or the primitive and the string |
+| `range-error` | a string offset off a character boundary or out of range; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative count or exponent; a fill that isn't one byte | the primitive and the operands; or the library combiner's name and the value; for a list index, the name, the index and the length |
+| `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1; or the primitive and the string |
+
+A text that doesn't read says why, as a symbol, and where: `unclosed-list` and `unclosed-string`
+at the `(` or `"` left open (the innermost, for lists), not at the end of the text;
+`unmatched-parenthesis` at a `)` with no `(`; `misplaced-dot` at a `.` or what follows it outside
+`(a . b)`; `bad-escape` at a `\` that isn't one of the escapes; `bad-number` at a token that starts
+as a number and isn't one; `unknown-constant` at a `#` name that isn't one. `(read-form "(a\n (b" 0)`
+is `parse-error unclosed-list 2 2`.
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `interrupted` | the host set its interrupt flag | none |
@@ -214,7 +260,8 @@ The runner adds its own operations, `standard-error` among them, and its own kin
 - **One special primitive.** `if!`, `define!` and `sequence!` are primitive in Kernel; here they
   are library code over `vau!`, `select`, `bind` and `evaluate`.
 - **`finally!`** is on `evaluate-with-cleanup` (not in Kernel), the exit half of Kernel's guards;
-  `binds?` is derived with `catch!` as R-1RK derives `$binds?` from its error continuation.
+  `binds?` is derived from `lookup`, a primitive Kernel doesn't have, where R-1RK derives `$binds?`
+  from its error continuation: a miss raised and caught an error, 5-14 µs a probe.
 - **Binary arithmetic and comparison.** `add`, `multiply`, `less-than?`, `minimum` and the rest
   take two operands; Kernel's take any number. The type predicates take one value.
 - **Strings are immutable,** and `same?` compares them by content, like integers. R-1RK has no
@@ -222,8 +269,9 @@ The runner adds its own operations, `standard-error` among them, and its own kin
   character type: a code point is an integer.
 - **`apply` has one form,** `(apply a arguments)`, with a new empty context; `for-each` takes one
   list, and `map` lists of one length, as Kernel's does. `context` takes at most one parent.
-- **New, not in Kernel:** `bind`, `names` and `built-in-names`, `select`, `type-of`, `when!`, `error`,
-  `raise`, `reverse`, `read-form`, `value-to-string`, `any?`, `all?`, `filter`, `fold`, `range`, and
-  the string and float primitives and helpers.
+- **New, not in Kernel:** `bind`, `unbind`, `lookup`, `names` and `built-in-names`, `select`,
+  `type-of`, `when!`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`,
+  `any?`, `all?`, `filter`, `fold`, `range`, `sort`, the list access by index, the bitwise
+  operations, and the string and float primitives and helpers.
 - **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as
   written. It is looked up where the body runs, like any other name in it.
