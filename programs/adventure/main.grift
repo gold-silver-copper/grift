@@ -66,8 +66,8 @@
     (define! read-after
       (lambda! (offset line)
         (catch! (read-form text offset) e
-          (if! (same? (field kind e) (quote! parse-error))
-            (let! (((at column) (field values e)))
+          (if! (same? (field! kind e) (quote! parse-error))
+            (let! (((at column) (field! values e)))
               (if! (same? at (length (string-split text "\n")))
                 (never-closed offset line)
                 (mistake-at source at "this doesn't read, at column " column)))
@@ -101,7 +101,7 @@
     (let! ((c (context)))
       (bind c fields values)
       c)))
-(define! field (vau! (name r) caller (evaluate name (evaluate r caller))))
+(define! field! (vau! (name r) caller (evaluate name (evaluate r caller))))
 
 ; ---------------------------------------------------------------------------------------------
 ; The world-building language. Each form records what it defines, with the file and line it
@@ -123,7 +123,7 @@
 
 ; Where the form being loaded is, as text: "world.grift:12".
 (define! where-now
-  (lambda! () (message (field source loading) ":" (field line loading))))
+  (lambda! () (message (field! source loading) ":" (field! line loading))))
 
 ; A mistake in a world form, found while loading it.
 (define! world-error
@@ -169,7 +169,7 @@
   (lambda! (what t name)
     (when! (not? (symbol? name)) (world-error what " needs a name, not " name))
     (when! (in-table? t name)
-      (world-error what " " name " is defined twice; the first is at " (field where (look-up t name))))))
+      (world-error what " " name " is defined twice; the first is at " (field! where (look-up t name))))))
 
 (define! put
   (lambda! (thing place)
@@ -317,9 +317,9 @@
         (define! p (look-up places name))
         (for-each (lambda! ((direction to))
                     (when! (not? (in-table? places to))
-                      (problem (field where p) ": place " name ": the exit " direction " leads to "
+                      (problem (field! where p) ": place " name ": the exit " direction " leads to "
                                to ", which is not a place")))
-                  (field exits p)))
+                  (field! exits p)))
       (names places))
     (for-each
       (lambda! (thing)
@@ -344,15 +344,15 @@
         (define! d (look-up doors name))
         (for-each (lambda! ((place direction))
                     (if! (not? (in-table? places place))
-                      (problem (field where d) ": the door " name " is in " place
+                      (problem (field! where d) ": the door " name " is in " place
                                ", which is not a place")
-                      (when! (not? (pair? (find-association direction (field exits (look-up places place)))))
-                        (problem (field where d) ": the door " name " closes the exit " direction
+                      (when! (not? (pair? (find-association direction (field! exits (look-up places place)))))
+                        (problem (field! where d) ": the door " name " closes the exit " direction
                                  " of " place ", which has no such exit"))))
-                  (field sides d))
-        (when! (not? (and!? (in-table? things (field key d))
-                            (not? (in-table? doors (field key d)))))
-          (problem (field where d) ": the door " name " is unlocked by " (field key d)
+                  (field! sides d))
+        (when! (not? (and!? (in-table? things (field! key d))
+                            (not? (in-table? doors (field! key d)))))
+          (problem (field! where d) ": the door " name " is unlocked by " (field! key d)
                    ", which is not an item")))
       (names doors))
     (for-each
@@ -376,17 +376,17 @@
 (define! flags (table))
 (define! unlocked (table))
 
-(define! location (lambda! () (field location game)))
+(define! location (lambda! () (field! location game)))
 (define! where-is (lambda! (thing) (if! (in-table? where thing) (look-up where thing) (quote! nowhere))))
 (define! carried? (lambda! (thing) (same? (where-is thing) (quote! carried))))
 (define! door-here?
   (lambda! (door)
     (and!? (in-table? doors door)
            (any? (lambda! (side) (same? (first side) (location)))
-                 (field sides (look-up doors door))))))
+                 (field! sides (look-up doors door))))))
 (define! present? (lambda! (thing) (or!? (carried? thing) (same? (where-is thing) (location)) (door-here? thing))))
 (define! things-in (lambda! (place) (filter (lambda! (t) (same? (where-is t) place)) (names where))))
-(define! called (lambda! (thing) (field called (look-up things thing))))
+(define! called (lambda! (thing) (field! called (look-up things thing))))
 
 (define! start-game
   (lambda! ()
@@ -399,14 +399,14 @@
 (define! flagged!? (vau! (name) #ignore (in-table? flags name)))
 (define! carrying!? (vau! (thing) #ignore (carried? thing)))
 (define! move! (vau! (thing place) #ignore (enter where thing place)))
-(define! finish! (lambda! texts (apply say texts) (bind game (quote! finished) #true)))
+(define! finish (lambda! texts (apply say texts) (bind game (quote! finished) #true)))
 
 ; ---------------------------------------------------------------------------------------------
 ; Saving and loading.
 
 (define! saved-state
   (lambda! ()
-    (append (list (list (quote! at) (location)) (list (quote! moves) (field moves game)))
+    (append (list (list (quote! at) (location)) (list (quote! moves) (field! moves game)))
             (map (lambda! (t) (list (quote! thing) t (where-is t))) (names where))
             (map (lambda! (f) (list (quote! flag) f)) (names flags))
             (map (lambda! (d) (list (quote! unlocked) d)) (names unlocked)))))
@@ -511,15 +511,15 @@
       (when! (not? (in-table? verbs verb-word))
         (not-understood "I don't know the verb \"" verb-word "\". Type help for the verbs I know."))
       (define! verb (look-up verbs verb-word))
-      (bind game (quote! moves) (add (field moves game) 1))
-      (if! (field text? verb)
-        ((field handler verb) (string-join (rest typed) " "))
+      (bind game (quote! moves) (add (field! moves game) 1))
+      (if! (field! text? verb)
+        ((field! handler verb) (string-join (rest typed) " "))
         (sequence!
           (define! words (filter (lambda! (w) (not? (member? w articles)))
                                  (map (lambda! (w) (string-to-symbol (string-to-lowercase w))) (rest typed))))
           (define! (before preposition after) (split-at-preposition words ()))
           (when! (and!? (not? (empty-list? preposition)) (empty-list? after))
-            (not-understood (field name verb) " the " (string-join (map symbol-to-string before) " ")
+            (not-understood (field! name verb) " the " (string-join (map symbol-to-string before) " ")
                             " " preposition " what?"))
           (define! object (thing-named before))
           (define! other (thing-named after))
@@ -529,10 +529,10 @@
                       (when! (and!? (in-table? things thing) (not? (present? thing)))
                         (not-understood "You don't see " (called thing) " here.")))
                     (list object other))
-          (define! key (rule-key (filter symbol? (list (field name verb) object other))))
+          (define! key (rule-key (filter symbol? (list (field! name verb) object other))))
           (if! (in-table? rules key)
             ((first (rest (look-up rules key))))
-            ((field handler verb) object preposition other)))))))
+            ((field! handler verb) object preposition other)))))))
 
 ; ---------------------------------------------------------------------------------------------
 ; The standard verbs, written in the world-building language. A world may replace any of them.
@@ -540,22 +540,22 @@
 (define! describe-place
   (lambda! ()
     (define! p (look-up places (location)))
-    (say (field title p))
-    (say (field description p))
+    (say (field! title p))
+    (say (field! description p))
     (define! seen (append (filter door-here? (names doors)) (things-in (location))))
     (when! (pair? seen) (say "You see " (string-join (map called seen) ", ") "."))
-    (say "Exits: " (string-join (map (lambda! (e) (symbol-to-string (first e))) (field exits p)) ", ") ".")))
+    (say "Exits: " (string-join (map (lambda! (e) (symbol-to-string (first e))) (field! exits p)) ", ") ".")))
 
 (define! door-closing
   (lambda! (direction)
     (filter (lambda! (d)
               (and!? (not? (in-table? unlocked d))
-                     (member? (list (location) direction) (field sides (look-up doors d)))))
+                     (member? (list (location) direction) (field! sides (look-up doors d)))))
             (names doors))))
 
 (define! go
   (lambda! (direction)
-    (define! exit (find-association direction (field exits (look-up places (location)))))
+    (define! exit (find-association direction (field! exits (look-up places (location)))))
     (conditional!
       ((not? (pair? exit)) (say "You can't go " direction " from here."))
       ((pair? (door-closing direction))
@@ -573,9 +573,9 @@
 (verb! (look l) (object #ignore #ignore)
   (if! (empty-list? object)
     (describe-place)
-    (say (field description (look-up things (need-thing "look at" object))))))
+    (say (field! description (look-up things (need-thing "look at" object))))))
 (verb! (examine x read) (object #ignore #ignore)
-  (say (field description (look-up things (need-thing "examine" object))))
+  (say (field! description (look-up things (need-thing "examine" object))))
   (when! (in-table? doors object)
     (say (if! (in-table? unlocked object) "It is unlocked." "It is locked."))))
 (verb! (go walk) (direction #ignore #ignore)
@@ -589,7 +589,7 @@
   (need-thing "take" object)
   (conditional!
     ((carried? object) (say "You already have " (called object) "."))
-    ((or!? (field fixed? (look-up things object)) (field door? (look-up things object)))
+    ((or!? (field! fixed? (look-up things object)) (field! door? (look-up things object)))
      (say "You can't take " (called object) "."))
     (#true (enter where object (quote! carried)) (say "Taken: " (called object) "."))))
 (verb! (drop) (object #ignore #ignore)
@@ -609,7 +609,7 @@
     ((in-table? unlocked door) (say (called door) " is already unlocked."))
     ((empty-list? key) (not-understood "Unlock " (called door) " with what?"))
     ((not? (carried? (need-thing "use" key))) (say "You aren't carrying " (called key) "."))
-    ((not? (same? key (field key (look-up doors door))))
+    ((not? (same? key (field! key (look-up doors door))))
      (say (called key) " doesn't fit " (called door) "."))
     (#true (enter unlocked door #true) (say "You unlock " (called door) " with " (called key) "."))))
 (verb! (use put) (object preposition other)
@@ -619,21 +619,21 @@
 (command! (save) (text)
   (define! path (if! (same? text "") "adventure.sav" text))
   (catch! (save-game path) e
-    (if! (same? (field kind e) (quote! file-error))
-      (say "Can't save to " path ": " (first (rest (field values e))))
+    (if! (same? (field! kind e) (quote! file-error))
+      (say "Can't save to " path ": " (first (rest (field! values e))))
       (raise e))))
 (command! (load restore) (text)
   (define! path (if! (same? text "") "adventure.sav" text))
   (catch! (load-game path) e
     (conditional!
-      ((same? (field kind e) (quote! file-error)) (say "Can't load " path ": " (first (rest (field values e)))))
-      ((same? (field kind e) (quote! world-error)) (say "Can't load " path ": " (first (field values e))))
+      ((same? (field! kind e) (quote! file-error)) (say "Can't load " path ": " (first (rest (field! values e)))))
+      ((same? (field! kind e) (quote! world-error)) (say "Can't load " path ": " (first (field! values e))))
       (#true (raise e)))))
 (command! (help) #ignore
   (say "Verbs: " (string-join (map symbol-to-string verb-names) ", ") ".")
   (say "Say verb, verb thing, or verb thing preposition thing: unlock the door with the key."))
 (command! (quit) #ignore
-  (say "You stop here, after " (field moves game) " moves.")
+  (say "You stop here, after " (field! moves game) " moves.")
   (exit 0))
 
 ; ---------------------------------------------------------------------------------------------
@@ -659,8 +659,8 @@
     (#true "programs/adventure/world.grift")))
 
 (catch! (load-world world-file) e
-  (if! (same? (field kind e) (quote! world-error))
-    (sequence! (display (first (field values e))) (display "\n") (exit 1))
+  (if! (same? (field! kind e) (quote! world-error))
+    (sequence! (display (first (field! values e))) (display "\n") (exit 1))
     (raise e)))
 (define! problems (check-world))
 (when! (pair? problems)
@@ -674,15 +674,15 @@
     (display "> ")
     (define! line (read-line))
     (if! (same? line "")
-      (sequence! (display "\n") (say "The input ends; you stop here, after " (field moves game) " moves."))
+      (sequence! (display "\n") (say "The input ends; you stop here, after " (field! moves game) " moves."))
       (sequence!
         (when! echo? (display (string-trim line)) (display "\n"))
         (catch! (perform (string-trim line)) e
-          (if! (same? (field kind e) (quote! not-understood))
-            (say (first (field values e)))
+          (if! (same? (field! kind e) (quote! not-understood))
+            (say (first (field! values e)))
             (raise e)))
-        (if! (field finished game)
-          (say "*** The end, in " (field moves game) " moves. ***")
+        (if! (field! finished game)
+          (say "*** The end, in " (field! moves game) " moves. ***")
           (play))))))
 (start-game)
 (describe-place)

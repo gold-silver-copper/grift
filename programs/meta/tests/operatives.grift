@@ -1,6 +1,6 @@
 ; An operative sees its operands unevaluated and the caller's context, as grift's do.
-(define! operands-of (vau! operands #ignore operands))
-(display "operands: " (operands-of (add 1 2) x "s")) (display "\n")
+(define! operands-of! (vau! operands #ignore operands))
+(display "operands: " (operands-of! (add 1 2) x "s")) (display "\n")
 
 ; It evaluates them where the caller is: here, inside a function with its own x.
 (define! twice! (vau! (form) caller (list (evaluate form caller) (evaluate form caller))))

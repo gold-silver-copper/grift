@@ -57,17 +57,7 @@
 ; How many characters a string has: string-byte-length counts bytes.
 (define! code-point-count (lambda! (s) (length (string-to-code-points s))))
 
-(define! string-join
-  (lambda! (strings separator)
-    (if! (empty-list? strings)
-      ""
-      (apply string-append
-        (pair (first strings)
-              (apply append (map (lambda! (s) (list separator s)) (rest strings))))))))
-
-; (split-code-points code-points c): the runs of code points between each c, as lists. It
-; runs once for each character of a file opened, so it uses if!: conditional! was 2.8 times
-; slower here.
+; (split-code-points code-points c): the runs of code points between each c, as lists.
 (define! split-code-points
   (lambda! (code-points c)
     (define! loop

@@ -24,8 +24,8 @@ done
 # The repo's 30-line script, unchanged: stdout and exit status as grift gives them.
 printf 'one two three\nfour five\n' > "$T/in.txt"
 check "count-words matches grift" \
-    "$($M crates/grift-cli/tests/count-words.grift "$T/r" < "$T/in.txt" 2>&1 | sed "s|$T/r|R|"; echo "exit $?")" \
-    "$($G crates/grift-cli/tests/count-words.grift "$T/r" < "$T/in.txt" 2>&1 | sed "s|$T/r|R|"; echo "exit $?")"
+    "$($M crates/grift-cli/tests/count-words.grift "$T/r" < "$T/in.txt" 2>&1 | sed "s|$T/r|R|"; echo "exit ${PIPESTATUS[0]}")" \
+    "$($G crates/grift-cli/tests/count-words.grift "$T/r" < "$T/in.txt" 2>&1 | sed "s|$T/r|R|"; echo "exit ${PIPESTATUS[0]}")"
 
 # meta running itself: the interpreted interpreter runs a program and reports an error.
 check "meta on meta" "$($M programs/meta/main.grift programs/meta/tests/square.grift 2>&1)" "meta on meta: 144"

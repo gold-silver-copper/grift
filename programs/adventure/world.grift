@@ -123,7 +123,7 @@
        (say "You fit the crank and heave. The seized gears don't move, and the crank slips out. Something about oil, the logbook said."))
       (#true
        (move! crank nowhere)
-       (finish! "You fit the crank and lean on it. The gears groan, catch, and turn; the chain runs, and the great bell swings out over the marsh. BOOM. BOOM. Far out on the water, the ferry turns for home.")))))
+       (finish "You fit the crank and lean on it. The gears groan, catch, and turn; the chain runs, and the great bell swings out over the marsh. BOOM. BOOM. Far out on the water, the ferry turns for home.")))))
 
 (on! (use oil-can winch) (oil-the-winch))
 (on! (oil winch oil-can) (oil-the-winch))

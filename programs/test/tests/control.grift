@@ -60,11 +60,11 @@
 
 (group! "lambda! and vau!"
   (test! "an operative sees its operands and the caller's context"
-    (define! operands (vau! xs #ignore xs))
-    (expect-equal! (operands (add 1 1) b) (quote! ((add 1 1) b)))
-    (define! here (vau! () caller caller))
+    (define! operands! (vau! xs #ignore xs))
+    (expect-equal! (operands! (add 1 1) b) (quote! ((add 1 1) b)))
+    (define! here! (vau! () caller caller))
     (define! marker 7)
-    (expect-equal! (evaluate-in! marker (here)) 7))
+    (expect-equal! (evaluate-in! marker (here!)) 7))
   (test! "a symbol twice is a parameter-error"
     (expect-error! parameter-error (vau! (a a) #ignore a))
     (expect-error! parameter-error (vau! (a) a a)))
@@ -72,10 +72,10 @@
     (expect-error! arity-error ((lambda! (a) a)))
     (expect-error! arity-error ((lambda! (a) a) 1 2)))
   (test! "wrap and unwrap undo each other"
-    (define! operative (vau! xs #ignore xs))
-    (expect-same! (unwrap (wrap operative)) operative)
-    (expect-true! (applicative? (wrap operative)))
-    (expect-error! type-error (unwrap operative))))
+    (define! operative! (vau! xs #ignore xs))
+    (expect-same! (unwrap (wrap operative!)) operative!)
+    (expect-true! (applicative? (wrap operative!)))
+    (expect-error! type-error (unwrap operative!))))
 
 (group! "tail calls"
   (test! "a long loop through if!, when!, conditional! and let! runs in constant space"

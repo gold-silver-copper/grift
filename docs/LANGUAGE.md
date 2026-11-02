@@ -190,8 +190,8 @@ can't swallow C-g; an error in one of those cleanups doesn't replace them. Wheth
 | Kind | When | Values |
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
-| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; a primitive's improper operand list | the primitive and the value |
-| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, which is how a library form refuses operands that aren't its shape | the primitive and the operands; or the parameters and the value |
+| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative | the primitive and the value |
+| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
 | `overflow` | integer arithmetic beyond 64 bits | the primitive and the operands |
