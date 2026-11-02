@@ -46,18 +46,22 @@
 ; The point one deletion right of `point`, or () if no old line is left.
 (define! delete-from
   (lambda! (point)
-    (if! (or!? (empty-list? point) (empty-list? (first (rest (rest point)))))
+    (if! (empty-list? point)
       ()
       (let! (((x y old new script) point))
-        (list (add x 1) y (rest old) new (pair (pair (quote! delete) (first old)) script))))))
+        (if! (empty-list? old)
+          ()
+          (list (add x 1) y (rest old) new (pair (pair (quote! delete) (first old)) script)))))))
 
 ; The point one insertion down from `point`, or () if no new line is left.
 (define! insert-from
   (lambda! (point)
-    (if! (or!? (empty-list? point) (empty-list? (first (rest (rest (rest point))))))
+    (if! (empty-list? point)
       ()
       (let! (((x y old new script) point))
-        (list x (add y 1) old (rest new) (pair (pair (quote! insert) (first new)) script))))))
+        (if! (empty-list? new)
+          ()
+          (list x (add y 1) old (rest new) (pair (pair (quote! insert) (first new)) script)))))))
 
 ; Of two points on one diagonal, the one further along it, preferring the insertion on a tie.
 (define! further
@@ -71,8 +75,8 @@
 (define! finished?
   (lambda! (point)
     (and!? (pair? point)
-           (empty-list? (first (rest (rest point))))
-           (empty-list? (first (rest (rest (rest point))))))))
+           (let! (((#ignore #ignore old new #ignore) point))
+             (and!? (empty-list? old) (empty-list? new))))))
 
 ; The first finished point of `points`, or ().
 (define! finished-point
@@ -89,7 +93,7 @@
              (lambda! (frontier)
                (let! ((done (finished-point frontier)))
                  (if! (pair? done)
-                   (reverse (first (rest (rest (rest (rest done))))))
+                   (reverse (last done))
                    ; Diagonal k of the next frontier is reached by a deletion from diagonal k - 1
                    ; or an insertion from k + 1: neighbours in this frontier, padded with () at
                    ; both ends.
@@ -131,20 +135,6 @@
                  (#true (walk (rest edits) (list (first edits)) (pair (reverse run) done)))))))
       (walk edits () ()))))
 
-; The first `n` elements of `xs`, or all of them if it is shorter.
-(define! take
-  (lambda! (xs n)
-    (if! (or!? (same? n 0) (empty-list? xs))
-      ()
-      (pair (first xs) (take (rest xs) (subtract n 1))))))
-
-; `xs` without its first `n` elements.
-(define! drop
-  (lambda! (xs n)
-    (if! (or!? (same? n 0) (empty-list? xs))
-      xs
-      (drop (rest xs) (subtract n 1)))))
-
 ; The last `n` elements of `xs`.
 (define! take-last
   (lambda! (xs n) (drop xs (maximum 0 (subtract (length xs) n)))))
@@ -170,7 +160,9 @@
                   (walk (rest runs) () (append (reverse (first runs)) hunk) done))
                  (#true
                   (walk (rest runs) (first runs) ()
-                        (pair (append (reverse hunk) (take (first runs) context-size)) done)))))))
+                        (pair (append (reverse hunk)
+                                      (take (first runs) (minimum context-size (length (first runs)))))
+                              done)))))))
       (walk runs () () ()))))
 
 ; ---- Printing
@@ -200,7 +192,7 @@
     (let! ((sign (lambda! (edit) (conditional! ((keep? edit) " ")
                                                ((same? (first edit) (quote! delete)) "-")
                                                (#true "+"))))
-           (text (lambda! (edit) (line-text (sign edit) (first (rest edit)))))
+           (text (lambda! (edit) (line-text (sign edit) (second edit))))
            (kind? (lambda! (kind) (lambda! (edit) (same? (first edit) kind)))))
       (fold (lambda! (lines run)
               (append lines
@@ -224,7 +216,7 @@
 
 (define! fail
   (lambda! (message)
-    ((evaluate-in! write standard-error) (string-append "diff: " message "\n"))
+    (display-error "diff: " message "\n")
     (exit 2)))
 
 ; The lines of the file at `path`; a file that can't be read ends the run with status 2.
@@ -234,7 +226,7 @@
             e
             (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
               (conditional!
-                ((same? kind (quote! file-error)) (fail (string-append path ": " (first (rest values)))))
+                ((same? kind (quote! file-error)) (fail (string-append path ": " (second values))))
                 ((same? kind (quote! encoding-error)) (fail (string-append path ": not UTF-8 text")))
                 (#true (raise e)))))))
 

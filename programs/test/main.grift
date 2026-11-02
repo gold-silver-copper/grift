@@ -60,13 +60,10 @@
 (define! say (lambda! strings (apply display strings) (display "\n")))
 (define! say-indented (lambda! (line) (say "     " line)))
 
-(define! say-error
-  (lambda! strings ((evaluate-in! write standard-error) (apply string-append strings))))
-
 (define! usage-error
   (lambda! (message)
-    (say-error "main.grift: " message "\n"
-               "usage: main.grift [--list] [--name TEXT]... FILE...\n")
+    (display-error "main.grift: " message "\n"
+                   "usage: main.grift [--list] [--name TEXT]... FILE...\n")
     (exit 2)))
 
 ; Evaluates form and catches what it raises: (#true value) or (#false error).
@@ -76,7 +73,7 @@
 
 ; A failure is a list of lines like "expected:   3".
 (define! field
-  (lambda! (label text) (string-append (string-pad-right (string-append label ":") 12) text)))
+  (lambda! (label text) (string-append (string-pad-right (string-append label ":") 12 " ") text)))
 
 ; An error's kind and values on a line. Its trace on lines of their own, without what this program
 ; added: a trace lists this program's combinations as it does a test's. The kinds this program
@@ -101,7 +98,7 @@
   (quote! ((evaluate form where)
            (list #true (evaluate form where))
            (evaluate-one form where)
-           (load-text path (read-file path) where evaluate-one))))
+           (load-text path (file-text path) where evaluate-one))))
 
 (define! inside-boundaries
   (lambda! (trace)
@@ -266,11 +263,9 @@
       (bind top (quote! group-names) before))))
 
 ; The file's text. An error here has no trace, so the failure doesn't list the runner's own forms.
-(define! read-file
+(define! file-text
   (lambda! (path)
-    (catch! (let! ((file (open-file path)))
-              (finally! ((evaluate-in! read-all file))
-                ((evaluate-in! close file))))
+    (catch! (read-file path)
             e
             (raise (apply error (pair (evaluate-in! kind e) (evaluate-in! values e)))))))
 
@@ -300,7 +295,7 @@
 
 (define! load-file
   (lambda! (path where evaluate-one)
-    (load-text path (read-file path) where evaluate-one)))
+    (load-text path (file-text path) where evaluate-one)))
 
 ; A relative path starts at the directory of the file that names it.
 (define! path-from
@@ -315,13 +310,18 @@
     (load-file (path-from current-file (evaluate path caller)) caller evaluate)))
 
 ; A test file's forms each run alone; load!'s stop at the first that raises, as any program would.
-; A file that can't be read or stops reading is a failure of the file too.
+; A file that can't be read or stops reading is a failure of the file too; one that doesn't read
+; names the line of the place the reader gives: the ( or " left open, or what it couldn't read.
 (define! load-test-file
   (lambda! (path)
     (catch! (load-file path (context language) evaluate-form)
             e
             (bind top (quote! load-failures) (add load-failures 1))
-            (say path "  when loading ... FAIL")
+            (say path
+                 (if! (same? (evaluate-in! kind e) (quote! parse-error))
+                   (string-append ":" (integer-to-string (second (evaluate-in! values e))))
+                   "")
+                 "  when loading ... FAIL")
             (say-indented (field "actual" (string-append "raised " (error-text e)))))))
 
 ; A name is selected if it holds any --name text, or there are none.

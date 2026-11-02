@@ -23,7 +23,6 @@
 
 (define! remove (lambda! (x xs) (filter (lambda! (y) (not? (equal? x y))) xs)))
 (define! adjoin (lambda! (x xs) (if! (member? x xs) xs (pair x xs))))
-(define! look-up (lambda! (c s default) (if! (binds? c s) (evaluate s c) default)))
 
 ; Strings.
 ; Written with same? rather than (member? b (list 32 9 10 13)), which costs 27 µs a call.
@@ -50,9 +49,12 @@
   (lambda! (text)
     (let! ((fail (lambda! (message i) (raise (error (quote! formula-error) message text i))))
            (read-at (lambda! (i)
-                      (catch! (read-form text i)
-                              e
-                              (fail "does not read" (subtract (first (rest (evaluate-in! values e))) 1)))))
+                      (catch-kind! (read-form text i)
+                                   parse-error
+                                   e
+                                   (let! (((reason #ignore column) (evaluate-in! values e)))
+                                     (fail (string-append "does not read: " (symbol-to-string reason))
+                                           (subtract column 1))))))
            (found (read-at 0)))
       (when! (same? found ()) (fail "no formula" 0))
       (let! (((form #ignore end) found))
@@ -109,13 +111,13 @@
 ; ---------------------------------------------------------------------------------------------
 ; The sheet. `cells` maps a cell name to its record, a context binding source (the formula's
 ; text), expression, references, reads, failed (a boolean) and value (the value, or the error
-; when failed). An empty cell is unbound or bound to (): a context can't lose a binding.
+; when failed). An empty cell is unbound.
 ; `dependents` is the graph's other direction: a cell name to the cells that read it.
 
 (define! cells (context))
 (define! dependents (context))
-(define! cell-record (lambda! (name) (look-up cells name ())))
-(define! cell-names (lambda! () (filter (lambda! (n) (not? (same? (cell-record n) ()))) (names cells))))
+(define! cell-record (lambda! (name) (lookup cells name ())))
+(define! cell-names (lambda! () (names cells)))
 
 ; Formulas see the library as it was when the program started, the range functions, and the
 ; sheet's own functions; not this program's definitions.
@@ -142,10 +144,10 @@
 
 (define! link
   (lambda! (name reads)
-    (for-each (lambda! (r) (bind dependents r (adjoin name (look-up dependents r ())))) reads)))
+    (for-each (lambda! (r) (bind dependents r (adjoin name (lookup dependents r ())))) reads)))
 (define! unlink
   (lambda! (name reads)
-    (for-each (lambda! (r) (bind dependents r (remove name (look-up dependents r ())))) reads)))
+    (for-each (lambda! (r) (bind dependents r (remove name (lookup dependents r ())))) reads)))
 
 ; A new record for a cell's formula text; a formula that doesn't read is a failed cell.
 (define! make-cell
@@ -192,7 +194,7 @@
                     (conditional! ((same? todo ()) #inert)
                                   ((binds? seen (first todo)) (visit #inert (rest todo)))
                                   (#true (visit (bind seen (first todo) #true)
-                                                (append (look-up dependents (first todo) ()) (rest todo))))))))
+                                                (append (lookup dependents (first todo) ()) (rest todo))))))))
       (visit #inert starts)
       (filter (lambda! (n) (not? (same? (cell-record n) ()))) (names seen)))))
 
@@ -210,8 +212,8 @@
            (visit (lambda! (order name path)
                     (conditional!
                       ((not? (binds? inside name)) order)
-                      ((same? (look-up state name ()) (quote! done)) order)
-                      ((same? (look-up state name ()) (quote! visiting))
+                      ((same? (lookup state name ()) (quote! done)) order)
+                      ((same? (lookup state name ()) (quote! visiting))
                        (let! ((cycle (reverse (cycle-of name path))))
                          (for-each (lambda! (c) (bind cycles c cycle)) cycle)
                          order))
@@ -235,7 +237,7 @@
     (let! ((old (cell-record name)))
       (when! (not? (same? old ())) (unlink name (evaluate-in! reads old)))
       (if! (same? source "")
-        (bind cells name ())
+        (unbind cells name)
         (let! ((cell (make-cell source)))
           (bind cells name cell)
           (link name (evaluate-in! reads cell))))
@@ -251,14 +253,14 @@
 ; ---------------------------------------------------------------------------------------------
 ; Showing values. A float shows two decimals.
 
-(define! two-digits (lambda! (n) (if! (less-than? n 10) (string-append "0" (integer-to-string n)) (integer-to-string n))))
+(define! two-digits (lambda! (n) (string-pad-left (integer-to-string n) 2 "0")))
 (define! float-text
   (lambda! (x)
     (conditional!
       ; A not-a-number fails this test too.
       ((not? (less-than-or-equal? (absolute-value x) 1e15)) (value-to-string x))
       (#true (let! ((hundredths (float-to-integer (round (multiply x 100.0))))
-                    (size (if! (less-than? hundredths 0) (subtract 0 hundredths) hundredths)))
+                    (size (absolute-value hundredths)))
                (string-append (if! (less-than? hundredths 0) "-" "")
                               (integer-to-string (divide size 100)) "." (two-digits (remainder size 100))))))))
 (define! value-text
@@ -288,14 +290,14 @@
                               (or!? (integer? (evaluate-in! value cell)) (float? (evaluate-in! value cell)))))))
            (widths (map (lambda! (column) (fold (lambda! (w row) (maximum w (string-byte-length (text-at column row)))) 1 rows)) columns))
            (label-width (string-byte-length (integer-to-string (length rows))))
-           (line (lambda! (label texts) (display (trim-end (string-append (string-pad-left label label-width) " " (string-join texts " "))) "\n"))))
-      (line "" (map (lambda! (column width) (string-pad-right (code-point-to-string (add 65 column)) width)) columns widths))
+           (line (lambda! (label texts) (display (trim-end (string-append (string-pad-left label label-width " ") " " (string-join texts " "))) "\n"))))
+      (line "" (map (lambda! (column width) (string-pad-right (code-point-to-string (add 65 column)) width " ")) columns widths))
       (for-each (lambda! (row)
                   (line (integer-to-string row)
                         (map (lambda! (column width)
                                (if! (right? column row)
-                                 (string-pad-left (text-at column row) width)
-                                 (string-pad-right (text-at column row) width)))
+                                 (string-pad-left (text-at column row) width " ")
+                                 (string-pad-right (text-at column row) width " ")))
                              columns widths)))
                 rows))))
 
@@ -315,8 +317,8 @@
 
 ; The lines of a file, each with its number: (number . line).
 (define! numbered-lines
-  (lambda! (file)
-    (let! ((lines (string-split (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))) "\n")))
+  (lambda! (path)
+    (let! ((lines (string-split (read-file path) "\n")))
       (map pair (range 1 (add 1 (length lines))) lines))))
 
 (define! load-sheet
@@ -338,7 +340,7 @@
                    (bind cells name cell)
                    (link name (evaluate-in! reads cell)))
                  (raise (error (quote! sheet-error) path number line "expected a cell name and a formula"))))))))
-      (numbered-lines (open-file path)))
+      (numbered-lines path))
     (recalculate (cell-names))))
 
 (define! save-sheet
@@ -406,8 +408,7 @@
 (catch! (load-sheet sheet-path)
         e
         (sequence!
-          ((evaluate-in! write standard-error)
-           (string-append "sheet-graph: " (symbol-to-string (evaluate-in! kind e)) " "
-                          (string-join (map value-text (evaluate-in! values e)) " ") "\n"))
+          (display-error "sheet-graph: " (evaluate-in! kind e) " "
+                         (string-join (map value-text (evaluate-in! values e)) " ") "\n")
           (exit 1)))
 (command-loop (evaluate-in! read-line standard-input))

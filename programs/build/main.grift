@@ -62,49 +62,36 @@
 ; Writes a message to stderr, its pieces as display would write them.
 (define! complain
   (lambda! pieces
-    ((evaluate-in! write standard-error)
-     (string-append "build: "
-                    (string-join (map (lambda! (v) (if! (string? v) v (value-to-string v))) pieces) "")
-                    "\n"))))
+    (apply display-error (pair "build: " (append pieces (list "\n"))))))
 
 ; ---------------------------------------------------------------------------------------------
 ; Reading: the forms of a text, each as (line . form), a form's line being where it starts.
 
 (define! read-forms
   (lambda! (text)
-    (let! (; Ending in a newline, the end of the text is alone on its line.
-           (text (string-append text "\n"))
-           (end (string-byte-length text))
-           ; The line of offset to, counting from offset from on line n.
+    (let! (; The line of offset to, counting from offset from on line n.
            (line-from
              (lambda! (from to n)
                (add n (subtract (length (string-split (byte-substring text from to) "\n")) 1))))
-           ; A form after offset i, on line n, never ends. read-form fails at the end of the text
-           ; and doesn't say where the form started: it is on the first line with more than space
-           ; or a comment.
-           (never-closed
-             (lambda! (i n)
-               (let! ((newline (string-search text "\n" i))
-                      (part (string-trim (byte-substring text i newline))))
-                 (if! (or!? (same? part "") (string-starts-with? part ";"))
-                   (never-closed (add newline 1) (add n 1))
-                   (fail-at n (if! (string-starts-with? part "\"") "a string" "a (")
-                            " that is never closed")))))
+           ; A ( or " never closed is told at the line where it opened.
            (read-after
-             (lambda! (i n)
-               (catch! (read-form text i)
-                       e
-                       (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                         (let! (((at column) (evaluate-in! values e)))
-                           (if! (same? at (line-from i end n))
-                             (never-closed i n)
-                             (fail-at at "text that doesn't read, at column "
-                                      (integer-to-string column))))
-                         (raise e)))))
+             (lambda! (i)
+               (catch-kind! (read-form text i)
+                            parse-error
+                            e
+                            (let! (((reason line column) (evaluate-in! values e)))
+                              (conditional!
+                                ((same? reason (quote! unclosed-list))
+                                 (fail-at line "a ( that is never closed"))
+                                ((same? reason (quote! unclosed-string))
+                                 (fail-at line "a string that is never closed"))
+                                (#true
+                                 (fail-at line "text that doesn't read, at column "
+                                          (integer-to-string column) ": " reason)))))))
            ; i is on line n; each form's line is counted on from the one before.
            (forms
              (lambda! (i n done)
-               (let! ((read (read-after i n)))
+               (let! ((read (read-after i)))
                  (if! (same? read ())
                    (reverse done)
                    (let! (((form start next) read)
@@ -218,19 +205,17 @@
                    (words (list elements) scope line))))
       ((same? kind (quote! default))
        (shape #false 2 "(default TARGET)")
-       (bind settings (quote! default) (one-word (first (rest entry)) scope line)))
+       (bind settings (quote! default) (one-word (second entry) scope line)))
       (#true
        (fail-at line "an entry is a list starting with variable, function, rule, rules or "
                 "default, not " entry)))))
 
 (define! load-build-file
   (lambda! ()
-    (let! ((file (catch! (open-file build-file)
-                         e
-                         (if! (same? (evaluate-in! kind e) (quote! file-error))
-                           (fail "no " build-file " here: " (first (rest (evaluate-in! values e))))
-                           (raise e))))
-           (text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file)))))
+    (let! ((text (catch-kind! (read-file build-file)
+                              file-error
+                              e
+                              (fail "no " build-file " here: " (second (evaluate-in! values e))))))
       (for-each load-entry (read-forms text)))))
 
 ; ---------------------------------------------------------------------------------------------
@@ -288,15 +273,14 @@
     (display (string-join (map shown command) " "))
     (display "\n")
     (when! (not? dry-run?)
-      (let! ((p (catch! (apply run-process command)
-                        e
-                        (if! (same? (evaluate-in! kind e) (quote! process-error))
-                          (fail "can't run " (first command) " for " target ": "
-                                (first (rest (evaluate-in! values e))))
-                          (raise e))))
+      (let! ((p (catch-kind! (apply run-process command)
+                             process-error
+                             e
+                             (fail "can't run " (first command) " for " target ": "
+                                   (second (evaluate-in! values e)))))
              (status (evaluate-in! status p)))
         (display (evaluate-in! output p))
-        ((evaluate-in! write standard-error) (evaluate-in! error-output p))
+        (display-error (evaluate-in! error-output p))
         (when! (not? (same? status 0))
           (if! (same? #inert status)
             (fail "the command for " target " was killed by a signal")

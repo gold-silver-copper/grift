@@ -40,19 +40,6 @@
                            (string-append (byte-substring "0123456789abcdef" digit (add digit 1)) done)))))))
       (digits n width ""))))
 
-; Writes the strings to standard error.
-(define! say
-  (lambda! parts ((evaluate-in! write standard-error) (apply string-append parts))))
-
-; Bitwise operations: grift has none. `f` combines two bits; stops when both numbers run out.
-(define! bitwise
-  (lambda! (f a b)
-    (if! (and!? (same? a 0) (same? b 0))
-      0
-      (add (f (remainder a 2) (remainder b 2))
-           (multiply 2 (bitwise f (divide a 2) (divide b 2)))))))
-(define! power-of-two
-  (lambda! (n) (if! (same? n 0) 1 (multiply 2 (power-of-two (subtract n 1))))))
 
 ; ---- The instruction set
 ;
@@ -112,10 +99,10 @@
                        (multiply 256 (read-byte (add address 3))))))))))
 (define! write-word
   (lambda! (address value)
-    (write-byte address (remainder value 256))
-    (write-byte (add address 1) (remainder (divide value 256) 256))
-    (write-byte (add address 2) (remainder (divide value 65536) 256))
-    (write-byte (add address 3) (divide value 16777216))))
+    (write-byte address (bitwise-and value 255))
+    (write-byte (add address 1) (bitwise-and (shift-right value 8) 255))
+    (write-byte (add address 2) (bitwise-and (shift-right value 16) 255))
+    (write-byte (add address 3) (shift-right value 24))))
 
 (define! register (lambda! (n) (evaluate (name-of n) registers)))
 ; Reading a register that doesn't exist fails by itself, but binding one would make it.
@@ -185,9 +172,7 @@
 (define! finish-character
   (lambda! (value byte)
     (when! (less-than? value (evaluate-in! smallest machine)) (not-text byte))
-    (catch! (display (code-point-to-string value))
-            e
-            (if! (same? (evaluate-in! kind e) (quote! range-error)) (not-text byte) (raise e)))))
+    (catch-kind! (display (code-point-to-string value)) range-error #ignore (not-text byte))))
 
 (instruction! halt () (#ignore #ignore #ignore #ignore) (raise (error (quote! halted))))
 (instruction! nop () (next #ignore #ignore #ignore) next)
@@ -219,21 +204,19 @@
   (set-register a (remainder (register b) (nonzero (register c))))
   next)
 (instruction! and (register register register) (next a b c)
-  (set-register a (bitwise multiply (register b) (register c)))
+  (set-register a (bitwise-and (register b) (register c)))
   next)
 (instruction! or (register register register) (next a b c)
-  (set-register a (bitwise maximum (register b) (register c)))
+  (set-register a (bitwise-or (register b) (register c)))
   next)
 (instruction! xor (register register register) (next a b c)
-  (set-register a (bitwise (lambda! (x y) (remainder (add x y) 2)) (register b) (register c)))
+  (set-register a (bitwise-exclusive-or (register b) (register c)))
   next)
 (instruction! shl (register register register) (next a b c)
-  (let! ((amount (remainder (register c) 32)))
-    (set-register a (multiply (remainder (register b) (power-of-two (subtract 32 amount)))
-                              (power-of-two amount))))
+  (set-register a (wrapped (shift-left (register b) (bitwise-and (register c) 31))))
   next)
 (instruction! shr (register register register) (next a b c)
-  (set-register a (divide (register b) (power-of-two (remainder (register c) 32))))
+  (set-register a (shift-right (register b) (bitwise-and (register c) 31)))
   next)
 (instruction! cmp (register register) (next a b #ignore)
   (bind machine (quote! left) (register a))
@@ -321,7 +304,7 @@
     (when! (not? (same? count (evaluate-in! traced machine)))
       (let! ((line (trace-line pc)))
         (bind machine (quote! traced) count)
-        (say line)))))
+        (display-error line)))))
 (define! register-name
   (lambda! (n) (if! (same? n 7) "sp" (string-append "r" (integer-to-string n)))))
 (define! trace-line
@@ -330,7 +313,7 @@
       (hexadecimal pc 4) "  "
       (string-pad-right
         (disassemble (read-byte pc) (read-byte (add pc 1)) (read-byte (add pc 2)) (read-byte (add pc 3)))
-        24)
+        24 " ")
       (string-join
         (map (lambda! (n) (string-append (register-name n) "=" (integer-to-string (register n))))
              (range 0 8))
@@ -417,14 +400,12 @@
 ; Runs the thunk for the line; an assembly-error becomes that line's error, and the value `otherwise`.
 (define! on-line
   (lambda! (number thunk otherwise)
-    (catch! (thunk)
-            e
-            (if! (same? (evaluate-in! kind e) (quote! assembly-error))
-              (sequence!
-                (when! (not? (binds? line-errors (name-of number)))
-                  (bind line-errors (name-of number) (first (evaluate-in! values e))))
-                otherwise)
-              (raise e)))))
+    (catch-kind! (thunk)
+                 assembly-error
+                 e
+                 (when! (not? (binds? line-errors (name-of number)))
+                   (bind line-errors (name-of number) (first (evaluate-in! values e))))
+                 otherwise)))
 
 (define! letter?
   (lambda! (byte)
@@ -564,12 +545,8 @@
 ; The string a double-quoted literal means, by grift's reader. A literal is checked to be one form.
 (define! read-string
   (lambda! (text)
-    (let! ((found (catch! (read-form text 0)
-                          e
-                          (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                            (problem "bad string " text)
-                            (raise e))))
-           ((value #ignore end) found))
+    (let! (((value #ignore end)
+            (catch-kind! (read-form text 0) parse-error #ignore (problem "bad string " text))))
       (if! (and!? (string? value) (same? end (string-byte-length text)))
         value
         (problem "expected a string in double quotes, got " text)))))
@@ -580,7 +557,7 @@
 (define! register-number
   (lambda! (text)
     (let! ((row (find-association text register-names)))
-      (if! (empty-list? row) () (first (rest row))))))
+      (if! (empty-list? row) () (second row)))))
 
 ; The line without its comment.
 (define! code-of
@@ -684,7 +661,7 @@
   (lambda! (value count)
     (if! (same? count 0)
       ()
-      (pair (remainder value 256) (bytes-of (divide value 256) (subtract count 1))))))
+      (pair (bitwise-and value 255) (bytes-of (shift-right value 8) (subtract count 1))))))
 (define! in-range
   (lambda! (value low high what text)
     (if! (or!? (less-than? value low) (less-than? high value))
@@ -696,7 +673,7 @@
 (define! encode-value
   (lambda! (text count low high what)
     (let! ((value (in-range (read-expression text) low high what text)))
-      (bytes-of (if! (less-than? value 0) (add value (power-of-two (multiply 8 count))) value) count))))
+      (bytes-of value count))))
 (define! encode-register
   (lambda! (text)
     (let! ((number (register-number text)))
@@ -779,29 +756,24 @@
         rows))))
 (define! read-source
   (lambda! (path)
-    (catch! (let! ((file (open-file path)) (text ((evaluate-in! read-all file))))
-              ((evaluate-in! close file))
-              text)
+    (catch! (read-file path)
             e
             (if! (member? (evaluate-in! kind e) (quote! (file-error encoding-error)))
               (sequence!
-                (say path ": " (last-of (evaluate-in! values e)) "\n")
+                (display-error path ": " (last (evaluate-in! values e)) "\n")
                 (exit 2))
               (raise e)))))
 ;   A file-error's values are the path and the system's message; an encoding-error's, the path alone.
-(define! last-of (lambda! (xs) (first (reverse xs))))
 (define! report-errors
   (lambda! (path lines)
     (let! ((numbers (range 1 (add (length lines) 1)))
            (found (filter (lambda! (number) (binds? line-errors (name-of number))) numbers)))
       (for-each
         (lambda! (number)
-          (say path ":" (integer-to-string number) ": " (evaluate (name-of number) line-errors) "\n"
-               "    " (string-trim (nth lines number)) "\n"))
+          (display-error path ":" number ": " (evaluate (name-of number) line-errors) "\n"
+                         "    " (string-trim (element-at lines (subtract number 1))) "\n"))
         found)
       (when! (not? (empty-list? found)) (exit 1)))))
-(define! nth
-  (lambda! (xs number) (if! (same? number 1) (first xs) (nth (rest xs) (subtract number 1)))))
 
 ; ---- Commands
 
@@ -816,14 +788,13 @@
 (define! list-row
   (lambda! ((address bytes #ignore source))
     (display (hexadecimal address 4) "  "
-             (string-pad-right (hexadecimal-bytes (first-bytes bytes 8)) 24)
+             (string-pad-right (hexadecimal-bytes (first-bytes bytes 8)) 24 " ")
              (if! (less-than? 8 (length bytes)) "..  " "    ")
              (string-trim source)
              "\n")))
 (define! list-name
   (lambda! (name)
-    (display (string-pad-right (symbol-to-string name) 16) " = "
-             (integer-to-string (evaluate name defined-names)) "\n")))
+    (display (string-pad-right (symbol-to-string name) 16 " ") " = " (evaluate name defined-names) "\n")))
 (define! assemble-command
   (lambda! (path)
     (for-each list-row (assemble path))
@@ -850,30 +821,28 @@
 (define! report-fault
   (lambda! (path message)
     (let! ((pc (evaluate-in! pc machine)) (name (name-of pc)))
-      (say path
-           (if! (binds? lines-of name)
-             (string-append ":" (integer-to-string (first (evaluate name lines-of))))
-             "")
-           ": machine fault at " (hexadecimal pc 4) ": " message "\n")
+      (display-error path
+                     (if! (binds? lines-of name)
+                       (string-append ":" (integer-to-string (first (evaluate name lines-of))))
+                       "")
+                     ": machine fault at " (hexadecimal pc 4) ": " message "\n")
       (exit 1))))
 (define! run-command
   (lambda! (path trace? count?)
     (load-rows (assemble path))
     (start-machine)
-    (catch! (sequence!
-              (run-machine (if! trace? traced-step step))
-              (when! (not? (same? (evaluate-in! left-to-come machine) 0))
-                (machine-fault "the program halted in the middle of a UTF-8 character")))
-            e
-            (if! (same? (evaluate-in! kind e) (quote! machine-fault))
-              (report-fault path (first (evaluate-in! values e)))
-              (raise e)))
-    (when! count?
-      (say (integer-to-string (add 1 (evaluate-in! count machine))) " instructions\n"))))
+    (catch-kind! (sequence!
+                   (run-machine (if! trace? traced-step step))
+                   (when! (not? (same? (evaluate-in! left-to-come machine) 0))
+                     (machine-fault "the program halted in the middle of a UTF-8 character")))
+                 machine-fault
+                 e
+                 (report-fault path (first (evaluate-in! values e))))
+    (when! count? (display-error (add 1 (evaluate-in! count machine)) " instructions\n"))))
 
 (define! usage
   (lambda! ()
-    (say "usage: main.grift assemble FILE.asm\n       main.grift run [--trace] [--count] FILE.asm\n")
+    (display-error "usage: main.grift assemble FILE.asm\n       main.grift run [--trace] [--count] FILE.asm\n")
     (exit 2)))
 (define! run-with-options
   (lambda! (arguments trace? count?)
@@ -888,7 +857,7 @@
     (conditional!
       ((empty-list? arguments) (usage))
       ((and!? (same? (first arguments) "assemble") (same? (length arguments) 2))
-       (assemble-command (first (rest arguments))))
+       (assemble-command (second arguments)))
       ((same? (first arguments) "run") (run-with-options (rest arguments) #false #false))
       (#true (usage)))))
 (main command-line-arguments)

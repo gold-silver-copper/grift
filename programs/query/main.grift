@@ -230,31 +230,6 @@
       ((and!? (number? a) (number? b)) (add (to-float a) (to-float b)))
       (#true (fail (quote! not-a-number) (if! (number? a) b a))))))
 
-; sort: the elements of xs in the order less? gives, keeping equal ones in order (a merge sort,
-; bottom up).
-(define! sort
-  ((lambda! ()
-     (define! merge
-       (lambda! (less? xs ys done)
-         (if! (same? xs ())
-           (append (reverse done) ys)
-           (if! (same? ys ())
-             (append (reverse done) xs)
-             (if! (less? (first ys) (first xs))
-               (merge less? xs (rest ys) (pair (first ys) done))
-               (merge less? (rest xs) ys (pair (first xs) done)))))))
-     (define! merge-pairs
-       (lambda! (less? runs)
-         (if! (or!? (same? runs ()) (same? (rest runs) ()))
-           runs
-           (pair (merge less? (first runs) (first (rest runs)) ())
-                 (merge-pairs less? (rest (rest runs)))))))
-     (define! merge-all
-       (lambda! (less? runs)
-         (if! (same? (rest runs) ()) (first runs) (merge-all less? (merge-pairs less? runs)))))
-     (lambda! (less? xs)
-       (if! (same? xs ()) () (merge-all less? (map list xs)))))))
-
 ; Checking a query before it runs: every symbol in an expression must be a column or a library
 ; name, outside (quote! ...).
 (define! check-column
@@ -268,8 +243,8 @@
       ((pair? x)
        (conditional!
          ((same? (first x) (quote! quote!)) #inert)
-         ((and!? (same? (first x) (quote! column)) (pair? (rest x)) (string? (first (rest x))))
-          (check-column (string-to-symbol (first (rest x))) columns))
+         ((and!? (same? (first x) (quote! column)) (pair? (rest x)) (string? (second x)))
+          (check-column (string-to-symbol (second x)) columns))
          (#true (check-expression (first x) columns) (check-expression (rest x) columns))))
       (#true #inert))))
 
@@ -278,10 +253,10 @@
   (lambda! (item)
     (if! (and!? (pair? item) (same? (first item) (quote! as)))
       (sequence!
-        (when! (not? (and!? (pair? (rest item)) (symbol? (first (rest item)))
+        (when! (not? (and!? (pair? (rest item)) (symbol? (second item))
                             (pair? (rest (rest item))) (same? (rest (rest (rest item))) ())))
           (fail (quote! bad-clause) "an item to name is (as name expression)" item))
-        (pair (first (rest item)) (first (rest (rest item)))))
+        (pair (second item) (third item)))
       (if! (symbol? item)
         (pair item item)
         (fail (quote! bad-clause) "a computed column needs a name: (as name expression)" item)))))
@@ -310,7 +285,7 @@
            (known (if! (pair? call) (find-association (first call) aggregates) ())))
       (when! (same? known ()) (fail (quote! bad-clause) "an aggregate is count, sum, average, minimum or maximum" form))
       (let! (((#ignore initial step finish) known)
-             (expression (if! (same? (rest call) ()) 1 (first (rest call)))))
+             (expression (if! (same? (rest call) ()) 1 (second call))))
         (check-expression expression columns)
         (list (first item) expression initial step finish)))))
 
@@ -323,9 +298,9 @@
       (if! (pair? form)
         (pair (conditional!
                 ((same? (rest form) ()) (first form))
-                ((symbol? (first (rest form)))
+                ((symbol? (second form))
                  (string-to-symbol (string-append (symbol-to-string (first form)) "-"
-                                                  (symbol-to-string (first (rest form))))))
+                                                  (symbol-to-string (second form)))))
                 (#true (fail (quote! bad-clause) "an aggregate of an expression needs a name: (as name aggregate)" form)))
               form)
         (fail (quote! bad-clause) "an aggregate is a list, such as (count) or (sum amount)" form)))))
@@ -336,11 +311,11 @@
            (add-row
              (lambda! (order row)
                (let! ((values (row-values keys row))
-                      (key (string-to-symbol (value-to-string values))))
-                 (if! (binds? groups key)
-                   (sequence! (bind groups key (pair (first (evaluate key groups)) (pair row (rest (evaluate key groups)))))
-                              order)
-                   (sequence! (bind groups key (list values row)) (pair key order)))))))
+                      (key (string-to-symbol (value-to-string values)))
+                      (group (lookup groups key ())))
+                 (if! (same? group ())
+                   (sequence! (bind groups key (list values row)) (pair key order))
+                   (sequence! (bind groups key (pair (first group) (pair row (rest group)))) order))))))
       ; Each group as (key-values . rows), in the order each was first seen.
       (map (lambda! (key) (let! (((values . rows) (evaluate key groups))) (pair values (reverse rows))))
            (reverse (fold add-row () rows))))))
@@ -356,7 +331,7 @@
   (lambda! (key)
     (if! (and!? (pair? key) (member? (first key) (quote! (ascending descending)))
                 (pair? (rest key)) (same? (rest (rest key)) ()))
-      (pair (same? (first key) (quote! descending)) (first (rest key)))
+      (pair (same? (first key) (quote! descending)) (second key))
       (pair #false key))))
 
 (define! keys-less-than?
@@ -412,8 +387,8 @@
           (for-each (lambda! (x) (check-expression x columns)) expressions)
           (pair columns
                 (map rest
-                     (sort (lambda! (a b) (keys-less-than? descending (first a) (first b)))
-                           (map (lambda! (row) (pair (row-values expressions row) row)) rows)))))))
+                     (sort (map (lambda! (row) (pair (row-values expressions row) row)) rows)
+                           (lambda! (a b) (keys-less-than? descending (first a) (first b)))))))))
     (lambda! (n)
       (lambda! ((columns . rows))
         (define! take
@@ -468,10 +443,8 @@
            (from (lambda! (at) (if! (same? at end) #false (if! (same? (string-byte s at) byte) #true (from (add at 1)))))))
       (from 0))))
 
-(define! repeat
-  (lambda! (s n) (if! (less-than? 0 n) (string-append s (repeat s (subtract n 1))) "")))
-(define! blanks (repeat " " 100))
-(define! spaces (lambda! (n) (if! (less-than? n 100) (byte-substring blanks 0 n) (repeat " " n))))
+(define! blanks (string-repeat " " 100))
+(define! spaces (lambda! (n) (if! (less-than? n 100) (byte-substring blanks 0 n) (string-repeat " " n))))
 
 ; cell-text: a value as aligned text shows it, a line end as \n and floats rounded to four places.
 (define! cell-text
@@ -513,7 +486,7 @@
                     (pair "  " (pieces more (rest widths) (rest right))))))
            (line (lambda! (cells) (display (apply string-append (pieces cells widths right))) (display "\n"))))
       (line header)
-      (display (string-join (map (lambda! (width) (repeat "-" width)) widths) "  "))
+      (display (string-join (map (lambda! (width) (string-repeat "-" width)) widths) "  "))
       (display "\n")
       (for-each line cells))))
 
@@ -559,7 +532,7 @@
 
 ; The program.
 (define! report
-  (lambda! (text) ((evaluate-in! write standard-error) (string-append "query: " text "\n"))))
+  (lambda! (text) (display-error "query: " text "\n")))
 (define! csv-output? (member? "--csv" command-line-arguments))
 (define! operands (filter (lambda! (a) (not? (same? a "--csv"))) command-line-arguments))
 (when! (not? (same? (length operands) 2))
@@ -570,14 +543,13 @@
   (catch! (query-clauses query-text)
           e
           (report (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                    (let! (((line column) (evaluate-in! values e)))
-                      (string-append "the query doesn't read at line " (integer-to-string line)
-                                     ", column " (integer-to-string column)))
+                    (let! (((reason line column) (evaluate-in! values e)))
+                      (string-append "the query doesn't read: " (symbol-to-string reason) " at line "
+                                     (integer-to-string line) ", column " (integer-to-string column)))
                     (error-text e)))
           (exit 1)))
 (define! text
-  (catch! (let! ((file (open-file path)))
-            (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+  (catch! (read-file path)
           e
           (report (string-append path ": " (error-text e)))
           (exit 2)))

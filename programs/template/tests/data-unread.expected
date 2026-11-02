@@ -1,2 +1,2 @@
-data-unread.grift:4: the data doesn't read at column 1
+data-unread.grift:3: the data doesn't read: unclosed-list at column 1
 [exit 1]

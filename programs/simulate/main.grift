@@ -25,7 +25,7 @@
 ; format!("{:.2}") but for the halves.
 (define! float-to-fixed
   (lambda! (x places)
-    (let! ((scale (fold (lambda! (n #ignore) (multiply n 10)) 1 (range 0 places)))
+    (let! ((scale (power 10 places))
            (n (float-to-integer (round (multiply (absolute-value x) (integer-to-float scale)))))
            (fraction (integer-to-string (add scale (remainder n scale))))
            (sign (if! (and!? (less-than? x 0.0) (not? (same? n 0))) "-" "")))
@@ -58,7 +58,7 @@
 ; random-generator: a combiner giving the next of a stream of floats uniform in (0, 1), from six
 ; words of state, the first three below m1 and not all zero, the last three below m2 and not all
 ; zero. It is L'Ecuyer's MRG32k3a, whose products stay below 2^53 and so fit grift's checked 64-bit
-; integers (generators built on wrapping multiplication or on bits don't: grift has neither).
+; integers (generators built on wrapping multiplication don't: grift has none).
 (define! random-generator
   (lambda! (words)
     (define! m1 4294967087)
@@ -175,8 +175,7 @@
 ; setting.
 (define! read-config
   (lambda! (path)
-    (define! file (open-file path))
-    (define! text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+    (define! text (read-file path))
     (define! config (context))
     (define! where (lambda! (offset) (string-append path ":" (integer-to-string (line-at text offset)) ": ")))
     (define! check
@@ -198,13 +197,16 @@
               (#true (bind config name value)))))))
     (define! each-form
       (lambda! (offset)
-        (let! ((read (catch! (read-form text offset)
-                             e
-                             (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                               (let! (((line column) (evaluate-in! values e)))
-                                 (complain path ":" (integer-to-string line) ":"
-                                           (integer-to-string column) ": the config doesn't read here"))
-                               (raise e)))))
+        (let! ((read (catch-kind! (read-form text offset)
+                                  parse-error
+                                  e
+                                  (let! (((reason line column) (evaluate-in! values e)))
+                                    (complain path ":" (integer-to-string line) ":" (integer-to-string column) ": "
+                                              (conditional!
+                                                ((same? reason (quote! unclosed-list)) "this ( is never closed")
+                                                ((same? reason (quote! unclosed-string)) "this \" is never closed")
+                                                (#true (string-append "the config doesn't read here: "
+                                                                      (symbol-to-string reason)))))))))
           (when! (pair? read)
             (let! (((form start end) read))
               (check form start)
@@ -299,7 +301,7 @@
 (define! describe
   (lambda! (bank event)
     (let! ((kind (evaluate-in! kind event)))
-      (display (string-pad-left (float-to-fixed (evaluate-in! time event) 3) 10) "  "
+      (display (string-pad-left (float-to-fixed (evaluate-in! time event) 3) 10 " ") "  "
                (if! (same? kind (quote! arrival))
                  (string-append "arrival   customer " (integer-to-string (evaluate-in! arrived bank)))
                  (string-append "departure teller " (integer-to-string (evaluate-in! number (evaluate-in! subject event)))))
@@ -361,7 +363,7 @@
     ; a line of the report: a label, a value, and what Erlang's formula predicts if it is given
     (define! row
       (lambda! (label value . theory)
-        (display (string-pad-right label 16) (string-pad-left value 12))
+        (display (string-pad-right label 16 " ") (string-pad-left value 12 " "))
         (when! (pair? theory) (display "    " (first theory)))
         (display "\n")))
     (define! use (lambda! (busy) (if! (same? now 0.0) 0.0 (divide busy now))))
@@ -408,15 +410,15 @@
   (catch! (let! ((arguments command-line-arguments))
             (conditional!
               ((and!? (pair? arguments) (same? (rest arguments) ())) (list (first arguments) 0))
-              ((and!? (same? (length arguments) 3) (equal? (first (rest arguments)) "--trace"))
-               (list (first arguments) (string-to-integer (first (rest (rest arguments))))))
+              ((and!? (same? (length arguments) 3) (equal? (second arguments) "--trace"))
+               (list (first arguments) (string-to-integer (third arguments))))
               (#true (complain usage))))
           e
           (sequence!
-            ((evaluate-in! write standard-error)
-             (if! (same? (evaluate-in! kind e) (quote! simulate-error))
-                  (string-append (first (evaluate-in! values e)) "\n")
-               (string-append usage "\n")))
+            (display-error (if! (same? (evaluate-in! kind e) (quote! simulate-error))
+                             (first (evaluate-in! values e))
+                             usage)
+                           "\n")
             (exit 2))))
 
 (define! config
@@ -424,11 +426,10 @@
           e
           (conditional!
             ((same? (evaluate-in! kind e) (quote! simulate-error))
-             ((evaluate-in! write standard-error) (string-append "simulate: " (first (evaluate-in! values e)) "\n"))
+             (display-error "simulate: " (first (evaluate-in! values e)) "\n")
              (exit 2))
             ((same? (evaluate-in! kind e) (quote! file-error))
-             ((evaluate-in! write standard-error)
-              (string-append "simulate: " (string-join (evaluate-in! values e) ": ") "\n"))
+             (display-error "simulate: " (string-join (evaluate-in! values e) ": ") "\n")
              (exit 2))
             (#true (raise e)))))
 

@@ -67,8 +67,8 @@ for f in bad stray; do
         pass "4 $f.grift: exit 1, left alone: $message"
     else fail "4 $f.grift: exit $status, $message"; fi
 done
-echo "$message" | grep -q 'stray.grift:1:14: does not read' || fail "4 stray.grift place"
-$format "$here/tests/bad.grift" 2>&1 | grep -q 'bad.grift:4:1: does not read; the list at 2:17 is not closed' &&
+echo "$message" | grep -q 'stray.grift:1:14: does not read: unmatched parenthesis' || fail "4 stray.grift place"
+$format "$here/tests/bad.grift" 2>&1 | grep -q 'bad.grift:2:17: does not read: this list is never closed' &&
     pass "4 an unclosed list is named where it opens" || fail "4 unclosed list message"
 
 # 5. --check names the files that would change and exits 1; --write fixes them.

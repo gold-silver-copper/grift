@@ -43,50 +43,32 @@
   (lambda! (source line . parts)
     (raise (error (quote! world-error) (message* (append (list source ":" line ": ") parts))))))
 
-; The forms of `whole`, each as (line . form), a form's line being where it starts. Text that
-; doesn't read is a mistake-at its line.
+; The forms of `text`, each as (line . form), a form's line being where it starts. Text that
+; doesn't read is a mistake-at the line where read-form stopped: for a ( or " never closed,
+; where it opened.
 (define! read-forms
-  (lambda! (whole source)
-    ; Ending in a newline, the end of the text is alone on its line.
-    (define! text (string-append whole "\n"))
+  (lambda! (text source)
     ; The line of offset `to`, when offset `from` is on `line`.
     (define! line-at
       (lambda! (line from to)
         (add line (subtract (length (string-split (byte-substring text from to) "\n")) 1))))
-    ; A form after `offset`, on `line`, never ends. read-form fails at the end of the text and
-    ; doesn't say where the form starts: on the first line with more than space or a comment.
-    (define! never-closed
-      (lambda! (offset line)
-        (let! ((end (string-search text "\n" offset))
-               (part (string-trim (byte-substring text offset end))))
-          (conditional!
-            ((or!? (same? part "") (string-starts-with? part ";")) (never-closed (add end 1) (add line 1)))
-            ((string-starts-with? part "\"") (mistake-at source line "a string is never closed"))
-            (#true (mistake-at source line "this ( is never closed"))))))
     (define! read-after
-      (lambda! (offset line)
-        (catch! (read-form text offset) e
-          (if! (same? (field! kind e) (quote! parse-error))
-            (let! (((at column) (field! values e)))
-              (if! (same? at (length (string-split text "\n")))
-                (never-closed offset line)
-                (mistake-at source at "this doesn't read, at column " column)))
-            (raise e)))))
+      (lambda! (offset)
+        (catch-kind! (read-form text offset) parse-error e
+          (let! (((reason line column) (field! values e)))
+            (conditional!
+              ((same? reason (quote! unclosed-list)) (mistake-at source line "this ( is never closed"))
+              ((same? reason (quote! unclosed-string)) (mistake-at source line "a string is never closed"))
+              (#true (mistake-at source line "this doesn't read, at column " column ": " reason)))))))
     (define! from
       (lambda! (offset line forms)
-        (let! ((found (read-after offset line)))
+        (let! ((found (read-after offset)))
           (if! (empty-list? found)
             (reverse forms)
             (let! (((form start end) found)
                    (at (line-at line offset start)))
               (from end (line-at at start end) (pair (pair at form) forms)))))))
     (from 0 1 ())))
-
-; The whole text of a file.
-(define! file-text
-  (lambda! (path)
-    (let! ((f (open-file path)))
-      (finally! ((evaluate-in! read-all f)) ((evaluate-in! close f))))))
 
 ; ---------------------------------------------------------------------------------------------
 ; Tables. A table is a context from symbols to values, with no parent; a record is a context
@@ -139,7 +121,7 @@
                     (world-error what " " name ": " clause " is not a clause it knows; it knows "
                                  allowed))
                   (enter c (first clause)
-                         (append (if! (in-table? c (first clause)) (look-up c (first clause)) ())
+                         (append (lookup c (first clause) ())
                                  (list (rest clause)))))
                 forms)
       c)))
@@ -174,14 +156,14 @@
 (define! put
   (lambda! (thing place)
     (enter placements thing
-           (append (if! (in-table? placements thing) (look-up placements thing) ())
+           (append (lookup placements thing ())
                    (list (list place (where-now)))))))
 
 (define! add-words
   (lambda! (thing words)
     (for-each (lambda! (w)
                 (enter vocabulary w
-                       (pair thing (if! (in-table? vocabulary w) (look-up vocabulary w) ()))))
+                       (pair thing (lookup vocabulary w ()))))
               words)))
 
 ; (place! name (title "...") (description "...") (exits (direction place) ...) (holds thing ...))
@@ -199,7 +181,7 @@
                                  (map first directions))))
                 exits)
       (for-each (lambda! (held) (for-each (lambda! (thing) (put thing name)) held))
-                (if! (in-table? c (quote! holds)) (look-up c (quote! holds)) ()))
+                (lookup c (quote! holds) ()))
       (enter places name
              (record (quote! (title description exits where))
                      (list (text-clause "place" name c (quote! title) caller)
@@ -261,7 +243,7 @@
   (vau! (place) #ignore
     (if! (empty-list? start-place)
       (bind engine (quote! start-place) (list place (where-now)))
-      (world-error "start! is given twice; the first is at " (first (rest start-place))))))
+      (world-error "start! is given twice; the first is at " (second start-place)))))
 
 ; The handler of a verb: its parameters and body, evaluated in `caller`, as lambda! makes one.
 (define! handler
@@ -310,7 +292,7 @@
     (if! (empty-list? start-place)
       (problem "the world has no (start! place)")
       (when! (not? (in-table? places (first start-place)))
-        (problem (first (rest start-place)) ": start! names " (first start-place)
+        (problem (second start-place) ": start! names " (first start-place)
                  ", which is not a place")))
     (for-each
       (lambda! (name)
@@ -325,10 +307,10 @@
       (lambda! (thing)
         (define! put-in (look-up placements thing))
         (when! (not? (in-table? things thing))
-          (problem (first (rest (first put-in))) ": " (first (first put-in)) " holds " thing
+          (problem (second (first put-in)) ": " (first (first put-in)) " holds " thing
                    ", which is not an item"))
         (when! (in-table? doors thing)
-          (problem (first (rest (first put-in))) ": the door " thing
+          (problem (second (first put-in)) ": the door " thing
                    " is put in a place; a door is in the places its (between ...) names"))
         (for-each (lambda! ((place at))
                     (when! (not? (in-table? places place))
@@ -436,23 +418,23 @@
         (define! shape (catch! (pair (first form) (length form)) e ()))
         (conditional!
           ((equal? shape (pair (quote! at) 2))
-           (when! (not? (in-table? places (first (rest form)))) (bad (first (rest form)) " is not a place"))
-           (bind here (quote! at) (first (rest form))))
+           (when! (not? (in-table? places (second form))) (bad (second form) " is not a place"))
+           (bind here (quote! at) (second form)))
           ((equal? shape (pair (quote! moves) 2))
-           (when! (not? (integer? (first (rest form)))) (bad "moves needs an integer"))
-           (bind here (quote! moves) (first (rest form))))
+           (when! (not? (integer? (second form))) (bad "moves needs an integer"))
+           (bind here (quote! moves) (second form)))
           ((equal? shape (pair (quote! thing) 3))
            (define! (thing place) (rest form))
            (when! (not? (in-table? things thing)) (bad thing " is not an item"))
            (when! (not? (or!? (in-table? places place) (member? place (quote! (carried nowhere)))))
              (bad place " is not a place, carried or nowhere"))
            (enter new-where thing place))
-          ((equal? shape (pair (quote! flag) 2)) (enter new-flags (first (rest form)) #true))
+          ((equal? shape (pair (quote! flag) 2)) (enter new-flags (second form) #true))
           ((equal? shape (pair (quote! unlocked) 2))
-           (when! (not? (in-table? doors (first (rest form)))) (bad (first (rest form)) " is not a door"))
-           (enter new-unlocked (first (rest form)) #true))
+           (when! (not? (in-table? doors (second form))) (bad (second form) " is not a door"))
+           (enter new-unlocked (second form) #true))
           (#true (bad form " is not part of a saved game"))))
-      (read-forms (file-text path) path))
+      (read-forms (read-file path) path))
     (when! (empty-list? at) (raise (error (quote! world-error) (message path ": no (at place)"))))
     (bind engine (quote! (where flags unlocked)) (list new-where new-flags new-unlocked))
     (bind game (quote! (location moves)) (list at moves))
@@ -531,7 +513,7 @@
                     (list object other))
           (define! key (rule-key (filter symbol? (list (field! name verb) object other))))
           (if! (in-table? rules key)
-            ((first (rest (look-up rules key))))
+            ((second (look-up rules key)))
             ((field! handler verb) object preposition other)))))))
 
 ; ---------------------------------------------------------------------------------------------
@@ -560,7 +542,7 @@
       ((not? (pair? exit)) (say "You can't go " direction " from here."))
       ((pair? (door-closing direction))
        (say "The way " direction " is shut: " (called (first (door-closing direction))) " is locked."))
-      (#true (bind game (quote! location) (first (rest exit))) (describe-place)))))
+      (#true (bind game (quote! location) (second exit)) (describe-place)))))
 
 (define! need-thing
   (lambda! (verb thing)
@@ -618,15 +600,13 @@
   (say "Nothing happens."))
 (command! (save) (text)
   (define! path (if! (same? text "") "adventure.sav" text))
-  (catch! (save-game path) e
-    (if! (same? (field! kind e) (quote! file-error))
-      (say "Can't save to " path ": " (first (rest (field! values e))))
-      (raise e))))
+  (catch-kind! (save-game path) file-error e
+    (say "Can't save to " path ": " (second (field! values e)))))
 (command! (load restore) (text)
   (define! path (if! (same? text "") "adventure.sav" text))
   (catch! (load-game path) e
     (conditional!
-      ((same? (field! kind e) (quote! file-error)) (say "Can't load " path ": " (first (rest (field! values e)))))
+      ((same? (field! kind e) (quote! file-error)) (say "Can't load " path ": " (second (field! values e))))
       ((same? (field! kind e) (quote! world-error)) (say "Can't load " path ": " (first (field! values e))))
       (#true (raise e)))))
 (command! (help) #ignore
@@ -648,7 +628,7 @@
     (for-each (lambda! ((line . form))
                 (bind loading (quote! line) line)
                 (evaluate form world))
-              (read-forms (file-text path) path))))
+              (read-forms (read-file path) path))))
 
 (define! echo? (member? "--echo" command-line-arguments))
 (define! world-files (filter (lambda! (a) (not? (same? a "--echo"))) command-line-arguments))
@@ -658,10 +638,9 @@
     ((catch! (sequence! ((evaluate-in! close (open-file "world.grift"))) #true) e #false) "world.grift")
     (#true "programs/adventure/world.grift")))
 
-(catch! (load-world world-file) e
-  (if! (same? (field! kind e) (quote! world-error))
-    (sequence! (display (first (field! values e))) (display "\n") (exit 1))
-    (raise e)))
+(catch-kind! (load-world world-file) world-error e
+  (display (first (field! values e)) "\n")
+  (exit 1))
 (define! problems (check-world))
 (when! (pair? problems)
   (for-each (lambda! (p) (display p) (display "\n")) problems)
@@ -677,10 +656,8 @@
       (sequence! (display "\n") (say "The input ends; you stop here, after " (field! moves game) " moves."))
       (sequence!
         (when! echo? (display (string-trim line)) (display "\n"))
-        (catch! (perform (string-trim line)) e
-          (if! (same? (field! kind e) (quote! not-understood))
-            (say (first (field! values e)))
-            (raise e)))
+        (catch-kind! (perform (string-trim line)) not-understood e
+          (say (first (field! values e))))
         (if! (field! finished game)
           (say "*** The end, in " (field! moves game) " moves. ***")
           (play))))))

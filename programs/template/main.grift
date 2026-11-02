@@ -54,11 +54,6 @@
           path
           (string-append (byte-substring from 0 (file-name-start from)) path))))
 
-    (define! read-file
-      (lambda! (path)
-        (let! ((file (open-file path)))
-          (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
-
     ; text with the characters HTML gives a meaning to replaced by their entities. It is the hot path,
     ; so it tests bytes with if! and passes values to a helper rather than binding them with let!,
     ; which was 2.3 times slower on a 10-byte string.
@@ -141,12 +136,13 @@
       (lambda! (text file line)
         (define! from
           (lambda! (at)
-            (let! ((read (catch! (read-form text at)
-                                 e
-                                 (fail file line "\"" text "\" doesn't read: "
-                                       (show (evaluate-in! kind e)) " at column "
-                                       (show (first (rest (evaluate-in! values e))))))))
-              (if! (same? read ()) () (pair (first read) (from (first (rest (rest read)))))))))
+            (let! ((read (catch-kind! (read-form text at)
+                                      parse-error
+                                      e
+                                      (let! (((reason #ignore column) (evaluate-in! values e)))
+                                        (fail file line "\"" text "\" doesn't read: "
+                                              (show reason) " at column " (show column))))))
+              (if! (same? read ()) () (pair (first read) (from (third read)))))))
         (from 0)))
 
     (define! parse-expression
@@ -217,11 +213,11 @@
                               (variables (map string-to-symbol (words (first parts)))))
                          (when! (not? (and!? (same? (length parts) 2) (member? (length variables) (list 1 2))))
                            (fail file line "{{#for " detail "}} isn't {{#for item in list}} or {{#for item index in list}}"))
-                         (let! ((expression (parse-expression (first (rest parts)) file line))
+                         (let! ((expression (parse-expression (second parts) file line))
                                 ((body otherwise after) (branches more line "for" (quote! end-for))))
                            (block after
                                   (pair (list (quote! for) (first variables)
-                                              (if! (same? (length variables) 2) (first (rest variables)) #ignore)
+                                              (if! (same? (length variables) 2) (second variables) #ignore)
                                               expression body otherwise line)
                                         done))))))))))))
         ; The nodes of an if or a for opened on `line`, an optional else part and its end: (nodes
@@ -234,7 +230,7 @@
                   (conditional!
                     ((same? stop ()) (fail file line "{{#" name "}} is never closed with {{/" name "}}"))
                     ((not? (same? (first stop) end))
-                     (fail file (first (rest stop)) "{{" (stop-text (first stop)) "}} where {{/" name "}} from line "
+                     (fail file (second stop) "{{" (stop-text (first stop)) "}} where {{/" name "}} from line "
                            (integer-to-string line) " was expected")))))
               (if! (and!? (not? (same? stop ())) (same? (first stop) (quote! else)))
                 (let! (((otherwise stop after) (block after ())))
@@ -243,7 +239,7 @@
                 (sequence! (closed stop) (list nodes () after))))))
         (let! (((nodes stop #ignore) (block tokens ())))
           (when! (not? (same? stop ()))
-            (fail file (first (rest stop)) "{{" (stop-text (first stop)) "}} with no {{#if}} or {{#for}} open"))
+            (fail file (second stop) "{{" (stop-text (first stop)) "}} with no {{#if}} or {{#for}} open"))
           nodes)))
 
     (define! stop-text
@@ -312,7 +308,7 @@
       (lambda! (node scope files done)
         (let! ((file (first files)) (kind (first node)))
           (conditional!
-            ((same? kind (quote! text)) (pair (first (rest node)) done))
+            ((same? kind (quote! text)) (pair (second node) done))
             ((same? kind (quote! insert))
              (let! (((#ignore expression raw? line) node)
                     (text (value-text (evaluate-expression expression scope file line) file line)))
@@ -352,7 +348,7 @@
                              (if! (same? line ())
                                (raise e)
                                (fail from line "can't include " path ": "
-                                     (first (rest (evaluate-in! values e))))))))
+                                     (second (evaluate-in! values e)))))))
           (parse (tokenize text path) path))))
 
     ; The data: each form of the file evaluated in turn in a new child of `top`, the program's
@@ -368,10 +364,12 @@
                 record)))
           (define! from
             (lambda! (at)
-              (let! ((read (catch! (read-form text at)
-                                   e
-                                   (let! (((line column) (evaluate-in! values e)))
-                                     (fail path line "the data doesn't read at column " (integer-to-string column))))))
+              (let! ((read (catch-kind! (read-form text at)
+                                        parse-error
+                                        e
+                                        (let! (((reason line column) (evaluate-in! values e)))
+                                          (fail path line "the data doesn't read: " (show reason)
+                                                " at column " (show column))))))
                 (when! (not? (same? read ()))
                   (let! (((form start end) read))
                     (catch! (evaluate form data)
@@ -384,13 +382,9 @@
           (from 0)
           data)))
 
-    (define! complain
-      (lambda! text
-        ((evaluate-in! write standard-error) (apply string-append text))))
-
     (lambda! (top arguments)
       (if! (not? (same? (length arguments) 2))
-        (sequence! (complain "usage: main.grift TEMPLATE DATA\n") (exit 2))
+        (sequence! (display-error "usage: main.grift TEMPLATE DATA\n") (exit 2))
         (let! (((template-path data-path) arguments))
           (catch! (display (apply string-append
                                   (reverse (render (load-template template-path () ())
@@ -402,10 +396,10 @@
                     (conditional!
                       ((same? kind (quote! template-error))
                        (let! (((file line message) values))
-                         (complain file ":" (integer-to-string line) ": " message "\n")))
+                         (display-error file ":" line ": " message "\n")))
                       ((same? kind (quote! file-error))
-                       (complain (first values) ": " (first (rest values)) "\n"))
-                      (#true (complain (show kind) " " (string-join (map show values) " ") "\n")))
+                       (display-error (first values) ": " (second values) "\n"))
+                      (#true (display-error kind " " (string-join (map show values) " ") "\n")))
                     (exit 1)))))))))
 
 (run-template (current-context) command-line-arguments)

@@ -18,21 +18,14 @@
 ; Writes "life: MESSAGE" to standard error and ends the run with `status`.
 (define! fail
   (lambda! (status . message)
-    ((evaluate-in! write standard-error) (apply string-append (pair "life: " message)))
-    ((evaluate-in! write standard-error) "\n")
+    (display-error "life: " (apply string-append message) "\n")
     (exit status)))
-
-; `text` repeated `count` times.
-(define! repeat-string
-  (lambda! (text count) (apply string-append (map (lambda! (#ignore) text) (range 0 count)))))
 
 ; The integer `text` names, or a usage error naming `what`.
 (define! read-count
   (lambda! (text what)
-    (let! ((n (catch! (string-to-integer text) e
-                (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                  (fail 2 what " must be a whole number, not \"" text "\"")
-                  (raise e)))))
+    (let! ((n (catch-kind! (string-to-integer text) parse-error e
+                (fail 2 what " must be a whole number, not \"" text "\""))))
       (if! (less-than? n 0) (fail 2 what " must not be negative, not " text) n))))
 
 ; The options, a record: wrapping, final, size (() or (width height)), path and generations.
@@ -50,12 +43,12 @@
                       (loop (rest arguments) positional))
                      ((equal? (first arguments) "--size")
                       (when! (empty-list? (rest arguments)) (fail 2 "--size needs WIDTHxHEIGHT\n" usage))
-                      (let! ((parts (string-split (first (rest arguments)) "x")))
+                      (let! ((parts (string-split (second arguments) "x")))
                         (when! (not? (same? (length parts) 2))
-                          (fail 2 "--size must be WIDTHxHEIGHT, not \"" (first (rest arguments)) "\""))
+                          (fail 2 "--size must be WIDTHxHEIGHT, not \"" (second arguments) "\""))
                         (bind options (quote! size)
                               (list (read-count (first parts) "the width")
-                                    (read-count (first (rest parts)) "the height"))))
+                                    (read-count (second parts) "the height"))))
                       (loop (rest (rest arguments)) positional))
                      ((string-starts-with? (first arguments) "--")
                       (fail 2 "unknown option " (first arguments) "\n" usage))
@@ -64,17 +57,14 @@
       (let! ((positional (loop arguments ())))
         (when! (not? (same? (length positional) 2)) (fail 2 usage))
         (bind options (quote! (path generations))
-              (list (first positional) (read-count (first (rest positional)) "GENERATIONS")))
+              (list (first positional) (read-count (second positional) "GENERATIONS")))
         options))))
 
 ; The text of the file at `path`, or an error naming it.
-(define! read-file
+(define! pattern-text
   (lambda! (path)
-    (let! ((file (catch! (open-file path) e
-                   (if! (same? (evaluate-in! kind e) (quote! file-error))
-                     (fail 2 path ": " (first (rest (evaluate-in! values e))))
-                     (raise e)))))
-      (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
+    (catch-kind! (read-file path) file-error e
+      (fail 2 path ": " (second (evaluate-in! values e))))))
 
 ; The rows of a pattern: its lines, without the comment lines that start with `!`, each checked
 ; to be only `.` and `#`. An error names the file, the line and the column.
@@ -136,11 +126,8 @@
               (integer-to-string pattern-width) "x" (integer-to-string pattern-height)
               ", larger than the grid, " (integer-to-string width) "x" (integer-to-string height)))
       (map (lambda! (row) (with-ends row wrapping))
-           (append (map (lambda! (row)
-                          (string-append (cells row)
-                                         (repeat-string zero (subtract width (string-byte-length row)))))
-                        rows)
-                   (map (lambda! (#ignore) (repeat-string zero width)) (range pattern-height height)))))))
+           (append (map (lambda! (row) (string-pad-right (cells row) width zero)) rows)
+                   (map (lambda! (#ignore) (string-repeat zero width)) (range pattern-height height)))))))
 
 ; What a cell becomes, at the offset of the living cells among the nine around it, itself
 ; included, plus 9 if it is alive itself: it lives with 3, or with 4 if it is one of them.
@@ -154,7 +141,7 @@
 (define! step
   (lambda! (grid wrapping)
     (let! ((end (subtract (string-byte-length (first grid)) 1))
-           (dead-row (repeat-string zero (add end 1)))
+           (dead-row (string-repeat zero (add end 1)))
            ; The new row, cell by cell from the left; `left` and `middle` count the living cells
            ; in the columns of the three rows at x - 1 and at x.
            (next-row (lambda! (above row below)
@@ -219,6 +206,6 @@
 
 (define! options (read-arguments command-line-arguments))
 (define! path (evaluate-in! path options))
-(run (make-grid path (read-pattern path (read-file path))
+(run (make-grid path (read-pattern path (pattern-text path))
                 (evaluate-in! size options) (evaluate-in! wrapping options))
      0 (evaluate-in! generations options) options (context))

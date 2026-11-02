@@ -46,12 +46,13 @@
     (expect-equal! (string-trim "") "")))
 
 (group! "string-pad-left and string-pad-right"
-  (test! "up to width bytes"
-    (expect-equal! (string-pad-left "a" 3) "  a")
-    (expect-equal! (string-pad-right "a" 3) "a  "))
+  (test! "up to width bytes, of the fill"
+    (expect-equal! (string-pad-left "a" 3 " ") "  a")
+    (expect-equal! (string-pad-right "a" 3 " ") "a  ")
+    (expect-equal! (string-pad-left "7" 3 "0") "007"))
   (test! "the string itself if it is that long"
-    (expect-equal! (string-pad-left "abc" 2) "abc")
-    (expect-equal! (string-pad-right "abc" -1) "abc")))
+    (expect-equal! (string-pad-left "abc" 2 " ") "abc")
+    (expect-equal! (string-pad-right "abc" -1 " ") "abc")))
 
 (group! "string-to-lowercase"
   (test! "ASCII only"
@@ -94,8 +95,9 @@
   (test! "() when only space and comments are left, a form () in a list"
     (expect-equal! (read-form " ; end" 0) ())
     (expect-equal! (read-form "()" 0) (list () 0 2)))
-  (test! "text that doesn't read gives the line and the column"
-    (expect-equal! (catch! (read-form "\n (a" 0) e (evaluate-in! values e)) (list 2 4)))
+  (test! "text that doesn't read gives why, and the line and the column of what is left open"
+    (expect-equal! (catch! (read-form "\n (a" 0) e (evaluate-in! values e))
+                   (list (quote! unclosed-list) 2 2)))
   (test! "an offset off a boundary is a range-error"
     (expect-error! range-error (read-form "é" 1))
     (expect-error! range-error (read-form "a" 2)))

@@ -1,10 +1,6 @@
 ; Exits 0 when the two files named on the command line read to the same forms, printed, and 1
 ; with the first difference otherwise. A text may start with a #! line, which is skipped.
 (define! (old new) command-line-arguments)
-(define! read-file
-  (lambda! (path)
-    (let! ((file (open-file path)))
-      (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
 (define! forms
   (lambda! (text i)
     (let! ((read (read-form text i)))
