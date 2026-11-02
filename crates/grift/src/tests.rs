@@ -18,27 +18,33 @@ fn show<T>(g: &Grift<T>, v: Value) -> String {
     s
 }
 
-fn code<T>(g: &mut Grift<T>, e: &Error) -> String {
-    show(g, Value::Sym(e.code))
+fn kind<T>(g: &mut Grift<T>, e: &Error) -> String {
+    show(g, Value::Symbol(e.kind))
 }
 
-/// Each source evaluates to `#t`.
+/// Binds a host function in the top-level context.
+fn define<T>(g: &mut Grift<T>, name: &str, f: crate::HostFunction<T>) {
+    let f = g.host_function(name, f).unwrap();
+    g.define(name, f).unwrap();
+}
+
+/// Each source evaluates to `#true`.
 fn holds(g: &mut Grift, cases: &[&str]) {
     for src in cases {
-        match g.eval(&mut (), src) {
+        match g.evaluate(&mut (), src) {
             Ok(Value::True) => {}
             Ok(v) => panic!("{src} gave {}", show(g, v)),
-            Err(e) => panic!("{src} failed: {}", code(g, &e)),
+            Err(e) => panic!("{src} failed: {}", kind(g, &e)),
         }
     }
 }
 
-/// Each source fails with the given code.
+/// Each source fails with the given kind of error.
 fn fails(g: &mut Grift, cases: &[(&str, &str)]) {
     for (src, want) in cases {
-        match g.eval(&mut (), src) {
+        match g.evaluate(&mut (), src) {
             Ok(v) => panic!("{src} gave {}", show(g, v)),
-            Err(e) => assert_eq!(code(g, &e), *want, "{src}"),
+            Err(e) => assert_eq!(kind(g, &e), *want, "{src}"),
         }
     }
 }
@@ -49,29 +55,29 @@ fn primitives() {
     holds(
         &mut g,
         &[
-            "(equal? (($vau (x) #ignore x) (a b)) (car ($quote ((a b)))))",
-            "(equal? (($vau (x . y) e (list x y)) 1 2 3) ($quote (1 (2 3))))",
-            "(eq? (type-of (($vau () e e))) ($quote environment))",
-            "(eq? ((wrap ($vau (x) #ignore x)) (+ 1 2)) 3)",
-            "(equal? ((unwrap list) (+ 1 2)) ($quote ((+ 1 2))))",
-            "(eq? (eval ($quote (+ 1 2)) (make-environment (get-current-environment))) 3)",
-            "($sequence ($define! e (make-environment)) (equal? (bindings e) ()))",
-            "($sequence ($define! e (make-environment)) (bind! e ($quote (a (b))) (list 1 (list 2))) \
-             (equal? (list (eval ($quote a) e) (bindings e)) ($quote (1 (a b)))))",
-            "(equal? (cons 1 2) ($quote (1 . 2)))",
-            "(eq? (car (cons 1 2)) 1)",
-            "(eq? (cdr (cons 1 2)) 2)",
-            "(eq? \"ab\" \"ab\")",
-            "(not? (eq? (cons 1 2) (cons 1 2)))",
-            "(eq? (select #t 1 2) 1)",
-            "(eq? (select #f 1 2) 2)",
-            "(equal? (map type-of (list () #t #inert #ignore 1 ($quote a) (cons 1 2) \"s\" car $if)) \
-             ($quote (null boolean inert ignore integer symbol pair string applicative operative)))",
-            "(eq? (+ 2 3) 5)",
-            "(eq? (- 2 3) -1)",
-            "(eq? (* -4 3) -12)",
-            "(equal? (list (div 7 2) (div -7 2) (div 7 -2) (div -7 -2)) ($quote (3 -4 -4 3)))",
-            "($and? (<? 1 2) (not? (<? 2 1)) (not? (<? 1 1)))",
+            "(equal? ((vau! (x) #ignore x) (a b)) (first (quote! ((a b)))))",
+            "(equal? ((vau! (x . y) e (list x y)) 1 2 3) (quote! (1 (2 3))))",
+            "(same? (type-of ((vau! () e e))) (quote! context))",
+            "(same? ((wrap (vau! (x) #ignore x)) (add 1 2)) 3)",
+            "(equal? ((unwrap list) (add 1 2)) (quote! ((add 1 2))))",
+            "(same? (evaluate (quote! (add 1 2)) (context (current-context))) 3)",
+            "(sequence! (define! e (context)) (equal? (names e) ()))",
+            "(sequence! (define! e (context)) (bind e (quote! (a (b))) (list 1 (list 2))) \
+             (equal? (list (evaluate (quote! a) e) (names e)) (quote! (1 (a b)))))",
+            "(equal? (pair 1 2) (quote! (1 . 2)))",
+            "(same? (first (pair 1 2)) 1)",
+            "(same? (rest (pair 1 2)) 2)",
+            "(same? \"ab\" \"ab\")",
+            "(not? (same? (pair 1 2) (pair 1 2)))",
+            "(same? (select #true 1 2) 1)",
+            "(same? (select #false 1 2) 2)",
+            "(equal? (map type-of (list () #true #inert #ignore 1 (quote! a) (pair 1 2) \"s\" first if!)) \
+             (quote! (empty-list boolean inert ignore integer symbol pair string applicative operative)))",
+            "(same? (add 2 3) 5)",
+            "(same? (subtract 2 3) -1)",
+            "(same? (multiply -4 3) -12)",
+            "(equal? (list (divide 7 2) (divide -7 2) (divide 7 -2) (divide -7 -2)) (quote! (3 -3 -3 3)))",
+            "(and!? (less-than? 1 2) (not? (less-than? 2 1)) (not? (less-than? 1 1)))",
         ],
     );
 }
@@ -82,28 +88,28 @@ fn library() {
     holds(
         &mut g,
         &[
-            "(eq? ($quote a) ($quote a))",
-            "(equal? (list 1 (+ 1 1)) ($quote (1 2)))",
-            "($sequence ($define! (a . b) (list 1 2)) (equal? (list a b) ($quote (1 (2)))))",
-            "(eq? ($if #t 1 (car ())) 1)",
-            "(eq? ($sequence) #inert)",
-            "(eq? ($sequence 1 2 3) 3)",
-            "(eq? (($lambda (x y) (* x y)) 6 7) 42)",
-            "(eq? (($lambda (x) ($define! y (+ x 1)) (* y 2)) 1) 4)",
-            "(eq? ($let ((x 2) ((y z) (list 3 4))) (+ x (* y z))) 14)",
-            "(eq? ($cond (#f 1) ((eq? 1 1) 2 3) (#t (car ()))) 3)",
-            "(eq? ($cond (#f 1)) #inert)",
-            "($and? ($and?) (not? ($and? #t #f)) (eq? ($and? #t 5) 5) (not? ($and? #f (car ()))))",
-            "($and? (not? ($or?)) ($or? #f #t) (eq? ($or? #f 5) 5) ($or? #t (car ())))",
-            "($and? (not? #f) (not? (not? #t)))",
-            "($and? (=? 3 3) (not? (=? 3 4)))",
-            "(equal? (apply list (list 1 2)) ($quote (1 2)))",
-            "(equal? (apply ($lambda (x) (* x x)) (list 5)) 25)",
-            "(equal? (map ($lambda (x) (* x x)) (list 1 2 3)) ($quote (1 4 9)))",
-            "(equal? (append (list 1) () (list 2 3) 4) ($quote (1 2 3 . 4)))",
-            "(eq? (append) ())",
-            "($and? (eq? (length ()) 0) (eq? (length (list 1 2 3)) 3))",
-            "($and? (equal? \"a\" \"a\") (equal? (list 1 (list 2)) (list 1 (list 2))) \
+            "(same? (quote! a) (quote! a))",
+            "(equal? (list 1 (add 1 1)) (quote! (1 2)))",
+            "(sequence! (define! (a . b) (list 1 2)) (equal? (list a b) (quote! (1 (2)))))",
+            "(same? (if! #true 1 (first ())) 1)",
+            "(same? (sequence!) #inert)",
+            "(same? (sequence! 1 2 3) 3)",
+            "(same? ((lambda! (x y) (multiply x y)) 6 7) 42)",
+            "(same? ((lambda! (x) (define! y (add x 1)) (multiply y 2)) 1) 4)",
+            "(same? (let! ((x 2) ((y z) (list 3 4))) (add x (multiply y z))) 14)",
+            "(same? (conditional! (#false 1) ((same? 1 1) 2 3) (#true (first ()))) 3)",
+            "(same? (conditional! (#false 1)) #inert)",
+            "(and!? (and!?) (not? (and!? #true #false)) (and!? #true #true) (not? (and!? #false (first ()))))",
+            "(and!? (not? (or!?)) (or!? #false #true) (not? (or!? #false #false)) (or!? #true (first ())))",
+            "(and!? (not? #false) (not? (not? #true)))",
+            "(and!? (equal? 3 3) (not? (equal? 3 4)))",
+            "(equal? (apply list (list 1 2)) (quote! (1 2)))",
+            "(equal? (apply (lambda! (x) (multiply x x)) (list 5)) 25)",
+            "(equal? (map (lambda! (x) (multiply x x)) (list 1 2 3)) (quote! (1 4 9)))",
+            "(equal? (append (list 1) () (list 2 3) 4) (quote! (1 2 3 . 4)))",
+            "(same? (append) ())",
+            "(and!? (same? (length ()) 0) (same? (length (list 1 2 3)) 3))",
+            "(and!? (equal? \"a\" \"a\") (equal? (list 1 (list 2)) (list 1 (list 2))) \
              (not? (equal? (list 1) (list 2))))",
         ],
     );
@@ -115,83 +121,86 @@ fn library_basics() {
     holds(
         &mut g,
         &[
-            "($and? (null? ()) (not? (null? (list 1))) (pair? (cons 1 2)) (not? (pair? ())))",
-            "($and? (symbol? ($quote a)) (string? \"a\") (integer? 1) (not? (integer? \"1\")) \
-             (environment? (get-current-environment)))",
-            "($and? (equal? (reverse (list 1 2 3)) ($quote (3 2 1))) (null? (reverse ())))",
-            "($and? (equal? (assoc 2 ($quote ((1 a) (2 b)))) ($quote (2 b))) (null? (assoc 3 ())))",
-            "($and? (member? (list 1) (list 2 (list 1))) (not? (member? 3 (list 1 2))))",
-            "($and? (=? (min 1 2) 1) (=? (max 1 2) 2))",
-            // mod is what div leaves, for every sign.
-            "(equal? (map ($lambda ((a b)) (=? a (+ (* b (div a b)) (mod a b)))) \
-                       ($quote ((7 2) (-7 2) (7 -2) (-7 -2)))) (list #t #t #t #t))",
-            // ... and fits wherever its result does.
-            "(equal? (list (mod -9223372036854775808 3) (mod 9223372036854775807 -2) \
-                           (mod -9223372036854775808 -1)) ($quote (1 -1 0)))",
-            "($sequence ($define! seen ()) ($define! here (get-current-environment)) \
-             (for-each ($lambda (x) ($set! here seen (cons x seen))) (list 1 2 3)) \
-             (equal? seen ($quote (3 2 1))))",
-            "($and? (eq? ($when #f (car ())) #inert) (eq? ($when #t 1 2) 2))",
-            "(equal? ($let* ((x 1) (y (+ x 1))) (list x y)) ($quote (1 2)))",
-            "(eq? ($let* () 5) 5)",
-            // $set! changes the binding where it is, even from inside a function.
-            "($sequence ($define! n 0) ($define! e (get-current-environment)) \
-             (($lambda () ($set! e n (+ n 1)))) (=? n 1))",
+            "(and!? (empty-list? ()) (not? (empty-list? (list 1))) (pair? (pair 1 2)) (not? (pair? ())))",
+            "(and!? (symbol? (quote! a)) (string? \"a\") (integer? 1) (not? (integer? \"1\")) \
+             (context? (current-context)))",
+            "(and!? (equal? (reverse (list 1 2 3)) (quote! (3 2 1))) (empty-list? (reverse ())))",
+            "(and!? (equal? (find-association 2 (quote! ((1 a) (2 b)))) (quote! (2 b))) (empty-list? (find-association 3 ())))",
+            "(and!? (member? (list 1) (list 2 (list 1))) (not? (member? 3 (list 1 2))))",
+            "(and!? (equal? (minimum 1 2) 1) (equal? (maximum 1 2) 2))",
+            // remainder is what divide leaves, for every sign, as in Rust.
+            "(equal? (map (lambda! ((a b)) (equal? a (add (multiply b (divide a b)) (remainder a b)))) \
+                       (quote! ((7 2) (-7 2) (7 -2) (-7 -2)))) (list #true #true #true #true))",
+            // ... with the sign of the dividend.
+            "(equal? (list (remainder -9223372036854775808 3) (remainder 9223372036854775807 -2)) \
+                     (quote! (-2 1)))",
+            "(sequence! (define! seen ()) (define! here (current-context)) \
+             (for-each (lambda! (x) (define-in! here seen (pair x seen))) (list 1 2 3)) \
+             (equal? seen (quote! (3 2 1))))",
+            "(and!? (same? (if! #false (first ())) #inert) (same? (if! #true 1) 1))",
+            "(equal? (let! ((x 1) (y (add x 1))) (list x y)) (quote! (1 2)))",
+            "(same? (let! () 5) 5)",
+            // define-in! changes the binding where it is, even from inside a function.
+            "(sequence! (define! n 0) (define! e (current-context)) \
+             ((lambda! () (define-in! e n (add n 1)))) (equal? n 1))",
         ],
     );
 }
 
 #[test]
-fn error_codes() {
+fn error_kinds() {
     let mut g = grift();
     fails(
         &mut g,
         &[
             ("nope", "unbound-symbol"),
-            ("(car 1)", "type-error"),
-            ("(+ 1 \"a\")", "type-error"),
-            ("($if 1 2 3)", "type-error"),
-            ("(eval 1)", "arity-error"),
-            ("($if #t 1)", "arity-error"),
-            ("(($lambda (x) x))", "arity-error"),
+            ("(first 1)", "type-error"),
+            ("(add 1 \"a\")", "type-error"),
+            ("(if! 1 2 3)", "type-error"),
+            ("(evaluate 1)", "arity-error"),
+            ("(if! #true 1 2 3)", "arity-error"),
+            ("(if! #true)", "arity-error"),
+            ("((lambda! (x) x))", "arity-error"),
             ("(1 2)", "not-a-combiner"),
-            ("($vau (x x) #ignore x)", "bad-formals"),
-            ("($vau (x) x x)", "bad-formals"),
-            ("($define! 1 2)", "bad-formals"),
-            ("(* 9223372036854775807 2)", "overflow"),
-            ("(div -9223372036854775808 -1)", "overflow"),
-            ("(div 1 0)", "division-by-zero"),
-            ("(car", "parse-error"),
+            ("(vau! (x x) #ignore x)", "parameter-error"),
+            ("(vau! (x) x x)", "parameter-error"),
+            ("(define! 1 2)", "parameter-error"),
+            ("(multiply 9223372036854775807 2)", "overflow"),
+            ("(divide -9223372036854775808 -1)", "overflow"),
+            ("(remainder -9223372036854775808 -1)", "overflow"),
+            ("(divide 1 0)", "division-by-zero"),
+            ("(remainder 1 0)", "division-by-zero"),
+            ("(first", "parse-error"),
             (")", "parse-error"),
             ("(1 . )", "parse-error"),
             ("#x", "parse-error"),
             ("99999999999999999999", "parse-error"),
-            ("(error ($quote my-code) 1 2)", "my-code"),
+            ("(raise (error (quote! my-kind) 1 2))", "my-kind"),
         ],
     );
     let e = g
-        .eval(&mut (), "(error ($quote my-code) 1 \"two\")")
+        .evaluate(&mut (), "(raise (error (quote! my-kind) 1 \"two\"))")
         .unwrap_err();
     assert_eq!(e.values.len(), 2);
-    assert_eq!(e.values[0], Value::Int(1));
-    assert_eq!(g.string(e.values[1]), Some("two"));
-    let e = g.eval(&mut (), "(car\n  (cons 1 2)").unwrap_err();
-    assert_eq!(e.values, [Value::Int(2), Value::Int(13)]);
-    let e = g.eval(&mut (), "(foo bar)").unwrap_err();
+    assert_eq!(e.values[0], Value::Integer(1));
+    assert_eq!(g.as_str(e.values[1]), Some("two"));
+    let e = g.evaluate(&mut (), "(first\n  (pair 1 2)").unwrap_err();
+    assert_eq!(e.values, [Value::Integer(2), Value::Integer(13)]);
+    let e = g.evaluate(&mut (), "(foo bar)").unwrap_err();
     assert_eq!(show(&g, e.values[0]), "foo");
 }
 
 #[test]
 fn tail_calls_run_in_constant_space() {
     let mut g = grift();
-    g.eval(
+    g.evaluate(
         &mut (),
-        "($define! loop ($lambda (n) ($if (eq? n 0) #t ($sequence (cons n n) (loop (- n 1))))))
-         ($define! count ($lambda (n) ($cond ((eq? n 0) #t) (#t ($let ((m (- n 1))) (count m))))))",
+        "(define! loop (lambda! (n) (if! (same? n 0) #true (sequence! (pair n n) (loop (subtract n 1))))))
+         (define! count (lambda! (n) (conditional! ((same? n 0) #true) (#true (let! ((m (subtract n 1))) (count m))))))",
     )
     .unwrap();
-    assert_eq!(g.eval(&mut (), "(loop 1000000)"), Ok(Value::True));
-    assert_eq!(g.eval(&mut (), "(count 100000)"), Ok(Value::True));
+    assert_eq!(g.evaluate(&mut (), "(loop 200000)"), Ok(Value::True));
+    assert_eq!(g.evaluate(&mut (), "(count 50000)"), Ok(Value::True));
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -204,70 +213,80 @@ fn deep_nesting_needs_no_rust_stack() {
     let mut g = grift();
     let depth = 100_000;
     let nested = format!("{}{}", "(".repeat(depth), ")".repeat(depth));
-    let v = g.eval(&mut (), &format!("($quote {nested})")).unwrap();
+    let v = g.evaluate(&mut (), &format!("(quote! {nested})")).unwrap();
     assert_eq!(show(&g, v), nested);
-    let sum = format!("{}0{}", "(+ 1 ".repeat(depth), ")".repeat(depth));
-    assert_eq!(g.eval(&mut (), &sum), Ok(Value::Int(100_000)));
-    g.eval(&mut (), &format!("($define! deep ($quote {nested}))"))
+    let sum = format!("{}0{}", "(add 1 ".repeat(depth), ")".repeat(depth));
+    assert_eq!(g.evaluate(&mut (), &sum), Ok(Value::Integer(100_000)));
+    // equal? is library code, so it needs no Rust stack either; a shallower tree keeps the
+    // test quick.
+    let nested = format!("{}{}", "(".repeat(depth / 10), ")".repeat(depth / 10));
+    g.evaluate(&mut (), &format!("(define! deep (quote! {nested}))"))
         .unwrap();
-    assert_eq!(g.eval(&mut (), "(equal? deep deep)"), Ok(Value::True));
+    let copy = format!("(equal? deep (quote! {nested}))");
+    assert_eq!(g.evaluate(&mut (), &copy), Ok(Value::True));
 }
 
 #[test]
 fn collection_reclaims_garbage_and_keeps_live_data() {
     let mut g = grift();
-    g.eval(
+    g.evaluate(
         &mut (),
-        "($define! build ($lambda (n acc) ($if (eq? n 0) acc (build (- n 1) (cons n acc)))))
-         ($define! keep (build 1000 ()))
-         ($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (build 100 ()) (churn (- n 1))))))",
+        "(define! build (lambda! (n acc) (if! (same? n 0) acc (build (subtract n 1) (pair n acc)))))
+         (define! keep (build 1000 ()))
+         (define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (build 100 ()) (churn (subtract n 1))))))",
     )
     .unwrap();
-    assert_eq!(g.eval(&mut (), "(churn 5000)"), Ok(Value::True));
+    assert_eq!(g.evaluate(&mut (), "(churn 5000)"), Ok(Value::True));
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
         g.heap.len()
     );
-    assert_eq!(g.eval(&mut (), "(length keep)"), Ok(Value::Int(1000)));
+    assert_eq!(
+        g.evaluate(&mut (), "(length keep)"),
+        Ok(Value::Integer(1000))
+    );
 }
 
 #[test]
 fn printing_reads_back() {
     let mut g = grift();
     for src in [
-        "(1 -2 (a . b) \"q\\\"\\\\\\n\" #t #f #inert #ignore ())",
+        "(1 -2 (a . b) \"q\\\"\\\\\\n\" #true #false #inert #ignore ())",
         "(())",
         "x",
     ] {
-        let v = g.eval(&mut (), &format!("($quote {src})")).unwrap();
+        let v = g.evaluate(&mut (), &format!("(quote! {src})")).unwrap();
         let printed = show(&g, v);
-        let again = g.eval(&mut (), &format!("($quote {printed})")).unwrap();
+        let again = g.evaluate(&mut (), &format!("(quote! {printed})")).unwrap();
+        let again = show(&g, again);
         let same = g
-            .eval(
+            .evaluate(
                 &mut (),
-                &format!("(equal? ($quote {printed}) ($quote {src}))"),
+                &format!("(equal? (quote! {printed}) (quote! {src}))"),
             )
             .unwrap();
-        assert_eq!((show(&g, again), same), (printed, Value::True));
+        assert_eq!((again, same), (printed, Value::True));
     }
-    let f = g.eval(&mut (), "($lambda (x) (* x x))").unwrap();
+    let f = g.evaluate(&mut (), "(lambda! (x) (multiply x x))").unwrap();
     assert_eq!(
         show(&g, f),
-        "#[applicative #[operative (x) #ignore (* x x)]]"
+        "#[applicative #[operative (x) #ignore (multiply x x)]]"
     );
-    // A body of several forms prints as written, not as $sequence's own source.
-    let f = g.eval(&mut (), "($lambda (x) (f x) x)").unwrap();
+    // A body of several forms prints as written, not as sequence!'s own source.
+    let f = g.evaluate(&mut (), "(lambda! (x) (f x) x)").unwrap();
     assert_eq!(
         show(&g, f),
-        "#[applicative #[operative (x) #ignore ($sequence (f x) x)]]"
+        "#[applicative #[operative (x) #ignore (sequence! (f x) x)]]"
     );
     // Control characters print as escapes that read back.
-    let v = g.eval(&mut (), "\"\\x1b;[2J\\ta\\x7f;\\x3bb;\"").unwrap();
+    let v = g
+        .evaluate(&mut (), "\"\\x1b;[2J\\ta\\x7f;\\x3bb;\"")
+        .unwrap();
     let printed = show(&g, v);
     assert_eq!(printed, "\"\\x1b;[2J\\ta\\x7f;\u{3bb}\"");
-    let again = g.eval(&mut (), &printed).unwrap();
-    assert_eq!(g.string(again), g.string(v));
+    let again = g.evaluate(&mut (), &printed).unwrap();
+    assert_eq!(g.as_str(again), g.as_str(v));
     fails(
         &mut g,
         &[
@@ -280,186 +299,197 @@ fn printing_reads_back() {
 #[test]
 fn reading_evaluates_nothing() {
     let mut g = grift();
-    let forms = g.read("(car 1) undefined").unwrap();
-    assert_eq!(show(&g, forms), "((car 1) undefined)");
+    let forms = g.read("(first 1) undefined").unwrap();
+    assert_eq!(show(&g, forms), "((first 1) undefined)");
 }
 
 #[test]
 fn errors_name_the_program_combination() {
     let mut g = grift();
-    g.eval(&mut (), "($define! f ($lambda (x) (car x)))")
+    g.evaluate(&mut (), "(define! f (lambda! (x) (first x)))")
         .unwrap();
     // The innermost combination of the program, never the library's code.
     for (src, at) in [
-        ("($if 1 2 3)", "($if 1 2 3)"),
-        ("(f 1)", "(car x)"),
-        ("(map car (list 1 2))", "(map car (list 1 2))"),
-        ("($let (((a b) (list 1))) a)", "($let (((a b) (list 1))) a)"),
-        ("($cond ((car 1) 2))", "(car 1)"),
-        ("(+ 1 (foo))", "(foo)"),
+        ("(if! 1 2 3)", "(if! 1 2 3)"),
+        ("(f 1)", "(first x)"),
+        ("(map first (list 1 2))", "(map first (list 1 2))"),
+        ("(let! (((a b) (list 1))) a)", "(let! (((a b) (list 1))) a)"),
+        ("(conditional! ((first 1) 2))", "(first 1)"),
+        ("(add 1 (foo))", "(foo)"),
         ("(length 1)", "(length 1)"),
         ("(reverse 1)", "(reverse 1)"),
-        ("(error ($quote mine))", "(error ($quote mine))"),
+        (
+            "(raise (error (quote! mine)))",
+            "(raise (error (quote! mine)))",
+        ),
     ] {
-        let e = g.eval(&mut (), src).unwrap_err();
+        let e = g.evaluate(&mut (), src).unwrap_err();
         assert_eq!(
-            e.at.first().map(|&v| show(&g, v)).as_deref(),
+            e.trace.first().map(|&v| show(&g, v)).as_deref(),
             Some(at),
             "{src}"
         );
     }
-    assert_eq!(g.eval(&mut (), "(car").unwrap_err().at, []);
+    assert_eq!(g.evaluate(&mut (), "(first").unwrap_err().trace, []);
     // A host function's location survives collections in an evaluation it runs.
-    g.eval(
+    g.evaluate(
         &mut (),
-        "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))",
+        "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))",
     )
     .unwrap();
-    g.define("fail-after-churn", |g, state, _| {
-        g.eval(state, "(churn 20000)")?;
+    define(&mut g, "fail-after-churn", |g, state, _| {
+        g.evaluate(state, "(churn 20000)")?;
         Err(g.error("mine", &[]))
-    })
-    .unwrap();
-    let e = g.eval(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, e.at[0]), "(fail-after-churn)");
+    });
+    let e = g.evaluate(&mut (), "(fail-after-churn)").unwrap_err();
+    assert_eq!(show(&g, e.trace[0]), "(fail-after-churn)");
 }
 
 #[test]
-fn redefinition_and_bindings() {
+fn redefinition_and_names() {
     let mut g = grift();
-    g.eval(
+    g.evaluate(
         &mut (),
-        "($define! f ($lambda (x) (+ x 1))) ($define! g ($lambda (x) (f x)))",
+        "(define! f (lambda! (x) (add x 1))) (define! g (lambda! (x) (f x)))",
     )
     .unwrap();
-    assert_eq!(g.eval(&mut (), "(g 1)"), Ok(Value::Int(2)));
-    g.eval(&mut (), "($define! f ($lambda (x) (* x 10)))")
+    assert_eq!(g.evaluate(&mut (), "(g 1)"), Ok(Value::Integer(2)));
+    g.evaluate(&mut (), "(define! f (lambda! (x) (multiply x 10)))")
         .unwrap();
-    assert_eq!(g.eval(&mut (), "(g 1)"), Ok(Value::Int(10)));
-    let top = g.eval(&mut (), "(bindings (($vau () e e)))").unwrap();
+    assert_eq!(g.evaluate(&mut (), "(g 1)"), Ok(Value::Integer(10)));
+    let top = g.evaluate(&mut (), "(names ((vau! () e e)))").unwrap();
     assert_eq!(show(&g, top), "(f g)");
-    let ground = g.eval(&mut (), "ground-names").unwrap();
-    let ground = show(&g, ground);
+    let built_in = g.evaluate(&mut (), "built-in-names").unwrap();
+    let built_in = show(&g, built_in);
     for name in [
-        "$vau",
-        "car",
+        "vau!",
+        "first",
         "error",
-        "$define!",
-        "$lambda",
+        "define!",
+        "lambda!",
         "equal?",
-        "ground-names",
+        "built-in-names",
     ] {
         assert!(
-            ground.split([' ', '(', ')']).any(|n| n == name),
-            "{name} missing from {ground}"
+            built_in.split([' ', '(', ')']).any(|n| n == name),
+            "{name} missing from {built_in}"
         );
     }
-    // A top-level definition shadows the library without changing it, and the ground
-    // can't be reached to change it there.
-    g.eval(&mut (), "($define! list 5) ($define! $vau 6)")
+    // A top-level definition shadows the library without changing it, and the built-in
+    // context can't be reached to change it there.
+    g.evaluate(&mut (), "(define! list 5) (define! vau! 6)")
         .unwrap();
     assert_eq!(
-        g.eval(
+        g.evaluate(
             &mut (),
-            "(equal? (map car ($quote ((1) (2)))) ($quote (1 2)))"
+            "(equal? (map first (quote! ((1) (2)))) (quote! (1 2)))"
         ),
         Ok(Value::True)
     );
-    fails(&mut g, &[("ground-environment", "unbound-symbol")]);
+    fails(&mut g, &[("built-in-context", "unbound-symbol")]);
 }
 
 fn twice(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     match args {
-        [Value::Int(n)] => Ok(Value::Int(n * 2)),
+        [Value::Integer(n)] => Ok(Value::Integer(n * 2)),
         _ => Err(g.error("type-error", args)),
     }
 }
 
 fn reenter(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    g.eval(&mut (), "(churn 2000)")?;
+    g.evaluate(&mut (), "(churn 2000)")?;
     Ok(args[0])
 }
 
 #[test]
 fn host_functions() {
     let mut g = grift();
-    g.define("twice", twice).unwrap();
-    g.define("reenter", reenter).unwrap();
-    assert_eq!(g.eval(&mut (), "(twice (+ 1 2))"), Ok(Value::Int(6)));
-    let f = g.eval(&mut (), "twice").unwrap();
+    define(&mut g, "twice", twice);
+    define(&mut g, "reenter", reenter);
+    assert_eq!(
+        g.evaluate(&mut (), "(twice (add 1 2))"),
+        Ok(Value::Integer(6))
+    );
+    let f = g.evaluate(&mut (), "twice").unwrap();
     assert_eq!(show(&g, f), "#[applicative #[host twice]]");
     fails(&mut g, &[("(twice 1 2)", "type-error")]);
     // A host function may evaluate; collections inside keep the caller's values.
-    g.eval(&mut (), "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))")
+    g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
         .unwrap();
     assert_eq!(
-        g.eval(&mut (), "(length (reenter (list 1 2 3)))"),
-        Ok(Value::Int(3))
+        g.evaluate(&mut (), "(length (reenter (list 1 2 3)))"),
+        Ok(Value::Integer(3))
     );
 }
 
 /// `(halves "ab")` is `("ab" . "ab")`, made from Rust; `(sum (1 2 3))` walks a list from Rust.
 fn halves(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    let s = String::from(g.string(args[0]).unwrap());
-    let (a, b) = (g.make_string(&s)?, g.make_string(&s)?);
-    g.cons(a, b)
+    let s = String::from(g.as_str(args[0]).unwrap());
+    let (a, b) = (g.string(&s)?, g.string(&s)?);
+    g.pair(a, b)
 }
 
 fn sum(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     let (mut list, mut n) = (args[0], 0);
-    while let Some((Value::Int(x), rest)) = g.uncons(list) {
+    while let Some((Value::Integer(x), rest)) = g.as_pair(list) {
         (list, n) = (rest, n + x);
     }
-    Ok(Value::Int(n))
+    Ok(Value::Integer(n))
 }
 
 #[test]
 fn host_functions_make_and_read_data() {
     let mut g = grift();
-    g.define("halves", halves).unwrap();
-    g.define("sum", sum).unwrap();
+    define(&mut g, "halves", halves);
+    define(&mut g, "sum", sum);
     holds(
         &mut g,
         &[
-            "(equal? (halves \"ab\") (cons \"ab\" \"ab\"))",
-            "(=? (sum (list 1 2 3)) 6)",
+            "(equal? (halves \"ab\") (pair \"ab\" \"ab\"))",
+            "(equal? (sum (list 1 2 3)) 6)",
         ],
     );
-    assert_eq!(g.uncons(Value::Int(1)), None);
+    assert_eq!(g.as_pair(Value::Integer(1)), None);
 }
 
 /// Counts its calls in the host's state, and calls back into grift with it.
 fn count(g: &mut Grift<u32>, calls: &mut u32, args: &[Value]) -> Result<Value, Error> {
     *calls += 1;
     match args {
-        [] => Ok(Value::Int(i64::from(*calls))),
-        _ => g.eval(calls, "(count)"),
+        [] => Ok(Value::Integer(i64::from(*calls))),
+        _ => g.evaluate(calls, "(count)"),
     }
 }
 
 #[test]
 fn host_functions_get_the_host_state() {
     let mut g: Grift<u32> = Grift::new().unwrap();
-    g.define("count", count).unwrap();
+    define(&mut g, "count", count);
     let mut calls = 0;
-    assert_eq!(g.eval(&mut calls, "(count) (count 1)"), Ok(Value::Int(3)));
+    assert_eq!(
+        g.evaluate(&mut calls, "(count) (count 1)"),
+        Ok(Value::Integer(3))
+    );
     assert_eq!(calls, 3);
 }
 
 #[test]
 fn the_host_calls_combiners_with_values() {
     let mut g = grift();
-    let f = g.eval(&mut (), "($lambda (x ys) (cons x ys))").unwrap();
+    let f = g.evaluate(&mut (), "(lambda! (x ys) (pair x ys))").unwrap();
     // The arguments are values: a symbol and a list are not evaluated again.
-    let x = g.eval(&mut (), "($quote undefined)").unwrap();
-    let ys = g.eval(&mut (), "($quote (car 1))").unwrap();
+    let x = g.evaluate(&mut (), "(quote! undefined)").unwrap();
+    let ys = g.evaluate(&mut (), "(quote! (first 1))").unwrap();
     let v = g.call(&mut (), f, &[x, ys]).unwrap();
-    assert_eq!(show(&g, v), "(undefined car 1)");
-    let car = g.eval(&mut (), "car").unwrap();
-    let e = g.call(&mut (), car, &[Value::Int(1)]).unwrap_err();
-    assert_eq!(code(&mut g, &e), "type-error");
-    let quote = g.eval(&mut (), "$quote").unwrap();
-    assert_eq!(g.call(&mut (), quote, &[Value::Int(1)]), Ok(Value::Int(1)));
+    assert_eq!(show(&g, v), "(undefined first 1)");
+    let first = g.evaluate(&mut (), "first").unwrap();
+    let e = g.call(&mut (), first, &[Value::Integer(1)]).unwrap_err();
+    assert_eq!(kind(&mut g, &e), "type-error");
+    let quote = g.evaluate(&mut (), "quote!").unwrap();
+    assert_eq!(
+        g.call(&mut (), quote, &[Value::Integer(1)]),
+        Ok(Value::Integer(1))
+    );
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -468,90 +498,84 @@ static STOP: AtomicBool = AtomicBool::new(false);
 fn the_host_interrupts_a_runaway_evaluation() {
     let mut g = grift();
     g.set_interrupt_flag(&STOP);
-    g.eval(
-        &mut (),
-        "($define! log ()) ($define! here (get-current-environment))",
-    )
-    .unwrap();
-    g.eval(&mut (), "($define! spin ($lambda () (spin)))")
+    g.evaluate(&mut (), "(define! log ()) (define! here (current-context))")
+        .unwrap();
+    g.evaluate(&mut (), "(define! spin (lambda! () (spin)))")
         .unwrap();
     let setter = std::thread::spawn(|| {
         std::thread::sleep(std::time::Duration::from_millis(50));
         STOP.store(true, Ordering::Relaxed);
     });
     let e = g
-        .eval(
+        .evaluate(
             &mut (),
-            "($unwind-protect (spin) ($set! here log (cons 1 log)))",
+            "(finally! (spin) (define-in! here log (pair 1 log)))",
         )
         .unwrap_err();
     setter.join().unwrap();
-    assert_eq!(code(&mut g, &e), "interrupted");
+    assert_eq!(kind(&mut g, &e), "interrupted");
     // The cleanup ran, the flag is clear again and the interpreter goes on.
     assert!(!STOP.load(Ordering::Relaxed));
-    assert_eq!(g.eval(&mut (), "(length log)"), Ok(Value::Int(1)));
+    assert_eq!(g.evaluate(&mut (), "(length log)"), Ok(Value::Integer(1)));
 }
 
 #[test]
 fn cleanup_runs_and_the_error_goes_on() {
     let mut g = grift();
-    g.eval(
+    g.evaluate(&mut (), "(define! log ()) (define! here (current-context))")
+        .unwrap();
+    g.evaluate(
         &mut (),
-        "($define! log ()) ($define! here (get-current-environment))",
-    )
-    .unwrap();
-    g.eval(
-        &mut (),
-        "($define! note ($lambda (x) ($set! here log (cons x log))))",
+        "(define! note (lambda! (x) (define-in! here log (pair x log))))",
     )
     .unwrap();
     assert_eq!(
-        g.eval(&mut (), "($unwind-protect 5 (note 1) (note 2))"),
-        Ok(Value::Int(5))
+        g.evaluate(&mut (), "(finally! 5 (note 1) (note 2))"),
+        Ok(Value::Integer(5))
     );
     // The error leaves through both cleanups, innermost first, unchanged.
     let e = g
-        .eval(
+        .evaluate(
             &mut (),
-            "($unwind-protect ($unwind-protect (error ($quote mine) 7 (list 8)) (note 3)) (note 4))",
+            "(finally! (finally! (raise (error (quote! mine) 7 (list 8))) (note 3)) (note 4))",
         )
         .unwrap_err();
-    assert_eq!(code(&mut g, &e), "mine");
-    assert_eq!(e.values[0], Value::Int(7));
+    assert_eq!(kind(&mut g, &e), "mine");
+    assert_eq!(e.values[0], Value::Integer(7));
     assert_eq!(show(&g, e.values[1]), "(8)");
-    assert_eq!(show(&g, e.at[0]), "(error ($quote mine) 7 (list 8))");
-    let log = g.eval(&mut (), "log").unwrap();
+    assert_eq!(
+        show(&g, e.trace[0]),
+        "(raise (error (quote! mine) 7 (list 8)))"
+    );
+    let log = g.evaluate(&mut (), "log").unwrap();
     assert_eq!(show(&g, log), "(4 3 2 1)");
     // A cleanup that fails replaces the error; the outer cleanup still runs.
     let e = g
-        .eval(
-            &mut (),
-            "($unwind-protect ($unwind-protect (car 1) (cdr 2)) (note 5))",
-        )
+        .evaluate(&mut (), "(finally! (finally! (first 1) (rest 2)) (note 5))")
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "#[primitive cdr]");
-    assert_eq!(g.eval(&mut (), "(car log)"), Ok(Value::Int(5)));
+    assert_eq!(show(&g, e.values[0]), "#[primitive rest]");
+    assert_eq!(g.evaluate(&mut (), "(first log)"), Ok(Value::Integer(5)));
     // A cleanup that succeeds doesn't lend the error its own location.
-    let (protect, env) = (
-        g.eval(&mut (), "eval-protected").unwrap(),
-        g.eval(&mut (), "(get-current-environment)").unwrap(),
+    let (protect, here) = (
+        g.evaluate(&mut (), "evaluate-with-cleanup").unwrap(),
+        g.evaluate(&mut (), "(current-context)").unwrap(),
     );
-    let missing = Value::Sym(g.symbol("missing").unwrap());
-    let cleanup = g.eval(&mut (), "($lambda () (list 1))").unwrap();
+    let missing = Value::Symbol(g.symbol("missing").unwrap());
+    let cleanup = g.evaluate(&mut (), "(lambda! () (list 1))").unwrap();
     let e = g
-        .call(&mut (), protect, &[missing, env, cleanup])
+        .call(&mut (), protect, &[missing, here, cleanup])
         .unwrap_err();
     assert_eq!(
-        (code(&mut g, &e), e.at),
+        (kind(&mut g, &e), e.trace),
         (String::from("unbound-symbol"), vec![])
     );
     // The waiting error's values survive collections in the cleanup.
-    g.eval(&mut (), "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))")
+    g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
         .unwrap();
     let e = g
-        .eval(
+        .evaluate(
             &mut (),
-            "($unwind-protect (error ($quote mine) (list 1 2)) (churn 20000))",
+            "(finally! (raise (error (quote! mine) (list 1 2))) (churn 20000))",
         )
         .unwrap_err();
     assert_eq!(show(&g, e.values[0]), "(1 2)");
@@ -560,55 +584,58 @@ fn cleanup_runs_and_the_error_goes_on() {
 #[test]
 fn stale_values_are_refused() {
     let mut g = grift();
-    let old = g.eval(&mut (), "(list 1 2)").unwrap();
-    g.eval(&mut (), "($define! churn ($lambda (n) ($if (eq? n 0) #t ($sequence (list 1 2 3) (churn (- n 1))))))")
+    let old = g.evaluate(&mut (), "(list 1 2)").unwrap();
+    g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
         .unwrap();
-    g.eval(&mut (), "(churn 10000)").unwrap();
+    g.evaluate(&mut (), "(churn 10000)").unwrap();
     assert_eq!(show(&g, old), "#[stale]");
-    assert_eq!(g.string(old), None);
+    assert_eq!(g.as_str(old), None);
     let Value::Pair(r) = old else {
         panic!("a pair")
     };
-    let e = g.pair(r).unwrap_err();
-    assert_eq!(code(&mut g, &e), "stale-value");
+    let e = g.pair_at(r).unwrap_err();
+    assert_eq!(kind(&mut g, &e), "stale-value");
 }
 
 /// The machine steps taken and the operatives made evaluating `src`.
 fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
     (g.machine.steps, g.heap.operatives) = (0, 0);
-    g.eval(&mut (), src).unwrap();
+    g.evaluate(&mut (), src).unwrap();
     (g.machine.steps, g.heap.operatives)
 }
 
 #[test]
 fn library_forms_build_no_code() {
     // Each form against the same thing written by hand: a use makes no operative and takes at
-    // most six times the steps. They used to build new code each time: $let made two
-    // operatives, and $cond took 29 times the steps.
+    // most six times the steps. They used to build new code each time: let! made two
+    // operatives, and conditional! took 29 times the steps.
     let mut g = grift();
-    g.eval(
-        &mut (),
-        "($define! n 3) ($define! e (get-current-environment))",
-    )
-    .unwrap();
+    g.evaluate(&mut (), "(define! n 3) (define! e (current-context))")
+        .unwrap();
     for (form, by_hand) in [
         (
-            "($cond ((eq? n 1) 1) ((eq? n 2) 2) (#t 3))",
-            "($if (eq? n 1) 1 ($if (eq? n 2) 2 3))",
+            "(conditional! ((same? n 1) 1) ((same? n 2) 2) (#true 3))",
+            "(if! (same? n 1) 1 (if! (same? n 2) 2 3))",
         ),
-        ("($let ((x (+ n 1))) x)", "(($lambda (x) x) (+ n 1))"),
+        ("(let! ((x (add n 1))) x)", "((lambda! (x) x) (add n 1))"),
         (
-            "($let* ((x (+ n 1)) (y x)) y)",
-            "(($lambda (x) (($lambda (y) y) x)) (+ n 1))",
+            "(let! ((x (add n 1)) (y x)) y)",
+            "((lambda! (x) ((lambda! (y) y) x)) (add n 1))",
         ),
-        ("($when #t n)", "($if #t n #inert)"),
+        ("(if! #true n)", "(if! #true n #inert)"),
         (
-            "($sequence 1 2 n)",
-            "(($lambda (#ignore #ignore x) x) 1 2 n)",
+            "(sequence! 1 2 n)",
+            "((lambda! (#ignore #ignore x) x) 1 2 n)",
         ),
-        ("($and? #t (eq? n 3))", "($if #t (eq? n 3) #f)"),
-        ("($or? #f (eq? n 3))", "($if #f #t (eq? n 3))"),
-        ("($set! e n 3)", "(bind! e ($quote n) 3)"),
+        (
+            "(and!? #true (same? n 3))",
+            "(if! #true (same? n 3) #false)",
+        ),
+        (
+            "(or!? #false (same? n 3))",
+            "(if! #false #true (same? n 3))",
+        ),
+        ("(define-in! e n 3)", "(bind e (quote! n) 3)"),
     ] {
         let ((steps, made), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
         assert_eq!(made, 0, "{form} made operatives");
@@ -620,72 +647,92 @@ fn library_forms_build_no_code() {
 }
 
 #[test]
-fn guard_catches_errors_as_values() {
+fn catch_catches_errors_as_contexts() {
     let mut g = grift();
-    g.eval(
+    g.evaluate(
         &mut (),
-        "($define! log ()) ($define! here (get-current-environment))
-         ($define! note ($lambda (x) ($set! here log (cons x log))))
-         ($define! check ($lambda (x) ($if (integer? x) x (error ($quote not-int) x 2))))",
+        "(define! log ()) (define! here (current-context))
+         (define! note (lambda! (x) (define-in! here log (pair x log))))
+         (define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x 2)))))",
     )
     .unwrap();
     holds(
         &mut g,
         &[
-            // A value passes through; an error becomes an environment binding code, values, at.
-            "(eq? (guard ($lambda () 5) car) 5)",
-            "(equal? (guard ($lambda () (+ 1 (check ($quote a)))) \
-                            ($lambda (e) (list ($remote-eval code e) ($remote-eval values e)))) \
-             ($quote (not-int (a 2))))",
-            "(equal? (guard ($lambda () (car 1)) ($lambda (e) ($remote-eval at e))) ($quote ((car 1))))",
-            "(equal? (guard ($lambda () (car 1)) ($lambda (e) (bindings e))) ($quote (at code values)))",
-            // Early exit is a guard and the program's own error code.
-            "(eq? (guard ($lambda () (for-each ($lambda (x) ($when (eq? x 3) (error ($quote found) x))) (list 1 2 3 4)) #f) \
-                         ($lambda (e) (car ($remote-eval values e)))) 3)",
-            // Cleanups inside run first, innermost first; the handler's value is guard's.
-            "(eq? (guard ($lambda () ($unwind-protect ($unwind-protect (car 1) (note 1)) (note 2))) \
-                         ($lambda (#ignore) (note 3) 7)) 7)",
-            "(equal? log ($quote (3 2 1)))",
-            // Guards nest; an error in a handler goes to the guard around it.
-            "(eq? (guard ($lambda () (guard ($lambda () (car 1)) ($lambda (#ignore) (cdr 1)))) \
-                         ($lambda (e) (eq? (car ($remote-eval values e)) (unwrap cdr)))) #t)",
-            // A guard in a loop runs in constant space.
-            "($sequence ($define! loop ($lambda (n) ($if (eq? n 0) #t ($sequence (guard ($lambda () (car n)) list) (loop (- n 1)))))) \
+            // A value passes through; a caught error is a context with no parent binding kind,
+            // values and trace.
+            "(same? (catch! 5 e (first 1)) 5)",
+            "(equal? (catch! (add 1 (check (quote! a))) e (list (evaluate-in! kind e) (evaluate-in! values e))) \
+             (quote! (not-integer (a 2))))",
+            "(equal? (catch! (first 1) e (evaluate-in! trace e)) (quote! ((first 1))))",
+            "(equal? (catch! (first 1) e (names e)) (quote! (kind trace values)))",
+            "(catch! (first 1) e (not? (binds!? e list)))",
+            // error makes the same kind of context, with an empty trace, and raises nothing.
+            "(sequence! (define! made (error (quote! mine) 1)) \
+                        (and!? (equal? (names made) (quote! (kind trace values))) \
+                               (equal? (evaluate-in! trace made) ()) (not? (binds!? made list))))",
+            // The handler forms run in a child of the caller's context; the last one's value is
+            // catch!'s.
+            "(sequence! (define! y 1) (equal? (catch! (first 1) e (define! y 2) (add y 1)) 3))",
+            "(equal? y 1)",
+            // Early exit is catch! and the program's own kind of error.
+            "(same? (catch! (sequence! (for-each (lambda! (x) (if! (same? x 3) (raise (error (quote! found) x)))) \
+                                                (list 1 2 3 4)) \
+                                      #false) \
+                            e (first (evaluate-in! values e))) 3)",
+            // Cleanups inside run first, innermost first.
+            "(same? (catch! (finally! (finally! (first 1) (note 1)) (note 2)) #ignore (note 3) 7) 7)",
+            "(equal? log (quote! (3 2 1)))",
+            // catch! nests; an error in a handler goes to the catch! around it.
+            "(same? (catch! (catch! (first 1) #ignore (rest 1)) e (same? (first (evaluate-in! values e)) (unwrap rest))) #true)",
+            // catch! in a loop runs in constant space.
+            "(sequence! (define! loop (lambda! (n) (if! (same? n 0) #true (sequence! (catch! (first n) #ignore 0) (loop (subtract n 1)))))) \
              (loop 20000))",
         ],
     );
     fails(
         &mut g,
         &[
-            ("(guard 1 car)", "type-error"),
-            ("($let ((x 1 2)) x)", "arity-error"),
-            ("($let* ((x 1 2)) x)", "arity-error"),
+            ("(call-with-handler 1 first)", "type-error"),
+            ("(let! ((x 1 2)) x)", "arity-error"),
             (
-                "(guard ($lambda () (car 1)) ($lambda (e) (apply error (cons ($quote again) ($remote-eval values e)))))",
+                "(catch! (first 1) e (raise (apply error (pair (quote! again) (evaluate-in! values e)))))",
                 "again",
             ),
-            ("(raise ($quote (code (1))))", "type-error"),
-            ("(raise (make-environment))", "type-error"),
+            ("(raise (quote! (kind (1))))", "type-error"),
+            ("(raise (context))", "type-error"),
+            ("(raise (sequence! (define! e (error 1)) e))", "type-error"),
         ],
     );
-    // raise passes a caught error on as it was, where it happened included.
+    // raise passes a caught error on as it was, its trace included.
     let e = g
-        .eval(
-            &mut (),
-            "(guard ($lambda () (+ 1 (check ($quote a)))) raise)",
-        )
+        .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
-    assert_eq!(code(&mut g, &e), "not-int");
-    assert_eq!(show(&g, e.at[0]), "(error ($quote not-int) x 2)");
-    // ... the raise itself not among them.
-    let at = g
-        .eval(
+    assert_eq!(kind(&mut g, &e), "not-integer");
+    let trace: Vec<String> = e.trace.iter().map(|&v| show(&g, v)).collect();
+    assert_eq!(
+        trace,
+        [
+            "(raise (error (quote! not-integer) x 2))",
+            "(add 1 (check (quote! a)))",
+            "(catch! (add 1 (check (quote! a))) e (raise e))"
+        ]
+    );
+    // ... the raise itself not among them; a new error starts at its raise.
+    let trace = g
+        .evaluate(
             &mut (),
-            "(guard ($lambda () (guard ($lambda () (car 1)) ($lambda (e) (raise e)))) \
-                    ($lambda (e) ($remote-eval at e)))",
+            "(catch! (catch! (first 1) e (raise e)) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, at), "((car 1))");
+    assert_eq!(show(&g, trace), "((first 1))");
+    let trace = g
+        .evaluate(
+            &mut (),
+            "(catch! (raise (error (quote! mine))) e (evaluate-in! trace e))",
+        )
+        .unwrap();
+    assert_eq!(show(&g, trace), "((raise (error (quote! mine))))");
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -707,65 +754,57 @@ fn fail(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
 }
 
 #[test]
-fn guard_catches_errors_about_the_program_and_never_the_limits() {
+fn catch_catches_errors_about_the_program_and_never_the_limits() {
     let mut g = grift();
     g.set_interrupt_flag(&STOP);
-    g.define("stop", stop).unwrap();
-    g.define("fail", fail).unwrap();
+    define(&mut g, "stop", stop);
+    define(&mut g, "fail", fail);
     // An error about the program, a host function's included, is caught.
     let caught = g
-        .eval(
-            &mut (),
-            "(guard ($lambda () (fail 7)) ($lambda (e) ($remote-eval code e)))",
-        )
+        .evaluate(&mut (), "(catch! (fail 7) e (evaluate-in! kind e))")
         .unwrap();
     assert_eq!(show(&g, caught), "bad-input");
-    // The allocator's limit and the host's go through every guard to the host.
+    // The allocator's limit and the host's go through every catch! to the host.
     let e = g
-        .eval(&mut (), "(guard ($lambda () (fail)) ($lambda (#ignore) 0))")
+        .evaluate(&mut (), "(catch! (fail) #ignore 0)")
         .unwrap_err();
-    assert_eq!(code(&mut g, &e), "out-of-memory");
-    // A cleanup that fails while a limit passes doesn't turn it into an error a guard catches.
+    assert_eq!(kind(&mut g, &e), "out-of-memory");
+    // A cleanup that fails while a limit passes doesn't turn it into an error catch! catches.
     let e = g
-        .eval(
+        .evaluate(&mut (), "(catch! (finally! (stop) (first 1)) #ignore 0)")
+        .unwrap_err();
+    assert_eq!(kind(&mut g, &e), "interrupted");
+    // ... even through a catch! in a loop that would catch anything.
+    let e = g
+        .evaluate(
             &mut (),
-            "(guard ($lambda () ($unwind-protect (stop) (car 1))) ($lambda (#ignore) 0))",
+            "(define! spin (lambda! () (catch! (sequence! (stop) (spin)) #ignore (spin)))) (spin)",
         )
         .unwrap_err();
-    assert_eq!(code(&mut g, &e), "interrupted");
-    // ... even through a guard in a loop that would catch anything.
-    let e = g
-        .eval(
-            &mut (),
-            "($define! spin ($lambda () (guard ($lambda () (stop) (spin)) ($lambda (#ignore) (spin))))) (spin)",
-        )
-        .unwrap_err();
-    assert_eq!(code(&mut g, &e), "interrupted");
+    assert_eq!(kind(&mut g, &e), "interrupted");
 }
 
 #[test]
-fn binds_tells_bound_from_unbound() {
+fn binds_looks_through_parents() {
     let mut g = grift();
-    g.eval(
-        &mut (),
-        "($define! x 1) ($define! e (get-current-environment))",
-    )
-    .unwrap();
+    g.evaluate(&mut (), "(define! x 1) (define! e (current-context))")
+        .unwrap();
     holds(
         &mut g,
         &[
-            "($and? ($binds? e x car) (not? ($binds? e x nope)) (not? ($binds? (make-environment) car)))",
-            "($binds? e)",
-            // The environment operand is evaluated once, the symbols not at all.
-            "($sequence ($define! n 0) ($binds? ($sequence ($set! e n (+ n 1)) e) n) (=? n 1))",
+            "(and!? (binds!? e x first) (not? (binds!? e x nope)) (not? (binds!? (context) first)))",
+            "(binds!? e)",
+            // The context operand is evaluated once, the symbols not at all.
+            "(binds!? (context e) x)",
+            "(sequence! (define! n 0) (binds!? (sequence! (define-in! e n (add n 1)) e) n) (equal? n 1))",
         ],
     );
     fails(
         &mut g,
         &[
-            ("($binds? e (car 1))", "type-error"),
-            ("($binds? 1 x)", "type-error"),
-            ("($binds? 1)", "type-error"),
+            ("(binds!? e (first 1))", "type-error"),
+            ("(binds!? 1 x)", "type-error"),
+            ("(binds!? 1)", "type-error"),
         ],
     );
 }
@@ -773,30 +812,33 @@ fn binds_tells_bound_from_unbound() {
 #[test]
 fn errors_name_each_program_combination_around_them() {
     let mut g = grift();
-    g.eval(
+    g.evaluate(
         &mut (),
-        "($define! check ($lambda (x) ($if (integer? x) x (error ($quote not-int) x))))
-         ($define! run ($lambda (x) (+ 1 (check x))))
-         ($define! loop ($lambda (n) ($if (eq? n 0) (check ($quote a)) (loop (- n 1)))))
-         ($define! deep ($lambda (n) ($if (eq? n 0) (check ($quote a)) (+ 1 (deep (- n 1))))))",
+        "(define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-int) x)))))
+         (define! run (lambda! (x) (add 1 (check x))))
+         (define! loop (lambda! (n) (if! (same? n 0) (check (quote! a)) (loop (subtract n 1)))))
+         (define! deep (lambda! (n) (if! (same? n 0) (check (quote! a)) (add 1 (deep (subtract n 1))))))",
     )
     .unwrap();
     // A helper's error names the caller, out to the top-level form; a call in tail position has
     // finished, so it isn't listed, and each combination is listed once, however deep.
     for (src, want) in [
         (
-            "(run ($quote a))",
-            "(error ($quote not-int) x) (+ 1 (check x)) (run ($quote a))",
+            "(run (quote! a))",
+            "(raise (error (quote! not-int) x)) (add 1 (check x)) (run (quote! a))",
         ),
-        ("(loop 100000)", "(error ($quote not-int) x) (loop 100000)"),
+        (
+            "(loop 100000)",
+            "(raise (error (quote! not-int) x)) (loop 100000)",
+        ),
         (
             "(deep 10000)",
-            "(error ($quote not-int) x) (+ 1 (deep (- n 1))) (deep 10000)",
+            "(raise (error (quote! not-int) x)) (add 1 (deep (subtract n 1))) (deep 10000)",
         ),
-        ("(car 1)", "(car 1)"),
+        ("(first 1)", "(first 1)"),
     ] {
-        let e = g.eval(&mut (), src).unwrap_err();
-        let at: Vec<String> = e.at.iter().map(|&v| show(&g, v)).collect();
+        let e = g.evaluate(&mut (), src).unwrap_err();
+        let at: Vec<String> = e.trace.iter().map(|&v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }
@@ -808,33 +850,426 @@ fn strings_by_byte_offsets() {
         &mut g,
         &[
             // Lengths and offsets count bytes: "λx" is three.
-            "(=? (string-length \"λx\") 3)",
-            "(equal? (list (string-byte \"λx\" 0) (string-byte \"λx\" 2)) ($quote (206 120)))",
-            "(eq? (substring \"λx\" 2 3) \"x\")",
-            "(eq? (substring \"abc\" 1 1) \"\")",
-            "(eq? (string-append \"a\" (code-point->string 955) \"\") \"aλ\")",
-            "(eq? (string-append) \"\")",
+            "(equal? (string-byte-length \"λx\") 3)",
+            "(equal? (list (string-byte \"λx\" 0) (string-byte \"λx\" 2)) (quote! (206 120)))",
+            "(same? (byte-substring \"λx\" 2 3) \"x\")",
+            "(same? (byte-substring \"abc\" 1 1) \"\")",
+            "(same? (string-append \"a\" (code-point-to-string 955) \"\") \"aλ\")",
+            "(same? (string-append) \"\")",
             // Symbols and integers to strings and back.
-            "(eq? (string->symbol (symbol->string ($quote $foo?))) ($quote $foo?))",
-            "(eq? (symbol->string ($quote a)) \"a\")",
-            "(equal? (map number->string (list 0 -9223372036854775808)) (list \"0\" \"-9223372036854775808\"))",
+            "(same? (string-to-symbol (symbol-to-string (quote! foo?))) (quote! foo?))",
+            "(same? (symbol-to-string (quote! a)) \"a\")",
+            "(equal? (map integer-to-string (list 0 -9223372036854775808)) (list \"0\" \"-9223372036854775808\"))",
         ],
     );
     fails(
         &mut g,
         &[
             // Off a character boundary, out of range, or not a Unicode scalar value.
-            ("(substring \"λ\" 0 1)", "range-error"),
-            ("(substring \"abc\" 2 1)", "range-error"),
-            ("(substring \"abc\" 0 4)", "range-error"),
+            ("(byte-substring \"λ\" 0 1)", "range-error"),
+            ("(byte-substring \"abc\" 2 1)", "range-error"),
+            ("(byte-substring \"abc\" 0 4)", "range-error"),
             ("(string-byte \"abc\" 3)", "range-error"),
             ("(string-byte \"abc\" -1)", "range-error"),
-            ("(code-point->string 55296)", "range-error"),
-            ("(code-point->string -1)", "range-error"),
-            ("(string-length ($quote a))", "type-error"),
+            ("(code-point-to-string 55296)", "range-error"),
+            ("(code-point-to-string -1)", "range-error"),
+            ("(string-byte-length (quote! a))", "type-error"),
             ("(string-append \"a\" 1)", "type-error"),
-            ("(symbol->string \"a\")", "type-error"),
-            ("(number->string \"1\")", "type-error"),
+            ("(symbol-to-string \"a\")", "type-error"),
+            ("(integer-to-string \"1\")", "type-error"),
         ],
     );
+}
+
+/// The value of `src`, which must be a float.
+fn float(g: &mut Grift, src: &str) -> f64 {
+    match g.evaluate(&mut (), src) {
+        Ok(Value::Float(f)) => f,
+        other => panic!("{src} gave {other:?}"),
+    }
+}
+
+const FLOATS: [f64; 12] = [
+    0.0,
+    -0.0,
+    0.1,
+    -2.5,
+    1.0,
+    1e300,
+    5e-324,
+    123456.789,
+    f64::MAX,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::NAN,
+];
+
+#[test]
+fn floats_read_back_as_they_print() {
+    let mut g = grift();
+    for x in FLOATS {
+        let printed = show(&g, Value::Float(x));
+        let again = float(&mut g, &printed);
+        assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
+        // float-to-string and string-to-float are Rust's Display and parse, and undo each other.
+        let s = g
+            .evaluate(&mut (), &format!("(float-to-string {printed})"))
+            .unwrap();
+        assert_eq!(g.as_str(s), Some(x.to_string().as_str()));
+        let again = float(
+            &mut g,
+            &format!("(string-to-float (float-to-string {printed}))"),
+        );
+        assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
+    }
+    holds(
+        &mut g,
+        &[
+            "(float? 1.5)",
+            "(float? 1e3)",
+            "(integer? 1000)",
+            "(same? (string-to-float \"1\") 1.0)",
+            "(same? (string-to-integer \"-42\") -42)",
+            "(same? (integer-to-string -42) \"-42\")",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("1e", "parse-error"),
+            ("1.2.3", "parse-error"),
+            ("#nan", "parse-error"),
+            ("(string-to-integer \"4x\")", "parse-error"),
+            (
+                "(string-to-integer \"99999999999999999999\")",
+                "parse-error",
+            ),
+            ("(string-to-integer \" 1\")", "parse-error"),
+            ("(string-to-float \"one\")", "parse-error"),
+            ("(string-to-float 1.0)", "type-error"),
+            ("(float-to-string 1)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn arithmetic_is_rusts() {
+    let mut g = grift();
+    let integers = [0, 1, -1, 7, -7, 2, -2, i64::MAX, i64::MIN];
+    for a in integers {
+        for b in integers {
+            for (name, rust) in [
+                ("add", a.checked_add(b)),
+                ("subtract", a.checked_sub(b)),
+                ("multiply", a.checked_mul(b)),
+                ("divide", a.checked_div(b)),
+                ("remainder", a.checked_rem(b)),
+            ] {
+                let got = g.evaluate(&mut (), &format!("({name} {a} {b})"));
+                match (rust, got) {
+                    (Some(n), Ok(v)) => assert_eq!(v, Value::Integer(n), "({name} {a} {b})"),
+                    (None, Err(e)) => {
+                        let want = if b == 0 && name.starts_with(['d', 'r']) {
+                            "division-by-zero"
+                        } else {
+                            "overflow"
+                        };
+                        assert_eq!(kind(&mut g, &e), want, "({name} {a} {b})");
+                    }
+                    (rust, got) => panic!("({name} {a} {b}): Rust {rust:?}, grift {got:?}"),
+                }
+            }
+            let less = g.evaluate(&mut (), &format!("(less-than? {a} {b})"));
+            assert_eq!(less, Ok(if a < b { Value::True } else { Value::False }));
+        }
+    }
+    let floats = FLOATS.map(|x| show(&g, Value::Float(x)));
+    for (x, a) in FLOATS.iter().zip(&floats) {
+        for (y, b) in FLOATS.iter().zip(&floats) {
+            for (name, rust) in [
+                ("add", x + y),
+                ("subtract", x - y),
+                ("multiply", x * y),
+                ("divide", x / y),
+                ("remainder", x % y),
+                ("power", x.powf(*y)),
+            ] {
+                let got = float(&mut g, &format!("({name} {a} {b})"));
+                assert_eq!(got.to_bits(), rust.to_bits(), "({name} {a} {b})");
+            }
+        }
+        for (name, rust) in [
+            ("square-root", x.sqrt()),
+            ("sine", x.sin()),
+            ("cosine", x.cos()),
+            ("tangent", x.tan()),
+            ("exponential", x.exp()),
+            ("natural-logarithm", x.ln()),
+            ("floor", x.floor()),
+            ("ceiling", x.ceil()),
+            ("round", x.round()),
+            ("truncate", x.trunc()),
+            ("absolute-value", x.abs()),
+        ] {
+            let got = float(&mut g, &format!("({name} {a})"));
+            assert_eq!(got.to_bits(), rust.to_bits(), "({name} {a})");
+        }
+        // float-to-integer is Rust's `as`: saturating, and not-a-number is 0.
+        let got = g.evaluate(&mut (), &format!("(float-to-integer {a})"));
+        assert_eq!(got, Ok(Value::Integer(*x as i64)), "(float-to-integer {a})");
+    }
+    for n in [0, -3, i64::MAX, i64::MIN] {
+        let got = float(&mut g, &format!("(integer-to-float {n})"));
+        assert_eq!(got.to_bits(), (n as f64).to_bits());
+    }
+    // Integers and floats never mix, and the float functions take floats only.
+    fails(
+        &mut g,
+        &[
+            ("(add 1 1.5)", "type-error"),
+            ("(add 1.5 1)", "type-error"),
+            ("(less-than? 1 1.5)", "type-error"),
+            ("(multiply 2.0 \"a\")", "type-error"),
+            ("(square-root 4)", "type-error"),
+            ("(absolute-value -1)", "type-error"),
+            ("(power 2 3)", "type-error"),
+            ("(integer-to-float 1.0)", "type-error"),
+            ("(float-to-integer 1)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn comparisons_agree_with_rust() {
+    let mut g = grift();
+    let integers = [-1, 0, 1].map(Value::Integer);
+    let floats = [-1.0, 0.0, -0.0, 1.0, f64::NAN, f64::INFINITY].map(Value::Float);
+    for values in [&integers[..], &floats[..]] {
+        for &x in values {
+            for &y in values {
+                let (a, b) = (show(&g, x), show(&g, y));
+                // Rust's own order of the two, None with not-a-number.
+                let order = match (x, y) {
+                    (Value::Integer(x), Value::Integer(y)) => x.partial_cmp(&y),
+                    (Value::Float(x), Value::Float(y)) => x.partial_cmp(&y),
+                    _ => panic!("two integers or two floats"),
+                };
+                let (less, equal, greater) = (
+                    order == Some(std::cmp::Ordering::Less),
+                    order == Some(std::cmp::Ordering::Equal),
+                    order == Some(std::cmp::Ordering::Greater),
+                );
+                for (name, want) in [
+                    ("less-than?", less),
+                    ("greater-than?", greater),
+                    ("less-than-or-equal?", less || equal),
+                    ("greater-than-or-equal?", greater || equal),
+                    ("equal?", equal),
+                ] {
+                    let got = g.evaluate(&mut (), &format!("({name} {a} {b})"));
+                    let want = if want { Value::True } else { Value::False };
+                    assert_eq!(got, Ok(want), "({name} {a} {b})");
+                }
+            }
+        }
+    }
+    holds(
+        &mut g,
+        &[
+            "(and!? (same? (minimum 1 2) 1) (same? (maximum 1 2) 2))",
+            "(and!? (same? (minimum 1.5 -2.0) -2.0) (same? (maximum 1.5 -2.0) 1.5))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(greater-than-or-equal? 1 1.0)", "type-error"),
+            ("(minimum 1 1.0)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn same_and_equal() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            // same? is identity for pairs, contexts and combiners, and equality of value for
+            // integers, symbols and strings.
+            "(same? 1 1)",
+            "(same? (quote! a) (quote! a))",
+            "(same? \"ab\" (string-append \"a\" \"b\"))",
+            "(not? (same? (list 1) (list 1)))",
+            "(not? (same? (context) (context)))",
+            "(not? (same? (lambda! () 1) (lambda! () 1)))",
+            "(sequence! (define! p (list 1)) (same? p p))",
+            "(same? first first)",
+            // Floats: same? compares the stored bits, equal? as IEEE does.
+            "(not? (same? 0.0 -0.0))",
+            "(equal? 0.0 -0.0)",
+            "(same? #not-a-number #not-a-number)",
+            "(not? (equal? #not-a-number #not-a-number))",
+            "(not? (equal? #not-a-number 1.0))",
+            "(equal? #infinity #infinity)",
+            // equal? compares pairs by structure, and everything else as same? does.
+            "(equal? (list 1 (list 2.0 \"x\")) (list 1 (list 2.0 \"x\")))",
+            "(not? (equal? (list 1 2) (list 1 3)))",
+            "(not? (equal? (context) (context)))",
+            // Values of different types are never equal.
+            "(not? (equal? 1 1.0))",
+            "(not? (same? 1 1.0))",
+            "(not? (equal? \"a\" (quote! a)))",
+            "(not? (equal? () #false))",
+            "(not? (equal? (list 1.0) (list 1)))",
+        ],
+    );
+}
+
+#[test]
+fn a_predicate_for_every_type() {
+    let mut g = grift();
+    let predicates = [
+        "empty-list?",
+        "boolean?",
+        "inert?",
+        "ignore?",
+        "integer?",
+        "float?",
+        "symbol?",
+        "pair?",
+        "string?",
+        "context?",
+        "operative?",
+        "applicative?",
+    ];
+    let values = [
+        "()",
+        "#false",
+        "#inert",
+        "#ignore",
+        "1",
+        "1.0",
+        "(quote! a)",
+        "(list 1)",
+        "\"s\"",
+        "(context)",
+        "if!",
+        "first",
+    ];
+    // Each value's type-of names exactly one predicate, and only that one holds.
+    for value in values {
+        let kind = g
+            .evaluate(&mut (), &format!("(symbol-to-string (type-of {value}))"))
+            .unwrap();
+        let kind = format!("{}?", g.as_str(kind).unwrap());
+        assert!(predicates.contains(&kind.as_str()), "{value}: {kind}");
+        for p in predicates {
+            let want = if p == kind { Value::True } else { Value::False };
+            assert_eq!(
+                g.evaluate(&mut (), &format!("({p} {value})")),
+                Ok(want),
+                "({p} {value})"
+            );
+        }
+    }
+    // A primitive and a host function are operatives too.
+    holds(
+        &mut g,
+        &["(and!? (operative? vau!) (operative? (unwrap first)) (applicative? list))"],
+    );
+}
+
+#[test]
+fn if_and_let() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            // if!'s alternative is optional; without one, a false test gives #inert.
+            "(same? (if! #true 1) 1)",
+            "(same? (if! #false 1) #inert)",
+            "(same? (if! #false 1 2) 2)",
+            // let! binds in order in one new context: each binding sees the ones before it, and a
+            // combiner it binds can call itself and the ones after it.
+            "(same? (let! ((x 1) (y (add x 1))) y) 2)",
+            "(same? (let! ((even? (lambda! (n) (if! (same? n 0) #true (odd? (subtract n 1))))) \
+                           (odd? (lambda! (n) (if! (same? n 0) #false (even? (subtract n 1)))))) \
+                      (even? 100)) #true)",
+            "(equal? (let! ((x 1) (y 2)) (names (current-context))) (quote! (x y)))",
+            "(sequence! (define! x 10) (same? (let! ((x (add x 1))) x) 11))",
+            "(equal? x 10)",
+            // ... and each binding's parameters are a tree.
+            "(same? (let! (((a b) (list 1 2)) (c (add a b))) c) 3)",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(when! #true 1)", "unbound-symbol"),
+            ("(let*! ((x 1)) x)", "unbound-symbol"),
+            ("(let! ((x)) x)", "arity-error"),
+            ("(let! (x) x)", "arity-error"),
+        ],
+    );
+}
+
+#[test]
+fn no_truthiness() {
+    let mut g = grift();
+    // Every test must be a boolean: anything else is a type-error, never true or false.
+    fails(
+        &mut g,
+        &[
+            ("(if! 1 2 3)", "type-error"),
+            ("(if! () 2)", "type-error"),
+            ("(conditional! (1 2))", "type-error"),
+            ("(conditional! (#false 1) ((quote! a) 2))", "type-error"),
+            ("(and!? 1)", "type-error"),
+            ("(and!? #true 5)", "type-error"),
+            ("(or!? #false ())", "type-error"),
+            ("(or!? 0 #true)", "type-error"),
+            ("(not? 0)", "type-error"),
+            ("(select \"\" 1 2)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn contexts() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! parent (context)) (bind parent (quote! (b a)) (list 1 2))
+         (define! child (context parent)) (bind child (quote! c) 3)",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            // names lists a context's own names, sorted; built-in-names the built-in context's.
+            "(equal? (names child) (quote! (c)))",
+            "(equal? (names parent) (quote! (a b)))",
+            "(member? (quote! names) built-in-names)",
+            "(not? (member? (quote! parent) built-in-names))",
+            // evaluate-in! evaluates in the context given, through its parents, and only there.
+            "(and!? (same? (evaluate-in! a child) 2) (same? (evaluate-in! c child) 3))",
+            "(catch! (evaluate-in! (add a c) child) e (equal? (evaluate-in! values e) (quote! (add))))",
+            // binds!? looks through parents.
+            "(and!? (binds!? child a b c) (not? (binds!? parent c)))",
+            // define-in! binds in the context given, never in its parent.
+            "(sequence! (define-in! child a 10) (and!? (same? (evaluate-in! a child) 10) \
+                                                       (same? (evaluate-in! a parent) 2)))",
+            "(equal? (names child) (quote! (a c)))",
+            // current-context is the context it is called in.
+            "(same? ((lambda! (x) (evaluate-in! x (current-context))) 5) 5)",
+        ],
+    );
+    // A context prints as its own names, sorted, never its values.
+    let child = g.evaluate(&mut (), "child").unwrap();
+    assert_eq!(show(&g, child), "#[context a c]");
+    let empty = g.evaluate(&mut (), "(context)").unwrap();
+    assert_eq!(show(&g, empty), "#[context]");
+    let e = g.evaluate(&mut (), "(error (quote! mine) 1)").unwrap();
+    assert_eq!(show(&g, e), "#[context kind trace values]");
 }

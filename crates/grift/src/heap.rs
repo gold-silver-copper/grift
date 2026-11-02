@@ -7,33 +7,35 @@ use std::hash::{BuildHasherDefault, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Ref {
+pub struct Reference {
     idx: u32,
     generation: u32,
 }
 
-/// A compound operative: formals tree, environment formal, body, and the static environment.
+/// A compound operative: its parameter tree, its context parameter, its body, the context it
+/// was made in, and how many bindings a call makes.
 #[derive(Clone, Copy)]
-pub(crate) struct Op {
-    pub formals: Value,
-    pub eformal: Value,
+pub(crate) struct Operative {
+    pub parameters: Value,
+    pub context_parameter: Value,
     pub body: Value,
-    pub env: Ref,
+    pub context: Reference,
+    pub size: usize,
 }
 
-pub(crate) enum Obj {
+pub(crate) enum Object {
     /// A free slot and the next free one.
     Free(u32),
     Pair(Value, Value),
-    Str(Box<str>),
+    String(Box<str>),
     /// An optional parent and the bindings.
-    Env(Option<Ref>, Binds),
-    Op(Op),
-    App(Value),
+    Context(Option<Reference>, Bindings),
+    Operative(Operative),
+    Applicative(Value),
 }
 
-/// An environment's bindings.
-pub(crate) type Binds = HashMap<Symbol, Value, BuildHasherDefault<SymbolHasher>>;
+/// A context's bindings.
+pub(crate) type Bindings = HashMap<Symbol, Value, BuildHasherDefault<SymbolHasher>>;
 
 /// Hashes a symbol by its id, a small integer: one multiplication spreads it over the bits the
 /// table looks at.
@@ -61,7 +63,7 @@ struct Slot {
     marked: bool,
     /// Live when the library had been loaded: its code, and the code it built.
     library: bool,
-    obj: Obj,
+    obj: Object,
 }
 
 const NONE: u32 = u32::MAX;
@@ -75,7 +77,7 @@ pub(crate) struct Heap {
     free: u32,
     since_gc: usize,
     live: usize,
-    marks: Vec<Ref>,
+    marks: Vec<Reference>,
     /// Operatives made, for tests of what a form costs.
     #[cfg(test)]
     pub operatives: usize,
@@ -95,16 +97,20 @@ impl Default for Heap {
     }
 }
 
-fn reference(v: Value) -> Option<Ref> {
+fn reference(v: Value) -> Option<Reference> {
     match v {
-        Value::Pair(r) | Value::Str(r) | Value::Env(r) | Value::Op(r) | Value::App(r) => Some(r),
+        Value::Pair(r)
+        | Value::String(r)
+        | Value::Context(r)
+        | Value::Operative(r)
+        | Value::Applicative(r) => Some(r),
         _ => None,
     }
 }
 
-impl Ref {
+impl Reference {
     /// No object: a reference no slot has.
-    pub(crate) const NONE: Ref = Ref {
+    pub(crate) const NONE: Reference = Reference {
         idx: NONE,
         generation: 0,
     };
@@ -112,19 +118,19 @@ impl Ref {
 
 impl Heap {
     #[inline]
-    pub fn alloc(&mut self, obj: Obj) -> Result<Ref, Error> {
+    pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
         self.since_gc = self.since_gc.saturating_add(1);
         #[cfg(test)]
         {
-            self.operatives += usize::from(matches!(obj, Obj::Op(_)));
+            self.operatives += usize::from(matches!(obj, Object::Operative(_)));
         }
         let idx = self.free;
         if let Some(slot) = self.slots.get_mut(idx as usize)
-            && let Obj::Free(next) = slot.obj
+            && let Object::Free(next) = slot.obj
         {
             self.free = next;
             slot.obj = obj;
-            return Ok(Ref {
+            return Ok(Reference {
                 idx,
                 generation: slot.generation,
             });
@@ -142,42 +148,42 @@ impl Heap {
                 obj,
             },
         )?;
-        Ok(Ref { idx, generation: 0 })
+        Ok(Reference { idx, generation: 0 })
     }
 
     /// Marks every object now in the heap as the library's. A slot loses the mark when it is
     /// freed.
     pub fn seal_library(&mut self) {
         for s in &mut self.slots {
-            s.library = !matches!(s.obj, Obj::Free(_));
+            s.library = !matches!(s.obj, Object::Free(_));
         }
     }
 
     /// The object, and whether it is the library's: its code, or code it built while it was
     /// loaded.
     #[inline]
-    pub fn get_code(&self, r: Ref) -> Result<(&Obj, bool), Error> {
+    pub fn get_code(&self, r: Reference) -> Result<(&Object, bool), Error> {
         self.slot(r)
             .map(|s| (&s.obj, s.library))
             .ok_or_else(|| Error::new(K::StaleValue, &[]))
     }
 
     #[inline]
-    fn slot(&self, r: Ref) -> Option<&Slot> {
+    fn slot(&self, r: Reference) -> Option<&Slot> {
         self.slots
             .get(r.idx as usize)
             .filter(|s| s.generation == r.generation)
     }
 
     #[inline]
-    pub fn get(&self, r: Ref) -> Result<&Obj, Error> {
+    pub fn get(&self, r: Reference) -> Result<&Object, Error> {
         self.slot(r)
             .map(|s| &s.obj)
             .ok_or_else(|| Error::new(K::StaleValue, &[]))
     }
 
     #[inline]
-    pub fn get_mut(&mut self, r: Ref) -> Result<&mut Obj, Error> {
+    pub fn get_mut(&mut self, r: Reference) -> Result<&mut Object, Error> {
         match self.slots.get_mut(r.idx as usize) {
             Some(s) if s.generation == r.generation => Ok(&mut s.obj),
             _ => Err(Error::new(K::StaleValue, &[])),
@@ -206,8 +212,8 @@ impl Heap {
             if s.marked {
                 s.marked = false;
                 self.live += 1;
-            } else if !matches!(s.obj, Obj::Free(_)) {
-                s.obj = Obj::Free(self.free);
+            } else if !matches!(s.obj, Object::Free(_)) {
+                s.obj = Object::Free(self.free);
                 s.library = false;
                 s.generation = s.generation.wrapping_add(1);
                 self.free = idx;
@@ -220,7 +226,7 @@ impl Heap {
     fn mark(
         &mut self,
         roots: impl Iterator<Item = Value>,
-        marks: &mut Vec<Ref>,
+        marks: &mut Vec<Reference>,
     ) -> Result<(), Error> {
         for root in roots {
             let Some(r) = reference(root) else { continue };
@@ -238,25 +244,25 @@ impl Heap {
                     None => Ok(()),
                 };
                 match &s.obj {
-                    Obj::Free(_) | Obj::Str(_) => {}
-                    Obj::Pair(a, d) => {
+                    Object::Free(_) | Object::String(_) => {}
+                    Object::Pair(a, d) => {
                         child(*a)?;
                         child(*d)?;
                     }
-                    Obj::Env(parent, binds) => {
+                    Object::Context(parent, bindings) => {
                         if let Some(p) = parent {
-                            child(Value::Env(*p))?;
+                            child(Value::Context(*p))?;
                         }
-                        for v in binds.values() {
+                        for v in bindings.values() {
                             child(*v)?;
                         }
                     }
-                    Obj::Op(op) => {
-                        child(op.formals)?;
+                    Object::Operative(op) => {
+                        child(op.parameters)?;
                         child(op.body)?;
-                        child(Value::Env(op.env))?;
+                        child(Value::Context(op.context))?;
                     }
-                    Obj::App(c) => child(*c)?,
+                    Object::Applicative(c) => child(*c)?,
                 }
             }
         }

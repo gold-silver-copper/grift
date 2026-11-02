@@ -1,0 +1,30 @@
+#!/usr/bin/env grift
+; Counts the lines and words of standard input, writes a report to the file named by the first
+; argument, and checks it with wc.
+(define! (report-path) command-line-arguments)
+(define! words-in
+  (lambda! (line)
+    (let! ((count (lambda! (i n inside)
+                    (if! (same? i (string-byte-length line))
+                      n
+                      (if! (member? (string-byte line i) (list 32 9 10))
+                        (count (add i 1) n #false)
+                        (count (add i 1) (if! inside n (add n 1)) #true))))))
+      (count 0 0 #false))))
+(define! read-line (evaluate-in! read-line standard-input))
+(define! tally
+  (lambda! (lines words)
+    (let! ((line (read-line)))
+      (if! (same? line "")
+        (list lines words)
+        (tally (add lines 1) (add words (words-in line)))))))
+(define! (lines words) (tally 0 0))
+(define! out (create-file report-path))
+((evaluate-in! write out) (string-append (integer-to-string lines) " " (integer-to-string words) "\n"))
+((evaluate-in! close out))
+(define! checked (run-process "cat" report-path))
+(display "report: " (evaluate-in! output checked))
+(display "HOME is set: " (string? (environment-variable "HOME"))) (newline)
+(catch! ((evaluate-in! write out) "more") e (sequence! (display (evaluate-in! kind e) " ") (display (evaluate-in! values e)) (newline)))
+(display out) (newline)
+(exit (if! (same? words 0) 3 0))

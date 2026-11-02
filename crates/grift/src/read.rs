@@ -1,6 +1,6 @@
 //! The reader: source text to a list of forms, with an explicit stack of open lists.
 
-use crate::heap::Obj;
+use crate::heap::Object;
 use crate::{Error, Grift, K, Value, push};
 use std::iter::Peekable;
 use std::str::CharIndices;
@@ -79,14 +79,14 @@ impl<T> Grift<T> {
             col: 1,
         };
         let mut top = List {
-            head: Value::Nil,
-            last: Value::Nil,
+            head: Value::EmptyList,
+            last: Value::EmptyList,
             dot: Dot::No,
         };
         let mut open: Vec<List> = Vec::new();
         loop {
             cur.skip_space();
-            let at = [Value::Int(cur.line), Value::Int(cur.col)];
+            let at = [Value::Integer(cur.line), Value::Integer(cur.col)];
             let fail = || Error::new(K::ParseError, &at);
             let Some((start, c)) = cur.next() else {
                 return if open.is_empty() {
@@ -100,8 +100,8 @@ impl<T> Grift<T> {
                     push(
                         &mut open,
                         List {
-                            head: Value::Nil,
-                            last: Value::Nil,
+                            head: Value::EmptyList,
+                            last: Value::EmptyList,
                             dot: Dot::No,
                         },
                     )?;
@@ -119,7 +119,7 @@ impl<T> Grift<T> {
                     let token = src.get(start..cur.end()).unwrap_or_default();
                     if token == "." {
                         match open.last_mut() {
-                            Some(list) if list.dot == Dot::No && list.last != Value::Nil => {
+                            Some(list) if list.dot == Dot::No && list.last != Value::EmptyList => {
                                 list.dot = Dot::Tail;
                                 continue;
                             }
@@ -132,16 +132,16 @@ impl<T> Grift<T> {
             let list = open.last_mut().unwrap_or(&mut top);
             match list.dot {
                 Dot::No => {
-                    let pair = self.cons(datum, Value::Nil)?;
+                    let pair = self.pair(datum, Value::EmptyList)?;
                     match list.last {
-                        Value::Pair(r) => self.set_cdr(r, pair)?,
+                        Value::Pair(r) => self.set_rest(r, pair)?,
                         _ => list.head = pair,
                     }
                     list.last = pair;
                 }
                 Dot::Tail => {
                     if let Value::Pair(r) = list.last {
-                        self.set_cdr(r, datum)?;
+                        self.set_rest(r, datum)?;
                     }
                     list.dot = Dot::Done;
                 }
@@ -150,29 +150,38 @@ impl<T> Grift<T> {
         }
     }
 
-    /// Sets the tail of a pair the reader made and nobody else has seen yet.
-    fn set_cdr(&mut self, r: crate::Ref, v: Value) -> Result<(), Error> {
-        if let Obj::Pair(_, d) = self.heap.get_mut(r)? {
+    /// Sets the rest of a pair the reader made and nobody else has seen yet.
+    fn set_rest(&mut self, r: crate::Reference, v: Value) -> Result<(), Error> {
+        if let Object::Pair(_, d) = self.heap.get_mut(r)? {
             *d = v;
         }
         Ok(())
     }
 
-    /// An atom: a constant, an integer or a symbol. `None` for a token that is neither.
+    /// An atom: a constant, a number or a symbol. `None` for a token that is none of them. A
+    /// number starts with a digit, after an optional sign: an integer if it is one, else a float
+    /// if it has a `.` or an exponent, as Rust reads them.
     fn atom(&mut self, token: &str) -> Option<Result<Value, Error>> {
         let v = match token {
-            "#t" => Value::True,
-            "#f" => Value::False,
+            "#true" => Value::True,
+            "#false" => Value::False,
             "#inert" => Value::Inert,
             "#ignore" => Value::Ignore,
+            "#infinity" => Value::Float(f64::INFINITY),
+            "#-infinity" => Value::Float(f64::NEG_INFINITY),
+            "#not-a-number" => Value::Float(f64::NAN),
             _ if token.starts_with('#') => return None,
             _ if token
                 .trim_start_matches(['+', '-'])
                 .starts_with(|c: char| c.is_ascii_digit()) =>
             {
-                Value::Int(token.parse().ok()?)
+                match token.parse() {
+                    Ok(n) => Value::Integer(n),
+                    Err(_) if token.contains(['.', 'e', 'E']) => Value::Float(token.parse().ok()?),
+                    Err(_) => return None,
+                }
             }
-            _ => return Some(self.symbol(token).map(Value::Sym)),
+            _ => return Some(self.symbol(token).map(Value::Symbol)),
         };
         Some(Ok(v))
     }
@@ -181,8 +190,12 @@ impl<T> Grift<T> {
     /// (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor) -> Result<Value, Error> {
         let mut s = String::new();
-        let fail =
-            |cur: &Cursor| Error::new(K::ParseError, &[Value::Int(cur.line), Value::Int(cur.col)]);
+        let fail = |cur: &Cursor| {
+            Error::new(
+                K::ParseError,
+                &[Value::Integer(cur.line), Value::Integer(cur.col)],
+            )
+        };
         loop {
             let c = match cur.next() {
                 Some((_, '"')) => break,
@@ -210,6 +223,6 @@ impl<T> Grift<T> {
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);
         }
-        self.make_string(&s)
+        self.string(&s)
     }
 }

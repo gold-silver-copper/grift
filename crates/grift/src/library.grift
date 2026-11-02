@@ -1,235 +1,273 @@
 ; The grift library: everything above the Rust primitives. Grift::new evaluates it, in order,
-; in the ground environment; each form uses only the primitives and the forms above it.
-; Section numbers are those of the Revised^-1 Report on the Kernel Programming Language
-; (05-07.pdf), where each combiner is specified.
+; in the built-in context; each form uses only the primitives and the forms above it. Section
+; numbers are those of the Revised^-1 Report on the Kernel Programming Language (05-07.pdf),
+; where Kernel specifies the combiner a form here follows. By convention an operative's context
+; parameter is `caller`.
 
-; $define! (4.9.1; primitive in Kernel). A one-shot operative receives the name unevaluated
-; and binds it in its caller's environment, the ground.
-(($vau (name) env
-   (bind! env name
-     ($vau (definiend expression) env
-       (bind! env definiend (eval expression env)))))
- $define!)
+; define! (4.9.1, $define!; primitive in Kernel). A one-shot operative receives the name
+; unevaluated and binds it in its caller's context, the built-in one.
+((vau! (name) caller
+   (bind caller name
+     (vau! (parameters expression) caller
+       (bind caller parameters (evaluate expression caller)))))
+ define!)
 
-; $quote (given in the rationale of 5.5.1).
-($define! $quote ($vau (x) #ignore x))
+; quote! (given in the rationale of 5.5.1, $quote).
+(define! quote! (vau! (x) #ignore x))
 
 ; list (5.2.1).
-($define! list (wrap ($vau xs #ignore xs)))
+(define! list (wrap (vau! xs #ignore xs)))
 
-; $if (4.5.2; primitive in Kernel). select picks the expression, eval runs it as a tail call.
-($define! $if
-  ($vau (test consequent alternative) env
-    (eval (select (eval test env) consequent alternative) env)))
+; if! (4.5.2, $if; primitive in Kernel). The alternative is optional: without one, a false test
+; gives #inert. select picks the expression and evaluate runs it as a tail call. Whether there is
+; an alternative picks which of two applicatives does that, each matching its operands exactly,
+; so (if! test consequent alternative more) is an arity-error.
+(define! if!
+  ((wrap (vau! (without with) #ignore
+     (vau! (test consequent . alternative) caller
+       ((select (same? alternative ()) without with) test consequent alternative caller))))
+   (wrap (vau! (test consequent () caller) #ignore
+     (evaluate (select (evaluate test caller) consequent #inert) caller)))
+   (wrap (vau! (test consequent (alternative) caller) #ignore
+     (evaluate (select (evaluate test caller) consequent alternative) caller)))))
 
-; $sequence (5.1.1): each expression in turn, the last one as a tail call. `next` gets the
-; value of the first expression, evaluated as its operand, and ignores it; it has no name, so it
-; gets itself as an operand too.
-($define! $sequence
-  ((wrap ($vau (next) #ignore
-     ($vau body env ($if (eq? body ()) #inert (next #inert next body env)))))
-   (wrap ($vau (#ignore next body env) #ignore
-     ($if (eq? (cdr body) ())
-       (eval (car body) env)
-       (next (eval (car body) env) next (cdr body) env))))))
+; sequence! (5.1.1, $sequence): each expression in turn, the last one as a tail call. `next`
+; gets the value of the first expression, evaluated as its operand, and ignores it; it has no
+; name, so it gets itself as an operand too.
+(define! sequence!
+  ((wrap (vau! (next) #ignore
+     (vau! body caller (if! (same? body ()) #inert (next #inert next body caller)))))
+   (wrap (vau! (#ignore next body caller) #ignore
+     (if! (same? (rest body) ())
+       (evaluate (first body) caller)
+       (next (evaluate (first body) caller) next (rest body) caller))))))
 
-; $lambda (5.3.2). A body of one expression is kept as is; several become ($sequence ...) with
-; the symbol, as if written so, so printing the combiner shows the body as written.
-($define! $lambda
-  ($vau (formals . body) env
-    (wrap (eval (list $vau formals #ignore
-                  ($if ($if (eq? body ()) #f (eq? (cdr body) ()))
-                    (car body)
-                    (cons ($quote $sequence) body)))
-                env))))
+; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become
+; (sequence! ...) with the symbol, as if written so, so printing the combiner shows the body as
+; written.
+(define! lambda!
+  (vau! (parameters . body) caller
+    (wrap (evaluate (list vau! parameters #ignore
+                      (if! (if! (same? body ()) #false (same? (rest body) ()))
+                        (first body)
+                        (pair (quote! sequence!) body)))
+                    caller))))
 
-; get-current-environment (6.7.2).
-($define! get-current-environment (wrap ($vau () e e)))
+; current-context (6.7.2, get-current-environment).
+(define! current-context (wrap (vau! () caller caller)))
 
-; $remote-eval (6.7.9): evaluates o, as a tail call, in the environment e evaluates to. It
-; reads a record, such as the error a guard's handler gets: ($remote-eval code e).
-($define! $remote-eval ($vau (o e) env (eval o (eval e env))))
+; evaluate-in! (6.7.9, $remote-eval): evaluates o, as a tail call, in the context c evaluates
+; to. It reads a record, such as an error: (evaluate-in! kind e).
+(define! evaluate-in! (vau! (o c) caller (evaluate o (evaluate c caller))))
 
 ; not? (6.1.1).
-($define! not? ($lambda (x) (select x #f #t)))
+(define! not? (lambda! (x) (select x #false #true)))
 
-; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value. R-1RK has no strings;
-; string? is named as its other predicates are.
-($define! null? ($lambda (x) (eq? x ())))
-($define! pair? ($lambda (x) (eq? (type-of x) ($quote pair))))
-($define! symbol? ($lambda (x) (eq? (type-of x) ($quote symbol))))
-($define! string? ($lambda (x) (eq? (type-of x) ($quote string))))
-($define! integer? ($lambda (x) (eq? (type-of x) ($quote integer))))
-($define! environment? ($lambda (x) (eq? (type-of x) ($quote environment))))
+; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value: one for each kind type-of
+; gives.
+(define! empty-list? (lambda! (x) (same? x ())))
+(define! boolean? (lambda! (x) (same? (type-of x) (quote! boolean))))
+(define! inert? (lambda! (x) (same? x #inert)))
+(define! ignore? (lambda! (x) (same? x #ignore)))
+(define! integer? (lambda! (x) (same? (type-of x) (quote! integer))))
+(define! float? (lambda! (x) (same? (type-of x) (quote! float))))
+(define! symbol? (lambda! (x) (same? (type-of x) (quote! symbol))))
+(define! pair? (lambda! (x) (same? (type-of x) (quote! pair))))
+(define! string? (lambda! (x) (same? (type-of x) (quote! string))))
+(define! context? (lambda! (x) (same? (type-of x) (quote! context))))
+(define! operative? (lambda! (x) (same? (type-of x) (quote! operative))))
+(define! applicative? (lambda! (x) (same? (type-of x) (quote! applicative))))
 
-; $and? and $or? (6.1.4, 6.1.5): left to right, the last operand as a tail call. Each walks its
-; operands with a loop of its own, evaluating them in the caller's environment.
-($define! $and?
-  (($lambda ()
-     ($define! all
-       ($lambda (xs env)
-         ($if (eq? xs ()) #t
-           ($if (eq? (cdr xs) ()) (eval (car xs) env)
-             ($if (eval (car xs) env) (all (cdr xs) env) #f)))))
-     ($vau xs env (all xs env)))))
+; and!? and or!? (6.1.4, 6.1.5, $and? and $or?): left to right, stopping early. Every operand
+; evaluated must give a boolean, the last one included, so it isn't a tail call. Each walks its
+; operands with a loop of its own, evaluating them in the caller's context.
+(define! and!?
+  ((lambda! ()
+     (define! all
+       (lambda! (xs caller)
+         (if! (same? xs ()) #true
+           (if! (evaluate (first xs) caller) (all (rest xs) caller) #false))))
+     (vau! xs caller (all xs caller)))))
 
-($define! $or?
-  (($lambda ()
-     ($define! any
-       ($lambda (xs env)
-         ($if (eq? xs ()) #f
-           ($if (eq? (cdr xs) ()) (eval (car xs) env)
-             ($if (eval (car xs) env) #t (any (cdr xs) env))))))
-     ($vau xs env (any xs env)))))
+(define! or!?
+  ((lambda! ()
+     (define! any
+       (lambda! (xs caller)
+         (if! (same? xs ()) #false
+           (if! (evaluate (first xs) caller) #true (any (rest xs) caller)))))
+     (vau! xs caller (any xs caller)))))
 
-; =? (12.5.2), of two integers: neither is less than the other.
-($define! =? ($lambda (a b) ($and? (not? (<? a b)) (not? (<? b a)))))
-
-; min and max (12.5.13), of two integers.
-($define! min ($lambda (a b) ($if (<? b a) b a)))
-($define! max ($lambda (a b) ($if (<? a b) b a)))
-
-; apply (5.5.1), its two-operand form: the underlying combiner sees a new empty environment.
-($define! apply
-  ($lambda (applicative args)
-    (eval (cons (unwrap applicative) args) (make-environment))))
+; apply (5.5.1), its two-operand form: the underlying combiner sees a new empty context.
+(define! apply
+  (lambda! (applicative arguments)
+    (evaluate (pair (unwrap applicative) arguments) (context))))
 
 ; map (5.9.1), over one list.
-($define! map
-  ($lambda (f xs)
-    ($if (eq? xs ())
+(define! map
+  (lambda! (f xs)
+    (if! (same? xs ())
       ()
-      (cons (apply f (list (car xs))) (map f (cdr xs))))))
+      (pair (apply f (list (first xs))) (map f (rest xs))))))
 
 ; for-each (6.9.1), over one list: f on each element in turn, for its effect.
-($define! for-each
-  ($lambda (f xs)
-    ($if (eq? xs ())
+(define! for-each
+  (lambda! (f xs)
+    (if! (same? xs ())
       #inert
-      ($sequence (apply f (list (car xs))) (for-each f (cdr xs))))))
+      (sequence! (apply f (list (first xs))) (for-each f (rest xs))))))
 
-; The forms with a body: $cond (5.6.1), $when, $let (5.10.1), $let* (6.7.4) and
-; $unwind-protect. Each is an operative that walks its operands with car and cdr and evaluates
-; only them, in the caller's environment or one it made; none builds code to evaluate. They
-; share `run`, which evaluates the forms of a body in turn, the last as a tail call.
-($define! ($cond $when $let $let* $unwind-protect)
-  (($lambda ()
-     ($define! run
-       ($lambda (body env)
-         ($if (eq? body ()) #inert
-           ($if (eq? (cdr body) ()) (eval (car body) env)
-             ($sequence (eval (car body) env) (run (cdr body) env))))))
-     ($define! first-true
-       ($lambda (clauses env)
-         ($if (eq? clauses ()) #inert
-           ($if (eval (car (car clauses)) env)
-             (run (cdr (car clauses)) env)
-             (first-true (cdr clauses) env)))))
-     ; A binding's expression; a binding that isn't (formals expression) is an arity-error.
-     ($define! expression-of ($lambda ((#ignore expression)) expression))
-     ; local, after matching formals to value in it.
-     ($define! bound ($lambda (local formals value) ($sequence (bind! local formals value) local)))
-     ; $let evaluates every expression in the caller's environment, then matches all the formals
-     ; at once in a new child of it, so a symbol bound twice is an error, as in Kernel.
-     ($define! bound-all
-       ($lambda (bindings env local formals values)
-         ($if (eq? bindings ())
-           (bound local formals values)
-           (bound-all (cdr bindings) env local
-             (cons (car (car bindings)) formals)
-             (cons (eval (expression-of (car bindings)) env) values)))))
-     ; $let* matches each binding in a new child of the environment before it, so each sees the
-     ; ones before it.
-     ($define! nested
-       ($lambda (bindings body env)
-         ($if (eq? bindings ())
-           (run body (make-environment env))
-           (nested (cdr bindings) body
-             (bound (make-environment env) (car (car bindings))
-               (eval (expression-of (car bindings)) env))))))
+; The forms with a body: conditional! (5.6.1, $cond), let! (6.7.5, $letrec*), finally! and
+; catch!. Each is an operative that walks its operands with first and rest and evaluates only
+; them, in the caller's context or one it made; none builds code to evaluate. They share `run`,
+; which evaluates the forms of a body in turn, the last as a tail call.
+(define! (conditional! let! finally! catch!)
+  ((lambda! ()
+     (define! run
+       (lambda! (body c)
+         (if! (same? body ()) #inert
+           (if! (same? (rest body) ()) (evaluate (first body) c)
+             (sequence! (evaluate (first body) c) (run (rest body) c))))))
+     (define! first-true
+       (lambda! (clauses caller)
+         (if! (same? clauses ()) #inert
+           (if! (evaluate (first (first clauses)) caller)
+             (run (rest (first clauses)) caller)
+             (first-true (rest clauses) caller)))))
+     ; A binding is (parameters expression); anything else is an arity-error.
+     (define! bind-one
+       (lambda! ((parameters expression) local)
+         (bind local parameters (evaluate expression local))))
+     (define! bind-each
+       (lambda! (bindings local)
+         (if! (same? bindings ())
+           local
+           (sequence! (bind-one (first bindings) local) (bind-each (rest bindings) local)))))
+     ; A catch!'s handler: the handler forms, with the parameter bound to the error.
+     (define! handled
+       (lambda! (parameter handler caller)
+         (lambda! (e)
+           (define! local (context caller))
+           (bind local parameter e)
+           (run handler local))))
      (list
-       ; $cond: the body of the first true test; #inert if none is true, as in Kernel.
-       ($vau clauses env (first-true clauses env))
-       ; $when (not in Kernel): the body if the test is true, else #inert.
-       ($vau (test . body) env ($if (eval test env) (run body env) #inert))
-       ($vau (bindings . body) env (run body (bound-all bindings env (make-environment env) () ())))
-       ($vau (bindings . body) env (nested bindings body env))
-       ; $unwind-protect: the body's value, after the cleanup forms have run. They run also
-       ; when an error leaves the body, and the error then goes on unchanged.
-       ($vau (body . cleanup) env
-         (eval-protected body env (wrap ($vau () #ignore (run cleanup env)))))))))
+       ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
+       (vau! clauses caller (first-true clauses caller))
+       ; let!: one new child of the caller's context; each binding in order evaluates its
+       ; expression there and binds its parameters there, so it sees the ones before it and a
+       ; combiner it binds can call itself and the ones after it.
+       (vau! (bindings . body) caller (run body (bind-each bindings (context caller))))
+       ; finally!: the body's value, after the cleanup forms have run. They run also when an
+       ; error leaves the body, and the error then goes on unchanged.
+       (vau! (body . cleanup) caller
+         (evaluate-with-cleanup body caller (wrap (vau! () #ignore (run cleanup caller)))))
+       ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then
+       ; the handler forms, with `parameter` bound to the error in a new child of the caller's
+       ; context. interrupted and out-of-memory are never caught.
+       (vau! (body parameter . handler) caller
+         (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
+                            (handled parameter handler caller)))))))
 
-; $set! (6.8.1): matches formals to the value in the environment `target` evaluates to, as
-; $define! does in the current one.
-($define! $set!
-  ($vau (target formals value) env
-    (bind! (eval target env) formals (eval value env))))
+; define-in! (6.8.1, $set!): matches the parameters to the value in the context `target`
+; evaluates to, as define! does in the current one.
+(define! define-in!
+  (vau! (target parameters value) caller
+    (bind (evaluate target caller) parameters (evaluate value caller))))
+
+; error (not in Kernel): a new error, a context with no parent binding kind, values and an empty
+; trace. raise raises it, and gives it where it happened.
+(define! error
+  (lambda! (kind . values)
+    (let! ((e (context)))
+      (bind e (quote! (kind values trace)) (list kind values ()))
+      e)))
 
 ; length (6.3.1), of a proper list, counting in a loop.
-($define! length
-  ($lambda (xs)
-    ($define! count ($lambda (xs n) ($if (eq? xs ()) n (count (cdr xs) (+ n 1)))))
+(define! length
+  (lambda! (xs)
+    (define! count (lambda! (xs n) (if! (same? xs ()) n (count (rest xs) (add n 1)))))
     (count xs 0)))
 
 ; append (6.3.3): every list but the last is copied; the last is shared.
-($define! append
-  ($lambda lists
-    ($define! append2
-      ($lambda (xs ys) ($if (eq? xs ()) ys (cons (car xs) (append2 (cdr xs) ys)))))
-    ($cond ((eq? lists ()) ())
-           ((eq? (cdr lists) ()) (car lists))
-           (#t (append2 (car lists) (apply append (cdr lists)))))))
+(define! append
+  (lambda! lists
+    (define! append-two
+      (lambda! (xs ys) (if! (same? xs ()) ys (pair (first xs) (append-two (rest xs) ys)))))
+    (conditional! ((same? lists ()) ())
+                  ((same? (rest lists) ()) (first lists))
+                  (#true (append-two (first lists) (apply append (rest lists)))))))
 
 ; reverse (not in Kernel): a list's elements in the opposite order.
-($define! reverse
-  ($lambda (xs)
-    ($define! onto ($lambda (xs acc) ($if (eq? xs ()) acc (onto (cdr xs) (cons (car xs) acc)))))
+(define! reverse
+  (lambda! (xs)
+    (define! onto
+      (lambda! (xs done) (if! (same? xs ()) done (onto (rest xs) (pair (first xs) done)))))
     (onto xs ())))
 
-; equal? (6.6.1): pairs compare by structure, everything else with eq?.
-($define! equal?
-  ($lambda (a b)
-    ($if ($and? (pair? a) (pair? b))
-      ($and? (equal? (car a) (car b)) (equal? (cdr a) (cdr b)))
-      (eq? a b))))
+; equal? (6.6.1): pairs compare by structure, the rest of a list as a tail call; floats as
+; IEEE does; everything else with same?. Values of different types are never equal.
+(define! equal?
+  ((lambda! ()
+     ; Not-a-number, the one float neither less than 1.0 nor more than 0.0, is equal to nothing.
+     (define! number? (lambda! (x) (or!? (less-than? x 1.0) (less-than? 0.0 x))))
+     (define! equal-floats?
+       (lambda! (a b)
+         (and!? (number? a) (number? b) (not? (less-than? a b)) (not? (less-than? b a)))))
+     (lambda! (a b)
+       (if! (pair? a)
+         (if! (pair? b) (if! (equal? (first a) (first b)) (equal? (rest a) (rest b)) #false) #false)
+         (if! (float? a)
+           (if! (float? b) (equal-floats? a b) #false)
+           (same? a b)))))))
 
-; assoc (6.3.6): the first pair in alist whose car is equal? to x, or () if there is none.
-($define! assoc
-  ($lambda (x alist)
-    ($cond ((eq? alist ()) ())
-           ((equal? x (car (car alist))) (car alist))
-           (#t (assoc x (cdr alist))))))
+; The comparisons above less-than? (12.5.1, Kernel's <? and the rest), of two integers or two
+; floats; mixing them is a type-error, as it is for less-than?.
+(define! greater-than? (lambda! (a b) (less-than? b a)))
+(define! less-than-or-equal? (lambda! (a b) (or!? (less-than? a b) (equal? a b))))
+(define! greater-than-or-equal? (lambda! (a b) (or!? (less-than? b a) (equal? a b))))
+
+; minimum and maximum (12.5.13, min and max), of two integers or two floats.
+(define! minimum (lambda! (a b) (if! (less-than? b a) b a)))
+(define! maximum (lambda! (a b) (if! (less-than? a b) b a)))
+
+; find-association (6.3.6, assoc): the first pair in the list whose first is equal? to x, or ()
+; if there is none.
+(define! find-association
+  (lambda! (x pairs)
+    (conditional! ((same? pairs ()) ())
+                  ((equal? x (first (first pairs))) (first pairs))
+                  (#true (find-association x (rest pairs))))))
 
 ; member? (6.3.7): whether x is equal? to an element of xs.
-($define! member?
-  ($lambda (x xs)
-    ($cond ((eq? xs ()) #f)
-           ((equal? x (car xs)) #t)
-           (#t (member? x (cdr xs))))))
+(define! member?
+  (lambda! (x xs)
+    (conditional! ((same? xs ()) #false)
+                  ((equal? x (first xs)) #true)
+                  (#true (member? x (rest xs))))))
 
-; $binds? (6.7.1): whether each symbol is bound in the environment `e` evaluates to. As R-1RK
-; derives it, it looks each one up, and a guard turns the error `unbound-symbol` into #f.
-($define! $binds?
-  (($lambda ()
-     ($define! look-up
-       ($lambda (e symbols)
-         ($if (eq? symbols ())
-           #t
-           ($sequence
-             ($if (symbol? (car symbols))
-               (eval (car symbols) e)
-               (error ($quote type-error) ($quote $binds?) (car symbols)))
-             (look-up e (cdr symbols))))))
-     ($define! unbound
-       ($lambda (e) ($if (eq? ($remote-eval code e) ($quote unbound-symbol)) #f (raise e))))
-     ($vau (e . symbols) env
-       ($let ((e (eval e env)))
-         ($if (environment? e)
-           (guard (wrap ($vau () #ignore (look-up e symbols))) unbound)
-           (error ($quote type-error) ($quote $binds?) e)))))))
+; binds!? (6.7.1, $binds?): whether each symbol is bound in the context `c` evaluates to or one
+; of its parents. As R-1RK derives it, it looks each one up, and catching the error
+; unbound-symbol gives #false.
+(define! binds!?
+  ((lambda! ()
+     (define! look-up
+       (lambda! (c symbols)
+         (if! (same? symbols ())
+           #true
+           (sequence!
+             (if! (symbol? (first symbols))
+               (evaluate (first symbols) c)
+               (raise (error (quote! type-error) (quote! binds!?) (first symbols))))
+             (look-up c (rest symbols))))))
+     (vau! (operand . symbols) caller
+       (let! ((c (evaluate operand caller)))
+         (if! (context? c)
+           (catch! (look-up c symbols)
+                   e
+                   (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
+           (raise (error (quote! type-error) (quote! binds!?) c))))))))
 
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
-; list them. The ground itself stays out of reach, so no program can change what the library
-; uses. Bound first, so that the list names itself.
-($define! ground-names ())
-($define! ground-names (bindings (get-current-environment)))
+; list them. The built-in context itself stays out of reach, so no program can change what the
+; library uses. Bound first, so that the list names itself.
+(define! built-in-names ())
+(define! built-in-names (names (current-context)))
