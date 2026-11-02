@@ -34,7 +34,7 @@ square                                      ; => #[applicative #[operative (x) #
 
 (let! ((x 2) ((y z) (list 3 x))) (add x (multiply y z)))   ; in order, parameters are trees => 8
 (conditional! ((less-than? 1 0) "no") (#true "yes"))       ; => "yes"
-(if! (same? 1 1) "same")                    ; the alternative is optional; tests must be booleans
+(when! (same? 1 1) "same")                  ; => "same"; if! needs both branches; tests are booleans
 (divide -7 2)                               ; => -3, Rust's / (remainder: Rust's %)
 (add 1.5 (integer-to-float 2))              ; => 3.5; (add 1 1.5) is a type-error
 (equal? 0.0 -0.0)                           ; => #true; (same? 0.0 -0.0) => #false
@@ -61,7 +61,7 @@ byte-substring string-append code-point-to-string symbol-to-string string-to-sym
 integer-to-string string-to-integer float-to-string string-to-float`. The library adds
 `define! quote! list if! sequence! lambda! current-context evaluate-in! not? empty-list? boolean?
 inert? ignore? integer? float? symbol? pair? string? context? operative? applicative? and!? or!?
-apply map for-each conditional! let! finally! catch! define-in! error length append reverse
+apply map for-each when! conditional! let! finally! catch! define-in! error length append reverse
 equal? greater-than? less-than-or-equal? greater-than-or-equal? minimum maximum find-association
 member? binds!? built-in-names`.
 
@@ -112,9 +112,9 @@ system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the pat
 (define! copy
   (lambda! (n)
     (let! ((line (read-line)))
-      (if! (not? (same? line ""))
-        (sequence! ((evaluate-in! write out) (string-append (integer-to-string n) " " line))
-                   (copy (add n 1)))))))
+      (when! (not? (same? line ""))
+        ((evaluate-in! write out) (string-append (integer-to-string n) " " line))
+        (copy (add n 1))))))
 (copy 1)
 ((evaluate-in! close out))
 (display (evaluate-in! output (run-process "wc" "-l" path)))

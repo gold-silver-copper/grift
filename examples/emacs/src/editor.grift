@@ -120,12 +120,11 @@
 
 (define! insert-code-points
   (lambda! (code-points)
-    (if! (pair? code-points)
-      (sequence!
-        (if! (same? (first code-points) 10)
-          (newline)
-          (define-field! before (pair (first code-points) (field! before))))
-        (insert-code-points (rest code-points))))))
+    (when! (pair? code-points)
+      (if! (same? (first code-points) 10)
+        (newline)
+        (define-field! before (pair (first code-points) (field! before))))
+      (insert-code-points (rest code-points)))))
 
 (define! buffer-text
   (lambda! ()
@@ -204,10 +203,9 @@
 
 (define! show-rows
   (lambda! (row lines n)
-    (if! (less-than? 0 n)
-      (sequence!
-        (show-row row (if! (empty-list? lines) "" (first lines)))
-        (show-rows (add row 1) (if! (empty-list? lines) () (rest lines)) (subtract n 1))))))
+    (when! (less-than? 0 n)
+      (show-row row (if! (empty-list? lines) "" (first lines)))
+      (show-rows (add row 1) (if! (empty-list? lines) () (rest lines)) (subtract n 1)))))
 
 (define! mode-line
   (lambda! (b columns)
@@ -227,8 +225,8 @@
     (define! row (evaluate-in! row window))
     ; Scroll so the current line is in the window, recentring when it leaves. Rows and height
     ; are positive, so divide rounds down.
-    (if! (or!? (less-than? row (evaluate-in! top window))
-               (less-than-or-equal? (add (evaluate-in! top window) height) row))
+    (when! (or!? (less-than? row (evaluate-in! top window))
+                 (less-than-or-equal? (add (evaluate-in! top window) height) row))
       (bind window (quote! top) (maximum 0 (subtract row (divide height 2)))))
     (define! above-shown (subtract row (evaluate-in! top window)))
     (define! lines
@@ -358,10 +356,9 @@
           (bind keymap (first keys) command)
           (sequence!
             (define! sub (lookup-key keymap (first keys)))
-            (if! (not? (context? sub))
-              (sequence!
-                (define! sub (context))
-                (bind keymap (first keys) sub)))
+            (when! (not? (context? sub))
+              (define! sub (context))
+              (bind keymap (first keys) sub))
             (walk sub (rest keys))))))
     (walk keymap (string-to-keys keys))))
 
@@ -385,10 +382,10 @@
     (if! (symbol? command)
       (evaluate (list command) editor-context)
       (command))
-    (if! (and!? text-changed
-                (not? (same? command (quote! undo)))
-                (not? (and!? (same? command (quote! self-insert-command))
-                             (same? last-command (quote! self-insert-command)))))
+    (when! (and!? text-changed
+                  (not? (same? command (quote! undo)))
+                  (not? (and!? (same? command (quote! self-insert-command))
+                               (same? last-command (quote! self-insert-command)))))
       (bind b (quote! undo) (pair state (evaluate-in! undo b))))
     (define-in! editor-context text-changed #false)
     (define-in! editor-context last-command this-command)))
@@ -462,7 +459,7 @@
     (define-in! editor-context window-buffer (find-file-noselect file))
     (define-in! editor-context current-buffer window-buffer)
     ; An empty text keeps what the init file put in the echo area.
-    (if! (not? (same? text "")) (message text))
+    (when! (not? (same? text "")) (message text))
     (main-loop)))
 
 (define! main-loop
@@ -506,7 +503,7 @@
 (define! goal-column 0)
 (define! set-goal
   (lambda! ()
-    (if! (not? (member? last-command (quote! (next-line previous-line))))
+    (when! (not? (member? last-command (quote! (next-line previous-line))))
       (define-in! editor-context goal-column (current-column)))))
 
 (define! next-line
@@ -583,11 +580,10 @@
          (define-field! below (rest (field! below)))
          (list 10))
         (#true (message "End of buffer") ())))
-    (if! (pair? killed)
-      (sequence!
-        (define-in! editor-context kill-ring
-          (if! (same? last-command (quote! kill-line)) (append kill-ring killed) killed))
-        (set-modified)))))
+    (when! (pair? killed)
+      (define-in! editor-context kill-ring
+        (if! (same? last-command (quote! kill-line)) (append kill-ring killed) killed))
+      (set-modified))))
 
 (define! insert-tab (lambda! () (insert-code-points (list 9)) (set-modified)))
 
@@ -606,18 +602,17 @@
 
 (define! save-buffer
   (lambda! ()
-    (if! (empty-list? (field! file))
-      (sequence!
-        (define-field! file (read-from-minibuffer "File to save in: "))
-        (define-field! name (field! file))))
+    (when! (empty-list? (field! file))
+      (define-field! file (read-from-minibuffer "File to save in: "))
+      (define-field! name (field! file)))
     (write-file (field! file) (buffer-text))
     (define-field! modified #false)
     (message (string-append "Wrote " (field! file)))))
 
 (define! save-buffers-kill-emacs
   (lambda! ()
-    (if! (or!? (not? (evaluate-in! modified window-buffer))
-               (equal? (read-from-minibuffer "Modified buffer; quit anyway? (yes or no) ") "yes"))
+    (when! (or!? (not? (evaluate-in! modified window-buffer))
+                 (equal? (read-from-minibuffer "Modified buffer; quit anyway? (yes or no) ") "yes"))
       (define-in! editor-context quit-flag #true))))
 
 (define! keyboard-quit (lambda! () (raise (error (quote! quit)))))

@@ -45,8 +45,9 @@ grift has few kinds of value, and each earns its place:
 - `#inert` (the value of a form with nothing useful to return) and `#ignore` (a parameter that
   binds nothing).
 
-There is no truthiness: the tests of `if!`, `conditional!`, `and!?` and `or!?` must be booleans,
-and anything else is a type error. Integers and floats never mix implicitly: `(add 1 1.5)` is a
+There is no truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and `or!?` must be
+booleans, and anything else is a type error. Nothing is guessed for a missing branch either: `if!`
+needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers and floats never mix implicitly: `(add 1 1.5)` is a
 type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
 and no vector type. Host types are not grift values: the host converts at the boundary (checked;
 `range-error` when a number doesn't fit) or gives grift a context of operations.

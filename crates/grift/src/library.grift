@@ -18,18 +18,11 @@
 ; list (5.2.1).
 (define! list (wrap (vau! xs #ignore xs)))
 
-; if! (4.5.2, $if; primitive in Kernel). The alternative is optional: without one, a false test
-; gives #inert. select picks the expression and evaluate runs it as a tail call. Whether there is
-; an alternative picks which of two applicatives does that, each matching its operands exactly,
-; so (if! test consequent alternative more) is an arity-error.
+; if! (4.5.2, $if; primitive in Kernel). Both branches are required, as in Kernel: select picks
+; the expression and evaluate runs it as a tail call. One branch is when!, below.
 (define! if!
-  ((wrap (vau! (without with) #ignore
-     (vau! (test consequent . alternative) caller
-       ((select (same? alternative ()) without with) test consequent alternative caller))))
-   (wrap (vau! (test consequent () caller) #ignore
-     (evaluate (select (evaluate test caller) consequent #inert) caller)))
-   (wrap (vau! (test consequent (alternative) caller) #ignore
-     (evaluate (select (evaluate test caller) consequent alternative) caller)))))
+  (vau! (test consequent alternative) caller
+    (evaluate (select (evaluate test caller) consequent alternative) caller)))
 
 ; sequence! (5.1.1, $sequence): each expression in turn, the last one as a tail call. `next`
 ; gets the value of the first expression, evaluated as its operand, and ignores it; it has no
@@ -116,46 +109,44 @@
       #inert
       (sequence! (apply f (list (first xs))) (for-each f (rest xs))))))
 
-; The forms with a body: conditional! (5.6.1, $cond), let! (6.7.5, $letrec*), finally! and
-; catch!. Each is an operative that walks its operands with first and rest and evaluates only
-; them, in the caller's context or one it made; none builds code to evaluate. They share `run`,
-; which evaluates the forms of a body in turn, the last as a tail call.
-(define! (conditional! let! finally! catch!)
+; The forms with a body: when! (not in Kernel), conditional! (5.6.1, $cond), let! (6.7.5,
+; $letrec*), finally! and catch!. Each is an operative that walks its operands and evaluates only
+; them, in the caller's context or one it made; none builds code to evaluate. A loop that
+; evaluates something only for its effect gets its value as an ignored first operand, as
+; sequence!'s does, and a list known not to be empty is taken apart in the parameters.
+(define! (when! conditional! let! finally! catch!)
   ((lambda! ()
-     (define! run
-       (lambda! (body c)
-         (if! (same? body ()) #inert
-           (if! (same? (rest body) ()) (evaluate (first body) c)
-             (sequence! (evaluate (first body) c) (run (rest body) c))))))
+     ; run: the forms of a body in turn, the last as a tail call; #inert for none. Its loop
+     ; `forms` is called only with a form left.
+     (define! forms
+       (lambda! (#ignore (form . more) c)
+         (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
+     (define! run (lambda! (body c) (if! (same? body ()) #inert (forms #inert body c))))
+     ; The body of the first clause whose test is #true, or #inert; called only with a clause
+     ; left, so a clause that isn't (test body ...) is an arity-error.
      (define! first-true
-       (lambda! (clauses caller)
-         (if! (same? clauses ()) #inert
-           (if! (evaluate (first (first clauses)) caller)
-             (run (rest (first clauses)) caller)
-             (first-true (rest clauses) caller)))))
+       (lambda! (((test . body) . more) caller)
+         (if! (evaluate test caller)
+           (run body caller)
+           (if! (same? more ()) #inert (first-true more caller)))))
      ; A binding is (parameters expression); anything else is an arity-error.
      (define! bind-one
        (lambda! ((parameters expression) local)
          (bind local parameters (evaluate expression local))))
      (define! bind-each
-       (lambda! (bindings local)
+       (lambda! (#ignore bindings local)
          (if! (same? bindings ())
            local
-           (sequence! (bind-one (first bindings) local) (bind-each (rest bindings) local)))))
-     ; A catch!'s handler: the handler forms, with the parameter bound to the error.
-     (define! handled
-       (lambda! (parameter handler caller)
-         (lambda! (e)
-           (define! local (context caller))
-           (bind local parameter e)
-           (run handler local))))
+           (bind-each (bind-one (first bindings) local) (rest bindings) local))))
      (list
+       ; when!: the body if the test is #true, #inert if it is #false.
+       (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
        ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
-       (vau! clauses caller (first-true clauses caller))
+       (vau! clauses caller (if! (same? clauses ()) #inert (first-true clauses caller)))
        ; let!: one new child of the caller's context; each binding in order evaluates its
        ; expression there and binds its parameters there, so it sees the ones before it and a
        ; combiner it binds can call itself and the ones after it.
-       (vau! (bindings . body) caller (run body (bind-each bindings (context caller))))
+       (vau! (bindings . body) caller (run body (bind-each #inert bindings (context caller))))
        ; finally!: the body's value, after the cleanup forms have run. They run also when an
        ; error leaves the body, and the error then goes on unchanged.
        (vau! (body . cleanup) caller
@@ -165,7 +156,10 @@
        ; context. interrupted and out-of-memory are never caught.
        (vau! (body parameter . handler) caller
          (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (handled parameter handler caller)))))))
+                            (lambda! (e)
+                              (define! local (context caller))
+                              (bind local parameter e)
+                              (run handler local))))))))
 
 ; define-in! (6.8.1, $set!): matches the parameters to the value in the context `target`
 ; evaluates to, as define! does in the current one.
