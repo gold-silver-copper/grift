@@ -98,6 +98,9 @@ known_symbols! {
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
+    UnclosedList "unclosed-list" UnclosedString "unclosed-string"
+    UnmatchedParenthesis "unmatched-parenthesis" MisplacedDot "misplaced-dot"
+    BadEscape "bad-escape" BadNumber "bad-number" UnknownConstant "unknown-constant"
 }
 
 impl From<K> for Symbol {

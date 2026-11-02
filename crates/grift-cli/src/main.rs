@@ -4,16 +4,19 @@
 //! failed output, 2 on a usage error or unreadable input, or what the program gave `exit`. A
 //! closed stdout (a broken pipe) ends the run quietly.
 //!
-//! For scripting, the program gets a small fixed set of operations: `display`, `standard-input`, `standard-error`, `open-file`, `create-file` and `run-process` (contexts of
-//! operations, made by `runner.grift`), `command-line-arguments`, `environment-variable` and
-//! `exit`.
+//! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
+//! `read-file`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
+//! `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
+//! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
 
 use grift::{Error, Grift, HostFunction, Value};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
+use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, reads the program \
                      from stdin (use `rlwrap grift` for line editing)";
@@ -38,11 +41,12 @@ enum Stream {
     Writing(Box<dyn Write>),
 }
 
-/// The runner's state: the files opened, standard input and standard error first, and the status
-/// `exit` gave.
+/// The runner's state: the files opened, standard input, error and output first, the status `exit`
+/// gave, and when the run started.
 struct Runner {
     files: Vec<Opened>,
     exit: Option<u8>,
+    started: Instant,
 }
 
 type G = Grift<Runner>;
@@ -63,12 +67,9 @@ impl<W: Write> fmt::Write for Sink<W> {
     }
 }
 
-/// Writes the values to stdout, strings without quotes when `raw`, then `end`, and flushes.
-fn put(g: &mut G, values: &[Value], raw: bool, end: &str) -> Result<Value, Error> {
-    let mut out = Sink {
-        w: io::stdout().lock(),
-        error: None,
-    };
+/// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes.
+fn put(g: &mut G, values: &[Value], raw: bool, end: &str, w: &mut dyn Write) -> Result<Value, Error> {
+    let mut out = Sink { w, error: None };
     let mut written = values.iter().try_for_each(|&v| match g.as_str(v) {
         Some(s) if raw => fmt::Write::write_str(&mut out, s),
         _ => g.write(v, &mut out),
@@ -94,7 +95,59 @@ fn put(g: &mut G, values: &[Value], raw: bool, end: &str) -> Result<Value, Error
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "")
+    put(g, args, true, "", &mut io::stdout().lock())
+}
+
+/// `(display-error v ...)`: as `display`, to stderr.
+fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    put(g, args, true, "", &mut io::stderr().lock())
+}
+
+/// `(read-file path)`: the whole text of the file.
+fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let path = one_string(g, args)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => g.string(&text),
+        Err(e) => Err(failed(g, "file-error", &path, &e)),
+    }
+}
+
+/// `(resolve-host base path)`: `path`, relative to the directory of the file `base` if it is
+/// relative.
+fn resolve_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let (Some(base), Some(path)) = (args.first(), args.get(1)) else {
+        return Err(g.error("arity-error", args));
+    };
+    let (Some(base), Some(path)) = (g.as_str(*base), g.as_str(*path)) else {
+        return Err(g.error("type-error", args));
+    };
+    let full = Path::new(base).parent().unwrap_or(Path::new("")).join(path);
+    match full.to_str().map(String::from) {
+        Some(full) => g.string(&full),
+        None => Err(g.error("encoding-error", args)),
+    }
+}
+
+/// `(wall-clock-nanoseconds)`: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock,
+/// which may be set back.
+fn wall_clock_nanoseconds(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    nanoseconds(g, args, SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).ok())
+}
+
+/// `(elapsed-nanoseconds)`: the nanoseconds since the run started, by a clock that never goes back.
+fn elapsed_nanoseconds(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    nanoseconds(g, args, Some(r.started.elapsed()))
+}
+
+/// A duration as an integer of nanoseconds; `range-error` before 1970 or after 2262.
+fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, Error> {
+    if !args.is_empty() {
+        return Err(g.error("arity-error", args));
+    }
+    match d.and_then(|d| i64::try_from(d.as_nanos()).ok()) {
+        Some(n) => Ok(Value::Integer(n)),
+        None => Err(g.error("range-error", &[])),
+    }
 }
 
 /// The one string argument, or a `type-error` or an `arity-error`.
@@ -207,6 +260,28 @@ fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Err
     reading(g, r, args, |input, s| input.read_to_string(s))
 }
 
+/// `(read-bytes count)` on a file: the next `count` bytes, fewer at the end, as a list of integers
+/// 0-255; `()` at the end.
+fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [id, count] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let Value::Integer(n) = count else {
+        return Err(g.error("type-error", &[*count]));
+    };
+    let n = u64::try_from(*n).map_err(|_| g.error("range-error", &[*count]))?;
+    let (path, Stream::Reading(input)) = file(g, r, *id)? else {
+        return Err(g.error("type-error", args));
+    };
+    let mut bytes = Vec::new();
+    if let Err(e) = input.as_mut().take(n).read_to_end(&mut bytes) {
+        return Err(failed(g, "file-error", path, &e));
+    }
+    bytes.iter().rev().try_fold(Value::EmptyList, |list, &b| {
+        g.pair(Value::Integer(i64::from(b)), list)
+    })
+}
+
 /// `(write text)` on a file: all of the string's bytes.
 fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id, text] = args else {
@@ -218,8 +293,45 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     let Some(text) = g.as_str(*text) else {
         return Err(g.error("type-error", &[*text]));
     };
-    match out.write_all(text.as_bytes()) {
+    let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+    written(g, *id, path, wrote)
+}
+
+/// `(write-bytes bytes)` on a file: the list of integers 0-255, as bytes.
+fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let &[id, mut list] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let mut bytes = Vec::new();
+    while let Some((b, rest)) = g.as_pair(list) {
+        match b {
+            Value::Integer(n) => match u8::try_from(n) {
+                Ok(b) => bytes.push(b),
+                Err(_) => return Err(g.error("range-error", &[b])),
+            },
+            _ => return Err(g.error("type-error", &[b])),
+        }
+        list = rest;
+    }
+    if list != Value::EmptyList {
+        return Err(g.error("type-error", &[list]));
+    }
+    let (path, Stream::Writing(out)) = file(g, r, id)? else {
+        return Err(g.error("type-error", args));
+    };
+    let wrote = out.write_all(&bytes).and_then(|()| out.flush());
+    written(g, id, path, wrote)
+}
+
+/// After a write to file `id`: `#inert`, or the error; a closed stdout ends the run quietly, as
+/// for `display`.
+fn written(g: &mut G, id: Value, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
+    match wrote {
         Ok(()) => Ok(Value::Inert),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe && id == Value::Integer(2) => {
+            CLOSED.store(true, Ordering::Relaxed);
+            Err(g.error("stdout-closed", &[]))
+        }
         Err(e) => Err(failed(g, "file-error", path, &e)),
     }
 }
@@ -331,12 +443,13 @@ fn ended(r: &Runner) -> Option<ExitCode> {
     }
 }
 
-/// Whether `e` is a parse error at the very end of `src`: the input isn't finished yet.
-fn unfinished(g: &mut G, src: &str, e: &Error) -> bool {
-    let line = src.matches('\n').count() + 1;
-    let col = src.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
-    let end = [Value::Integer(line as i64), Value::Integer(col as i64)];
-    g.symbol("parse-error").is_ok_and(|k| k == e.kind) && e.values == end
+/// Whether `e` is a parse error for a list or string left open: the input isn't finished yet.
+fn unfinished(g: &mut G, e: &Error) -> bool {
+    let reason = e.values.first().copied();
+    g.symbol("parse-error").is_ok_and(|k| k == e.kind)
+        && ["unclosed-list", "unclosed-string"]
+            .iter()
+            .any(|&open| g.symbol(open).is_ok_and(|s| reason == Some(Value::Symbol(s))))
 }
 
 fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
@@ -361,13 +474,13 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
         }
         // Read first: a `parse-error` from running the input (`read-form`'s) doesn't mean there is
         // more of it to come.
-        pending = g.read(&src).err().filter(|e| unfinished(g, &src, e));
+        pending = g.read(&src).err().filter(|e| unfinished(g, e));
         if pending.is_some() {
             eprint!("  ");
             continue;
         }
         let done = match g.evaluate(r, &src) {
-            Ok(v) => put(g, &[v], false, "\n"),
+            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock()),
             Err(e) => Err(e),
         };
         if let Some(status) = ended(r) {
@@ -388,25 +501,33 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
 }
 
 /// The host functions the program gets by name.
-const PUBLIC: [(&str, HostFunction<Runner>); 3] = [
+const PUBLIC: [(&str, HostFunction<Runner>); 7] = [
     ("display", display),
+    ("display-error", display_error),
+    ("read-file", read_file),
     ("environment-variable", environment_variable),
+    ("wall-clock-nanoseconds", wall_clock_nanoseconds),
+    ("elapsed-nanoseconds", elapsed_nanoseconds),
     ("exit", exit),
 ];
 
 /// The host functions only `runner.grift`'s closures get.
-const PRIVATE: [(&str, HostFunction<Runner>); 7] = [
+const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
     ("open-host", open_host),
     ("create-host", create_host),
     ("read-line-host", read_line_host),
     ("read-all-host", read_all_host),
+    ("read-bytes-host", read_bytes_host),
     ("write-host", write_host),
+    ("write-bytes-host", write_bytes_host),
     ("close-host", close_host),
     ("run-host", run_host),
+    ("read-file-host", read_file),
+    ("resolve-host", resolve_host),
 ];
 
-/// Binds the runner's operations in the top-level context.
-fn set_up(g: &mut G, r: &mut Runner, arguments: &[String]) -> Result<(), Error> {
+/// Binds the runner's operations in the top-level context, and `script-path` if there is a script.
+fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: Option<&str>) -> Result<(), Error> {
     for (name, f) in PUBLIC {
         let f = g.host_function(name, f)?;
         g.define(name, f)?;
@@ -417,6 +538,10 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String]) -> Result<(), Error> 
         list = g.pair(a, list)?;
     }
     g.define("command-line-arguments", list)?;
+    if let Some(script) = script {
+        let path = g.string(script)?;
+        g.define("script-path", path)?;
+    }
     // The setup is made in a private context, so the operations it makes look names up there,
     // never where the program could redefine them. An evaluation may reclaim a value held only
     // here, so `form`, `private`, `setup` and the host functions are each made after the last
@@ -432,7 +557,8 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String]) -> Result<(), Error> 
     };
     let private = g.context()?;
     let setup = g.call(r, evaluate, &[form, private])?;
-    let mut hosts = vec![top];
+    let script = g.string(script.unwrap_or_default())?;
+    let mut hosts = vec![top, script];
     for (name, f) in PRIVATE {
         hosts.push(g.host_function(name, f)?);
     }
@@ -461,8 +587,13 @@ fn main() -> ExitCode {
                 path: String::from("standard-error"),
                 file: Some(Stream::Writing(Box::new(io::stderr()))),
             },
+            Opened {
+                path: String::from("standard-output"),
+                file: Some(Stream::Writing(Box::new(io::stdout()))),
+            },
         ],
         exit: None,
+        started: Instant::now(),
     };
     let mut g: G = match Grift::new() {
         Ok(g) => g,
@@ -475,7 +606,8 @@ fn main() -> ExitCode {
         }
     };
     g.set_interrupt_flag(&STOP);
-    if let Err(e) = set_up(&mut g, &mut r, &arguments) {
+    let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
+    if let Err(e) = set_up(&mut g, &mut r, &arguments, script_path.as_deref()) {
         return report(&g, "grift", &e);
     }
     let (name, text) = match script {

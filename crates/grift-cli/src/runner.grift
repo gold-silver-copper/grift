@@ -1,36 +1,89 @@
-; The runner's operations on files, standard input, standard error and processes. main.rs evaluates
-; this, in a private child of the built-in context, to a combiner it calls with the top-level context
-; and its host functions, which are bound nowhere else.
+; The runner's operations on files, standard input, output and error, processes and loading.
+; main.rs evaluates this, in a private child of the built-in context, to a combiner it calls with
+; the top-level context, the script's path (or "" for none) and its host functions, which are bound
+; nowhere else.
 ; Every operation a program gets is a closure over them, holding the number of its file: a
 ; program reaches a file only through the context it was given, and can't name one by its
 ; number.
-(lambda! (top open-host create-host read-line-host read-all-host write-host close-host run-host)
+(lambda! (top script open-host create-host read-line-host read-all-host read-bytes-host
+          write-host write-bytes-host close-host run-host read-file-host resolve-host)
   ; A new context binding `names` to `values`.
   (define! operations
     (lambda! (names values)
       (let! ((c (context)))
         (bind c names values)
         c)))
+  (define! reading
+    (lambda! (file)
+      (list (lambda! () (read-line-host file))
+            (lambda! () (read-all-host file))
+            (lambda! (count) (read-bytes-host file count)))))
+  (define! writing
+    (lambda! (file)
+      (list (lambda! (text) (write-host file text))
+            (lambda! (bytes) (write-bytes-host file bytes)))))
   (define! reader
     (lambda! (path file)
-      (operations (quote! (path read-line read-all close))
-                  (list path
-                        (lambda! () (read-line-host file))
-                        (lambda! () (read-all-host file))
-                        (lambda! () (close-host file))))))
+      (operations (quote! (path read-line read-all read-bytes close))
+                  (append (list path) (reading file) (list (lambda! () (close-host file)))))))
   (define! writer
     (lambda! (path file)
-      (operations (quote! (path write close))
-                  (list path
-                        (lambda! (text) (write-host file text))
-                        (lambda! () (close-host file))))))
-  (bind top (quote! (standard-input standard-error open-file create-file run-process))
-    (list (operations (quote! (read-line read-all))
-                      (list (lambda! () (read-line-host 0)) (lambda! () (read-all-host 0))))
-          (operations (quote! (write)) (list (lambda! (text) (write-host 1 text))))
+      (operations (quote! (path write write-bytes close))
+                  (append (list path) (writing file) (list (lambda! () (close-host file)))))))
+  ; The file whose forms are being loaded, at first the script; a relative path given `load` is
+  ; relative to it.
+  (define! loading (operations (quote! (file)) (list script)))
+  ; A caught error again, its trace ending with where in a loaded file it happened.
+  (define! placed
+    (lambda! (e where)
+      (operations (quote! (kind values trace))
+                  (list (evaluate-in! kind e)
+                        (evaluate-in! values e)
+                        (append (evaluate-in! trace e) (list where))))))
+  ; The forms of `text`, the file `path`, from offset `at`, as read-form gives them, after those in
+  ; `done`; one that doesn't read is a parse-error saying the file.
+  (define! forms-of
+    (lambda! (text path at done)
+      (forms-after text path (catch! (read-form text at) e (raise (placed e path))) done)))
+  (define! forms-after
+    (lambda! (text path read done)
+      (if! (pair? read)
+        (forms-of text path (third read) (pair (append read (list text)) done))
+        (reverse done))))
+  ; Each form in turn, evaluated in `c`; an error says the file and the form's line, counted in the
+  ; file's text, which each form carries.
+  (define! each-form
+    (lambda! (forms path c)
+      (when! (pair? forms)
+        (evaluate-form (first forms) path c)
+        (each-form (rest forms) path c))))
+  (define! evaluate-form
+    (lambda! ((form start #ignore text) path c)
+      (catch! (evaluate form c)
+              e
+              (let! ((line (length (string-split (byte-substring text 0 start) "\n"))))
+                (raise (placed e (string-append path ":" (integer-to-string line))))))))
+  ; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in `c`
+  ; while a relative path given load is relative to the file.
+  (define! load-file
+    (lambda! (path c)
+      (load-forms (forms-of (read-file-host path) path 0 ()) path c (evaluate-in! file loading))))
+  (define! load-forms
+    (lambda! (forms path c outer)
+      (bind loading (quote! file) path)
+      (finally! (each-form forms path c) (bind loading (quote! file) outer))))
+  (bind top (quote! (standard-input standard-output standard-error open-file create-file
+                     run-process load))
+    (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
+          (operations (quote! (write write-bytes)) (writing 2))
+          (operations (quote! (write write-bytes)) (writing 1))
           (lambda! (path) (reader path (open-host path)))
           (lambda! (path) (writer path (create-host path)))
           ; The record of a finished process: its status, output and error output.
           (lambda! (program . arguments)
             (operations (quote! (status output error-output))
-                        (apply run-host (pair program arguments)))))))
+                        (apply run-host (pair program arguments))))
+          ; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's
+          ; load does; each load reads the file again.
+          (wrap (vau! (path) caller
+                  (load-file (resolve-host (evaluate-in! file loading) path) caller))))))

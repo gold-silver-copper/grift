@@ -186,8 +186,6 @@ fn error_kinds() {
     assert_eq!(e.values.len(), 2);
     assert_eq!(e.values[0], Value::Integer(1));
     assert_eq!(g.as_str(e.values[1]), Some("two"));
-    let e = g.evaluate(&mut (), "(first\n  (pair 1 2)").unwrap_err();
-    assert_eq!(e.values, [Value::Integer(2), Value::Integer(13)]);
     let e = g.evaluate(&mut (), "(foo bar)").unwrap_err();
     assert_eq!(show(&g, e.values[0]), "foo");
 }
@@ -825,7 +823,7 @@ fn binds_looks_through_parents() {
         &[
             "(binds? e (string-to-symbol \"x\"))",
             "(not? (binds? e (string-to-symbol \"nope\")))",
-            "(equal? (catch! (binds? e 1) x (evaluate-in! values x)) (quote! (binds? 1)))",
+            "(same? (second (catch! (binds? e 1) x (evaluate-in! values x))) 1)",
             "(sequence! (define! s (quote! nope)) (not? (binds? e s)))",
             "(binds? (context e) (quote! first))",
         ],
@@ -1021,6 +1019,23 @@ fn arithmetic_is_rusts() {
             let less = g.evaluate(&mut (), &format!("(less-than? {a} {b})"));
             assert_eq!(less, Ok(Value::Boolean(a < b)));
         }
+        // absolute-value and power take integers too: Rust's checked abs and pow, overflow
+        // where they give none, and a negative exponent is a range-error.
+        let got = g.evaluate(&mut (), &format!("(absolute-value {a})"));
+        match (a.checked_abs(), got) {
+            (Some(n), Ok(v)) => assert_eq!(v, Value::Integer(n), "(absolute-value {a})"),
+            (None, Err(e)) => assert_eq!(kind(&mut g, &e), "overflow"),
+            (rust, got) => panic!("(absolute-value {a}): Rust {rust:?}, grift {got:?}"),
+        }
+        for b in [0, 1, 2, 3, 31, 62, 63, 64, -1] {
+            let got = g.evaluate(&mut (), &format!("(power {a} {b})"));
+            match (u32::try_from(b).map(|b| a.checked_pow(b)), got) {
+                (Ok(Some(n)), Ok(v)) => assert_eq!(v, Value::Integer(n), "(power {a} {b})"),
+                (Ok(None), Err(e)) => assert_eq!(kind(&mut g, &e), "overflow", "(power {a} {b})"),
+                (Err(_), Err(e)) => assert_eq!(kind(&mut g, &e), "range-error"),
+                (rust, got) => panic!("(power {a} {b}): Rust {rust:?}, grift {got:?}"),
+            }
+        }
     }
     let floats = FLOATS.map(|x| show(&g, Value::Float(x)));
     for (x, a) in FLOATS.iter().zip(&floats) {
@@ -1070,10 +1085,48 @@ fn arithmetic_is_rusts() {
             ("(less-than? 1 1.5)", "type-error"),
             ("(multiply 2.0 \"a\")", "type-error"),
             ("(square-root 4)", "type-error"),
-            ("(absolute-value -1)", "type-error"),
-            ("(power 2 3)", "type-error"),
+            ("(absolute-value \"a\")", "type-error"),
+            ("(power 2 3.0)", "type-error"),
+            ("(power 2.0 3)", "type-error"),
             ("(integer-to-float 1.0)", "type-error"),
             ("(float-to-integer 1)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn bitwise_operations_are_rusts() {
+    let mut g = grift();
+    let integers = [0, 1, -1, 6, -7, 0x5555, i64::MAX, i64::MIN];
+    for a in integers {
+        for b in integers {
+            for (name, rust) in [("bitwise-and", a & b), ("bitwise-or", a | b), ("bitwise-exclusive-or", a ^ b)] {
+                let got = g.evaluate(&mut (), &format!("({name} {a} {b})"));
+                assert_eq!(got, Ok(Value::Integer(rust)), "({name} {a} {b})");
+            }
+        }
+        // A shift drops the bits it moves out, as Rust's does, and an amount outside 0 to 63,
+        // where Rust's checked shift gives none, is overflow.
+        for n in [0, 1, 13, 63, 64, -1, i64::MAX] {
+            for (name, rust) in [
+                ("shift-left", u32::try_from(n).ok().and_then(|n| a.checked_shl(n))),
+                ("shift-right", u32::try_from(n).ok().and_then(|n| a.checked_shr(n))),
+            ] {
+                let got = g.evaluate(&mut (), &format!("({name} {a} {n})"));
+                match (rust, got) {
+                    (Some(r), Ok(v)) => assert_eq!(v, Value::Integer(r), "({name} {a} {n})"),
+                    (None, Err(e)) => assert_eq!(kind(&mut g, &e), "overflow", "({name} {a} {n})"),
+                    (rust, got) => panic!("({name} {a} {n}): Rust {rust:?}, grift {got:?}"),
+                }
+            }
+        }
+    }
+    fails(
+        &mut g,
+        &[
+            ("(bitwise-and 1 1.0)", "type-error"),
+            ("(shift-left 1.0 1)", "type-error"),
+            ("(bitwise-or 1)", "arity-error"),
         ],
     );
 }
@@ -1481,7 +1534,8 @@ fn read_form_is_the_program_reader() {
     let e = g
         .evaluate(&mut (), "(read-form \"a\\nb\\n)\" 4)")
         .unwrap_err();
-    assert_eq!(e.values, [Value::Integer(3), Value::Integer(1)]);
+    assert_eq!(show(&g, e.values[0]), "unmatched-parenthesis");
+    assert_eq!(e.values[1..], [Value::Integer(3), Value::Integer(1)]);
     fails(
         &mut g,
         &[
@@ -1694,16 +1748,25 @@ fn string_helpers() {
             "(all? (lambda! (t) (same? (string-trim (string-append \" \" t \"\\n\")) t)) texts)",
             // The pads: at least the width, the text unchanged, the spaces on the side named.
             "(all? (lambda! (t)
-               (and!? (same? (string-byte-length (string-pad-left t 30)) 30)
-                      (string-ends-with? (string-pad-left t 30) t)
-                      (string-starts-with? (string-pad-right t 30) t)
-                      (same? (string-pad-right t 0) t)
-                      (same? (string-pad-left t 0) t)))
+               (and!? (same? (string-byte-length (string-pad-left t 30 \" \")) 30)
+                      (string-ends-with? (string-pad-left t 30 \"0\") t)
+                      (string-starts-with? (string-pad-right t 30 \".\") t)
+                      (same? (string-pad-right t 0 \" \") t)
+                      (same? (string-pad-left t 0 \" \") t)))
                texts)",
-            "(same? (string-pad-left \"ab\" 4) \"  ab\")",
-            "(same? (string-pad-right \"ab\" 4) \"ab  \")",
-            "(same? (string-pad-left \"ab\" -9223372036854775808) \"ab\")",
-            "(same? (string-pad-right \"ab\" -9223372036854775808) \"ab\")",
+            "(same? (string-pad-left \"ab\" 4 \" \") \"  ab\")",
+            "(same? (string-pad-right \"ab\" 4 \" \") \"ab  \")",
+            "(same? (string-pad-left \"7\" 2 \"0\") \"07\")",
+            "(same? (string-pad-left \"ab\" -9223372036854775808 \" \") \"ab\")",
+            "(same? (string-pad-right \"ab\" -9223372036854775808 \" \") \"ab\")",
+            // string-repeat: as long as count copies, each one the string.
+            "(all? (lambda! (t)
+               (all? (lambda! (n)
+                       (let! ((r (string-repeat t n)))
+                         (and!? (same? (string-byte-length r) (multiply n (string-byte-length t)))
+                                (same? (string-join (string-split r t) \"\") (string-repeat \"\" n)))))
+                     (range 0 4)))
+               (pair \"ab\" (rest texts)))",
             // string-to-lowercase: only A to Z change, and once is enough.
             "(same? (string-to-lowercase \"ÉCLAIR Ab1 [@]\") \"Éclair ab1 [@]\")",
             "(all? (lambda! (t)
@@ -1726,9 +1789,218 @@ fn string_helpers() {
             ("(string-starts-with? 1 \"a\")", "type-error"),
             ("(string-ends-with? \"a\" 1)", "type-error"),
             ("(string-trim 1)", "type-error"),
-            ("(string-pad-left 1 2)", "type-error"),
-            ("(string-pad-right \"a\" \"b\")", "type-error"),
+            ("(string-pad-left 1 2 \" \")", "type-error"),
+            ("(string-pad-right \"a\" \"b\" \" \")", "type-error"),
+            ("(string-pad-left \"a\" 3 \"ab\")", "range-error"),
+            ("(string-pad-left \"a\" 3 \"\")", "range-error"),
+            ("(string-pad-left \"a\" 3)", "arity-error"),
+            ("(string-repeat \"a\" -1)", "range-error"),
+            ("(string-repeat 1 2)", "type-error"),
             ("(string-to-lowercase 1)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn a_parse_error_says_why_and_where() {
+    let mut g = grift();
+    // Each reason the reader has, and the line and column: of the `(` or `"` left open, wherever
+    // the text ends, or else of what didn't read.
+    for (text, want) in [
+        ("(define! f\n  (lambda! (x)\n    (add x 1)\n(f 2)", "unclosed-list 2 3"),
+        ("(a (b) (c)", "unclosed-list 1 1"),
+        ("(a \"bc\n\nd", "unclosed-string 1 4"),
+        ("\"ab\\", "unclosed-string 1 1"),
+        ("\"\\x41", "unclosed-string 1 1"),
+        ("(a))", "unmatched-parenthesis 1 4"),
+        ("(a . )", "misplaced-dot 1 6"),
+        ("(. a)", "misplaced-dot 1 2"),
+        ("(a . b c)", "misplaced-dot 1 8"),
+        ("x \"a\\qb\"", "bad-escape 1 5"),
+        ("\"\\x110000;\"", "bad-escape 1 2"),
+        ("(1.2.3)", "bad-number 1 2"),
+        ("99999999999999999999", "bad-number 1 1"),
+        ("#nope", "unknown-constant 1 1"),
+    ] {
+        let e = g.read(text).unwrap_err();
+        let values: Vec<String> = e.values.iter().map(|&v| show(&g, v)).collect();
+        assert_eq!(
+            (kind(&mut g, &e), values.join(" ")),
+            ("parse-error".into(), want.into()),
+            "{text:?}"
+        );
+        // More text after an unclosed form changes nothing.
+        if want.starts_with("unclosed-list") {
+            let more = g.read(&format!("{text}\n(g 3)\n")).unwrap_err();
+            assert_eq!(more.values, e.values);
+        }
+    }
+}
+
+#[test]
+fn lookup_and_unbind() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! outer (current-context))
+         (define! x 1)
+         (define! inner (context outer))
+         (bind inner (quote! (x y)) (list 2 3))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            // lookup gives what evaluating the symbol gives, or `otherwise` where that fails.
+            "(all? (lambda! (s) (equal? (lookup inner s ()) (evaluate s inner))) (quote! (x y first)))",
+            "(same? (lookup inner (quote! nope) 7) 7)",
+            "(same? (lookup (context) (quote! first) 7) 7)",
+            // binds? says whether lookup finds it, whatever is bound, otherwise's value included.
+            "(sequence! (bind inner (quote! z) 7) (binds? inner (quote! z)))",
+            "(not? (binds? inner (quote! nope)))",
+            // unbind removes a binding of the context itself, revealing a parent's.
+            "(unbind inner (quote! x))",
+            "(same? (evaluate (quote! x) inner) 1)",
+            "(not? (unbind inner (quote! x)))",
+            "(not? (unbind inner (quote! first)))",
+            "(same? (lookup outer (quote! x) ()) 1)",
+            "(sequence! (unbind inner (quote! y)) (not? (binds? inner (quote! y))))",
+            "(equal? (names inner) (quote! (z)))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(lookup 1 (quote! x) 2)", "type-error"),
+            ("(lookup inner 1 2)", "type-error"),
+            ("(unbind inner \"x\")", "type-error"),
+            ("(unbind inner)", "arity-error"),
+        ],
+    );
+    // An unbound value can be reclaimed: the collector frees it, so the host's copy goes stale.
+    let held = g
+        .evaluate(&mut (), "(sequence! (bind inner (quote! held) \"kept?\") held)")
+        .unwrap_or(Value::Inert);
+    g.evaluate(&mut (), "(evaluate (quote! held) inner)").unwrap();
+    g.evaluate(
+        &mut (),
+        "(unbind inner (quote! held)) (length (map (lambda! (n) (list n)) (range 0 20000)))",
+    )
+    .unwrap();
+    assert_eq!(g.as_str(held), None);
+}
+
+#[test]
+fn catch_kind_catches_one_kind_and_lets_the_rest_go_on_as_they_were() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! deep (lambda! (x) (add 1 (first x))))
+         (define! trace-of
+           (lambda! (body) (catch! (evaluate body (current-context)) e (evaluate-in! trace e))))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            "(same? (catch-kind! (deep 1) type-error e (evaluate-in! kind e)) (quote! type-error))",
+            "(same? (catch-kind! (deep (list 1)) type-error e 0) 2)",
+            "(same? (catch-kind! (raise (error (quote! found) 4)) found e (first (evaluate-in! values e))) 4)",
+            // Another kind goes on with the trace a catch! that raises it again gives it, and the
+            // body's own combinations in it.
+            "(equal? (trace-of (quote! (catch-kind! (deep 1) parse-error e 0)))
+                     (trace-of (quote! (catch! (deep 1) e (raise e)))))",
+            "(equal? (first (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
+                     (first (trace-of (quote! (deep 1)))))",
+            "(same? (catch-kind! (catch-kind! (deep 1) parse-error e 1) type-error e 2) 2)",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(catch-kind! (deep 1) (quote! type-error) e 0)", "type-error"),
+            ("(catch-kind! (deep 1) parse-error e 0)", "type-error"),
+        ],
+    );
+}
+
+#[test]
+fn sort_is_ordered_and_stable() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! seed 12345)
+         (define! here (current-context))
+         (define! next (lambda! () (bind here (quote! seed) (remainder (add (multiply seed 1103515245) 12345) 2147483648)) seed))
+         (define! numbers (map (lambda! (#ignore) (remainder (next) 100)) (range 0 10000)))
+         (define! by-first (lambda! (a b) (less-than? (first a) (first b))))
+         (define! ordered?
+           (lambda! (xs before?)
+             (if! (or!? (empty-list? xs) (empty-list? (rest xs)))
+               #true
+               (and!? (not? (before? (second xs) (first xs))) (ordered? (rest xs) before?)))))",
+    )
+    .unwrap();
+    let started = Instant::now();
+    g.evaluate(&mut (), "(define! sorted (sort numbers less-than?))")
+        .unwrap();
+    let took = started.elapsed();
+    holds(
+        &mut g,
+        &[
+            "(ordered? sorted less-than?)",
+            "(same? (length sorted) 10000)",
+            "(all? (lambda! (n) (same? (length (filter (lambda! (x) (same? x n)) sorted))
+                                       (length (filter (lambda! (x) (same? x n)) numbers))))
+                   (range 0 100))",
+            // Stable: elements that are equal keep their order, here the order of their index.
+            "(let! ((pairs (map pair numbers (range 0 10000))) (s (sort pairs by-first)))
+               (ordered? s (lambda! (a b) (if! (same? (first a) (first b))
+                                            (less-than? (rest a) (rest b))
+                                            (less-than? (first a) (first b))))))",
+            "(empty-list? (sort () less-than?))",
+            "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") string-less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
+        ],
+    );
+    assert!(took < Duration::from_secs(2), "sorting 10,000 took {took:?}");
+    fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
+    // string-less-than? is Rust's < on str, byte by byte.
+    let words = ["", "a", "b", "ab", "abc", "B", "é", "e", "日本", "日"];
+    for a in words {
+        for b in words {
+            let got = g.evaluate(&mut (), &format!("(string-less-than? {a:?} {b:?})"));
+            assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
+        }
+    }
+}
+
+#[test]
+fn list_access_by_index() {
+    let mut g = grift();
+    g.evaluate(&mut (), "(define! xs (range 10 20))").unwrap();
+    holds(
+        &mut g,
+        &[
+            // Element i is the i-th of the list, counting from 0, and take and drop split it there.
+            "(all? (lambda! (i) (same? (element-at xs i) (add 10 i))) (range 0 10))",
+            "(all? (lambda! (i) (equal? (append (take xs i) (drop xs i)) xs)) (range 0 11))",
+            "(all? (lambda! (i) (same? (length (take xs i)) i)) (range 0 11))",
+            "(and!? (same? (second xs) 11) (same? (third xs) 12) (same? (last xs) 19))",
+            "(same? (last (list 1)) 1)",
+            // Out of range: the name, the index and the list's length.
+            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (quote! (element-at 10 10)))",
+            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (element-at -1 10)))",
+            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (take 11 10)))",
+            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
+            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(last ())", "range-error"),
+            ("(third (list 1 2))", "range-error"),
+            ("(element-at xs 1.0)", "type-error"),
         ],
     );
 }

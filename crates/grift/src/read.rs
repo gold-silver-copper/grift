@@ -5,19 +5,22 @@ use crate::heap::Object;
 use crate::{Error, Grift, K, Value, push};
 use std::ops::Range;
 
-/// A list being read: its first pair, its last pair, and where a dotted tail stands.
+/// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
+/// of its `(`.
 struct List {
     head: Value,
     last: Value,
     dot: Dot,
+    start: usize,
 }
 
 impl List {
-    fn new() -> List {
+    fn new(start: usize) -> List {
         List {
             head: Value::EmptyList,
             last: Value::EmptyList,
             dot: Dot::No,
+            start,
         }
     }
 }
@@ -64,13 +67,16 @@ impl Cursor<'_> {
     }
 }
 
-/// A `parse-error` at byte offset `at` of `src`: its line and column, counted from the start of
-/// the text only now, so reading form by form never recounts.
-fn parse_error(src: &str, at: usize) -> Error {
+/// A `parse-error` for `reason` at byte offset `at` of `src`: the reason, then its line and column,
+/// counted from the start of the text only now, so reading form by form never recounts.
+fn parse_error(src: &str, at: usize, reason: K) -> Error {
     let before = src.get(..at).unwrap_or_default();
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
-    Error::new(K::ParseError, &[integer(line), integer(column)])
+    Error::new(
+        K::ParseError,
+        &[Value::Symbol(reason.into()), integer(line), integer(column)],
+    )
 }
 
 fn delimiter(c: char) -> bool {
@@ -88,10 +94,10 @@ pub(crate) fn float_name(token: &str) -> Option<f64> {
 }
 
 impl<T> Grift<T> {
-    /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries the
-    /// line and column where reading failed; an unfinished form fails at the end of the text.
+    /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
+    /// the line and column: of the `(` or `"` left open, or of what didn't read.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let mut forms = List::new();
+        let mut forms = List::new(0);
         let mut at = 0;
         while let Some((form, place)) = self.read_form(src, at)? {
             self.add(&mut forms, form)?;
@@ -118,24 +124,24 @@ impl<T> Grift<T> {
         loop {
             cur.skip_space();
             let begin = cur.at;
-            let fail = || parse_error(src, begin);
+            let fail = |reason| parse_error(src, begin, reason);
             let Some(c) = cur.next() else {
-                return if open.is_empty() {
-                    Ok(None)
-                } else {
-                    Err(fail())
+                return match open.last() {
+                    None => Ok(None),
+                    Some(list) => Err(parse_error(src, list.start, K::UnclosedList)),
                 };
             };
             let datum = match c {
                 '(' => {
-                    push(&mut open, List::new())?;
+                    push(&mut open, List::new(begin))?;
                     continue;
                 }
                 ')' => match open.pop() {
                     Some(list) if list.dot != Dot::Tail => list.head,
-                    _ => return Err(fail()),
+                    Some(_) => return Err(fail(K::MisplacedDot)),
+                    None => return Err(fail(K::UnmatchedParenthesis)),
                 },
-                '"' => self.read_string(&mut cur)?,
+                '"' => self.read_string(&mut cur, begin)?,
                 _ => {
                     while cur.peek().is_some_and(|c| !delimiter(c)) {
                         cur.next();
@@ -147,17 +153,22 @@ impl<T> Grift<T> {
                                 list.dot = Dot::Tail;
                                 continue;
                             }
-                            _ => return Err(fail()),
+                            _ => return Err(fail(K::MisplacedDot)),
                         }
                     }
-                    self.atom(token).ok_or_else(fail)??
+                    let reason = if token.starts_with('#') {
+                        K::UnknownConstant
+                    } else {
+                        K::BadNumber
+                    };
+                    self.atom(token).ok_or_else(|| fail(reason))??
                 }
             };
             let Some(list) = open.last_mut() else {
                 return Ok(Some((datum, start..cur.at)));
             };
             if list.dot == Dot::Done {
-                return Err(fail());
+                return Err(fail(K::MisplacedDot));
             }
             self.add(list, datum)?;
         }
@@ -214,11 +225,12 @@ impl<T> Grift<T> {
         Some(Ok(v))
     }
 
-    /// A string after its opening quote, with the escapes `\\`, `\"`, `\n`, `\t` and `\xHEX;`
-    /// (a Unicode scalar value in hex).
-    fn read_string(&mut self, cur: &mut Cursor) -> Result<Value, Error> {
+    /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,
+    /// `\t` and `\xHEX;` (a Unicode scalar value in hex).
+    fn read_string(&mut self, cur: &mut Cursor, start: usize) -> Result<Value, Error> {
         let mut s = String::new();
         loop {
+            let escape = cur.at;
             let c = match cur.next() {
                 Some('"') => break,
                 Some('\\') => match cur.next() {
@@ -235,13 +247,15 @@ impl<T> Grift<T> {
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
                         match (cur.next(), c) {
                             (Some(';'), Some(c)) => c,
-                            _ => return Err(parse_error(cur.src, cur.at)),
+                            (None, _) => return Err(parse_error(cur.src, start, K::UnclosedString)),
+                            _ => return Err(parse_error(cur.src, escape, K::BadEscape)),
                         }
                     }
-                    _ => return Err(parse_error(cur.src, cur.at)),
+                    Some(_) => return Err(parse_error(cur.src, escape, K::BadEscape)),
+                    None => return Err(parse_error(cur.src, start, K::UnclosedString)),
                 },
                 Some(c) => c,
-                None => return Err(parse_error(cur.src, cur.at)),
+                None => return Err(parse_error(cur.src, start, K::UnclosedString)),
             };
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);
