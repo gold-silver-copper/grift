@@ -89,7 +89,9 @@ everything else as `same?` does. Values of different types are never equal (`(eq
 ## Embedding
 grift is a Rust library with zero dependencies, using `std`. It does no I/O, starts no threads and
 keeps no global state: the host owns those, lends its state per call, and sets every limit.
-Bare-metal targets are not a goal; WebAssembly works wherever `std` does.
+Bare-metal targets are not a goal; WebAssembly works wherever `std` does. grift does not isolate
+code from the host or from other code in the same interpreter; an embedder running untrusted code
+isolates it itself, for example in its own process.
 
 ## State
 Only bindings change: a context gains a binding or has one replaced, and no other value ever
@@ -116,8 +118,8 @@ the host; closing it is explicit (no finalizers), and using it after it is close
 ## The runner
 The `grift` runner is a Unix tool: it runs files or stdin, prints data to stdout and diagnostics to
 stderr, and exits 0, 1 on an error, 2 on a usage error. For scripting it gives programs a small,
-fixed set of host operations: reading stdin as data, files (as contexts of operations), the
-command-line arguments, environment variables, the exit status, and running processes. The core
+fixed set of host operations: reading stdin as data, writing to stderr, files (as contexts of
+operations), the command-line arguments, environment variables, the exit status, and running processes. The core
 does none of this.
 
 ## Implementation

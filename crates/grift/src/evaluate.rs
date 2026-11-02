@@ -7,7 +7,8 @@
 //! nothing is freed until the next safe point, and by then every local is gone. The same safe
 //! point checks the host's interrupt flag.
 
-use crate::heap::{Bindings, Object, Operative};
+use crate::heap::{Bindings, Object, Operative, Seen};
+use crate::read::float_name;
 use crate::{Error, Grift, Host, K, Reference, Symbol, Value, boxed, formatted, push};
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -82,6 +83,8 @@ primitives! {
     StringToInteger "string-to-integer" 1 1;
     FloatToString "float-to-string" 1 1;
     StringToFloat "string-to-float" 1 1;
+    ReadForm "read-form" 2 2;
+    ValueToString "value-to-string" 1 1;
 }
 
 /// What the machine does next.
@@ -695,6 +698,7 @@ impl<T> Grift<T> {
                 kind: K::ArityError.into(),
                 values,
                 trace: Vec::new(),
+                seen: Seen::default(),
             });
         }
         let n = given.len();
@@ -894,16 +898,44 @@ impl<T> Grift<T> {
                 Value::String(self.heap.alloc(Object::String(s))?)
             }
             P::FloatToString => {
-                let s = formatted(format_args!("{}", float_of(p, x)?))?;
-                Value::String(self.heap.alloc(Object::String(s))?)
+                float_of(p, x)?;
+                self.printed(x)?
             }
+            P::ValueToString => self.printed(x)?,
             P::StringToInteger | P::StringToFloat => {
                 let s = self.text(p, x)?;
                 let n = match p {
                     P::StringToInteger => s.parse().ok().map(Value::Integer),
-                    _ => s.parse().ok().map(Value::Float),
+                    _ => float_name(s).or_else(|| s.parse().ok()).map(Value::Float),
                 };
                 n.ok_or_else(|| Error::new(K::ParseError, &[Value::Primitive(p), x]))?
+            }
+            P::ReadForm => {
+                let Value::String(r) = x else {
+                    return Err(type_error(p, x));
+                };
+                let offset = usize::try_from(integer_of(p, y)?).ok();
+                // The text is lent to the reader, not copied: a program reads a long text one
+                // form at a time.
+                let Object::String(text) = self.heap.get_mut(r)? else {
+                    return Err(Error::new(K::StaleValue, &[x]));
+                };
+                let text = std::mem::take(text);
+                let read = offset
+                    .filter(|&i| text.is_char_boundary(i))
+                    .map(|i| self.read_form(&text, i));
+                if let Object::String(s) = self.heap.get_mut(r)? {
+                    *s = text;
+                }
+                let read =
+                    read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                match read? {
+                    Some((form, next)) => {
+                        let next = i64::try_from(next).map_err(|_| Error::oom())?;
+                        self.pair(form, Value::Integer(next))?
+                    }
+                    None => Value::EmptyList,
+                }
             }
         };
         Ok(Mode::Return(v))
@@ -938,10 +970,17 @@ impl<T> Grift<T> {
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
         let (values, trace) = (self.items(values, bad)?, self.items(trace, bad)?);
+        let mut seen = Seen::default();
+        seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
+        seen.extend(trace.iter().filter_map(|&v| match v {
+            Value::Pair(r) => Some(r),
+            _ => None,
+        }));
         Ok(Error {
             kind,
             values,
             trace,
+            seen,
         })
     }
 
@@ -986,13 +1025,17 @@ impl<T> Grift<T> {
     /// a call makes.
     fn check_parameters(&mut self, tree: Value, context_parameter: Value) -> Result<usize, Error> {
         let bad = |v: Value| Error::new(K::ParameterError, &[v]);
-        let mut seen: Vec<Symbol> = Vec::new();
+        let mut seen: Seen<Symbol> = Seen::default();
         let mut todo = Vec::new();
         push(&mut todo, tree)?;
         while let Some(t) = todo.pop() {
             match t {
-                Value::Symbol(s) if seen.contains(&s) => return Err(bad(tree)),
-                Value::Symbol(s) => push(&mut seen, s)?,
+                Value::Symbol(s) => {
+                    seen.try_reserve(1).map_err(|_| Error::oom())?;
+                    if !seen.insert(s) {
+                        return Err(bad(tree));
+                    }
+                }
                 Value::Ignore | Value::EmptyList => {}
                 Value::Pair(r) => {
                     let (a, b) = self.pair_at(r)?;
@@ -1117,9 +1160,12 @@ fn limit(kind: Symbol) -> bool {
 /// Adds program combination `r` to the error's trace, unless it is there already. With no
 /// memory to spare the trace stays as it is: the error matters more than its last location.
 fn locate(e: &mut Error, r: Reference) {
-    let v = Value::Pair(r);
-    if r != Reference::NONE && !e.trace.contains(&v) && e.trace.try_reserve(1).is_ok() {
-        e.trace.push(v);
+    if r != Reference::NONE
+        && e.seen.try_reserve(1).is_ok()
+        && e.trace.try_reserve(1).is_ok()
+        && e.seen.insert(r)
+    {
+        e.trace.push(Value::Pair(r));
     }
 }
 

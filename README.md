@@ -50,6 +50,8 @@ built-in-names                              ; every primitive and library name
 (catch! (first 1) e (evaluate-in! kind e))  ; => type-error; e binds kind, values, trace
 (raise (error (quote! my-kind) 1 2))        ; error makes one, raise raises it
 (binds!? here n first nope)                 ; => #false: nope isn't bound
+(read-form "(add 1 2) x" 0)                 ; => ((add 1 2) . 9): the form and the offset after it
+(value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
 (string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
 ```
 
@@ -58,12 +60,15 @@ context bind names pair first rest same? select type-of add subtract multiply di
 less-than? power square-root sine cosine tangent exponential natural-logarithm floor ceiling round
 truncate absolute-value integer-to-float float-to-integer string-byte-length string-byte
 byte-substring string-append code-point-to-string symbol-to-string string-to-symbol
-integer-to-string string-to-integer float-to-string string-to-float`. The library adds
+integer-to-string string-to-integer float-to-string string-to-float read-form value-to-string`. The
+library adds
 `define! quote! list if! sequence! lambda! current-context evaluate-in! not? empty-list? boolean?
 inert? ignore? integer? float? symbol? pair? string? context? operative? applicative? and!? or!?
-apply map for-each when! conditional! let! finally! catch! define-in! error length append reverse
-equal? greater-than? less-than-or-equal? greater-than-or-equal? minimum maximum find-association
-member? binds!? built-in-names`.
+apply any? all? map for-each when! conditional! let! finally! catch! define-in! error length append
+reverse equal? greater-than? less-than-or-equal? greater-than-or-equal? minimum maximum
+find-association member? binds!? binds? filter fold range string-search string-starts-with?
+string-ends-with? string-split string-join string-trim string-pad-left string-pad-right
+string-to-lowercase built-in-names`.
 
 ## The runner
 
@@ -88,6 +93,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 |---|---|
 | `(display v ...)`, `(newline)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest. A program read from stdin can't read it again (`closed`). |
+| `standard-error` | A context of operations: `(write string)`, as a file's, to stderr: a message before `(exit 2)`, say. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `close`, and `path`. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
