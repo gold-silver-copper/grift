@@ -409,9 +409,9 @@ reference that matches them.
     test's `if!` and the end check's `if!`: 3 contexts for each false clause, against 5 before
     (`first-true` and two of the old two-applicative `if!`s), and no `first` or `rest`, because
     `first-true` is called only with a clause left and takes it apart in its parameters,
-    `(((test . body) . more) caller)`. A clause that isn't `(test body ...)` is so an
-    `arity-error` from the match, as a malformed `let!` binding already was, where it used to be
-    a `type-error` from `first`.
+    `(((test . body) . more) caller)`. A clause that isn't a pair is so an `arity-error` from the
+    match, as a malformed `let!` binding already was, where it used to be a `type-error` from
+    `first`; a body, as before, is checked only when it runs.
   - `run` checks once whether a body is empty; its loop `forms` checks only whether each form is
     the last (it checked both for every form). The value of the form before is `forms`'s ignored
     first operand, `sequence!`'s own idiom, instead of a `sequence!` call per form; `let!`'s

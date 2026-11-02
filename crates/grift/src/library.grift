@@ -123,7 +123,7 @@
          (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
      (define! run (lambda! (body c) (if! (same? body ()) #inert (forms #inert body c))))
      ; The body of the first clause whose test is #true, or #inert; called only with a clause
-     ; left, so a clause that isn't (test body ...) is an arity-error.
+     ; left, so a clause that isn't a pair (test . body) is an arity-error.
      (define! first-true
        (lambda! (((test . body) . more) caller)
          (if! (evaluate test caller)

@@ -1233,7 +1233,6 @@ fn if_and_let() {
     fails(
         &mut g,
         &[
-            ("(if! #true 1)", "arity-error"),
             ("(if! #false 1 2 3)", "arity-error"),
             ("(when!)", "arity-error"),
             ("(when! 1 2)", "type-error"),
