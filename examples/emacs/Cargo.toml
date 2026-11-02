@@ -25,6 +25,7 @@ indexing_slicing = "deny"
 unreachable = "deny"
 
 # The interpreter runs the whole editor: optimize it even in `cargo run`, or loading a 2,000-line
-# file takes 2.4 s instead of 0.3 s.
-[profile.dev.package.grift]
+# file takes 13 s instead of 1.5 s. grift's evaluator is generic over the host's state, so it is
+# compiled as part of this crate: the whole crate needs the optimization, not only grift.
+[profile.dev]
 opt-level = 3
