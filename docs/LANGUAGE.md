@@ -20,7 +20,7 @@ Kernel's names, and grift's before 2026-11-01, against grift's:
 | Kernel / before | grift |
 |---|---|
 | `$vau` `$lambda` `$define!` `$quote` `$sequence` | `vau!` `lambda!` `define!` `quote!` `sequence!` |
-| `$if` (both branches), `$when` | `if!` (the alternative is optional) |
+| `$if`, `$when` | `if!` (both branches), `when!` (one branch, a body) |
 | `$cond` | `conditional!` |
 | `$let`, `$let*`, `$letrec*` | `let!` (binds in order in one new context) |
 | `$and?` `$or?` | `and!?` `or!?` |
@@ -53,9 +53,9 @@ Kernel's names, and grift's before 2026-11-01, against grift's:
   operands left to right and passes the list of results to the combiner it wraps.
 - Everything else evaluates to itself, `()` included.
 - A compound operative's body, `evaluate`, and a `catch!`'s handler are evaluated as tail calls:
-  a loop through `if!`, `sequence!`, `conditional!`, `let!` or `lambda!` bodies runs in constant
-  space.
-- There is no truthiness: the tests of `if!`, `conditional!`, `and!?` and `or!?`, and the
+  a loop through `if!`, `when!`, `sequence!`, `conditional!`, `let!` or `lambda!` bodies runs in
+  constant space.
+- There is no truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and `or!?`, and the
   arguments of `not?` and `select`, must be booleans; anything else is a `type-error`.
 - There are no limits on time, depth or memory besides those of the allocator and the OS, and the
   host's: it can interrupt an evaluation (`interrupted`).
@@ -123,7 +123,7 @@ All are applicatives except `vau!`.
 | `(define! parameters expression)` | Evaluates `expression` and matches `parameters` to it in the current context (4.9.1). Returns `#inert`. |
 | `(quote! x)` | `x`, unevaluated. |
 | `(list x ...)` | The list of the arguments (5.2.1). |
-| `(if! test consequent)`, `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call; without an alternative, a false test gives `#inert` (4.5.2). More operands are an `arity-error`. |
+| `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. |
 | `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). |
 | `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become `(sequence! form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
 | `(current-context)` | The context it is called in (6.7.2). |
@@ -132,7 +132,8 @@ All are applicatives except `vau!`.
 | `(empty-list? x)` `(boolean? x)` `(inert? x)` `(ignore? x)` `(integer? x)` `(float? x)` `(symbol? x)` `(pair? x)` `(string? x)` `(context? x)` `(operative? x)` `(applicative? x)` | A predicate for each type `type-of` gives (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
 | `(apply a arguments)` | Calls applicative `a`'s combiner on the list `arguments`, in a new empty context (5.5.1). |
 | `(map a list)`, `(for-each a list)` | The list of `a` applied to each element; `a` on each in turn, giving `#inert` (5.9.1, 6.9.1). |
-| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is (5.6.1). |
+| `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
+| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.5). A binding that isn't `(parameters expression)` is an `arity-error`. |
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on unchanged, to a `catch!` or the host. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted` and `out-of-memory` are never caught. |
@@ -187,7 +188,7 @@ cleanups doesn't replace them. Whether an error is a limit goes by its kind: a p
 ```lisp
 (define! first-even
   (lambda! (xs)
-    (catch! (sequence! (for-each (lambda! (x) (if! (same? (remainder x 2) 0) (raise (error (quote! found) x)))) xs)
+    (catch! (sequence! (for-each (lambda! (x) (when! (same? (remainder x 2) 0) (raise (error (quote! found) x)))) xs)
                        #false)
             e
             (if! (same? (evaluate-in! kind e) (quote! found)) (first (evaluate-in! values e)) (raise e)))))
@@ -219,7 +220,8 @@ The runner adds its own kinds; [the README](../README.md#the-runner) lists them.
   is grift code.
 - **grift's own names** (the table above): Kernel's `$` became the `!` suffix, and Kernel's
   mutation `!` became the verb itself (`define-in!`, `bind`).
-- **`if!`'s alternative is optional**, and `let!` is the one binding form, `$letrec*`'s meaning.
+- **`if!` needs both branches**, as `$if` does; `when!` is the form with one, and a body.
+  `let!` is the one binding form, `$letrec*`'s meaning.
 - **No truthiness and no continuations.** Kernel catches errors with guarded continuations; grift
   has `catch!` on `call-with-handler`, which calls a handler with the error as a context and can't
   re-enter anything, and `finally!` on `evaluate-with-cleanup` (not in Kernel), the exit half of
@@ -237,7 +239,7 @@ The runner adds its own kinds; [the README](../README.md#the-runner) lists them.
   take one list. `context` takes at most one parent.
 - **New, not in Kernel:** `bind` (the matching of `define!` as an applicative, so `define!` can be
   library code), `names` and `built-in-names` (a program, or an agent, lists what exists),
-  `select`, `type-of` and the predicates for floats, operatives and applicatives, `error`,
+  `select`, `type-of` and the predicates for floats, operatives and applicatives, `when!`, `error`,
   `raise`, `catch!`, `finally!`, `reverse`, and the string and float primitives.
 - **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as
   written. It is looked up where the body runs, like any other name in it.

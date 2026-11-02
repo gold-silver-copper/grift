@@ -381,3 +381,45 @@ reference that matches them.
   flag, so the program stops at its next step with `interrupted`, which no `catch!` stops, and
   its cleanups run: no core change. Kinds: `file-error`, `encoding-error`, `closed`,
   `unset-variable`, `process-error`.
+
+## Owner decision, 2026-11-01: `if!` requires its else again
+
+- **G-71. `if!` has both branches; `when!` has one** (replaces G-46 and G-68; G-8 holds again in
+  full). `(if! test consequent alternative)` is one operative with that fixed parameter list, as
+  `$if` was, so any other number of operands is an `arity-error`. `(when! test body ...)`
+  evaluates the body forms in order, the last as a tail call, when the test is `#true`, and gives
+  `#inert` when it is `#false`; the test must be a boolean (G-52). No `unless!` (G-57: no program
+  asked for it, and `(when! (not? test) ...)` says it). `conditional!` is rewritten more directly,
+  with the same meaning (G-73). Evidence: the optional else cost `fib 25` 0.13 s -> 0.21 s (PR
+  #191, G-68); Kernel's `$if` and Racket's `if` require the else; every Lisp has `when`.
+
+## Made with G-71, 2026-11-01 (the owner may overrule any)
+
+- **G-72. `when!`'s body may be empty** (`(when! test)` gives `#inert` either way), as the body
+  of `sequence!`, `let!` and a `conditional!` clause may: the body forms share one walker, `run`,
+  and a rule of their own for `when!` would be a special case. `(when!)`, with no test, is an
+  `arity-error`. `when!` lives with the other forms with a body, after `lambda!`.
+- **G-73. How the forms with a body walk their operands** (G-31 still holds: no code is built,
+  only the operands are evaluated).
+  - A compound call always makes its context (it binds the parameters in a new child), so any
+    library loop over n clauses makes at least n contexts. The only loop that doesn't is one that
+    rebinds a variable with `bind` and re-evaluates a stored expression, choosing branches with
+    `select` and `evaluate` instead of `if!`: not simple, uniform library grift, so rejected. The
+    walk is therefore one call per clause, `first-true`, with nothing else per clause but its
+    test's `if!` and the end check's `if!`: 3 contexts for each false clause, against 5 before
+    (`first-true` and two of the old two-applicative `if!`s), and no `first` or `rest`, because
+    `first-true` is called only with a clause left and takes it apart in its parameters,
+    `(((test . body) . more) caller)`. A clause that isn't a pair is so an `arity-error` from the
+    match, as a malformed `let!` binding already was, where it used to be a `type-error` from
+    `first`; a body, as before, is checked only when it runs.
+  - `run` checks once whether a body is empty; its loop `forms` checks only whether each form is
+    the last (it checked both for every form). The value of the form before is `forms`'s ignored
+    first operand, `sequence!`'s own idiom, instead of a `sequence!` call per form; `let!`'s
+    `bind-each` does the same. `catch!`'s handler is a `lambda!` in `catch!` itself: the helper
+    that made it is gone.
+  - Measured and rejected: `select` picking which combiner to call for the end checks,
+    `((select (same? more ()) none first-true) more caller)` with `none` giving `#inert`, and the
+    same in `run`: 13% faster on a `conditional!` loop (0.84 s -> 0.74 s), but a second way to
+    branch beside `if!`. Speed (release, one run each, load about 7 on 32 cores): `fib 25` 0.216 s
+    on the base, 0.132 s here; a 200,000-step loop through a four-clause `conditional!` 1.467 s on
+    the base, 0.868 s here, against 0.530 s and 0.347 s for the same loop with nested `if!`s.

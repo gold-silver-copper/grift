@@ -137,7 +137,7 @@ fn library_basics() {
             "(sequence! (define! seen ()) (define! here (current-context)) \
              (for-each (lambda! (x) (define-in! here seen (pair x seen))) (list 1 2 3)) \
              (equal? seen (quote! (3 2 1))))",
-            "(and!? (same? (if! #false (first ())) #inert) (same? (if! #true 1) 1))",
+            "(and!? (same? (when! #false (first ())) #inert) (same? (when! #true 1) 1))",
             "(equal? (let! ((x 1) (y (add x 1))) (list x y)) (quote! (1 2)))",
             "(same? (let! () 5) 5)",
             // define-in! changes the binding where it is, even from inside a function.
@@ -159,6 +159,7 @@ fn error_kinds() {
             ("(if! 1 2 3)", "type-error"),
             ("(evaluate 1)", "arity-error"),
             ("(if! #true 1 2 3)", "arity-error"),
+            ("(if! #true 1)", "arity-error"),
             ("(if! #true)", "arity-error"),
             ("((lambda! (x) x))", "arity-error"),
             ("(1 2)", "not-a-combiner"),
@@ -201,6 +202,13 @@ fn tail_calls_run_in_constant_space() {
     .unwrap();
     assert_eq!(g.evaluate(&mut (), "(loop 200000)"), Ok(Value::True));
     assert_eq!(g.evaluate(&mut (), "(count 50000)"), Ok(Value::True));
+    // when!'s last body form is a tail call too.
+    g.evaluate(
+        &mut (),
+        "(define! down (lambda! (n) (when! (less-than? 0 n) (pair n n) (down (subtract n 1)))))",
+    )
+    .unwrap();
+    assert_eq!(g.evaluate(&mut (), "(down 1000000)"), Ok(Value::Inert));
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -315,6 +323,8 @@ fn errors_name_the_program_combination() {
         ("(map first (list 1 2))", "(map first (list 1 2))"),
         ("(let! (((a b) (list 1))) a)", "(let! (((a b) (list 1))) a)"),
         ("(conditional! ((first 1) 2))", "(first 1)"),
+        ("(conditional! 1)", "(conditional! 1)"),
+        ("(when! 1 2)", "(when! 1 2)"),
         ("(add 1 (foo))", "(foo)"),
         ("(length 1)", "(length 1)"),
         ("(reverse 1)", "(reverse 1)"),
@@ -622,7 +632,7 @@ fn library_forms_build_no_code() {
             "(let! ((x (add n 1)) (y x)) y)",
             "((lambda! (x) ((lambda! (y) y) x)) (add n 1))",
         ),
-        ("(if! #true n)", "(if! #true n #inert)"),
+        ("(when! #true n)", "(if! #true n #inert)"),
         (
             "(sequence! 1 2 n)",
             "((lambda! (#ignore #ignore x) x) 1 2 n)",
@@ -676,7 +686,7 @@ fn catch_catches_errors_as_contexts() {
             "(sequence! (define! y 1) (equal? (catch! (first 1) e (define! y 2) (add y 1)) 3))",
             "(equal? y 1)",
             // Early exit is catch! and the program's own kind of error.
-            "(same? (catch! (sequence! (for-each (lambda! (x) (if! (same? x 3) (raise (error (quote! found) x)))) \
+            "(same? (catch! (sequence! (for-each (lambda! (x) (when! (same? x 3) (raise (error (quote! found) x)))) \
                                                 (list 1 2 3 4)) \
                                       #false) \
                             e (first (evaluate-in! values e))) 3)",
@@ -1190,10 +1200,23 @@ fn if_and_let() {
     holds(
         &mut g,
         &[
-            // if!'s alternative is optional; without one, a false test gives #inert.
-            "(same? (if! #true 1) 1)",
-            "(same? (if! #false 1) #inert)",
-            "(same? (if! #false 1 2) 2)",
+            // if! has both branches and evaluates one; when! has one branch, a body of several
+            // forms evaluated in order, the last one's value its own, and #inert on a false test.
+            "(same? (if! #true 1 (first ())) 1)",
+            "(same? (if! #false (first ()) 2) 2)",
+            "(same? (when! #true 1) 1)",
+            "(same? (when! #false (first ())) #inert)",
+            "(same? (when! #true) #inert)",
+            "(sequence! (define! seen ()) (define! here (current-context)) \
+             (equal? (list (when! #true (define-in! here seen (pair 1 seen)) (define-in! here seen (pair 2 seen)) 3) seen) \
+                     (quote! (3 (2 1)))))",
+            // conditional!: the body of the first clause whose test is #true, its forms in order;
+            // #inert if there is none or the body is empty; later tests aren't evaluated.
+            "(same? (conditional! (#false (first ())) (#true 1) (#true 2) ((first ()) 3)) 1)",
+            "(sequence! (define! seen ()) (define! here (current-context)) \
+             (equal? (list (conditional! (#false 0) (#true (define-in! here seen (pair 1 seen)) (define-in! here seen (pair 2 seen)) 3)) seen) \
+                     (quote! (3 (2 1)))))",
+            "(and!? (inert? (conditional!)) (inert? (conditional! (#false 1))) (inert? (conditional! (#true))))",
             // let! binds in order in one new context: each binding sees the ones before it, and a
             // combiner it binds can call itself and the ones after it.
             "(same? (let! ((x 1) (y (add x 1))) y) 2)",
@@ -1210,7 +1233,13 @@ fn if_and_let() {
     fails(
         &mut g,
         &[
-            ("(when! #true 1)", "unbound-symbol"),
+            ("(if! #false 1 2 3)", "arity-error"),
+            ("(when!)", "arity-error"),
+            ("(when! 1 2)", "type-error"),
+            ("(when! (quote! a))", "type-error"),
+            ("(unless! #false 1)", "unbound-symbol"),
+            ("(conditional! 1)", "arity-error"),
+            ("(conditional! (#false 1) ())", "arity-error"),
             ("(let*! ((x 1)) x)", "unbound-symbol"),
             ("(let! ((x)) x)", "arity-error"),
             ("(let! (x) x)", "arity-error"),
@@ -1226,7 +1255,8 @@ fn no_truthiness() {
         &mut g,
         &[
             ("(if! 1 2 3)", "type-error"),
-            ("(if! () 2)", "type-error"),
+            ("(if! () 2 3)", "type-error"),
+            ("(when! () 2)", "type-error"),
             ("(conditional! (1 2))", "type-error"),
             ("(conditional! (#false 1) ((quote! a) 2))", "type-error"),
             ("(and!? 1)", "type-error"),
