@@ -89,7 +89,11 @@ everything else as `same?` does. Values of different types are never equal (`(eq
 
 ## Embedding
 grift is a Rust library with zero dependencies, using `std`. It does no I/O, starts no threads and
-keeps no global state: the host owns those, lends its state per call, and sets every limit.
+keeps no global state: the host owns those, lends its state per call, and sets every limit, a time
+limit being a thread that stops the run. Every value the host holds says which interpreter it
+belongs to, and every reference which object it was, so a value from another interpreter or one
+the collector reclaimed is an error, never read as another. A value the host keeps across runs is
+a binding the interpreter owns, released by the host.
 Bare-metal targets are not a goal; WebAssembly works wherever `std` does. grift does not isolate
 code from the host or from other code in the same interpreter; an embedder running untrusted code
 isolates it itself, for example in its own process.
@@ -125,15 +129,20 @@ path, environment variables, two clocks, the exit status, and running processes.
 
 ## Implementation
 The implementation stays small and uniform: one evaluation step for every kind of form, one
-representation for each kind of value, no fast paths or special cases. Speed comes from simpler
-library code and better representations, never from shortcuts. When simple and fast disagree,
-simple wins and the cost is written down. Library forms are `vau!` operatives that walk their
-operands and call `evaluate`; no expansion caching, no compile step. `if!` and `sequence!` stay
-library code (owner, 2026-11-01), although making them primitives measured 1.5-2.3x faster.
+representation for each kind of value. Speed comes from simpler library code and better
+representations. When simple and fast disagree, simple wins and the cost is written down. Library
+forms are `vau!` operatives that walk their operands and call `evaluate`; no expansion caching, no
+compile step. A library form may have a native twin, proven equal and justified by a measurement on
+`programs/`: the library's own operative, run in Rust when its operands are the shape the twin
+handles and by its body otherwise, so a program can't tell them apart (`if!`, `sequence!` and
+`string-search`, owner, 2026-11-02). Everything else keeps one evaluation path per kind of form.
+The primitives are core, what grift can't express, or native, there for speed, each with its grift
+definition as its meaning and a test that no program can tell the two apart.
 
 ## Errors
 An error has a kind (a symbol such as `type-error`), the values involved, and a trace: the program
-combinations it happened in, innermost first. `(error kind value ...)` makes an error and `raise`
+combinations it happened in, innermost first, each with its source and line when it was read from a
+named text, so the host says `at config.grift:12`. `(error kind value ...)` makes an error and `raise`
 raises it: `(raise (error (quote! type-error) x))`. `finally!` runs cleanup as an error passes and
 lets it go on. `catch!` catches: cleanups run first, then the handler receives the error as a
 context with no parent, binding `kind`, `values` and `trace`; `(raise e)` passes a caught error on,
@@ -182,18 +191,21 @@ again. An error, a context, prints its names; the host reports its kind, its val
    that evaluates, the heap that holds values, and the host that embeds grift.
 2. **One source of truth for each fact.** A binding lives only in its context. A combiner's
    meaning is its parameters, the context it was made in and its body; it prints as its source. A
-   library form's meaning is its grift definition, never a Rust shortcut.
+   library form's meaning is its grift definition, and a native primitive's too: a native twin or
+   primitive is proven equal to it. Where a combination was read is the reader's, kept beside the
+   code, not in it.
 3. **What is derived.** Every library form, from a few dozen primitives. `names`,
    `built-in-names` and printed source, from the definitions. An error's trace, from the
    combinations being evaluated when it happened.
 4. **What changes, and who may change it.** Only bindings change: programs through `define!` and
    `bind`, on contexts they hold; the host through `define` and its own state.
    Errors unwind the machine; `finally!` and `catch!` meet them on the way. Collection happens only
-   at safe points; the host's interrupt flag stops evaluation there.
+   at safe points; a stop the host asks for ends the run in progress there, and never a later one.
 5. **What makes a change to grift correct.** No Rust recursion that grows with a program's nesting;
    tail calls in constant space; no limits of grift's own; nothing guessed; every error carries its
    values and its trace; redefinition always takes effect; one evaluation path for each kind of
-   form; a new primitive only when the library version can't exist or can't be used.
+   form but a native twin, proven equal; a new primitive only when the library version can't exist
+   or can't be used.
 
 ## What complete means
 grift is complete when a closed list of programs runs well on it, each with no blocker in its

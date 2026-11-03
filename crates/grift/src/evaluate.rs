@@ -17,59 +17,62 @@ use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::read::float_name;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
-/// fewest and most operands it takes.
+/// fewest and most operands it takes. The core ones are what grift can't express; each native
+/// one exists for speed only, and its meaning is its grift definition in `natives.grift`.
 macro_rules! primitives {
-    ($($p:ident $name:literal $lo:literal $hi:expr;)*) => {
+    (core { $($p:ident $name:literal $lo:literal $hi:expr;)* }
+     native { $($q:ident $qname:literal $qlo:literal $qhi:expr;)* }) => {
         /// The Rust primitives. All but `vau!` are bound wrapped, as applicatives.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Primitive { $($p),* }
+        pub enum Primitive { $($p,)* $($q),* }
 
         impl Primitive {
-            pub(crate) const ALL: &[Primitive] = &[$(Primitive::$p),*];
+            pub(crate) const ALL: &[Primitive] = &[$(Primitive::$p,)* $(Primitive::$q),*];
+
+            /// The natives, each with a grift definition.
+            #[cfg(test)]
+            pub(crate) const NATIVE: &[Primitive] = &[$(Primitive::$q),*];
 
             /// The name the primitive is bound to in the built-in context.
             pub fn name(self) -> &'static str {
-                match self { $(Primitive::$p => $name),* }
+                match self { $(Primitive::$p => $name,)* $(Primitive::$q => $qname),* }
             }
 
             /// The fewest and most operands.
             fn arity(self) -> (usize, usize) {
-                match self { $(Primitive::$p => ($lo, $hi)),* }
+                match self { $(Primitive::$p => ($lo, $hi),)* $(Primitive::$q => ($qlo, $qhi)),* }
             }
         }
     };
 }
 
 primitives! {
+core {
+    // Abstraction, wrapping and evaluation: the machine itself.
     Vau "vau!" 3 3;
     Wrap "wrap" 1 1;
     Unwrap "unwrap" 1 1;
     Evaluate "evaluate" 2 2;
+    // Unwinding: machine frames.
     EvaluateWithCleanup "evaluate-with-cleanup" 3 3;
     CallWithHandler "call-with-handler" 2 2;
     Raise "raise" 1 1;
+    // Making, changing and listing bindings.
     Context "context" 0 1;
     Bind "bind" 3 3;
     Unbind "unbind" 2 2;
-    Lookup "lookup" 3 3;
     Names "names" 1 1;
+    // Making a pair; identity and representation.
     Pair "pair" 2 2;
-    First "first" 1 1;
-    Rest "rest" 1 1;
     Same "same?" 2 2;
-    Select "select" 3 3;
     TypeOf "type-of" 1 1;
+    // Checked integers and IEEE floats, and Rust's float functions (G-42).
     Add "add" 2 2;
     Subtract "subtract" 2 2;
     Multiply "multiply" 2 2;
     Divide "divide" 2 2;
     Remainder "remainder" 2 2;
     LessThan "less-than?" 2 2;
-    BitwiseAnd "bitwise-and" 2 2;
-    BitwiseOr "bitwise-or" 2 2;
-    BitwiseExclusiveOr "bitwise-exclusive-or" 2 2;
-    ShiftLeft "shift-left" 2 2;
-    ShiftRight "shift-right" 2 2;
     Power "power" 2 2;
     SquareRoot "square-root" 1 1;
     Sine "sine" 1 1;
@@ -82,19 +85,32 @@ primitives! {
     Round "round" 1 1;
     Truncate "truncate" 1 1;
     AbsoluteValue "absolute-value" 1 1;
-    IntegerToFloat "integer-to-float" 1 1;
-    FloatToInteger "float-to-integer" 1 1;
-    StringByteLength "string-byte-length" 1 1;
+    // A string's bytes, making text, names and floats from it, the reader and the printer.
     StringByte "string-byte" 2 2;
-    ByteSubstring "byte-substring" 3 3;
     StringAppend "string-append" 0 usize::MAX;
-    CodePointToString "code-point-to-string" 1 1;
     StringToSymbol "string-to-symbol" 1 1;
-    IntegerToString "integer-to-string" 1 1;
-    StringToInteger "string-to-integer" 1 1;
     StringToFloat "string-to-float" 1 1;
     ReadForm "read-form" 2 2;
     ValueToString "value-to-string" 1 1;
+}
+native {
+    First "first" 1 1;
+    Rest "rest" 1 1;
+    Select "select" 3 3;
+    Lookup "lookup" 3 3;
+    BitwiseAnd "bitwise-and" 2 2;
+    BitwiseOr "bitwise-or" 2 2;
+    BitwiseExclusiveOr "bitwise-exclusive-or" 2 2;
+    ShiftLeft "shift-left" 2 2;
+    ShiftRight "shift-right" 2 2;
+    IntegerToFloat "integer-to-float" 1 1;
+    FloatToInteger "float-to-integer" 1 1;
+    StringByteLength "string-byte-length" 1 1;
+    ByteSubstring "byte-substring" 3 3;
+    CodePointToString "code-point-to-string" 1 1;
+    IntegerToString "integer-to-string" 1 1;
+    StringToInteger "string-to-integer" 1 1;
+}
 }
 
 /// The library forms with a native twin.

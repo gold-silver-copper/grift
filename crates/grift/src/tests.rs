@@ -2410,6 +2410,11 @@ fn twins() -> [Grift<Vec<String>>; 2] {
 #[test]
 fn natives_are_their_definitions() {
     let [mut native, mut defined] = twins();
+    // Every native primitive has its definition, and no core one has.
+    for &p in Primitive::ALL {
+        let has = defined.definition(p).unwrap().is_some();
+        assert_eq!(has, Primitive::NATIVE.contains(&p), "{}", p.name());
+    }
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
     let mut counts = [0usize; 2];
     for case in 0..2500 {

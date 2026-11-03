@@ -56,7 +56,7 @@ are R-1RK's.
 | floats, 64-bit IEEE | `1.5` `-0.0` `1e300` `#infinity` `#-infinity` `#not-a-number` | `float` |
 | symbols, interned, case-sensitive | `foo` `if!` `less-than?` | `symbol` |
 | pairs, immutable | `(1 . 2)` `(1 2 3)` | `pair` |
-| strings, immutable, addressed by byte; escapes `\\` `\"` `\n` `\t` and `\xHEX;` (a Unicode scalar value) | `"hi\x1b;"` | `string` |
+| strings, immutable, addressed by byte; escapes `\\` `\"` `\n` `\r` `\t` and `\xHEX;` (a Unicode scalar value) | `"hi\x1b;"` | `string` |
 | contexts | `#[context a b]` (its own names, sorted) | `context` |
 | operatives | `#[operative (x) caller body]`, `#[primitive vau!]`, `#[host name]` | `operative` |
 | applicatives | `#[applicative #[operative (x) #ignore (multiply x x)]]` | `applicative` |
@@ -67,11 +67,20 @@ such as `99999999999999999999` or `1.2.3`, is a `parse-error` (`bad-number`). A 
 form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it reads back as the same float, bit
 for bit. Every not-a-number prints as `#not-a-number`, which reads back as Rust's `f64::NAN`: a
 not-a-number's sign and payload don't survive printing.
+The escapes mean what Rust's do: `\\ \" \n \r \t` are Rust's characters, and a string prints with
+them. Rust's `\0`, `\'` and backslash-newline aren't grift's (`\x0;` says `\0`, and a `'` needs no
+escape), and grift's `\xHEX;` takes any scalar value in place of Rust's `\xNN` and `\u{...}`.
 `;` starts a comment to the end of the line, and so does `#!` at the very start of a text.
 
 ## Primitives (Rust)
 
-All are applicatives except `vau!`.
+All are applicatives except `vau!`. Most are **core**: what no grift definition could do the same
+(the machine, its frames, bindings, pairs, identity, the number substrate, a string's bytes, the
+reader and the printer). The rest are **native**: `first`, `rest`, `select`, `lookup`, the bitwise
+operations, `integer-to-string`, `string-to-integer`, `integer-to-float`, `float-to-integer`,
+`string-byte-length`, `byte-substring` and `code-point-to-string` exist only for speed, and each
+one's meaning is its grift definition in [`natives.grift`](../crates/grift/src/natives.grift),
+which a test shows no program can tell from the Rust.
 
 | Combiner | Meaning |
 |---|---|
@@ -112,8 +121,8 @@ All are applicatives except `vau!`.
 | `(define! parameters expression)` | Evaluates `expression` and matches `parameters` to it in the current context (4.9.1), Kernel's `$define!` and Scheme's internal `define`. Returns `#inert`. Inside a body that context is the call's own, so `define!` there makes a local and never changes an outer binding; see below the table. |
 | `(quote! x)` | `x`, unevaluated. |
 | `(list x ...)` | The list of the arguments (5.2.1). |
-| `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. |
-| `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). |
+| `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. A native twin runs it (see "What the library forms cost"). |
+| `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). A native twin runs it. |
 | `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become `(sequence! form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
 | `(current-context)` | The context it is called in (6.7.2). |
 | `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
@@ -134,6 +143,7 @@ All are applicatives except `vau!`.
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on unchanged, to a `catch!` or the host. After `out-of-memory` a cleanup stops at its first allocation that fails, so it may do nothing. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted` and `out-of-memory` are never caught. |
 | `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had, as `(raise e)` in a `catch!` passes it on. A `kind` that isn't a symbol is a `type-error`. |
+| `(bindings c)` | Context `c`'s own bindings as data: a list of `(name value)`, sorted by name as `names` gives them, so a record's fields are a list: `(bindings (error (quote! e) 1))` is `((kind e) (trace ()) (values (1)))`. |
 | `(error kind value ...)` | A new error: a context with no parent binding `kind`, `values` (the list of the values) and an empty `trace`. It raises nothing; `raise` does. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
@@ -179,15 +189,18 @@ counter                                                               ; => 1
 `((evaluate (quote! add) operations) x)` or `((lookup operations name default) x)` costs one
 lookup whatever the number of cases, where `conditional!` tests its clauses in order.
 
-**What the library forms cost.** `if!` is one library operative; the forms with a body walk their
-operands in grift, so in a loop run per byte or per node each costs a few `if!`s. Measured with the
-runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a
-loop of one `if!` and a call, 0.49 µs a turn: another `if!` 0.35 µs, `sequence!` of two forms 1.6 µs,
-`let!` of one binding 2.5 µs, `and!?` of two 2.3 µs, `catch!` with no error 0.5 µs more than the
-`sequence!` around it, and `conditional!` of three clauses, the last one true, 3.1 µs more than the
-same choice in two nested `if!`s. A library combiner such as `second` costs a call, about 0.9 µs,
-where `(first (rest x))` costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read
-better where speed doesn't matter.
+**What the library forms cost.** `if!` and `sequence!` are library operatives with a native twin:
+the same operative, run in Rust when its operands are the shape it handles (three for `if!`, a
+proper list for `sequence!`), and by its body otherwise, so what a program sees, its errors and
+traces included, is the library's. `string-search` has one too. The other forms with a body walk
+their operands in grift, so in a loop run per byte or per node each costs a few calls. Measured with
+the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a
+loop of one `if!` and a call, 0.32 µs a turn: another `if!` 0.05 µs, `sequence!` of two forms
+0.07 µs, `let!` of one binding 1.95 µs, `and!?` of two 1.19 µs, making a `lambda!` 1.0 µs, and
+`conditional!` of three clauses, the last one true, 2.1 µs more than the same choice in nested
+`if!`s. A library combiner such as `second` costs a call, about 0.9 µs, where `(first (rest x))`
+costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read better where speed
+doesn't matter.
 
 ## Errors
 
@@ -195,7 +208,9 @@ Every error stops evaluation and goes to the innermost `catch!` around it, or to
 kind, the values involved, and a trace: the combinations of the program being evaluated,
 innermost first, each once, out to the top-level form (the library's own code and code built
 around a combiner value are skipped). A combination in tail position has finished when the next
-one starts, so it isn't listed. Cleanups (`finally!`) run on the way out.
+one starts, so it isn't listed. Cleanups (`finally!`) run on the way out. A combination read from
+a named text, such as a file the runner runs or loads, keeps its source and line beside it, not in
+it, so the host reports `in (first x) at lib/table.grift:12`.
 
 ```lisp
 (define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x)))))
@@ -250,7 +265,8 @@ as a number and isn't one; `unknown-constant` at a `#` name that isn't one. `(re
 is `parse-error unclosed-list 2 2`.
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
-| `interrupted` | the host set its interrupt flag | none |
+| `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
+| `interrupted` | the host stopped the run in progress | none |
 | any symbol | a program raised an error it made | the values given |
 
 The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
@@ -258,7 +274,7 @@ describes each. Those added with the evidence of wave 4:
 
 | Operation | Meaning |
 |---|---|
-| `(load path)` | The file's forms, all read first, evaluated in turn in the caller's context, as Kernel's `load`; a relative path is relative to the file being loaded when `load` is called (at first the script). An error while it runs has `"path:line"` in its trace. |
+| `(load path)` | The file's forms, all read first, evaluated in turn in the caller's context, as Kernel's `load`; a relative path is relative to the file being loaded when `load` is called (at first the script). Its combinations keep their lines, so the runner reports an error `at path:line`. |
 | `script-path` | The script's path as given; unbound for a program on stdin. |
 | `(read-file path)` | The file's whole text. |
 | `(display-error v ...)` | `display`, to stderr. |
@@ -270,7 +286,8 @@ describes each. Those added with the evidence of wave 4:
 [VISION "Kernel"](VISION.md#kernel) gives the larger differences. Beyond those:
 
 - **One special primitive.** `if!`, `define!` and `sequence!` are primitive in Kernel; here they
-  are library code over `vau!`, `select`, `bind` and `evaluate`.
+  are library code over `vau!`, `select`, `bind` and `evaluate`, `if!` and `sequence!` with a
+  native twin.
 - **`finally!`** is on `evaluate-with-cleanup` (not in Kernel), the exit half of Kernel's guards;
   `binds?` is derived from `lookup`, a primitive Kernel doesn't have, where R-1RK derives `$binds?`
   from its error continuation: a miss raised and caught an error, 5-14 µs a probe.
