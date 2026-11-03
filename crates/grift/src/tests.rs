@@ -2031,3 +2031,428 @@ fn list_access_by_index() {
         ],
     );
 }
+
+/// A small deterministic generator (xorshift*), so the generated programs need no dependency and
+/// a failure names its seed.
+struct Random(u64);
+
+impl Random {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % n
+    }
+
+    fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
+        xs[self.below(xs.len())]
+    }
+}
+
+/// Values of every kind, by what the natives take: integers at the ends and the shift bounds,
+/// floats with signed zero, the infinities and not-a-number, UTF-8 strings and number texts,
+/// symbols, contexts, combiners, pairs and the constants.
+const INTEGER_TEXTS: &[&str] = &[
+    "0",
+    "1",
+    "-1",
+    "2",
+    "7",
+    "-8",
+    "62",
+    "63",
+    "64",
+    "255",
+    "1114111",
+    "1114112",
+    "55296",
+    "57343",
+    "9223372036854775807",
+    "-9223372036854775808",
+    "4611686018427387904",
+    "-4611686018427387905",
+    "-6148914691236517206",
+];
+const FLOAT_TEXTS: &[&str] = &[
+    "0.0",
+    "-0.0",
+    "1.5",
+    "-1.5",
+    "0.5",
+    "-0.99",
+    "#infinity",
+    "#-infinity",
+    "#not-a-number",
+    "9.3e18",
+    "-9.3e18",
+    "9223372036854775807.0",
+    "-9223372036854775808.0",
+    "4.5e15",
+    "1e300",
+];
+const STRING_TEXTS: &[&str] = &[
+    "\"\"",
+    "\"a\"",
+    "\"h\\xe9;llo\"",
+    "\"\\x3bb;x\\x3bb;\\x1f600;\"",
+    "\"a\\rb\\rb\"",
+    "\"abcabc\"",
+    "\"bcabcab\"",
+    "\"bc\"",
+    "\"+12\"",
+    "\"-0\"",
+    "\"0042\"",
+    "\"9223372036854775807\"",
+    "\"9223372036854775808\"",
+    "\"-9223372036854775808\"",
+    "\"-9223372036854775809\"",
+    "\"12x\"",
+    "\"+\"",
+    "\"-\"",
+    "\" 1\"",
+];
+const OTHER_TEXTS: &[&str] = &[
+    "()",
+    "#true",
+    "#false",
+    "#inert",
+    "#ignore",
+    "(quote! x)",
+    "(quote! first)",
+    "here",
+    "(context)",
+    "record",
+    "(list 1 2)",
+    "(pair 1 2)",
+    "(quote! (a . b))",
+    "first",
+    "if!",
+    "(unwrap first)",
+    "(wrap if!)",
+    "sequence!",
+    "string-search",
+    "double",
+    "note",
+];
+
+/// Each native with what each of its arguments usually is: `i` an integer, `f` a float, `s` a
+/// string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a symbol, `p` a
+/// pair, `b` a test, `x` anything.
+const NATIVES: &[(&str, &str)] = &[
+    ("first", "p"),
+    ("rest", "p"),
+    ("select", "bxx"),
+    ("lookup", "cyx"),
+    ("bitwise-and", "ii"),
+    ("bitwise-or", "ii"),
+    ("bitwise-exclusive-or", "ii"),
+    ("shift-left", "in"),
+    ("shift-right", "in"),
+    ("integer-to-string", "i"),
+    ("string-to-integer", "s"),
+    ("integer-to-float", "i"),
+    ("float-to-integer", "f"),
+    ("string-byte-length", "s"),
+    ("byte-substring", "soo"),
+    ("code-point-to-string", "i"),
+    ("if!", "bxx"),
+    ("sequence!", "xxx"),
+    ("string-search", "sto"),
+];
+
+/// Where a generated call stands: at top level, as an operand, in a body's tail, in a branch
+/// taken or not, before or as the last of a sequence, in a handler and a cleanup, applied,
+/// unwrapped, wrapped again, and bound and read back.
+const PLACES: &[&str] = &[
+    "{}",
+    "(list {} (note 2))",
+    "((lambda! () {}))",
+    "(double {})",
+    "(if! #true {} (note 0))",
+    "(if! #false (note 0) {})",
+    "(sequence! {} (note 3))",
+    "(sequence! (note 3) {})",
+    "(catch! {} e (list (evaluate-in! kind e) (evaluate-in! values e) (evaluate-in! trace e)))",
+    "(catch! (raise (error (quote! mine) 1)) #ignore {})",
+    "(finally! {} (note 9))",
+    "(finally! (note 9) {})",
+    "(sequence! (bind record (quote! x) {}) (lookup record (quote! x) 0))",
+    "(catch-kind! {} type-error e (evaluate-in! values e))",
+];
+
+/// One generated expression.
+fn generated(r: &mut Random, depth: usize) -> String {
+    let (name, kinds) = NATIVES[r.below(NATIVES.len())];
+    let mut arguments: Vec<String> = kinds.chars().map(|k| argument(r, k, depth)).collect();
+    // Missing and excess operands now and then.
+    match r.below(12) {
+        0 => {
+            arguments.pop();
+        }
+        1 => arguments.push(argument(r, 'x', depth)),
+        _ => {}
+    }
+    let arguments = arguments.join(" ");
+    let call = match r.below(14) {
+        0 if !name.ends_with('!') => format!("(apply {name} (list {arguments}))"),
+        1 => format!("((unwrap {name}) {arguments})"),
+        2 => format!("((wrap {name}) {arguments})"),
+        3 => format!("({name} . {arguments})"),
+        4 => format!(
+            "(list (type-of {name}) (operative? {name}) (applicative? {name}) (value-to-string {name}) (same? {name} (unwrap (wrap {name}))))"
+        ),
+        5 => format!("({name} {arguments} . 1)"),
+        _ => format!("({name} {arguments})"),
+    };
+    r.pick(PLACES).replace("{}", &call)
+}
+
+fn argument(r: &mut Random, kind: char, depth: usize) -> String {
+    let pool = match (r.below(8), kind) {
+        (0, _) => OTHER_TEXTS,
+        (1, _) => [INTEGER_TEXTS, FLOAT_TEXTS, STRING_TEXTS, OTHER_TEXTS][r.below(4)],
+        (_, 'i' | 'o' | 'n') if r.below(3) == 0 && depth > 0 => {
+            return generated(r, depth - 1);
+        }
+        (_, 'i') => INTEGER_TEXTS,
+        (_, 'o') => &["-1", "0", "1", "2", "3", "4", "6", "7", "100"],
+        (_, 'n') => &["-1", "0", "1", "2", "13", "62", "63", "64"],
+        (_, 'f') => FLOAT_TEXTS,
+        (_, 's') => STRING_TEXTS,
+        (_, 't') => &[
+            "\"\"",
+            "\"b\"",
+            "\"bc\"",
+            "\"ca\"",
+            "\"l\"",
+            "\"\\x3bb;\"",
+            "\"\\rb\"",
+            "\"0\"",
+        ],
+        (_, 'c') => &["here", "record", "(context)", "(context record)", "1"],
+        (_, 'y') => &[
+            "(quote! x)",
+            "(quote! y)",
+            "(quote! first)",
+            "(quote! nope)",
+            "\"x\"",
+        ],
+        (_, 'p') => &[
+            "(list 1 2)",
+            "(pair 1 2)",
+            "(quote! (a . b))",
+            "()",
+            "1",
+            "(list (list))",
+        ],
+        (_, 'b') => &["#true", "#false", "(same? 1 1)", "(note #false)", "1", "()"],
+        _ if depth > 0 && r.below(2) == 0 => return generated(r, depth - 1),
+        _ => [INTEGER_TEXTS, FLOAT_TEXTS, STRING_TEXTS, OTHER_TEXTS][r.below(4)],
+    };
+    r.pick(pool).to_string()
+}
+
+/// What a host sees of a value, compared across two interpreters: the same structure, and the
+/// same identities, so aliasing is the same too.
+struct Comparison<'a> {
+    left: &'a Grift<Vec<String>>,
+    right: &'a Grift<Vec<String>>,
+    matched: Vec<(Value, Value)>,
+}
+
+impl Comparison<'_> {
+    fn values(&mut self, a: &Value, b: &Value) -> Result<(), String> {
+        let (l, r) = (self.left, self.right);
+        let mut todo = vec![(a.clone(), b.clone())];
+        while let Some((a, b)) = todo.pop() {
+            let differ = || Err(format!("{} against {}", show(l, &a), show(r, &b)));
+            match (&a, &b) {
+                (Value::Float(x), Value::Float(y)) if x.to_bits() != y.to_bits() => {
+                    return differ();
+                }
+                (Value::Symbol(x), Value::Symbol(y))
+                    if l.symbol_name(x).unwrap() != r.symbol_name(y).unwrap() =>
+                {
+                    return differ();
+                }
+                (Value::String(_), Value::String(_)) if l.as_str(&a) != r.as_str(&b) => {
+                    return differ();
+                }
+                (Value::Host(_), Value::Host(_)) if show(l, &a) != show(r, &b) => return differ(),
+                (Value::Float(_), Value::Float(_))
+                | (Value::Symbol(_), Value::Symbol(_))
+                | (Value::String(_), Value::String(_))
+                | (Value::Host(_), Value::Host(_)) => {}
+                (Value::Pair(_), Value::Pair(_))
+                | (Value::Context(_), Value::Context(_))
+                | (Value::Operative(_), Value::Operative(_))
+                | (Value::Applicative(_), Value::Applicative(_)) => {
+                    let known = self.matched.iter().find(|(x, y)| *x == a || *y == b);
+                    match known {
+                        Some((x, y)) if *x == a && *y == b => continue,
+                        Some(_) => return Err(format!("aliasing differs at {}", show(l, &a))),
+                        None => self.matched.push((a.clone(), b.clone())),
+                    }
+                    if let (Some((a1, a2)), Some((b1, b2))) =
+                        (l.as_pair(&a).unwrap(), r.as_pair(&b).unwrap())
+                    {
+                        todo.push((a1, b1));
+                        todo.push((a2, b2));
+                    } else if let Value::Context(_) = a {
+                        let (x, y) = (l.names(&a).unwrap(), r.names(&b).unwrap());
+                        let names = |g: &Grift<Vec<String>>, n: &[crate::Symbol]| {
+                            n.iter()
+                                .map(|s| g.symbol_name(s).unwrap().to_string())
+                                .collect::<Vec<_>>()
+                        };
+                        if names(l, &x) != names(r, &y) {
+                            return differ();
+                        }
+                        for (s, t) in x.iter().zip(&y) {
+                            todo.push((
+                                l.lookup(&a, s).unwrap().unwrap(),
+                                r.lookup(&b, t).unwrap().unwrap(),
+                            ));
+                        }
+                    } else if show(l, &a) != show(r, &b) {
+                        return differ();
+                    }
+                }
+                _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
+                    return differ();
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn outcomes(
+        &mut self,
+        a: &Result<Value, Error>,
+        b: &Result<Value, Error>,
+    ) -> Result<(), String> {
+        match (a, b) {
+            (Ok(a), Ok(b)) => self.values(a, b),
+            (Err(a), Err(b)) => {
+                let (l, r) = (self.left, self.right);
+                if kind(l, a) != kind(r, b) || a.values.len() != b.values.len() {
+                    return Err(format!(
+                        "{} {:?} against {} {:?}",
+                        kind(l, a),
+                        a.values,
+                        kind(r, b),
+                        b.values
+                    ));
+                }
+                if a.trace().len() != b.trace().len() {
+                    return Err(format!(
+                        "trace {} against {}",
+                        a.trace().len(),
+                        b.trace().len()
+                    ));
+                }
+                for (x, y) in a.trace().iter().zip(b.trace()) {
+                    if l.position(x) != r.position(y) {
+                        return Err(format!(
+                            "{} placed {:?} against {:?}",
+                            show(l, x),
+                            l.position(x),
+                            r.position(y)
+                        ));
+                    }
+                    self.values(x, y)?;
+                }
+                a.values
+                    .iter()
+                    .zip(&b.values)
+                    .try_for_each(|(x, y)| self.values(x, y))
+            }
+            _ => Err(String::from("a value against an error")),
+        }
+    }
+}
+
+/// `(note x)`: logs x as it prints, and gives it back: the order and number of evaluations.
+fn note(g: &mut Grift<Vec<String>>, log: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
+    log.push(
+        args.iter()
+            .map(|v| show(g, v))
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    Ok(args.first().cloned().unwrap_or(Value::Inert))
+}
+
+/// Two interpreters alike, one running the natives and one their grift definitions.
+fn twins() -> [Grift<Vec<String>>; 2] {
+    [true, false].map(|natives| {
+        let mut g: Grift<Vec<String>> = Grift::new().unwrap();
+        let f = g.host_function("note", note).unwrap();
+        g.define("note", f).unwrap();
+        g.evaluate(
+            &mut Vec::new(),
+            "(define! here (current-context))
+             (define! record (context))
+             (bind record (quote! (x first)) (list 5 6))
+             (define! double (lambda! (x) (list x x)))",
+        )
+        .unwrap();
+        g.natives = natives;
+        g
+    })
+}
+
+#[test]
+fn natives_are_their_definitions() {
+    let [mut native, mut defined] = twins();
+    let mut random = Random(0x9e37_79b9_7f4a_7c15);
+    let mut counts = [0usize; 2];
+    for case in 0..2500 {
+        let src = generated(&mut random, 2);
+        let place = format!("case-{case}.grift");
+        let (mut a_log, mut b_log) = (Vec::new(), Vec::new());
+        let a_scope = native.context(Some(&native.top_level())).unwrap();
+        let b_scope = defined.context(Some(&defined.top_level())).unwrap();
+        let a = native.evaluate_in(&mut a_log, &a_scope, &place, &src);
+        let b = defined.evaluate_in(&mut b_log, &b_scope, &place, &src);
+        counts[usize::from(a.is_err())] += 1;
+        let mut compare = Comparison {
+            left: &native,
+            right: &defined,
+            matched: Vec::new(),
+        };
+        if let Err(why) = compare.outcomes(&a, &b) {
+            panic!("case {case}: {src}\n  {why}");
+        }
+        assert_eq!(a_log, b_log, "case {case}: {src}: what ran");
+    }
+    // Both kinds of outcome are well represented.
+    assert!(
+        counts.iter().all(|&n| n > 500),
+        "values and errors: {counts:?}"
+    );
+}
+
+#[test]
+fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
+    for mut g in twins() {
+        g.evaluate(
+            &mut Vec::new(),
+            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (loop (shift-right (add n 2) 1))))))
+             (define! count (lambda! (n) (if! (same? n 0) 0 (count (subtract n 1)))))",
+        )
+        .unwrap();
+        let mut high = Vec::new();
+        for n in [100, 3000] {
+            g.evaluate(&mut Vec::new(), &format!("(count {n})"))
+                .unwrap();
+            high.push(g.machine.frames_high());
+        }
+        assert_eq!(
+            high[0], high[1],
+            "frames grew with the loop (natives {})",
+            g.natives
+        );
+    }
+}

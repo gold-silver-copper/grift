@@ -194,6 +194,14 @@ pub(crate) struct Machine {
     pub steps: u64,
 }
 
+#[cfg(test)]
+impl Machine {
+    /// The most frames there were at once.
+    pub fn frames_high(&self) -> usize {
+        self.frames.capacity()
+    }
+}
+
 impl Default for Machine {
     fn default() -> Machine {
         Machine {
