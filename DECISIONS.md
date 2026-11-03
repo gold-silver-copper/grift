@@ -580,3 +580,117 @@ name's uses; the PR has each name's decision.
   that means a float says so. The owner confirmed the other two removals that touched names they had
   chosen or used: `define-in!` (for `bind` with the parameters quoted) and `newline` (for
   `(display "\n")`).
+
+## Owner decisions, 2026-11-02, after wave 4
+
+Evidence: 196 programs, 29,478 lines, written by ten agents on grift at 699c95b without changing it,
+ranked in `~/code/notes/projects/grift/apps4-2026-11-02/tally.md` (cited as "tally" by section).
+
+- **G-94. `absolute-value` and `power` take an integer or a float** (amends G-63; tally sections 4 #11,
+  5 #3, 6). Two integers give an integer, two floats a float, never mixed, as `add`, `minimum` and
+  `maximum` do; one name per operation, no typed variants. 8 agents wrote an integer absolute value by
+  hand (13 copies), and it was the commonest wrong guess. `(absolute-value <the most negative
+  integer>)` is `overflow`. Library grift.
+- **G-95. `define!` keeps binding in the current context** (Kernel's `$define!`, Scheme's internal
+  `define`; tally sections 4 #18, 5 #9). In a body it makes a local; there is no `set!` and no warning
+  on shadowing. Changing an outer binding means holding its context and binding there (VISION "State":
+  you can change only a context you hold). LANGUAGE.md shows the pitfall and the idiom beside
+  `define!`; VISION "State" says why there is no `set!`.
+- **G-96. `(unbind context symbol)`** (tally section 5 #23: structures F2, embedding F1, a hash map 10x
+  slower than a plain context because it couldn't delete). The mirror of `bind`, both operands
+  evaluated: it removes the binding from that context itself, never a parent's, and gives `#true` if
+  one was removed, `#false` if the symbol wasn't bound there (deleting what may be absent is the common
+  table case, and `binds?` looks through parents, so it can't check first). A lookup there then sees a
+  parent's binding, if any. Closures and library names get no protection (G-74). A primitive beside
+  `bind`: a library version can't exist. VISION "State" now says a context "gains, replaces or loses a
+  binding". Symbols themselves are never freed, which LANGUAGE.md says beside it.
+
+## Made with G-94 to G-96, 2026-11-02 (the owner may overrule any)
+
+The tally's section 3 (K1-K4) and section 10 (library 1-4, core 1-2, runner 2-4), as the owner chose
+them. Each has a test stating a property, a LANGUAGE.md or README entry, and its before/after in the PR.
+
+- **G-97. A `parse-error` says why and where** (K1; G-77 left the reason out). Its values are `(reason
+  line column)`, the reason a symbol for the reader's real cases: `unclosed-list`, `unclosed-string`,
+  `unmatched-parenthesis`, `misplaced-dot`, `bad-escape`, `bad-number`, `unknown-constant`. An unclosed
+  list or string is placed at its `(` or `"`, the innermost list left open, because that is where the
+  mistake is and the end of the text says nothing (wave 4: `parse-error 7 1` for every unclosed form,
+  8 agents, 1-7 minutes each). Data, not prose, so a program tells an unclosed form from a typo without
+  comparing places, as format, build, adventure and the interactive runner did: the runner now waits
+  for more input exactly when the reason is `unclosed-list` or `unclosed-string`. `string-to-integer`
+  and `string-to-float` keep the primitive and the string: their text has no line.
+- **G-98. `load` and `script-path`** (K2: ~2,400 lines copied between programs, all ten agents). `(load
+  path)` is a runner operation that evaluates the file's forms in turn **in the caller's context**, as
+  Kernel's `load` (15.2.2) and Scheme's do, so a shared file of helpers is used as if written in place;
+  a program that wants them apart loads into a child it made, `(evaluate (quote! (load "big.grift"))
+  big)`, which is VISION "Numbers"' "a context whose arithmetic is theirs" (Kernel's `get-module` is
+  that, one name more). A relative path is relative to the file being loaded when `load` is called, at
+  first the script, as Racket's and Guile's `load` do; the runner keeps that file in a private context
+  and restores it after, error or not. A second `load` of a file runs it again (redefinition always
+  takes effect; no "once" bookkeeping); a file that loads itself loads without end, as an endless
+  recursion runs (G-5). All of a file's forms are read before any runs, as for a script. Errors keep
+  their kind and values, so `catch-kind!` sees them, and gain the place in their trace as a string,
+  `"lib/table.grift:12"` (the form's first line), or the path alone for a parse-error, whose values hold
+  its place: the trace is where a host looks for "where", and a string prints as what it is. Rejected:
+  a new error kind for loading (it would hide `file-error` from a program catching it), and a core
+  `evaluate` with file and line (the embedding asks, tally section 8, not in this change). Known cost:
+  the loader's own two combinations appear in such a trace, as the runner's own code already did for
+  `open-file`'s errors. `script-path` is the script's path as given, unbound for a program on stdin,
+  where there is no file, as Python leaves `__file__` unset.
+- **G-99. `catch-kind!`** (K3: 147 `catch!` + `if!` + re-raise, ~521 lines). `(catch-kind! body kind e
+  handler ...)`, catch!'s operands with the kind, a symbol, before the parameter, unevaluated as the
+  parameter is. Library grift beside `catch!`, sharing its handler code: an error of another kind goes
+  on with the trace it had, exactly as `(catch! body e (raise e))` gives it (tested), because the
+  handler runs as a tail call and `raise` of a caught error adds nothing. A kind that isn't a symbol
+  is a `type-error`, since `(quote! parse-error)` written there would otherwise never match.
+- **G-100. Bytes are a list of integers 0-255** (K4: Brainfuck's `-.`, base64 of binary, `head -c 1` on
+  `é`, `cat` of a binary file). Reader contexts get `(read-bytes count)`, up to `count` bytes, `()` at
+  the end; writer contexts get `(write-bytes bytes)`; a new `standard-output` context (`write`,
+  `write-bytes`) is where bytes go to stdout, beside `standard-error`, which gains `write-bytes` (amends
+  G-82's "`write` alone"). Against VISION "Values": no new
+  value, no vectors, strings stay UTF-8 text; a list is what every helper already takes (`map`, `fold`,
+  `take`, `element-at`), and embedding's host wrote exactly this (`read-bytes`, a list of integers,
+  200 KB through `hexdump` in 3.1 s). A count, not "the rest", so `head -c 1` and Brainfuck's `,` read
+  only what they use, also from a pipe that doesn't end. Cost (ports): the primitives move 1 MB in 11 ms,
+  but list helpers cost 0.35-1.5 µs a byte, so `tail -c 100` of 589 KB takes 1.8 s where the text
+  version took 2 ms (it was wrong on characters).
+- **G-101. `sort`, stable, and `string-less-than?` in byte order** (reopens G-75's "sort, not now":
+  ten agents, ~376 lines, two unstable sorts). `(sort list before?)` is a merge sort in library grift
+  calling `before?` through `apply`; an element goes before an earlier one only if it is `before?` it,
+  so equal ones keep their order. 10,000 integers in about 0.3 s, 10,000 short strings in 0.9 s.
+- **G-102. List access by index** (435 `(first (rest x))`, 10 agents). `element-at` (from 0, Rust's
+  indexing), `second`, `third`, `last`, `take`, `drop`, list first as Rust's methods and SRFI-1 have
+  them. An index or count out of range is a `range-error` carrying the name, the index and the length,
+  never a shorter list (`take` doesn't stop at the end: that is a guess; `(take xs (minimum n (length
+  xs)))` says it). A count that isn't an integer names the combiner, since `(drop n xs)` is the
+  likely slip. `second` and `third` take the list apart themselves (0.9 µs over a call, against 2.5 µs
+  through the index walk).
+- **G-103. `string-repeat`, and a fill on the pads** (9 + 2 agents). `(string-repeat s count)` is
+  Rust's `str::repeat`. The pads take a required third operand, the fill, a string of one byte, so the
+  width in bytes is always met exactly: no optional operands (G-14, G-20), so every two-operand call
+  changes (19 in `programs/`, 22 in the four ported wave-4 domains), to `" "`.
+- **G-104. `lookup` is the primitive; `binds?` is library over it** (tally core 1: a probe was a caught
+  error, 5-14 µs). `(lookup context symbol otherwise)`: one lookup, with a default where 54 inline
+  `(if! (binds? t k) (evaluate k t) d)` did two; `binds?` is `lookup` with a context no program holds
+  as `otherwise`. Not a primitive `binds?`: it would leave the default idiom at two lookups, and the
+  pick was one of the two. A `type-error` from `binds?` now names `lookup`.
+- **G-105. Bitwise operations** (6 agents; an `and` by hand 173 µs). `bitwise-and`, `bitwise-or`,
+  `bitwise-exclusive-or`, `shift-left`, `shift-right`: Rust's `& | ^ << >>` on `i64`, two operands as
+  all arithmetic. A shift amount outside 0 to 63 is `overflow`, where Rust's checked shift gives
+  `None` and debug Rust panics "shift left with overflow"; the bits shifted out are lost, as in Rust,
+  debug or release, because the uses (xorshift, hashes, masks) need them lost, and a shift that refused
+  them would make every generator mask first. `shift-right` keeps the sign, as `i64 >>` does.
+- **G-106. `display-error`, `read-file` and two clocks in the runner** (runner 2-4). `display-error` is
+  `display` to stderr. `read-file` is `std::fs::read_to_string`; its bytes counterpart is `read-bytes`
+  on `open-file`'s context (G-100), so no second name. `(wall-clock-nanoseconds)` is the system time
+  since 1970 (a date, a seed) and `(elapsed-nanoseconds)` Rust's `Instant` since the run started: one
+  clock can't serve both, since the system's can be set back. Nanoseconds, the unit of Rust's
+  `Duration::as_nanos`, fit an integer until 2262; the unit is in the name so no one guesses it.
+- **G-107. A band revised: meta's and format's tests read the library.** The target was each
+  `programs/` program within 10% of the base. Measured (one run each): meta's test 13.4 s to 15.5 s
+  (+16%), format's 3.35 s to 3.77 s (+13%), every other program within 5% or faster. Both read the
+  library's own text as input (meta interprets `library.grift` on every run, format formats it), and it
+  grew by about 150 lines (inside its band). On the same input they are within it: meta on
+  `tests/square.grift` with the base library 0.023 s to 0.021 s, meta on meta 2.06 s to 2.11 s, format
+  of the base `library.grift` 0.379 s to 0.394 s. New target: within 10% on the same input; cost: these
+  two tests take longer by the library's growth.

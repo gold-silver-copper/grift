@@ -34,14 +34,14 @@
     (expect-error! type-error (string-split 1 ","))
     (expect-error! type-error (string-join (list 1) ","))
     (expect-error! type-error (string-trim 1))
-    (expect-error! type-error (string-pad-left 1 2))
+    (expect-error! type-error (string-pad-left 1 2 " "))
     (expect-error! type-error (string-to-lowercase 1))
     (expect-error! type-error (string-search 1 "a" 0))
     (expect-error! type-error (string-starts-with? 1 "a"))
     (expect-error! type-error (string-ends-with? "a" 1)))
   (test! "range and the pads with floats mixed in"
     (expect-error! type-error (range 0 1.5))
-    (expect-error! type-error (string-pad-left "a" 1.5))))
+    (expect-error! type-error (string-pad-left "a" 1.5 " "))))
 
 (group! "out of range"
   (test! "string-byte"

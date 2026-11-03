@@ -36,14 +36,14 @@
                     caller))))
 
 ; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
-; $cond), let! (6.7.5, $letrec*), finally! and catch!. Each is an operative that walks its operands
+; $cond), let! (6.7.5, $letrec*), finally!, catch! and catch-kind!. Each is an operative that walks its operands
 ; and evaluates only them, in the caller's context or one it made; none builds code to evaluate. A
 ; loop that evaluates something only for its effect gets its value as an ignored first operand, and
 ; a list known not to be empty is taken apart in the parameters. sequence! is defined here, so nothing
 ; running now can use it: `list` evaluates the helpers' definitions in order, and the outer define!
 ; ignores their values.
 (define! (#ignore #ignore #ignore #ignore #ignore #ignore
-          sequence! when! conditional! let! finally! catch!)
+          sequence! when! conditional! let! finally! catch! catch-kind!)
   ((lambda! ()
      (list
        ; The forms of a body in turn, the last as a tail call; called only with a form left.
@@ -97,7 +97,18 @@
        ; the handler forms. interrupted and out-of-memory are never caught.
        (vau! (body parameter . handler) caller
          (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (wrap (vau! (e) #ignore (handle e parameter handler caller)))))))))
+                            (wrap (vau! (e) #ignore (handle e parameter handler caller)))))
+       ; catch-kind!: catch!, for the errors of one kind, a symbol; any other goes on as it was,
+       ; with its trace. It names symbol? and the forms after it, which exist when it runs.
+       (vau! (body wanted parameter . handler) caller
+         (if! (symbol? wanted)
+           (call-with-handler
+             (wrap (vau! () #ignore (evaluate body caller)))
+             (wrap (vau! (e) #ignore
+                     (if! (same? (evaluate-in! kind e) wanted)
+                       (handle e parameter handler caller)
+                       (raise e)))))
+           (raise (error (quote! type-error) (quote! catch-kind!) wanted))))))))
 
 ; current-context (6.7.2, get-current-environment).
 (define! current-context (wrap (vau! () caller caller)))
@@ -230,6 +241,45 @@
 (define! minimum (lambda! (a b) (if! (less-than? b a) b a)))
 (define! maximum (lambda! (a b) (if! (less-than? a b) b a)))
 
+; absolute-value and power (12.5.7, abs; 12.5.11, expt), of integers or floats, as add is: Rust's
+; checked abs and pow on integers, abs and powf on floats. The most negative integer has no
+; absolute value, and an integer power with a negative exponent isn't an integer (Rust's pow takes
+; a u32): overflow, range-error.
+(define! (absolute-value power)
+  ((lambda! (float-absolute float-power)
+     ; product times base to the exponent, by squaring; base is squared only while a bit of the
+     ; exponent is left, so nothing overflows unless the result does.
+     (define! raised
+       (lambda! (product base exponent)
+         (if! (same? exponent 0)
+           product
+           (power-of (if! (same? (remainder exponent 2) 0) product (multiply product base))
+                     base
+                     (divide exponent 2)))))
+     (define! power-of
+       (lambda! (product base exponent)
+         (if! (same? exponent 0) product (raised product (multiply base base) exponent))))
+     (list
+       (lambda! (x)
+         (if! (integer? x)
+           (if! (less-than? x 0)
+             (if! (same? x -9223372036854775808)
+               (raise (error (quote! overflow) (quote! absolute-value) x))
+               (subtract 0 x))
+             x)
+           (float-absolute x)))
+       (lambda! (x y)
+         (if! (and!? (integer? x) (integer? y))
+           (if! (less-than? y 0)
+             (raise (error (quote! range-error) (quote! power) x y))
+             (catch-kind! (raised 1 x y)
+                          overflow
+                          #ignore
+                          (raise (error (quote! overflow) (quote! power) x y))))
+           (float-power x y)))))
+   absolute-value
+   power))
+
 ; find-association (6.3.6, assoc): the first pair in the list whose first is equal? to x, or ()
 ; if there is none.
 (define! find-association
@@ -248,15 +298,12 @@
       (if! (equal? x (first xs)) #true (member? x (rest xs))))))
 
 ; binds? (6.7.1, $binds?, with both operands evaluated, so the symbol can be computed): whether
-; the symbol is bound in the context or one of its parents. As R-1RK derives it, it looks the symbol
-; up, and catching the error unbound-symbol gives #false.
+; the symbol is bound in the context or one of its parents, that is, whether lookup finds it
+; rather than giving a context no program holds.
 (define! binds?
-  (lambda! (c symbol)
-    (if! (and!? (context? c) (symbol? symbol))
-      (catch! (sequence! (evaluate symbol c) #true)
-              e
-              (if! (same? (evaluate-in! kind e) (quote! unbound-symbol)) #false (raise e)))
-      (raise (error (quote! type-error) (quote! binds?) (if! (context? c) symbol c))))))
+  ((lambda! (absent)
+     (lambda! (c symbol) (not? (same? (lookup c symbol absent) absent))))
+   (context)))
 
 ; symbol-to-string, float-to-string: the printer's text, refusing any other type.
 (define! symbol-to-string
@@ -270,7 +317,8 @@
       (value-to-string f)
       (raise (error (quote! type-error) (quote! float-to-string) f)))))
 
-; Not in Kernel, each asked for by three or more programs: filter, fold, range.
+; Not in Kernel, each asked for by three or more programs: filter, fold, range, sort and the list
+; access below.
 (define! filter
   (lambda! (f xs)
     (if! (same? xs ())
@@ -286,6 +334,84 @@
 (define! range
   (lambda! (start end)
     (if! (less-than? start end) (pair start (range (add start 1) end)) ())))
+
+; sort: the elements in the order before? gives, stable: an element goes before an earlier one
+; only if it is before? it, so equal ones keep their order. A merge sort: n log n calls of before?.
+(define! sort
+  ((lambda! ()
+     (define! merge
+       (lambda! (xs ys before?)
+         (if! (same? xs ())
+           ys
+           (if! (same? ys ())
+             xs
+             (if! (apply before? (list (first ys) (first xs)))
+               (pair (first ys) (merge xs (rest ys) before?))
+               (pair (first xs) (merge (rest xs) ys before?)))))))
+     ; The first n elements of xs sorted, paired with the elements after them; n is at least 1.
+     (define! sorted
+       (lambda! (xs n before?)
+         (if! (same? n 1)
+           (pair (list (first xs)) (rest xs))
+           (let! ((half (divide n 2))
+                  ((left . more) (sorted xs half before?))
+                  ((right . after) (sorted more (subtract n half) before?)))
+             (pair (merge left right before?) after)))))
+     (lambda! (xs before?)
+       (if! (same? xs ()) () (first (sorted xs (length xs) before?)))))))
+
+; element-at, second, third, last, take and drop: an index counts from 0, as in Rust, and one
+; out of range is a range-error carrying the name, the index and the list's length.
+(define! (element-at second third last take drop)
+  ((lambda! ()
+     ; The list after the first i of n elements asked for by name.
+     (define! after
+       (lambda! (name xs i n)
+         (if! (same? i 0)
+           xs
+           (if! (same? xs ())
+             (raise (error (quote! range-error) name n (subtract n i)))
+             (after name (rest xs) (subtract i 1) n)))))
+     (define! element
+       (lambda! (name xs index)
+         (if! (same? xs ())
+           (raise (error (quote! range-error) name index index))
+           (first xs))))
+     ; n, if it is an integer of 0 or more: given the list in its place, the error names the
+     ; combiner, and a negative one is out of range without counting down from it.
+     (define! counted
+       (lambda! (name xs n)
+         (if! (integer? n)
+           (if! (less-than? n 0) (raise (error (quote! range-error) name n (length xs))) n)
+           (raise (error (quote! type-error) name n)))))
+     (define! at
+       (lambda! (name xs index) (element name (after name xs (counted name xs index) index) index)))
+     (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
+     (define! taken
+       (lambda! (xs i n)
+         (if! (same? i 0)
+           ()
+           (if! (same? xs ())
+             (raise (error (quote! range-error) (quote! take) n (subtract n i)))
+             (pair (first xs) (taken (rest xs) (subtract i 1) n))))))
+     (list
+       (lambda! (xs index) (at (quote! element-at) xs index))
+       ; second and third take the list apart themselves, as (first (rest xs)) would, and walk it
+       ; again with at only to say why they can't.
+       (lambda! (xs)
+         (if! (same? xs ())
+           (at (quote! second) xs 1)
+           (if! (same? (rest xs) ()) (at (quote! second) xs 1) (first (rest xs)))))
+       (lambda! (xs)
+         (if! (same? xs ())
+           (at (quote! third) xs 2)
+           (if! (same? (rest xs) ())
+             (at (quote! third) xs 2)
+             (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
+       (lambda! (xs)
+         (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
+       (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
+       (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
 
 ; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
@@ -366,14 +492,41 @@
        (let! ((end (string-byte-length s)) (start (start-of s 0 end)))
          (byte-substring s start (end-of s start end)))))))
 
-; string-pad-left and string-pad-right: s with spaces before it, after it, up to width bytes.
+; string-less-than?: whether a is before b in byte order, as Rust's < on str: at the first byte
+; where they differ, or the shorter first when one starts the other.
+(define! string-less-than?
+  ((lambda! ()
+     (define! from
+       (lambda! (a b at a-end b-end)
+         (if! (same? at b-end)
+           #false
+           (if! (same? at a-end)
+             #true
+             (if! (same? (string-byte a at) (string-byte b at))
+               (from a b (add at 1) a-end b-end)
+               (less-than? (string-byte a at) (string-byte b at)))))))
+     (lambda! (a b) (from a b 0 (string-byte-length a) (string-byte-length b))))))
+
+; string-repeat: s count times, as Rust's str::repeat; a count below 0 is a range-error.
+(define! string-repeat
+  (lambda! (s count)
+    (if! (and!? (string? s) (integer? count))
+      (if! (less-than? count 0)
+        (raise (error (quote! range-error) (quote! string-repeat) count))
+        (apply string-append (map (lambda! (#ignore) s) (range 0 count))))
+      (raise (error (quote! type-error) (quote! string-repeat) (if! (string? s) count s))))))
+
+; string-pad-left and string-pad-right: s with copies of fill, a string of one byte, before it,
+; after it, up to width bytes.
 (define! (string-pad-left string-pad-right)
   ((lambda! ()
      (define! room
-       (lambda! (s width)
-         (apply string-append (map (lambda! (#ignore) " ") (range (string-byte-length s) width)))))
-     (list (lambda! (s width) (string-append (room s width) s))
-           (lambda! (s width) (string-append s (room s width)))))))
+       (lambda! (name s width fill)
+         (if! (same? (string-byte-length fill) 1)
+           (apply string-append (map (lambda! (#ignore) fill) (range (string-byte-length s) width)))
+           (raise (error (quote! range-error) name fill)))))
+     (list (lambda! (s width fill) (string-append (room (quote! string-pad-left) s width fill) s))
+           (lambda! (s width fill) (string-append s (room (quote! string-pad-right) s width fill)))))))
 
 ; string-to-lowercase: with A to Z made a to z, and every other byte as it is, as Rust's
 ; to_ascii_lowercase.

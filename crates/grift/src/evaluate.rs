@@ -45,6 +45,8 @@ primitives! {
     Raise "raise" 1 1;
     Context "context" 0 1;
     Bind "bind" 3 3;
+    Unbind "unbind" 2 2;
+    Lookup "lookup" 3 3;
     Names "names" 1 1;
     Pair "pair" 2 2;
     First "first" 1 1;
@@ -58,6 +60,11 @@ primitives! {
     Divide "divide" 2 2;
     Remainder "remainder" 2 2;
     LessThan "less-than?" 2 2;
+    BitwiseAnd "bitwise-and" 2 2;
+    BitwiseOr "bitwise-or" 2 2;
+    BitwiseExclusiveOr "bitwise-exclusive-or" 2 2;
+    ShiftLeft "shift-left" 2 2;
+    ShiftRight "shift-right" 2 2;
     Power "power" 2 2;
     SquareRoot "square-root" 1 1;
     Sine "sine" 1 1;
@@ -609,6 +616,16 @@ impl<T> Grift<T> {
                 }
                 _ => return Err(type_error(p, x)),
             },
+            P::Unbind | P::Lookup => {
+                let (Value::Context(c), Value::Symbol(s)) = (x, y) else {
+                    let bad = if matches!(x, Value::Context(_)) { y } else { x };
+                    return Err(type_error(p, bad));
+                };
+                match p {
+                    P::Unbind => Value::Boolean(self.bindings_mut(c)?.remove(&s).is_some()),
+                    _ => self.find(c, s)?.unwrap_or(z),
+                }
+            }
             P::Names => match x {
                 Value::Context(c) => {
                     let names = self.names_of(c)?;
@@ -633,6 +650,9 @@ impl<T> Grift<T> {
             P::TypeOf => Value::Symbol(type_of(x).into()),
             P::Add | P::Subtract | P::Multiply | P::Divide | P::Remainder | P::LessThan => {
                 arithmetic(p, x, y)?
+            }
+            P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
+                bitwise(p, x, y)?
             }
             P::Power => Value::Float(float_of(p, x)?.powf(float_of(p, y)?)),
             P::SquareRoot => Value::Float(float_of(p, x)?.sqrt()),
@@ -925,13 +945,22 @@ impl<T> Grift<T> {
         }
     }
 
-    fn lookup(&self, mut context: Reference, s: Symbol) -> Result<Value, Error> {
+    fn lookup(&self, context: Reference, s: Symbol) -> Result<Value, Error> {
+        self.find(context, s)?
+            .ok_or_else(|| Error::new(K::UnboundSymbol, &[Value::Symbol(s)]))
+    }
+
+    /// The binding of `s` in `context` or the nearest parent that has one.
+    fn find(&self, mut context: Reference, s: Symbol) -> Result<Option<Value>, Error> {
         loop {
             let (parent, bindings) = self.context_at(context)?;
             if let Some(&v) = bindings.get(&s) {
-                return Ok(v);
+                return Ok(Some(v));
             }
-            context = parent.ok_or_else(|| Error::new(K::UnboundSymbol, &[Value::Symbol(s)]))?;
+            let Some(parent) = parent else {
+                return Ok(None);
+            };
+            context = parent;
         }
     }
 
@@ -980,6 +1009,23 @@ fn locate(e: &mut Error, r: Reference) {
     {
         e.trace.push(Value::Pair(r));
     }
+}
+
+/// The bitwise operations, as Rust's `&`, `|`, `^`, `<<` and `>>` on `i64`: a shift by an amount
+/// outside 0 to 63 is `overflow`, where Rust panics, and the bits shifted out are lost, as in Rust.
+fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
+    use Primitive as P;
+    let (a, b) = (integer_of(p, x)?, integer_of(p, y)?);
+    let amount = u32::try_from(b).ok();
+    let r = match p {
+        P::BitwiseAnd => Some(a & b),
+        P::BitwiseOr => Some(a | b),
+        P::BitwiseExclusiveOr => Some(a ^ b),
+        P::ShiftLeft => amount.and_then(|n| a.checked_shl(n)),
+        _ => amount.and_then(|n| a.checked_shr(n)),
+    };
+    r.map(Value::Integer)
+        .ok_or_else(|| Error::new(K::Overflow, &[Value::Primitive(p), x, y]))
 }
 
 /// A length or offset as a grift integer.

@@ -46,8 +46,8 @@ expect "load! of a missing file names it, with none of the runner's own forms" h
     "failing/raises-loading.grift:3  after a raising form ... ok"
 run failing/does-not-read.grift tests/numbers.grift
 expect "a file that doesn't read names where, and the others run" has_lines \
-    "failing/does-not-read.grift  when loading ... FAIL" \
-    "     actual:     raised parse-error 6 1"
+    "failing/does-not-read.grift:4  when loading ... FAIL" \
+    "     actual:     raised parse-error unclosed-list 4 1"
 expect "the tests before the bad form still run" has "failing/does-not-read.grift:2  before the bad form ... ok"
 expect "the next file still runs" has "tests/numbers.grift:4  integers / divide and remainder truncate toward zero ... ok"
 run no-such-file.grift tests/numbers.grift

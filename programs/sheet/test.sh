@@ -64,7 +64,7 @@ expect "4 errors" "$out" \
   "5      1866.60" \
   "E1 (divide 1 0) => error division-by-zero (#[primitive divide] 1 0)" \
   'E2 (add 1 "x") => error type-error (#[primitive add] "x")' \
-  'E3 (add 1 2 => error formula-error ("does not read" "(add 1 2" 8)'
+  'E3 (add 1 2 => error formula-error ("does not read: unclosed-list" "(add 1 2" 0)'
 
 # 5. Range functions over a column and a rectangle, and a function from the sheet file.
 out=$(printf 'set D1 (sum B1:B3)\nset D2 (count A1:B3)\nset D3 (average B1:C2)\ndefine (define! half (lambda! (x) (divide x 2.0)))\nset D4 (half (with-tax 10.0))\nshow D1\nshow D2\nshow D3\nshow D4\n' | run)

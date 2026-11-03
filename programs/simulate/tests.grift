@@ -2,18 +2,17 @@
 ; a summary, and exits 1 if any failed.
 
 ; load-definitions: evaluates the forms of the file at path here, up to the form that defines
-; `stop`, so the tests get main.grift's definitions without running its command line. grift has
-; no load.
+; `stop`, so the tests get main.grift's definitions without running its command line, as load
+; would.
 (define! load-definitions
   (lambda! (path stop c)
-    (define! file (open-file path))
-    (define! text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+    (define! text (read-file path))
     (define! each
       (lambda! (offset)
         (let! ((read (read-form text offset)))
           (when! (pair? read)
             (let! (((form #ignore end) read))
-              (when! (not? (and!? (pair? form) (pair? (rest form)) (same? (first (rest form)) stop)))
+              (when! (not? (and!? (pair? form) (pair? (rest form)) (same? (second form) stop)))
                 (evaluate form c)
                 (each end)))))))
     (each 0)))
@@ -61,7 +60,7 @@
 (define! in-order?
   (lambda! (events)
     (or!? (same? (rest events) ())
-          (and!? (earlier? (first events) (first (rest events))) (in-order? (rest events))))))
+          (and!? (earlier? (first events) (second events)) (in-order? (rest events))))))
 (expect "heap order" (and!? (same? (length out) 300) (in-order? out)) (length out))
 
 ; The line is first in, first out.

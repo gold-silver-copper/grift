@@ -28,22 +28,11 @@
 (define! width 100)
 
 ; Text: offsets count bytes, as grift's strings do, and so do widths and columns, so a line with
-; characters of more than a byte may break before 100 characters, never after; error places count
-; characters, as read-form's do.
+; characters of more than a byte may break before 100 characters, never after; error places are
+; read-form's.
 ; ASCII whitespace, as the reader skips it: space, and tab to return.
 (define! space-byte? (lambda! (b) (or!? (same? b 32) (and!? (less-than? 8 b) (less-than? b 14)))))
-; The number of characters in `s`: its bytes that don't continue a character.
-(define! text-width
-  (lambda! (s)
-    (let! ((end (string-byte-length s))
-           (count (lambda! (i n)
-                    (if! (same? i end)
-                      n
-                      (count (add i 1) (if! (continuation-byte? (string-byte s i)) n (add n 1)))))))
-      (count 0 0))))
-; Whether byte b continues a UTF-8 character (10xxxxxx).
-(define! continuation-byte? (lambda! (b) (same? (divide b 64) 2)))
-(define! spaces (lambda! (n) (string-pad-left "" n)))
+(define! spaces (lambda! (n) (string-repeat " " n)))
 
 ; The tree. Each item is a list (kind a b):
 ;   (atom text ())             a symbol, number, constant or string, as written
@@ -55,7 +44,7 @@
 (define! kind-of first)
 (define! element? (lambda! (item) (member? (kind-of item) (quote! (atom lines list)))))
 (define! comment? (lambda! (item) (same? (kind-of item) (quote! comment))))
-(define! flat-text (lambda! (item) (first (rest item))))
+(define! flat-text second)
 
 (define! list-item
   (lambda! (children)
@@ -65,21 +54,6 @@
                    ()
                    (string-append "(" (string-join (map flat-text elements) " ") ")"))))
       (list (quote! list) flat children))))
-
-; The end of the string whose `"` is at offset i: the offset after its closing `"`, or past the
-; end of the text when it has none.
-(define! string-end
-  (lambda! (text i)
-    (let! ((end (string-byte-length text))
-           (loop (lambda! (i)
-                   (if! (greater-than-or-equal? i end)
-                     (add end 1)
-                     (let! ((b (string-byte text i)))
-                       (conditional!
-                         ((same? b 92) (loop (add i 2)))
-                         ((same? b 34) (add i 1))
-                         (#true (loop (add i 1)))))))))
-      (loop (add i 1)))))
 
 (define! atom-item
   (lambda! (text)
@@ -91,11 +65,8 @@
 ; alone is the `.` of a dotted list, one byte.
 (define! atom-end
   (lambda! (text i)
-    (catch! (let! (((#ignore #ignore end) (read-form text i))) end) e
-      (if! (and!? (same? (evaluate-in! kind e) (quote! parse-error))
-                  (same? (string-byte text i) 46))
-        (add i 1)
-        (raise e)))))
+    (catch-kind! (let! (((#ignore #ignore end) (read-form text i))) end) parse-error e
+      (if! (same? (string-byte text i) 46) (add i 1) (raise e)))))
 ; The offset of the newline that ends the line at offset i, or the end of the text.
 (define! line-end
   (lambda! (text i)
@@ -148,7 +119,7 @@
 (define! new-line (lambda! (out indent) (emit-at out (string-append "\n" (spaces indent)) indent)))
 ; A string with newlines in it ends at the column after its last one.
 (define! emit-lines
-  (lambda! (out s) (emit-at out s (string-byte-length (first (reverse (string-split s "\n")))))))
+  (lambda! (out s) (emit-at out s (string-byte-length (last (string-split s "\n"))))))
 (define! column-of (lambda! (out) (evaluate-in! column out)))
 (define! output-text (lambda! (out) (string-join (reverse (evaluate-in! pieces out)) "")))
 
@@ -287,73 +258,40 @@
         formatted))))
 
 ; Files.
-(define! read-file
-  (lambda! (path)
-    (let! ((file (open-file path)))
-      (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))))
 (define! write-file
   (lambda! (path text)
     (let! ((file (create-file path)))
       (finally! ((evaluate-in! write file) text) ((evaluate-in! close file))))))
-(define! complain (lambda! (text) ((evaluate-in! write standard-error) (string-append text "\n"))))
+(define! complain (lambda! (text) (display-error text "\n")))
 
-; Where reading stopped, for a text that doesn't read. read-form reports an unfinished text at
-; its end; the place to look is the innermost `(` or `"` still open there, found here by a scan
-; that knows strings and comments: its offset, or () if nothing is open.
-(define! still-open
-  (lambda! (text i)
-    (let! ((end (string-byte-length text))
-           (loop (lambda! (i opens)
-                   (if! (greater-than-or-equal? i end)
-                     (if! (pair? opens) (first opens) ())
-                     (let! ((b (string-byte text i)))
-                       (conditional!
-                         ((same? b 59) (loop (line-end text i) opens))
-                         ((same? b 34)
-                          (let! ((j (string-end text i)))
-                            (if! (greater-than? j end) i (loop j opens))))
-                         ((same? b 40) (loop (add i 1) (pair i opens)))
-                         ((same? b 41) (loop (add i 1) (if! (pair? opens) (rest opens) ())))
-                         (#true (loop (add i 1) opens))))))))
-      (loop i ()))))
-; The line and column of byte offset `at`, counted from 1, the column in characters.
-(define! line-and-column
-  (lambda! (text at)
-    (let! ((lines (string-split (byte-substring text 0 at) "\n")))
-      (list (length lines) (add 1 (text-width (first (reverse lines))))))))
-(define! place-text
-  (lambda! ((line column)) (string-append (integer-to-string line) ":" (integer-to-string column))))
-; The message for a text that doesn't read, from read-form's (line column).
+; The message for a text that doesn't read, from read-form's (reason line column): a list or a
+; string left open is named where it opens.
 (define! does-not-read
-  (lambda! (path text place)
-    (let! ((open (still-open text (forms-start text)))
-           (at-end? (equal? place (line-and-column text (string-byte-length text)))))
-      (string-append path
-                     ":"
-                     (place-text place)
-                     ": does not read"
-                     (if! (and!? at-end? (not? (empty-list? open)))
-                       (string-append (if! (same? (string-byte text open) 34)
-                                        "; the string at "
-                                        "; the list at ")
-                                      (place-text (line-and-column text open))
-                                      " is not closed")
-                       "")
-                     "; left as it is"))))
+  (lambda! (path (reason line column))
+    (string-append path
+                   ":"
+                   (integer-to-string line)
+                   ":"
+                   (integer-to-string column)
+                   ": does not read: "
+                   (conditional!
+                     ((same? reason (quote! unclosed-list)) "this list is never closed")
+                     ((same? reason (quote! unclosed-string)) "this string is never closed")
+                     (#true (string-join (string-split (symbol-to-string reason) "-") " ")))
+                   "; left as it is")))
 
 ; Formats the file at `path` and gives (text formatted) to `done`, or reports why it can't on
 ; standard error and gives #false.
 (define! with-formatted
   (lambda! (path done)
     (catch! (let! ((text (read-file path)))
-              (catch! (done text (format-text path text)) e
-                (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                  (sequence! (complain (does-not-read path text (evaluate-in! values e))) #false)
-                  (raise e)))) e
+              (catch-kind! (done text (format-text path text)) parse-error e
+                (complain (does-not-read path (evaluate-in! values e)))
+                #false)) e
       (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
         (conditional!
           ((member? kind (quote! (file-error encoding-error)))
-           (complain (string-append path ": " (first (reverse values))))
+           (complain (string-append path ": " (last values)))
            #false)
           ((member? kind (quote! (formatter-changed-forms formatter-lost-comments)))
            (complain (string-append path

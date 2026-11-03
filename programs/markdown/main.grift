@@ -343,7 +343,7 @@
                         (construct (lambda! (found)
                                      (if! (same? found ())
                                        (scan from (add at 1) out)
-                                       (put at (first found) (first (rest found)))))))
+                                       (put at (first found) (second found))))))
                    (conditional!
                      ((same? c backslash)
                        (let! ((next (byte-at s (add at 1))))
@@ -365,7 +365,7 @@
                      ((same? c open-bracket) (construct (link-at s at #false)))
                      ((and!? (same? c bang) (same? (byte-at s (add at 1)) open-bracket))
                        (let! ((found (link-at s (add at 1) #true)))
-                         (if! (same? found ()) (scan from (add at 1) out) (put at (first found) (first (rest found))))))
+                         (if! (same? found ()) (scan from (add at 1) out) (put at (first found) (second found)))))
                      ((same? c less) (construct (autolink-at s at)))
                      (#true (scan from (add at 1) out)))))))))
       (apply string-append (reverse (scan 0 0 ()))))))
@@ -577,7 +577,7 @@
            (same-kind? (lambda! (line)
                          (let! ((marker (list-marker line)))
                            (and!? (pair? marker) (not? (thematic-break? line))
-                                  (same? (first marker) ordered) (same? (first (rest marker)) delimiter)))))
+                                  (same? (first marker) ordered) (same? (second marker) delimiter)))))
            ; items: the bodies so far, last first; body: this item's lines, last first. Blank
            ; lines at the end of an item go between it and what follows.
            (collect
@@ -643,7 +643,7 @@
             (expand (add at 1) (add column 1))
             (if! (same? b tab)
               (expand (add at 1) (multiply (add (divide column 4) 1) 4))
-              (string-append (string-pad-left "" column) (from-byte line at)))))))
+              (string-append (string-repeat " " column) (from-byte line at)))))))
     (let! ((line (if! (in-set? blanks (byte-at line (indent-of line))) (expand 0 0) line))
            (size (string-byte-length line)))
       (if! (string-ends-with? line "\xd;") (byte-substring line 0 (subtract size 1)) line))))
@@ -656,27 +656,23 @@
 
 ; ---- Running
 
-(define! write-error (evaluate-in! write standard-error))
-
 ; Reads every form of the file: here, each a test case (name markdown html). Text that doesn't
-; read ends the run with the file, line and column.
+; read ends the run with the file, the line and column (of the ( or " left open, if one is) and
+; why.
 (define! read-forms
   (lambda! (path)
-    (let! ((file (open-file path))
-           (text (finally! ((evaluate-in! read-all file)) ((evaluate-in! close file))))
+    (let! ((text (read-file path))
            (walk (lambda! (at forms)
                    (let! ((read (read-form text at)))
                      (if! (same? read ())
                        (reverse forms)
                        (let! (((form #ignore end) read)) (walk end (pair form forms))))))))
-      (catch! (walk 0 ())
-              e
-              (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                (let! (((line column) (evaluate-in! values e)))
-                  (write-error (string-append path ":" (integer-to-string line) ":" (integer-to-string column)
-                                              ": doesn't read\n"))
-                  (exit 2))
-                (raise e))))))
+      (catch-kind! (walk 0 ())
+                   parse-error
+                   e
+                   (let! (((reason line column) (evaluate-in! values e)))
+                     (display-error path ":" line ":" column ": doesn't read: " reason "\n")
+                     (exit 2))))))
 
 ; Runs the cases, says which fail with what was expected and what came, and exits 1 if any did.
 (define! run-tests
@@ -704,7 +700,7 @@
   ((same? command-line-arguments ())
     (display (markdown-to-html ((evaluate-in! read-all standard-input)))))
   ((and!? (same? (length command-line-arguments) 2) (same? (first command-line-arguments) "--test"))
-    (run-tests (first (rest command-line-arguments))))
+    (run-tests (second command-line-arguments)))
   (#true
-    (write-error "usage: main.grift < FILE.md, or main.grift --test CASES.grift\n")
+    (display-error "usage: main.grift < FILE.md, or main.grift --test CASES.grift\n")
     (exit 2)))

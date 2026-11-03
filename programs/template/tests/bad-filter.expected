@@ -1,2 +1,2 @@
-bad-filter.html:1: "add (1" doesn't read: parse-error at column 7
+bad-filter.html:1: "add (1" doesn't read: unclosed-list at column 5
 [exit 1]

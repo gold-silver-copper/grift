@@ -194,9 +194,10 @@
       ((pair? (rest v)) (string-append (print (first v)) " " (print-list (rest v))))
       (#true (string-append (print (first v)) " . " (print (rest v)))))))
 
-(define! meta-display
-  (lambda! values
-    (for-each (lambda! (v) (display (if! (string? v) v (print v)))) values)))
+; display and display-error: strings as they are, everything else as print gives it.
+(define! printed (lambda! (v) (if! (string? v) v (print v))))
+(define! meta-display (lambda! values (apply display (map printed values))))
+(define! meta-display-error (lambda! values (apply display-error (map printed values))))
 
 ; The interpreter's built-in context: its primitives, then the library, loaded into it as grift
 ; loads its own.
@@ -205,8 +206,9 @@
       (list meta-vau! meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
             (native print)))
 (for-each (lambda! (name) (bind root name (native (evaluate name (current-context)))))
-          (quote! (wrap unwrap context bind names pair first rest same? select type-of raise
-                   add subtract multiply divide remainder less-than?
+          (quote! (wrap unwrap context bind unbind lookup names pair first rest same? select type-of
+                   raise add subtract multiply divide remainder less-than?
+                   bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
                    square-root sine cosine tangent exponential natural-logarithm floor ceiling round
                    truncate absolute-value power integer-to-float float-to-integer
                    string-byte-length string-byte byte-substring string-append code-point-to-string
@@ -222,23 +224,14 @@
           (each form start)
           (each-form text end each))))))
 
-(define! read-file
-  (lambda! (path)
-    (let! ((file (open-file path)) (text ((evaluate-in! read-all file))))
-      ((evaluate-in! close file))
-      text)))
-
 (define! line-of
   (lambda! (text at)
     (add 1 (length (filter (lambda! (i) (same? (string-byte text i) 10)) (range 0 at))))))
 
-(define! say
-  (lambda! parts
-    ((evaluate-in! write standard-error) (apply string-append parts))))
-
 ; The runner's operations, for the program's top-level context as the runner binds them in
 ; grift's: each host operation becomes a primitive of the interpreter, and so does each operation
-; of a context one gives (a file, standard input, a finished process).
+; of a context one gives (a file, standard input, a finished process). All but load, which
+; evaluates with grift's evaluator, not this one.
 (define! host
   (lambda! (v)
     (conditional!
@@ -249,8 +242,8 @@
          operations))
       (#true v))))
 (define! runner-names
-  (quote! (standard-input standard-error open-file create-file run-process environment-variable
-           exit)))
+  (quote! (standard-input standard-output standard-error open-file create-file read-file
+           run-process environment-variable wall-clock-nanoseconds elapsed-nanoseconds exit)))
 
 ; Runs the program in `path` with `arguments`: each top-level form in the program's context, a
 ; child of the root. An error stops it, reported with the form it happened in and the forms it
@@ -260,7 +253,8 @@
     (let! ((text (read-file path)) (top (context root)))
       (bind top program-marker #true)
       (for-each (lambda! (name) (bind top name (host (evaluate name (current-context))))) runner-names)
-      (bind top (quote! (display command-line-arguments)) (list (native meta-display) arguments))
+      (bind top (quote! (display display-error command-line-arguments script-path))
+            (list (native meta-display) (native meta-display-error) arguments path))
       (each-form text 0
         (lambda! (form start)
           (catch! (meta-evaluate form top)
@@ -270,10 +264,9 @@
 (define! report
   (lambda! (path text start e)
     (let! ((trace (take-trace)))
-      (say "meta: " path ":" (integer-to-string (line-of text start)) ": "
-           (symbol-to-string (evaluate-in! kind e)) " " (print-list-or-empty (evaluate-in! values e))
-           "\n  in " (print (first trace)) "\n")
-      (for-each (lambda! (form) (say "  from " (print form) "\n")) (rest trace)))))
+      (display-error "meta: " path ":" (line-of text start) ": " (evaluate-in! kind e) " "
+                     (print-list-or-empty (evaluate-in! values e)) "\n  in " (print (first trace)) "\n")
+      (for-each (lambda! (form) (display-error "  from " (print form) "\n")) (rest trace)))))
 
 (define! print-list-or-empty (lambda! (xs) (if! (same? xs ()) "" (print-list xs))))
 
@@ -283,7 +276,7 @@
     (pair "crates/grift/src/library.grift" command-line-arguments)))
 
 (when! (not? (pair? program))
-  (say "usage: grift programs/meta/main.grift [--library PATH] FILE [ARGUMENT ...]\n")
+  (display-error "usage: grift programs/meta/main.grift [--library PATH] FILE [ARGUMENT ...]\n")
   (exit 2))
 
 (define! library-text (read-file library))

@@ -99,7 +99,7 @@ check "unknown column in where" 1 'query: in (where (less-than? agee 3)): no col
 check "unknown column after rename" 1 'query: in (sort-by city): no column named city; the columns are name, town' -- '(select name (as town city)) (sort-by city)' data/people.csv
 check "unknown clause" 1 'query: not a clause; the clauses are select, where, group-by, sort-by and limit: (selec name)' -- '(selec name)' data/people.csv
 check "where not boolean" 1 'query: in (where qty): a where test must give #true or #false: qty, not 10' -- '(where qty)' data/crlf.csv
-check "query that does not read" 1 'query: the query doesn'"'"'t read at line 1, column 13' -- '(select name' data/people.csv
+check "query that does not read" 1 'query: the query doesn'"'"'t read: unclosed-list at line 1, column 1' -- '(select name' data/people.csv
 check "missing file" 2 'query: nope.csv: file-error "nope.csv" "No such file or directory (os error 2)"' -- '' nope.csv
 check "usage" 2 'query: usage: main.grift [--csv] QUERY FILE.csv' -- ''
 
