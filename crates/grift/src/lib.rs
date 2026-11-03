@@ -233,10 +233,8 @@ impl<T> Grift<T> {
             #[cfg(test)]
             definitions: heap::Reference::NONE,
         };
-        match g.load() {
-            Ok(()) => Ok(g),
-            Err(e) => Err(g.export_error(e)),
-        }
+        let loaded = g.load();
+        g.out(loaded).map(|()| g)
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
@@ -312,14 +310,8 @@ impl<T> Grift<T> {
     /// operative gets them as they are. Host functions get `state`.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.import(f).and_then(|f| {
-            let mut local = Vec::new();
-            local
-                .try_reserve_exact(arguments.len())
-                .map_err(|_| local::Error::oom())?;
-            for a in arguments {
-                local.push(self.import(a)?);
-            }
-            self.call_local(Some(state), f, &local)
+            let arguments = self.imported(arguments)?;
+            self.call_local(Some(state), f, &arguments)
         });
         self.exported(done)
     }
@@ -351,6 +343,15 @@ impl<T> Grift<T> {
 
     /// A new empty context whose parent is the built-in one: a private top level. Grift code
     /// evaluated there sees the primitives and the library, never what a program defines.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// g.evaluate(&mut (), "(define! list 0)")?; // a program redefines list
+    /// let private = g.private_context()?;
+    /// let made = g.evaluate_in(&mut (), &private, "prelude.grift", "(list 1 2)")?;
+    /// assert_eq!(g.list_items(&made)?, [grift::Value::Integer(1), grift::Value::Integer(2)]);
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn private_context(&mut self) -> Result<Value, Error> {
         let c = Object::Context(Some(self.built_in), Bindings::default());
         let made = self.heap.alloc(c).map(local::Value::Context);
@@ -368,7 +369,7 @@ impl<T> Grift<T> {
             let s = self.intern(name)?;
             self.bind_symbol(self.top, s, v)
         });
-        self.exported(done.map(|()| local::Value::Inert)).map(drop)
+        self.out(done)
     }
 
     /// `(bind context parameters value)`: matches the parameter tree to the value and binds its
@@ -393,7 +394,7 @@ impl<T> Grift<T> {
             let (parameters, value) = (self.import(parameters)?, self.import(&value)?);
             self.bind_tree(c, parameters, value)
         });
-        self.exported(done.map(|()| local::Value::Inert)).map(drop)
+        self.out(done)
     }
 
     /// `(lookup context name otherwise)` without the default: the value bound to `name` in
@@ -402,10 +403,7 @@ impl<T> Grift<T> {
         let found = self
             .context_of(context, Primitive::Lookup)
             .and_then(|c| self.find(c, self.import_symbol(name)?));
-        match found {
-            Ok(v) => Ok(v.map(|v| self.export(v))),
-            Err(e) => Err(self.export_error(e)),
-        }
+        self.out(found.map(|v| v.map(|v| self.export(v))))
     }
 
     /// `(names context)`: the symbols bound in `context` itself, sorted by name.
@@ -414,67 +412,63 @@ impl<T> Grift<T> {
             .context_of(context, Primitive::Names)
             .and_then(|c| self.names_of(c));
         let names = names.and_then(|names| {
-            let mut out = Vec::new();
-            out.try_reserve_exact(names.len())
-                .map_err(|_| local::Error::oom())?;
-            out.extend(names.into_iter().filter_map(|n| match n {
-                local::Value::Symbol(s) => Some(self.export_symbol(s)),
-                _ => None,
-            }));
-            Ok(out)
+            collected(names.into_iter().map(|n| match n {
+                local::Value::Symbol(s) => self.export_symbol(s),
+                _ => self.export_symbol(K::Symbol.into()),
+            }))
         });
-        names.map_err(|e| self.export_error(e))
+        self.out(names)
     }
 
     /// From now on everything in the heap counts as library code, as grift's own library does:
     /// an error's trace skips its combinations and the code it built. A host calls this after
     /// evaluating its prelude and before any user code; data live at that moment, if later
     /// evaluated as code, is skipped too.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let top = g.top_level();
+    /// g.evaluate_in(&mut (), &top, "fux.grift", "(define! split (lambda! (pane) (first pane)))")?;
+    /// g.seal_library();
+    /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(split 9)").unwrap_err();
+    /// let mut text = String::new();
+    /// g.describe(&e, &mut text).unwrap();
+    /// // The prelude's (first pane) is skipped: the error is the config's line.
+    /// assert_eq!(text, "type-error #[primitive first] 9 in (split 9) at config.grift:2");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn seal_library(&mut self) {
         self.heap.seal_library();
     }
 
     /// Interns `name`.
     pub fn symbol(&mut self, name: &str) -> Result<Symbol, Error> {
-        match self.intern(name) {
-            Ok(s) => Ok(self.export_symbol(s)),
-            Err(e) => Err(self.export_error(e)),
-        }
+        let s = self.intern(name);
+        self.out(s.map(|s| self.export_symbol(s)))
     }
 
     /// The name of a symbol.
     pub fn symbol_name(&self, symbol: &Symbol) -> Result<&str, Error> {
-        match self.import_symbol(symbol) {
-            Ok(s) => Ok(self.name(s)),
-            Err(e) => Err(self.export_error(e)),
-        }
+        self.out(self.import_symbol(symbol).map(|s| self.name(s)))
     }
 
     /// An error of kind `kind` with a copy of `values`, for a host function to return.
     pub fn error(&mut self, kind: &str, values: &[Value]) -> Error {
-        let kind = match self.symbol(kind) {
-            Ok(kind) => kind,
-            Err(e) => return e,
-        };
-        let mut copy = Vec::new();
-        if copy.try_reserve_exact(values.len()).is_err() {
-            return self.export_error(local::Error::oom());
-        }
-        copy.extend_from_slice(values);
-        Error {
-            kind,
-            values: copy,
-            trace: Vec::new(),
-        }
+        let made = self.intern(kind).and_then(|kind| {
+            Ok(Error {
+                kind: self.export_symbol(kind),
+                values: collected(values.iter().cloned())?,
+                trace: Vec::new(),
+            })
+        });
+        made.unwrap_or_else(|e| self.export_error(e))
     }
 
     /// Whether `error` is of the kind named `name`.
     pub fn is_kind(&self, error: &Error, name: &str) -> Result<bool, Error> {
-        match self.import_symbol(&error.kind) {
-            // A name never interned is no error's kind.
-            Ok(kind) => Ok(self.interned(name) == Some(kind)),
-            Err(e) => Err(self.export_error(e)),
-        }
+        // A name never interned is no error's kind.
+        let kind = self.import_symbol(&error.kind);
+        self.out(kind.map(|kind| self.interned(name) == Some(kind)))
     }
 
     /// A new string holding a copy of `s`.
@@ -485,30 +479,33 @@ impl<T> Grift<T> {
 
     /// The contents of a string value; `None` for anything else.
     pub fn as_str(&self, v: &Value) -> Result<Option<&str>, Error> {
-        match self.import(v) {
-            Ok(local::Value::String(r)) => match self.heap.get(r) {
-                Ok(Object::String(s)) => Ok(Some(s)),
-                _ => Err(self.export_error(local::Error::new(K::StaleValue, &[]))),
-            },
-            Ok(_) => Ok(None),
-            Err(e) => Err(self.export_error(e)),
-        }
+        let s = self.import(v).and_then(|v| match v {
+            local::Value::String(_) => self.text(Primitive::StringAppend, v).map(Some),
+            _ => Ok(None),
+        });
+        self.out(s)
     }
 
     /// A copy of a string value's contents, which the host can hold while it calls `&mut self`
     /// methods; `None` for anything else.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let path = g.string("notes.txt")?;
+    /// let path = g.as_string(&path)?.unwrap(); // owned: g is free again
+    /// let e = g.error("file-error", &[]);
+    /// assert_eq!((path.as_str(), g.is_kind(&e, "file-error")?), ("notes.txt", true));
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn as_string(&self, v: &Value) -> Result<Option<String>, Error> {
         let Some(s) = self.as_str(v)? else {
             return Ok(None);
         };
         let mut copy = String::new();
-        match copy.try_reserve_exact(s.len()) {
-            Ok(()) => {
-                copy.push_str(s);
-                Ok(Some(copy))
-            }
-            Err(_) => Err(self.export_error(local::Error::oom())),
-        }
+        let reserved = copy
+            .try_reserve_exact(s.len())
+            .map_err(|_| local::Error::oom());
+        self.out(reserved).map(|()| Some(copy + s))
     }
 
     /// The new pair `(a . b)`.
@@ -522,14 +519,11 @@ impl<T> Grift<T> {
 
     /// The first and the rest of a pair; `None` for anything else.
     pub fn as_pair(&self, v: &Value) -> Result<Option<(Value, Value)>, Error> {
-        match self.import(v) {
-            Ok(local::Value::Pair(r)) => match self.pair_at(r) {
-                Ok((a, b)) => Ok(Some((self.export(a), self.export(b)))),
-                Err(e) => Err(self.export_error(e)),
-            },
-            Ok(_) => Ok(None),
-            Err(e) => Err(self.export_error(e)),
-        }
+        let p = self.import(v).and_then(|v| match v {
+            local::Value::Pair(r) => self.pair_at(r).map(Some),
+            _ => Ok(None),
+        });
+        self.out(p.map(|p| p.map(|(a, b)| (self.export(a), self.export(b)))))
     }
 
     /// A new list of `values`.
@@ -545,18 +539,22 @@ impl<T> Grift<T> {
     }
 
     /// The elements of a proper list; a `type-error` carrying anything else.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let keys = g.evaluate(&mut (), "(list \"C-b\" \"v\")")?;
+    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_string(k).ok()?).collect();
+    /// assert_eq!(keys, ["C-b", "v"]);
+    /// let dotted = g.evaluate(&mut (), "(pair 1 2)")?;
+    /// assert!(g.is_kind(&g.list_items(&dotted).unwrap_err(), "type-error")?);
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
         let items = self
             .import(list)
             .and_then(|l| self.items(l, || local::Error::new(K::TypeError, &[l])));
-        let items = items.and_then(|items| {
-            let mut out = Vec::new();
-            out.try_reserve_exact(items.len())
-                .map_err(|_| local::Error::oom())?;
-            out.extend(items.into_iter().map(|v| self.export(v)));
-            Ok(out)
-        });
-        items.map_err(|e| self.export_error(e))
+        let items = items.and_then(|items| collected(items.into_iter().map(|v| self.export(v))));
+        self.out(items)
     }
 
     /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
@@ -568,7 +566,19 @@ impl<T> Grift<T> {
 
     /// Writes `v` as grift would read it back, where it can be read back. Combiners show their
     /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive first]]`;
-    /// a context shows its own names, sorted: `#[context a b]`.
+    /// a context shows its own names, sorted: `#[context a b]`. A reclaimed value is
+    /// [`WriteError::Value`] with `stale-value`, never text.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let v = g.evaluate(&mut (), "(list 1.0 \"a\\rb\" (quote! x))")?;
+    /// let mut text = String::new();
+    /// g.write(&v, &mut text).unwrap();
+    /// assert_eq!(text, "(1.0 \"a\\rb\" x)");
+    /// g.evaluate(&mut (), "(length (map list (range 0 100000)))")?; // collects v
+    /// assert!(matches!(g.write(&v, &mut text), Err(grift::WriteError::Value(_))));
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn write(&self, v: &Value, out: &mut dyn fmt::Write) -> Result<(), WriteError> {
         let v = self
             .import(v)
@@ -819,33 +829,29 @@ impl<T> Grift<T> {
 
     /// An error a host function returned, as this interpreter's.
     pub(crate) fn import_error(&self, e: &Error) -> Result<local::Error, local::Error> {
-        let mut values = Vec::new();
-        let mut trace = Vec::new();
+        let (values, trace) = (self.imported(&e.values)?, self.imported(&e.trace)?);
         let mut seen = heap::Seen::default();
-        values
-            .try_reserve_exact(e.values.len())
+        seen.try_reserve(trace.len())
             .map_err(|_| local::Error::oom())?;
-        trace
-            .try_reserve_exact(e.trace.len())
-            .map_err(|_| local::Error::oom())?;
-        seen.try_reserve(e.trace.len())
-            .map_err(|_| local::Error::oom())?;
-        for v in &e.values {
-            values.push(self.import(v)?);
-        }
-        for v in &e.trace {
-            let v = self.import(v)?;
-            if let local::Value::Pair(r) = v {
-                seen.insert(r);
-            }
-            trace.push(v);
-        }
+        seen.extend(trace.iter().filter_map(|v| match v {
+            local::Value::Pair(r) => Some(*r),
+            _ => None,
+        }));
+        let kind = self.import_symbol(&e.kind)?;
         Ok(local::Error {
-            kind: self.import_symbol(&e.kind)?,
+            kind,
             values,
             trace,
             seen,
         })
+    }
+
+    fn imported(&self, values: &[Value]) -> Result<Vec<local::Value>, local::Error> {
+        let mut out = collected(std::iter::repeat_n(local::Value::Inert, values.len()))?;
+        for (to, v) in out.iter_mut().zip(values) {
+            *to = self.import(v)?;
+        }
+        Ok(out)
     }
 
     pub(crate) fn export(&self, v: local::Value) -> Value {
@@ -883,19 +889,11 @@ impl<T> Grift<T> {
     }
 
     pub(crate) fn export_error(&self, e: local::Error) -> Error {
-        let mut values = Vec::new();
-        let mut trace = Vec::new();
-        let (kind, all) = match (
-            values.try_reserve_exact(e.values.len()),
-            trace.try_reserve_exact(e.trace.len()),
-        ) {
-            (Ok(()), Ok(())) => (e.kind, true),
-            _ => (K::OutOfMemory.into(), false),
+        let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
+        let (kind, values, trace) = match (exported(&e.values), exported(&e.trace)) {
+            (Ok(values), Ok(trace)) => (e.kind, values, trace),
+            _ => (K::OutOfMemory.into(), Vec::new(), Vec::new()),
         };
-        if all {
-            values.extend(e.values.iter().map(|&v| self.export(v)));
-            trace.extend(e.trace.iter().map(|&v| self.export(v)));
-        }
         Error {
             kind: self.export_symbol(kind),
             values,
@@ -904,11 +902,21 @@ impl<T> Grift<T> {
     }
 
     fn exported(&self, r: Result<local::Value, local::Error>) -> Result<Value, Error> {
-        match r {
-            Ok(v) => Ok(self.export(v)),
-            Err(e) => Err(self.export_error(e)),
-        }
+        self.out(r.map(|v| self.export(v)))
     }
+
+    fn out<R>(&self, r: Result<R, local::Error>) -> Result<R, Error> {
+        r.map_err(|e| self.export_error(e))
+    }
+}
+
+/// The items in a new vector, reporting `out-of-memory` instead of aborting.
+fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local::Error> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(items.len())
+        .map_err(|_| local::Error::oom())?;
+    v.extend(items);
+    Ok(v)
 }
 
 /// A sink that notes whether it refused text, to tell that from the printer's own failure.

@@ -1376,6 +1376,10 @@ fn contexts() {
             "(sequence! (bind child (quote! a) 10) (and!? (same? (evaluate-in! a child) 10) \
                                                        (same? (evaluate-in! a parent) 2)))",
             "(equal? (names child) (quote! (a c)))",
+            // bindings gives a context's own bindings as data, a record's fields.
+            "(equal? (bindings child) (quote! ((a 10) (c 3))))",
+            "(equal? (second (find-association (quote! values) (bindings (error (quote! e) 1)))) (list 1))",
+            "(same? (bindings (context child)) ())",
             // current-context is the context it is called in.
             "(same? ((lambda! (x) (evaluate-in! x (current-context))) 5) 5)",
         ],
@@ -2454,5 +2458,62 @@ fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
             "frames grew with the loop (natives {})",
             g.natives
         );
+    }
+}
+
+#[test]
+fn string_escapes_are_rusts() {
+    let mut g = grift();
+    // Every letter grift takes after `\` means what Rust's escape of it does; any other ASCII
+    // character there is a bad-escape.
+    let rust = [
+        ('\\', '\\'),
+        ('"', '"'),
+        ('n', '\n'),
+        ('r', '\r'),
+        ('t', '\t'),
+    ];
+    for c in (32u8..127).map(char::from).filter(|&c| c != 'x') {
+        let read = g.evaluate(&mut (), &format!("\"\\{c}\""));
+        match rust.iter().find(|(letter, _)| *letter == c) {
+            Some(&(_, meant)) => {
+                let v = read.unwrap();
+                assert_eq!(g.as_str(&v), Ok(Some(meant.to_string().as_str())), "\\{c}");
+            }
+            None => {
+                let e = read.unwrap_err();
+                assert_eq!(show(&g, &e.values[0]), "bad-escape", "\\{c}");
+            }
+        }
+    }
+    // Every control character prints as an escape that reads back as it.
+    let controls: String = (0u8..32).map(char::from).chain(['\u{7f}']).collect();
+    let v = g.string(&controls).unwrap();
+    let printed = show(&g, &v);
+    assert!(printed.contains("\\r") && printed.contains("\\n") && !printed.contains('\r'));
+    let again = g.evaluate(&mut (), &printed).unwrap();
+    assert_eq!(g.as_str(&again), Ok(Some(controls.as_str())));
+}
+
+#[test]
+fn positions_name_each_combination_s_source_and_line() {
+    let mut g = grift();
+    let top = g.top_level();
+    let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(f 1)";
+    let e = g.evaluate_in(&mut (), &top, "f.grift", src).unwrap_err();
+    let lines: Vec<_> = e.trace().iter().map(|at| g.position(at)).collect();
+    assert_eq!(lines, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
+    // Text evaluated with no name, and pairs a program makes, have none.
+    let e = g.evaluate(&mut (), "(f 2)").unwrap_err();
+    assert_eq!(g.position(&e.trace()[1]), None);
+    let made = g.evaluate(&mut (), "(list 1 2)").unwrap();
+    assert_eq!(g.position(&made), None);
+    // A slot reused by a pair read later answers with its own line, never the old one.
+    for n in 0..30 {
+        let src = format!("{}(f {n})", "\n".repeat(n));
+        let e = g.evaluate_in(&mut (), &top, "g.grift", &src).unwrap_err();
+        assert_eq!(g.position(&e.trace()[1]), Some(("g.grift", n as u32 + 1)));
+        g.evaluate(&mut (), "(length (map list (range 0 5000)))")
+            .unwrap();
     }
 }

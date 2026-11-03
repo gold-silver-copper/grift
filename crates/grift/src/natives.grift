@@ -7,83 +7,52 @@
 ; lambda!, whose if! and first would come back here.
 
 ; Branching under select, which if! stands on: a boolean names one of two bindings by its printed
-; text, so nothing here branches by select.
+; text, so nothing up to `select`'s meaning branches by select.
 (define! record (lambda! (names values) (filled (context) names values)))
 (define! filled (lambda! (c names values) (second-of (bind c names values) c)))
 (define! second-of (lambda! (#ignore x) x))
 (define! truths (list (string-to-symbol "#true") (string-to-symbol "#false")))
 (define! choose
-  (lambda! (b yes no)
-    (evaluate (string-to-symbol (value-to-string b)) (record truths (list yes no)))))
+  (lambda! (b yes no) (evaluate (string-to-symbol (value-to-string b)) (record truths (list yes no)))))
 (define! fail (lambda! (kind values) (raise (record (quote! (kind values trace)) (list kind values ())))))
 (define! head (lambda! ((x . #ignore)) x))
-(define! passed (lambda! (#ignore x) x))
 (define! tail (lambda! ((#ignore . x)) x))
 (define! counts
   (record (quote! (pair empty-list))
           (list (lambda! ((#ignore . more) n) (count more (add n 1))) (lambda! (#ignore n) n))))
 (define! count (lambda! (xs n) ((evaluate (type-of xs) counts) xs n)))
-
-; The arguments, if there are n; else the primitive's arity-error.
+; The arguments, if there are n; x, if its type is `type`; else the primitive's error.
 (define! arity
   (lambda! (primitive arguments n)
-    ((choose (same? (count arguments 0) n) passed arity-failed) primitive arguments)))
+    ((choose (same? (count arguments 0) n) second-of arity-failed) primitive arguments)))
 (define! arity-failed (lambda! (primitive xs) (fail (quote! arity-error) (pair primitive xs))))
-(define! only (lambda! (primitive arguments) (head (arity primitive arguments 1))))
-; x, if its type is `type`; else the primitive's type-error.
 (define! typed
-  (lambda! (primitive x type)
-    ((choose (same? (type-of x) type) passed type-failed) primitive x)))
+  (lambda! (primitive x type) ((choose (same? (type-of x) type) second-of type-failed) primitive x)))
 (define! type-failed (lambda! (primitive x) (fail (quote! type-error) (list primitive x))))
+; A meaning: an operative checking how many arguments there are, and for one the type, then
+; giving f the primitive and the argument or the arguments.
+(define! one
+  (lambda! (primitive type f)
+    (vau! arguments #ignore (f primitive (typed primitive (head (arity primitive arguments 1)) type)))))
+(define! several
+  (lambda! (primitive n f) (vau! arguments #ignore (f primitive (arity primitive arguments n)))))
 
-(define! select-meaning
-  ((lambda! (primitive) (vau! arguments #ignore (picked primitive (arity primitive arguments 3))))
-   (unwrap select)))
 (define! picked
   (lambda! (primitive (b consequent alternative))
     (choose (typed primitive b (quote! boolean)) consequent alternative)))
-
-(define! first-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore (head (typed primitive (only primitive arguments) (quote! pair)))))
-   (unwrap first)))
-(define! rest-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore (tail (typed primitive (only primitive arguments) (quote! pair)))))
-   (unwrap rest)))
-
 ; lookup: the symbol evaluated there, or otherwise where that is unbound.
-(define! lookup-meaning
-  ((lambda! (primitive) (vau! arguments #ignore (looked-up primitive (arity primitive arguments 3))))
-   (unwrap lookup)))
 (define! looked-up
   (lambda! (primitive (c s otherwise))
     (if! (context? c)
       (if! (symbol? s)
-        (call-with-handler (wrap (vau! () #ignore (evaluate s c)))
-                           (wrap (vau! (#ignore) #ignore otherwise)))
+        (call-with-handler (wrap (vau! () #ignore (evaluate s c))) (wrap (vau! (#ignore) #ignore otherwise)))
         (type-failed primitive s))
       (type-failed primitive c))))
 
-; The conversions.
-(define! integer-to-string-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore
-       (value-to-string (typed primitive (only primitive arguments) (quote! integer)))))
-   (unwrap integer-to-string)))
-(define! integer-to-float-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore
-       (string-to-float (integer-to-string (typed primitive (only primitive arguments) (quote! integer))))))
-   (unwrap integer-to-float)))
-(define! float-to-integer-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore (truncated (typed primitive (only primitive arguments) (quote! float)))))
-   (unwrap float-to-integer)))
 ; Rust's as: not-a-number is 0, the integers' ends saturate, the rest is the integer part, read
 ; off in powers of two from 2 to the 62nd.
 (define! truncated
-  (lambda! (f)
+  (lambda! (#ignore f)
     (conditional!
       ((not? (or!? (less-than? f 1.0) (less-than? 0.0 f))) 0)
       ((not? (less-than? f 9223372036854775807.0)) 9223372036854775807)
@@ -97,10 +66,6 @@
       (if! (less-than? t power-float)
         (magnitude t (divide power-float 2.0) (divide power 2) n)
         (magnitude (subtract t power-float) (divide power-float 2.0) (divide power 2) (add n power))))))
-(define! string-to-integer-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore (parsed primitive (typed primitive (only primitive arguments) (quote! string)))))
-   (unwrap string-to-integer)))
 ; Rust's parse: a sign or none, then digits, added up negative so the most negative fits.
 (define! parsed
   (lambda! (primitive text)
@@ -110,9 +75,7 @@
       (if! (same? from size)
         (fail (quote! parse-error) (list primitive text))
         (catch-kind! (signed sign (negated primitive text from size 0))
-                     overflow
-                     #ignore
-                     (fail (quote! parse-error) (list primitive text)))))))
+                     overflow #ignore (fail (quote! parse-error) (list primitive text)))))))
 (define! negated
   (lambda! (primitive text at size n)
     (if! (same? at size)
@@ -123,25 +86,17 @@
           (fail (quote! parse-error) (list primitive text)))))))
 (define! signed (lambda! (sign n) (if! (same? sign 45) n (subtract 0 n))))
 
-; The strings, by string-byte.
-(define! string-byte-length-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore (byte-count (typed primitive (only primitive arguments) (quote! string)))))
-   (unwrap string-byte-length)))
-(define! byte-at? (lambda! (s i) (catch-kind! (same? (string-byte s i) (string-byte s i)) range-error #ignore #false)))
-; The first offset with no byte: past one with none found by doubling, then by halving between.
-(define! byte-count (lambda! (s) (missing s 0 (beyond s 1))))
-(define! beyond (lambda! (s n) (if! (byte-at? s n) (beyond s (multiply n 2)) n)))
+; The strings, by string-byte. The length is the first offset with no byte: past one with none
+; found by doubling, then by halving between.
+(define! byte-at? (lambda! (s i) (catch-kind! (integer? (string-byte s i)) range-error #ignore #false)))
+(define! byte-count (lambda! (#ignore s) (missing s 0 (beyond s 1))))
+(define! beyond (lambda! (s n) (if! (not? (byte-at? s n)) n (beyond s (multiply n 2)))))
 (define! missing
   (lambda! (s low high)
     (if! (same? low high)
       low
       (let! ((middle (divide (add low high) 2)))
-        (if! (byte-at? s middle) (missing s (add middle 1) high) (missing s low middle))))))
-(define! code-point-to-string-meaning
-  ((lambda! (primitive)
-     (vau! arguments #ignore (character primitive (typed primitive (only primitive arguments) (quote! integer)))))
-   (unwrap code-point-to-string)))
+        (if! (not? (byte-at? s middle)) (missing s low middle) (missing s (add middle 1) high))))))
 ; A Unicode scalar value's text: its escape, read.
 (define! character
   (lambda! (primitive n)
@@ -154,9 +109,6 @@
            (n (divide n 16)))
       (if! (same? n 0) (apply string-append done) (hexadecimal n done)))))
 (define! nth (lambda! (xs i) (if! (same? i 0) (head xs) (nth (tail xs) (subtract i 1)))))
-(define! byte-substring-meaning
-  ((lambda! (primitive) (vau! arguments #ignore (part primitive (arity primitive arguments 3))))
-   (unwrap byte-substring)))
 ; The text between two character boundaries, decoded and made again a character at a time.
 (define! part
   (lambda! (primitive (text start end))
@@ -164,11 +116,8 @@
       (typed primitive text (quote! string))
       (typed primitive start (quote! integer))
       (typed primitive end (quote! integer))
-      (if! (and!? (not? (less-than? start 0))
-                  (not? (less-than? end start))
-                  (not? (less-than? (string-byte-length text) end))
-                  (boundary? text start)
-                  (boundary? text end))
+      (if! (and!? (not? (less-than? start 0)) (not? (less-than? end start))
+                  (not? (less-than? (string-byte-length text) end)) (boundary? text start) (boundary? text end))
         (apply string-append (characters text start end ()))
         (fail (quote! range-error) (list primitive text start end))))))
 (define! boundary?
@@ -180,11 +129,10 @@
     (if! (same? at end)
       (reverse done)
       (let! ((byte (string-byte text at))
-             (size (conditional! ((less-than? byte 128) 1) ((less-than? byte 224) 2) ((less-than? byte 240) 3) (#true 4))))
+             (size (conditional! ((less-than? byte 128) 1) ((less-than? byte 224) 2) ((less-than? byte 240) 3) (#true 4)))
+             (lead (remainder byte (nth (quote! (128 32 16 8)) (subtract size 1)))))
         (characters text (add at size) end
-                    (pair (code-point-to-string
-                            (continued text (add at 1) (subtract size 1) (remainder byte (nth (quote! (128 32 16 8)) (subtract size 1)))))
-                          done))))))
+                    (pair (code-point-to-string (continued text (add at 1) (subtract size 1) lead)) done))))))
 (define! continued
   (lambda! (text at left n)
     (if! (same? left 0)
@@ -202,11 +150,10 @@
       (if! (same? k 63)
         (if! (same? bit 1) (add n -9223372036854775808) n)
         (combined f (halved a) (halved b) (add k 1) (if! (same? k 62) 0 (multiply power 2)) (add n (multiply bit power)))))))
-(define! bits
-  (lambda! (primitive (a b) f)
-    (combined f (typed primitive a (quote! integer)) (typed primitive b (quote! integer)) 0 1 0)))
-(define! bitwise-meaning
-  (lambda! (primitive f) (vau! arguments #ignore (bits primitive (arity primitive arguments 2) f))))
+(define! bitwise
+  (lambda! (f)
+    (lambda! (primitive (a b))
+      (combined f (typed primitive a (quote! integer)) (typed primitive b (quote! integer)) 0 1 0))))
 ; A doubling as Rust's wrapping one, by halves so nothing overflows on the way.
 (define! doubled
   (lambda! (a)
@@ -214,27 +161,36 @@
       ((less-than? a -4611686018427387904) (add (add (multiply (add a 4611686018427387904) 2) 9223372036854775807) 1))
       ((less-than? a 4611686018427387904) (multiply a 2))
       (#true (add (multiply (subtract a 4611686018427387904) 2) -9223372036854775808)))))
-(define! shifted
-  (lambda! (primitive (a n) step)
-    (sequence!
-      (typed primitive a (quote! integer))
-      (typed primitive n (quote! integer))
-      (if! (and!? (not? (less-than? n 0)) (less-than? n 64))
-        (repeated step a n)
-        (fail (quote! overflow) (list primitive a n))))))
+(define! shift
+  (lambda! (step)
+    (lambda! (primitive (a n))
+      (sequence!
+        (typed primitive a (quote! integer))
+        (typed primitive n (quote! integer))
+        (if! (and!? (not? (less-than? n 0)) (less-than? n 64))
+          (repeated step a n)
+          (fail (quote! overflow) (list primitive a n)))))))
 (define! repeated (lambda! (f x n) (if! (same? n 0) x (repeated f (f x) (subtract n 1)))))
-(define! shift-meaning
-  (lambda! (primitive step) (vau! arguments #ignore (shifted primitive (arity primitive arguments 2) step))))
 
 (define! meanings
-  (record (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
-                   string-to-integer string-byte-length code-point-to-string byte-substring
-                   bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right))
-          (list select-meaning first-meaning rest-meaning lookup-meaning integer-to-string-meaning
-                integer-to-float-meaning float-to-integer-meaning string-to-integer-meaning
-                string-byte-length-meaning code-point-to-string-meaning byte-substring-meaning
-                (bitwise-meaning (unwrap bitwise-and) (lambda! (x y) (multiply x y)))
-                (bitwise-meaning (unwrap bitwise-or) (lambda! (x y) (subtract (add x y) (multiply x y))))
-                (bitwise-meaning (unwrap bitwise-exclusive-or) (lambda! (x y) (remainder (add x y) 2)))
-                (shift-meaning (unwrap shift-left) doubled)
-                (shift-meaning (unwrap shift-right) halved))))
+  (record
+    (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
+             string-to-integer string-byte-length code-point-to-string byte-substring bitwise-and
+             bitwise-or bitwise-exclusive-or shift-left shift-right))
+    (list (several (unwrap select) 3 picked)
+          (one (unwrap first) (quote! pair) (lambda! (#ignore x) (head x)))
+          (one (unwrap rest) (quote! pair) (lambda! (#ignore x) (tail x)))
+          (several (unwrap lookup) 3 looked-up)
+          (one (unwrap integer-to-string) (quote! integer) (lambda! (#ignore n) (value-to-string n)))
+          (one (unwrap integer-to-float) (quote! integer)
+               (lambda! (#ignore n) (string-to-float (integer-to-string n))))
+          (one (unwrap float-to-integer) (quote! float) truncated)
+          (one (unwrap string-to-integer) (quote! string) parsed)
+          (one (unwrap string-byte-length) (quote! string) byte-count)
+          (one (unwrap code-point-to-string) (quote! integer) character)
+          (several (unwrap byte-substring) 3 part)
+          (several (unwrap bitwise-and) 2 (bitwise (lambda! (x y) (multiply x y))))
+          (several (unwrap bitwise-or) 2 (bitwise (lambda! (x y) (subtract (add x y) (multiply x y)))))
+          (several (unwrap bitwise-exclusive-or) 2 (bitwise (lambda! (x y) (remainder (add x y) 2))))
+          (several (unwrap shift-left) 2 (shift doubled))
+          (several (unwrap shift-right) 2 (shift halved)))))

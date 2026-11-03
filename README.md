@@ -72,7 +72,7 @@ for-each error length append reverse equal? greater-than? less-than-or-equal?
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-search string-starts-with? string-ends-with? string-split string-join string-trim
-string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase
+string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bindings
 built-in-names`.
 
 ## The runner
@@ -86,8 +86,8 @@ rlwrap cargo run --release                        # interactive: prints each res
 `grift SCRIPT ARGUMENT...` runs the script; `#!/usr/bin/env grift` makes it a command, since the
 reader takes a first line starting with `#!` as a comment. With no script it reads the program from stdin,
 and when stdin is a terminal it evaluates each complete input and prints its result. Data goes
-to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in:
-`stdin: type-error #[primitive select] 1 in (if! 1 2 3)`. It exits with 0, 1 on a grift error or
+to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
+file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error or
 a failed write (`output-error`), 2 on a usage error or unreadable input, or the status the program
 gave `exit`; a closed pipe on stdout ends it quietly. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
@@ -103,7 +103,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `(write-bytes bytes)`, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
-| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. An error while it runs has the file and the form's line in its trace, as a string: `from "lib/table.grift:12"`; a combiner the file defined, failing after the load, has only its combinations, as any combiner's error does. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
+| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
 | `script-path` | The script's path, as given; unbound when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
@@ -163,22 +163,25 @@ fn main() -> Result<(), Error> {
     let mut g = Grift::new()?; // the built-in context and the library
     let f = g.host_function("twice", twice)?; // an applicative, bound nowhere yet
     g.define("twice", f)?; // in the top-level context
-    g.evaluate(&mut board, "(define! f (lambda! (x) (twice (add x 1))))")?;
+    let top = g.top_level();
+    g.evaluate_in(&mut board, &top, "init.grift", "(define! f (lambda! (x) (twice (add x 1))))")?;
     assert_eq!(g.evaluate(&mut board, "(f 20)")?, Value::Integer(42)); // the last form's value
     let f = g.evaluate(&mut board, "f")?;
-    assert_eq!(g.call(&mut board, f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
+    assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.pair(hi, Value::EmptyList)?;
-    assert_eq!(g.as_pair(list), Some((hi, Value::EmptyList)));
+    let list = g.list(&[hi.clone(), Value::Integer(1)])?;
+    assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]);
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = String::new();
-    assert!(g.write(forms, &mut s).is_ok()); // into any std::fmt::Write
+    g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
     assert_eq!(s, "((f 1) (first 1))");
-    let e = g.evaluate(&mut board, "(f (quote! x))").unwrap_err();
-    let mut trace = String::new();
-    assert!(e.trace().iter().try_for_each(|&v| g.write(v, &mut trace)).is_ok());
-    assert_eq!(trace, "(add x 1)(twice (add x 1))(f (quote! x))"); // innermost first
+    let e = g.evaluate_in(&mut board, &top, "user.grift", "\n(f (quote! x))").unwrap_err();
+    let mut text = String::new();
+    g.describe(&e, &mut text).unwrap(); // innermost first, with the source and line
+    assert_eq!(text, "type-error #[primitive add] x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
+    let kept = g.keep(f)?; // alive across evaluations until released
+    g.release(kept).map_err(|(e, _)| e)?;
     Ok(())
 }
 ```
@@ -186,38 +189,44 @@ fn main() -> Result<(), Error> {
 - `Grift<T = ()>`: `T` is the host's state. The host owns it and lends it, `&mut T`, to each
   `evaluate` and `call`, which pass it to host functions. A host function gets it as an argument
   of its own beside `&mut Grift<T>`, so the borrow checker sees both borrows; no globals.
-- `Grift::new() -> Result<Grift<T>, Error>`; `evaluate(&mut self, &mut T, &str) -> Result<Value,
-  Error>`; `call(&mut self, &mut T, Value, &[Value]) -> Result<Value, Error>` (Kernel's `apply`:
-  an applicative's combiner gets the values as its operands, in a new empty context);
-  `read(&mut self, &str) -> Result<Value, Error>` (the list of forms, nothing evaluated);
-  `write(&self, Value, &mut dyn fmt::Write)`; `host_function(&mut self, &str, HostFunction<T>) ->
-  Result<Value, Error>` (an applicative, bound nowhere); `define(&mut self, &str, Value)` (binds
-  in the top-level context); `context(&mut self) -> Result<Value, Error>` (a new child of the
-  built-in context, a private top level); `symbol(&mut self, &str) -> Result<Symbol, Error>`;
-  `string(&mut self, &str)`, `pair(&mut self, Value, Value)`, both `-> Result<Value, Error>`; `as_str(&self,
-  Value) -> Option<&str>`, `as_pair(&self, Value) -> Option<(Value, Value)>`; `error(&mut self,
-  &str, &[Value]) -> Error`; `set_interrupt_flag(&mut self, &'static AtomicBool)`.
+- **Evaluating:** `evaluate(&mut T, &str)` at top level; `evaluate_in(&mut T, &context, source,
+  &str)` in a given context, each combination keeping its line in `source`, so errors say
+  `at config.grift:12`; `call(&mut T, &f, &[Value])` (Kernel's `apply`: an applicative's combiner
+  gets the values as its operands, in a new empty context); `read(&str)`, the list of forms,
+  nothing evaluated.
+- **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
+  `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
+  `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
+  `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
+  `define(name, value)` at top level. `seal_library()` after a host's prelude makes its code
+  count as library code, as grift's own: traces skip it.
+- **Values:** `string`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`, `as_string` (an
+  owned copy), `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
+  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
   context of operations on it, never as a number a program could forge. Keep the host functions
   that take a resource's number private: don't `define` them; hand them to grift code, evaluated
-  in a private `context()`, that makes the operations as closures over them, as the runner's
+  in a `private_context()`, that makes the operations as closures over them, as the runner's
   [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
   after it is closed is the error `closed`.
 - `Error { kind: Symbol, values: Vec<Value>, .. }`, with `Error::trace()`, which lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
-  not inside `if!`. A call in tail position has finished, so it isn't listed.
-- **Interrupting.** After `g.set_interrupt_flag(&STOP)` with `static STOP: AtomicBool`, setting
-  `STOP` from another thread or a signal handler stops the evaluation at its next step with the
-  error `interrupted` (cleanups run) and clears the flag. grift sets no limit of its own; this is
-  how the host applies one.
+  not inside `if!`. A call in tail position has finished, so it isn't listed. `position(&at)` is a
+  combination's source and line; `describe(&e, out)` writes the whole error for a person;
+  `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
+- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
+  any thread stops the run in progress at its next step with the error `interrupted` (cleanups
+  run). A stop when no run is in progress does nothing, and one never reaches a later run. grift
+  sets no limit of its own; a timer thread holding an interrupter is how the host applies one.
 - **A returned `Value` stays valid until the next `evaluate` or `call`**, which may collect it.
-  Each heap reference carries its slot's generation, so a stale value is refused (`stale-value`,
-  or `#[stale]` when written) rather than read as some other object. To keep a value, bind it in
-  a context. A value a host function makes stays valid until it returns: allocation never
-  collects.
+  `keep(value)` gives a `Kept` that holds it until `release(kept)`; `kept(&k)` reads it. Every
+  value carries its interpreter's identity and each heap reference its slot's generation, so a
+  stale value is `stale-value` and another interpreter's is `foreign-value`, everywhere, never
+  read as some other object. A value a host function makes stays valid until it returns:
+  allocation never collects.
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
@@ -232,7 +241,10 @@ machine loop over a frame stack, so no Rust recursion grows with a program's nes
 `evaluate` in tail position is a proper tail call. The collector runs only at the top of the
 machine loop, where the machine's frames, argument stack, errors waiting for a cleanup and
 current expression are all the state there is; they are its roots, so nothing is rooted by hand.
-The same point checks the host's interrupt flag.
+The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
+which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
+`if!`, `sequence!` and `string-search` are library code with a native twin: the library's own
+operative, run in Rust when its operands have the shape the twin handles.
 
 `jshutt.pdf` is Shutt's thesis, *Fexprs as the basis of Lisp function application*.
 

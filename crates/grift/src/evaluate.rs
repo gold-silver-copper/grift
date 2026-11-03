@@ -1062,7 +1062,7 @@ impl<T> Grift<T> {
     }
 
     /// The contents of string `v`, or a type error naming `p`.
-    fn text(&self, p: Primitive, v: Value) -> Result<&str, Error> {
+    pub(crate) fn text(&self, p: Primitive, v: Value) -> Result<&str, Error> {
         match v {
             Value::String(r) => match self.heap.get(r)? {
                 Object::String(s) => Ok(s),
