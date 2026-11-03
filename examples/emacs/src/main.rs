@@ -2,8 +2,8 @@
 //! a key as a byte, writes to the terminal, the terminal's size, reading and writing a file. The
 //! buffer, redisplay, the keymap, the minibuffer and every command live in `editor.grift`.
 //!
-//! A thread reads the terminal while grift runs, so C-g stops a command that never returns:
-//! it sets grift's interrupt flag, and the command ends with the error `interrupted`.
+//! A thread reads the terminal while grift runs, so C-g stops a command that never returns: it
+//! holds an `Interrupter`, and the command ends with the error `interrupted`.
 //!
 //! `grift-emacs [--init INIT.grift] [FILE]`
 
@@ -11,6 +11,7 @@ use grift::{Error, Grift, HostFunction, Value};
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 
@@ -20,9 +21,6 @@ const USAGE: &str = "usage: grift-emacs [--init INIT.grift] [FILE]";
 /// C-g, the byte that interrupts.
 const QUIT: u8 = 7;
 
-/// Grift's interrupt flag: set by the input thread when C-g arrives.
-static STOP: AtomicBool = AtomicBool::new(false);
-
 /// The longest error text shown: an error may carry a whole buffer.
 const ERROR_TEXT_MAX: usize = 400;
 
@@ -30,8 +28,10 @@ const ERROR_TEXT_MAX: usize = 400;
 struct Host {
     /// Terminal output waiting for the next key read.
     out: Vec<u8>,
-    /// The bytes typed, from the input thread.
-    keys: Receiver<u8>,
+    /// The bytes typed, from the input thread, each with whether it stopped the command.
+    keys: Receiver<(u8, bool)>,
+    /// Set while `(key)` waits, so a C-g then is a key, not a stop.
+    waiting: Arc<AtomicBool>,
     /// How many keys grift has read.
     read: u64,
 }
@@ -46,32 +46,33 @@ impl Host {
 
 type G = Grift<Host>;
 
-/// `(key)`: the next byte from the terminal, after showing what was written. The input thread
-/// sets the interrupt flag before it passes a C-g on. A C-g that finds the flag still set
-/// arrived while grift waited here: it is a key, and the flag is cleared. One that finds it
-/// clear has already interrupted a command, which cleared it: it is dropped.
+/// `(key)`: the next byte from the terminal, after showing what was written. A C-g typed while
+/// this waits is a key. One typed while a command ran stopped it: if it comes here, the stop
+/// asked for is this run's, so it ends now with `interrupted`.
 fn key(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
     if !args.is_empty() {
         return Err(g.error("arity-error", args));
     }
     h.flush();
-    loop {
-        let Ok(b) = h.keys.recv() else {
-            return Err(g.error("end-of-input", &[]));
-        };
-        if b != QUIT || STOP.swap(false, Ordering::Relaxed) {
+    h.waiting.store(true, Ordering::SeqCst);
+    let got = h.keys.recv();
+    h.waiting.store(false, Ordering::SeqCst);
+    match got {
+        Ok((_, true)) => Err(g.error("interrupted", &[])),
+        Ok((b, false)) => {
             h.read += 1;
-            return Ok(Value::Integer(i64::from(b)));
+            Ok(Value::Integer(i64::from(b)))
         }
+        Err(_) => Err(g.error("end-of-input", &[])),
     }
 }
 
 /// `(terminal-write string ...)`: queues the strings for the terminal.
 fn terminal_write(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    for &v in args {
-        match g.as_str(v) {
+    for v in args {
+        match g.as_str(v)? {
             Some(s) => h.out.extend_from_slice(s.as_bytes()),
-            None => return Err(g.error("type-error", &[v])),
+            None => return Err(g.error("type-error", std::slice::from_ref(v))),
         }
     }
     Ok(Value::Inert)
@@ -87,9 +88,9 @@ fn terminal_size(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error
     g.pair(Value::Integer(i64::from(rows)), cols)
 }
 
-fn file_error(g: &mut G, path: Value, e: &io::Error) -> Error {
+fn file_error(g: &mut G, path: &Value, e: &io::Error) -> Error {
     match g.string(&e.to_string()) {
-        Ok(why) => g.error("file-error", &[path, why]),
+        Ok(why) => g.error("file-error", &[path.clone(), why]),
         Err(e) => e,
     }
 }
@@ -99,13 +100,13 @@ fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [path] = args else {
         return Err(g.error("arity-error", args));
     };
-    let Some(name) = g.as_str(*path).map(String::from) else {
+    let Some(name) = g.as_string(path)? else {
         return Err(g.error("type-error", args));
     };
     match std::fs::read_to_string(&name) {
         Ok(s) => g.string(&s),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Value::EmptyList),
-        Err(e) => Err(file_error(g, *path, &e)),
+        Err(e) => Err(file_error(g, path, &e)),
     }
 }
 
@@ -114,16 +115,16 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [path, contents] = args else {
         return Err(g.error("arity-error", args));
     };
-    let (Some(name), Some(s)) = (g.as_str(*path), g.as_str(*contents)) else {
+    let (Some(name), Some(s)) = (g.as_str(path)?, g.as_str(contents)?) else {
         return Err(g.error("type-error", args));
     };
     match std::fs::write(name, s) {
         Ok(()) => Ok(Value::Inert),
-        Err(e) => Err(file_error(g, *path, &e)),
+        Err(e) => Err(file_error(g, path, &e)),
     }
 }
 
-/// A `fmt::Write` into a string that stops at `ERROR_TEXT_MAX` bytes.
+/// A `fmt::Write` into a string of one line that stops at `ERROR_TEXT_MAX` bytes.
 struct Capped(String);
 
 impl fmt::Write for Capped {
@@ -133,7 +134,7 @@ impl fmt::Write for Capped {
                 self.0.push_str("...");
                 return Err(fmt::Error);
             }
-            self.0.push(c);
+            self.0.push(if c == '\n' { ' ' } else { c });
         }
         Ok(())
     }
@@ -143,16 +144,7 @@ impl fmt::Write for Capped {
 /// the next `evaluate`.
 fn describe(g: &G, e: &Error) -> String {
     let mut out = Capped(String::new());
-    let _ = g.write(Value::Symbol(e.kind), &mut out).and_then(|()| {
-        e.values.iter().try_for_each(|&v| {
-            fmt::Write::write_str(&mut out, " ")?;
-            g.write(v, &mut out)
-        })?;
-        e.trace().iter().enumerate().try_for_each(|(i, &at)| {
-            fmt::Write::write_str(&mut out, if i == 0 { " in " } else { " from " })?;
-            g.write(at, &mut out)
-        })
-    });
+    let _ = g.describe(e, &mut out);
     out.0
 }
 
@@ -166,7 +158,7 @@ fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<V
             None => Value::EmptyList,
         });
     }
-    g.call(h, f, &values)
+    g.call(h, &f, &values)
 }
 
 const HOST: [(&str, HostFunction<Host>); 5] = [
@@ -187,7 +179,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
     loop {
         let e = match entered {
             Ok(_) => return Ok(()),
-            Err(e) if g.symbol("end-of-input").is_ok_and(|k| k == e.kind) => return Ok(()),
+            Err(e) if g.is_kind(&e, "end-of-input").unwrap_or(false) => return Ok(()),
             Err(e) => e,
         };
         let text = describe(g, &e);
@@ -201,7 +193,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
                 "\x1b[999;1H\x1b[0m\x1b[K{text} -- the editor itself fails: q quits, any other key retries"
             );
             let _ = out.flush();
-            if !matches!(h.keys.recv(), Ok(b) if b != b'q') {
+            if !matches!(h.keys.recv(), Ok((b, _)) if b != b'q') {
                 return Ok(());
             }
         }
@@ -237,9 +229,11 @@ fn main() -> ExitCode {
         }
     };
     let (send, keys) = mpsc::channel();
+    let waiting = Arc::new(AtomicBool::new(false));
     let mut h = Host {
         out: Vec::new(),
         keys,
+        waiting: Arc::clone(&waiting),
         read: 0,
     };
     let mut g: G = match Grift::new() {
@@ -249,7 +243,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    g.set_interrupt_flag(&STOP);
+    let mut stop = g.interrupter();
     for (name, f) in HOST {
         if g
             .host_function(name, f)
@@ -273,15 +267,16 @@ fn main() -> ExitCode {
         eprintln!("grift-emacs: the terminal: {e}");
         return ExitCode::FAILURE;
     }
-    // The input thread: every byte typed goes to `(key)`; C-g also interrupts whatever grift
-    // is running. It ends with the input, and when the program exits.
+    // The input thread: every byte typed goes to `(key)`; a C-g typed while no key is awaited
+    // also stops the command running. It ends with the input, and when the program exits.
     std::thread::spawn(move || {
         let mut b = [0u8];
         while let Ok(1) = io::stdin().lock().read(&mut b) {
-            if b[0] == QUIT {
-                STOP.store(true, Ordering::Relaxed);
+            let stopped = b[0] == QUIT && !waiting.load(Ordering::SeqCst);
+            if stopped {
+                stop.stop();
             }
-            if send.send(b[0]).is_err() {
+            if send.send((b[0], stopped)).is_err() {
                 break;
             }
         }

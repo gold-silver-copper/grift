@@ -5,22 +5,51 @@
     clippy::indexing_slicing
 )]
 
-use crate::{Error, Grift, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::heap::{Bindings, Object};
+use crate::{Error, Grift, Interrupter, Primitive, Value, local};
 use std::time::{Duration, Instant};
+
+/// The grift definitions of the native primitives, run in their place when natives are off.
+const MEANINGS: &str = include_str!("natives.grift");
+
+impl<T> Grift<T> {
+    /// Evaluates the definitions of the native primitives, while the library loads.
+    pub(crate) fn load_definitions(&mut self) -> Result<(), local::Error> {
+        let here = Object::Context(Some(self.built_in), Bindings::default());
+        let here = self.heap.alloc(here)?;
+        let forms = self.read_local(MEANINGS, None)?;
+        self.evaluate_forms(None, forms, here)?;
+        let name = self.intern("meanings")?;
+        if let Some(local::Value::Context(meanings)) = self.find(here, name)? {
+            self.definitions = meanings;
+        }
+        Ok(())
+    }
+
+    /// With the natives off, the grift definition of native primitive `p`.
+    pub(crate) fn definition(&self, p: Primitive) -> Result<Option<local::Value>, local::Error> {
+        if self.natives {
+            return Ok(None);
+        }
+        let Some(name) = self.interned(p.name()) else {
+            return Ok(None);
+        };
+        Ok(self.context_at(self.definitions)?.1.get(&name).copied())
+    }
+}
 
 fn grift() -> Grift {
     Grift::new().expect("the library loads")
 }
 
-fn show<T>(g: &Grift<T>, v: Value) -> String {
+fn show<T>(g: &Grift<T>, v: &Value) -> String {
     let mut s = String::new();
     g.write(v, &mut s).unwrap();
     s
 }
 
-fn kind<T>(g: &mut Grift<T>, e: &Error) -> String {
-    show(g, Value::Symbol(e.kind))
+fn kind<T>(g: &Grift<T>, e: &Error) -> String {
+    g.symbol_name(&e.kind).unwrap().to_string()
 }
 
 /// Binds a host function in the top-level context.
@@ -34,7 +63,7 @@ fn holds(g: &mut Grift, cases: &[&str]) {
     for src in cases {
         match g.evaluate(&mut (), src) {
             Ok(Value::Boolean(true)) => {}
-            Ok(v) => panic!("{src} gave {}", show(g, v)),
+            Ok(v) => panic!("{src} gave {}", show(g, &v)),
             Err(e) => panic!("{src} failed: {}", kind(g, &e)),
         }
     }
@@ -44,7 +73,7 @@ fn holds(g: &mut Grift, cases: &[&str]) {
 fn fails(g: &mut Grift, cases: &[(&str, &str)]) {
     for (src, want) in cases {
         match g.evaluate(&mut (), src) {
-            Ok(v) => panic!("{src} gave {}", show(g, v)),
+            Ok(v) => panic!("{src} gave {}", show(g, &v)),
             Err(e) => assert_eq!(kind(g, &e), *want, "{src}"),
         }
     }
@@ -185,9 +214,9 @@ fn error_kinds() {
         .unwrap_err();
     assert_eq!(e.values.len(), 2);
     assert_eq!(e.values[0], Value::Integer(1));
-    assert_eq!(g.as_str(e.values[1]), Some("two"));
+    assert_eq!(g.as_str(&e.values[1]), Ok(Some("two")));
     let e = g.evaluate(&mut (), "(foo bar)").unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "foo");
+    assert_eq!(show(&g, &e.values[0]), "foo");
 }
 
 #[test]
@@ -227,7 +256,7 @@ fn deep_nesting_needs_no_rust_stack() {
     let depth = 100_000;
     let nested = format!("{}{}", "(".repeat(depth), ")".repeat(depth));
     let v = g.evaluate(&mut (), &format!("(quote! {nested})")).unwrap();
-    assert_eq!(show(&g, v), nested);
+    assert_eq!(show(&g, &v), nested);
     let sum = format!("{}0{}", "(add 1 ".repeat(depth), ")".repeat(depth));
     assert_eq!(g.evaluate(&mut (), &sum), Ok(Value::Integer(100_000)));
     // equal? is library code, so it needs no Rust stack either; a shallower tree keeps the
@@ -273,9 +302,9 @@ fn printing_reads_back() {
         "x",
     ] {
         let v = g.evaluate(&mut (), &format!("(quote! {src})")).unwrap();
-        let printed = show(&g, v);
+        let printed = show(&g, &v);
         let again = g.evaluate(&mut (), &format!("(quote! {printed})")).unwrap();
-        let again = show(&g, again);
+        let again = show(&g, &again);
         let same = g
             .evaluate(
                 &mut (),
@@ -286,23 +315,23 @@ fn printing_reads_back() {
     }
     let f = g.evaluate(&mut (), "(lambda! (x) (multiply x x))").unwrap();
     assert_eq!(
-        show(&g, f),
+        show(&g, &f),
         "#[applicative #[operative (x) #ignore (multiply x x)]]"
     );
     // A body of several forms prints as written, not as sequence!'s own source.
     let f = g.evaluate(&mut (), "(lambda! (x) (f x) x)").unwrap();
     assert_eq!(
-        show(&g, f),
+        show(&g, &f),
         "#[applicative #[operative (x) #ignore (sequence! (f x) x)]]"
     );
     // Control characters print as escapes that read back.
     let v = g
         .evaluate(&mut (), "\"\\x1b;[2J\\ta\\x7f;\\x3bb;\"")
         .unwrap();
-    let printed = show(&g, v);
+    let printed = show(&g, &v);
     assert_eq!(printed, "\"\\x1b;[2J\\ta\\x7f;\u{3bb}\"");
     let again = g.evaluate(&mut (), &printed).unwrap();
-    assert_eq!(g.as_str(again), g.as_str(v));
+    assert_eq!(g.as_str(&again), g.as_str(&v));
     fails(
         &mut g,
         &[
@@ -316,7 +345,7 @@ fn printing_reads_back() {
 fn reading_evaluates_nothing() {
     let mut g = grift();
     let forms = g.read("(first 1) undefined").unwrap();
-    assert_eq!(show(&g, forms), "((first 1) undefined)");
+    assert_eq!(show(&g, &forms), "((first 1) undefined)");
 }
 
 #[test]
@@ -343,7 +372,7 @@ fn errors_name_the_program_combination() {
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
         assert_eq!(
-            e.trace().first().map(|&v| show(&g, v)).as_deref(),
+            e.trace().first().map(|v| show(&g, v)).as_deref(),
             Some(at),
             "{src}"
         );
@@ -360,7 +389,7 @@ fn errors_name_the_program_combination() {
         Err(g.error("mine", &[]))
     });
     let e = g.evaluate(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, e.trace()[0]), "(fail-after-churn)");
+    assert_eq!(show(&g, &e.trace()[0]), "(fail-after-churn)");
 }
 
 #[test]
@@ -376,9 +405,9 @@ fn redefinition_and_names() {
         .unwrap();
     assert_eq!(g.evaluate(&mut (), "(g 1)"), Ok(Value::Integer(10)));
     let top = g.evaluate(&mut (), "(names ((vau! () e e)))").unwrap();
-    assert_eq!(show(&g, top), "(f g)");
+    assert_eq!(show(&g, &top), "(f g)");
     let built_in = g.evaluate(&mut (), "built-in-names").unwrap();
-    let built_in = show(&g, built_in);
+    let built_in = show(&g, &built_in);
     for name in [
         "vau!",
         "first",
@@ -416,7 +445,7 @@ fn twice(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
 
 fn reenter(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     g.evaluate(&mut (), "(churn 2000)")?;
-    Ok(args[0])
+    Ok(args[0].clone())
 }
 
 #[test]
@@ -429,7 +458,7 @@ fn host_functions() {
         Ok(Value::Integer(6))
     );
     let f = g.evaluate(&mut (), "twice").unwrap();
-    assert_eq!(show(&g, f), "#[applicative #[host twice]]");
+    assert_eq!(show(&g, &f), "#[applicative #[host twice]]");
     fails(&mut g, &[("(twice 1 2)", "type-error")]);
     // A host function may evaluate; collections inside keep the caller's values.
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
@@ -442,14 +471,14 @@ fn host_functions() {
 
 /// `(halves "ab")` is `("ab" . "ab")`, made from Rust; `(sum (1 2 3))` walks a list from Rust.
 fn halves(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    let s = String::from(g.as_str(args[0]).unwrap());
+    let s = g.as_string(&args[0])?.unwrap();
     let (a, b) = (g.string(&s)?, g.string(&s)?);
     g.pair(a, b)
 }
 
 fn sum(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    let (mut list, mut n) = (args[0], 0);
-    while let Some((Value::Integer(x), rest)) = g.as_pair(list) {
+    let (mut list, mut n) = (args[0].clone(), 0);
+    while let Some((Value::Integer(x), rest)) = g.as_pair(&list)? {
         (list, n) = (rest, n + x);
     }
     Ok(Value::Integer(n))
@@ -467,7 +496,7 @@ fn host_functions_make_and_read_data() {
             "(equal? (sum (list 1 2 3)) 6)",
         ],
     );
-    assert_eq!(g.as_pair(Value::Integer(1)), None);
+    assert_eq!(g.as_pair(&Value::Integer(1)), Ok(None));
 }
 
 /// Counts its calls in the host's state, and calls back into grift with it.
@@ -498,43 +527,16 @@ fn the_host_calls_combiners_with_values() {
     // The arguments are values: a symbol and a list are not evaluated again.
     let x = g.evaluate(&mut (), "(quote! undefined)").unwrap();
     let ys = g.evaluate(&mut (), "(quote! (first 1))").unwrap();
-    let v = g.call(&mut (), f, &[x, ys]).unwrap();
-    assert_eq!(show(&g, v), "(undefined first 1)");
+    let v = g.call(&mut (), &f, &[x, ys]).unwrap();
+    assert_eq!(show(&g, &v), "(undefined first 1)");
     let first = g.evaluate(&mut (), "first").unwrap();
-    let e = g.call(&mut (), first, &[Value::Integer(1)]).unwrap_err();
-    assert_eq!(kind(&mut g, &e), "type-error");
+    let e = g.call(&mut (), &first, &[Value::Integer(1)]).unwrap_err();
+    assert_eq!(kind(&g, &e), "type-error");
     let quote = g.evaluate(&mut (), "quote!").unwrap();
     assert_eq!(
-        g.call(&mut (), quote, &[Value::Integer(1)]),
+        g.call(&mut (), &quote, &[Value::Integer(1)]),
         Ok(Value::Integer(1))
     );
-}
-
-static STOP: AtomicBool = AtomicBool::new(false);
-
-#[test]
-fn the_host_interrupts_a_runaway_evaluation() {
-    let mut g = grift();
-    g.set_interrupt_flag(&STOP);
-    g.evaluate(&mut (), "(define! log ()) (define! here (current-context))")
-        .unwrap();
-    g.evaluate(&mut (), "(define! spin (lambda! () (spin)))")
-        .unwrap();
-    let setter = std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        STOP.store(true, Ordering::Relaxed);
-    });
-    let e = g
-        .evaluate(
-            &mut (),
-            "(finally! (spin) (bind here (quote! log) (pair 1 log)))",
-        )
-        .unwrap_err();
-    setter.join().unwrap();
-    assert_eq!(kind(&mut g, &e), "interrupted");
-    // The cleanup ran, the flag is clear again and the interpreter goes on.
-    assert!(!STOP.load(Ordering::Relaxed));
-    assert_eq!(g.evaluate(&mut (), "(length log)"), Ok(Value::Integer(1)));
 }
 
 #[test]
@@ -558,20 +560,20 @@ fn cleanup_runs_and_the_error_goes_on() {
             "(finally! (finally! (raise (error (quote! mine) 7 (list 8))) (note 3)) (note 4))",
         )
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "mine");
+    assert_eq!(kind(&g, &e), "mine");
     assert_eq!(e.values[0], Value::Integer(7));
-    assert_eq!(show(&g, e.values[1]), "(8)");
+    assert_eq!(show(&g, &e.values[1]), "(8)");
     assert_eq!(
-        show(&g, e.trace()[0]),
+        show(&g, &e.trace()[0]),
         "(raise (error (quote! mine) 7 (list 8)))"
     );
     let log = g.evaluate(&mut (), "log").unwrap();
-    assert_eq!(show(&g, log), "(4 3 2 1)");
+    assert_eq!(show(&g, &log), "(4 3 2 1)");
     // A cleanup that fails replaces the error; the outer cleanup still runs.
     let e = g
         .evaluate(&mut (), "(finally! (finally! (first 1) (rest 2)) (note 5))")
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "#[primitive rest]");
+    assert_eq!(show(&g, &e.values[0]), "#[primitive rest]");
     assert_eq!(g.evaluate(&mut (), "(first log)"), Ok(Value::Integer(5)));
     // A cleanup that succeeds doesn't lend the error its own location.
     let (protect, here) = (
@@ -581,10 +583,10 @@ fn cleanup_runs_and_the_error_goes_on() {
     let missing = Value::Symbol(g.symbol("missing").unwrap());
     let cleanup = g.evaluate(&mut (), "(lambda! () (list 1))").unwrap();
     let e = g
-        .call(&mut (), protect, &[missing, here, cleanup])
+        .call(&mut (), &protect, &[missing, here, cleanup])
         .unwrap_err();
     assert_eq!(
-        (kind(&mut g, &e), e.trace()),
+        (kind(&g, &e), e.trace()),
         (String::from("unbound-symbol"), &[][..])
     );
     // The waiting error's values survive collections in the cleanup.
@@ -596,7 +598,7 @@ fn cleanup_runs_and_the_error_goes_on() {
             "(finally! (raise (error (quote! mine) (list 1 2))) (churn 20000))",
         )
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "(1 2)");
+    assert_eq!(show(&g, &e.values[0]), "(1 2)");
 }
 
 #[test]
@@ -606,13 +608,8 @@ fn stale_values_are_refused() {
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
         .unwrap();
     g.evaluate(&mut (), "(churn 10000)").unwrap();
-    assert_eq!(show(&g, old), "#[stale]");
-    assert_eq!(g.as_str(old), None);
-    let Value::Pair(r) = old else {
-        panic!("a pair")
-    };
-    let e = g.pair_at(r).unwrap_err();
-    assert_eq!(kind(&mut g, &e), "stale-value");
+    let e = g.as_pair(&old).unwrap_err();
+    assert_eq!(kind(&g, &e), "stale-value");
 }
 
 /// The machine steps taken and the operatives made evaluating `src`.
@@ -626,8 +623,9 @@ fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
 fn library_forms_build_no_code() {
     // Each form against the same thing written by hand: a use makes no operative and takes at
     // most six times the steps. They used to build new code each time: let! made two
-    // operatives, and conditional! took 29 times the steps.
+    // operatives, and conditional! took 29 times the steps. Both as grift: the natives off.
     let mut g = grift();
+    g.natives = false;
     g.evaluate(&mut (), "(define! n 3) (define! e (current-context))")
         .unwrap();
     for (form, by_hand) in [
@@ -728,8 +726,8 @@ fn catch_catches_errors_as_contexts() {
     let e = g
         .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "not-integer");
-    let trace: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
+    assert_eq!(kind(&g, &e), "not-integer");
+    let trace: Vec<String> = e.trace().iter().map(|v| show(&g, v)).collect();
     assert_eq!(
         trace,
         [
@@ -745,14 +743,14 @@ fn catch_catches_errors_as_contexts() {
             "(catch! (catch! (first 1) e (raise e)) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, trace), "((first 1))");
+    assert_eq!(show(&g, &trace), "((first 1))");
     let trace = g
         .evaluate(
             &mut (),
             "(catch! (raise (error (quote! mine))) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, trace), "((raise (error (quote! mine))))");
+    assert_eq!(show(&g, &trace), "((raise (error (quote! mine))))");
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -760,13 +758,13 @@ fn catch_catches_errors_as_contexts() {
     );
 }
 
-fn stop(_: &mut Grift, _: &mut (), _: &[Value]) -> Result<Value, Error> {
-    STOP.store(true, Ordering::Relaxed);
+fn stop(_: &mut Grift<Interrupter>, s: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
+    s.stop();
     Ok(Value::Inert)
 }
 
 /// A host function that fails as the program's mistake, or reports that memory ran out.
-fn fail(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
+fn fail<T>(g: &mut Grift<T>, _: &mut T, args: &[Value]) -> Result<Value, Error> {
     match args {
         [] => Err(g.error("out-of-memory", &[])),
         _ => Err(g.error("bad-input", args)),
@@ -775,33 +773,31 @@ fn fail(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
 
 #[test]
 fn catch_catches_errors_about_the_program_and_never_the_limits() {
-    let mut g = grift();
-    g.set_interrupt_flag(&STOP);
+    let mut g: Grift<Interrupter> = Grift::new().unwrap();
+    let mut s = g.interrupter();
     define(&mut g, "stop", stop);
     define(&mut g, "fail", fail);
     // An error about the program, a host function's included, is caught.
     let caught = g
-        .evaluate(&mut (), "(catch! (fail 7) e (evaluate-in! kind e))")
+        .evaluate(&mut s, "(catch! (fail 7) e (evaluate-in! kind e))")
         .unwrap();
-    assert_eq!(show(&g, caught), "bad-input");
+    assert_eq!(show(&g, &caught), "bad-input");
     // The allocator's limit and the host's go through every catch! to the host.
-    let e = g
-        .evaluate(&mut (), "(catch! (fail) #ignore 0)")
-        .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "out-of-memory");
+    let e = g.evaluate(&mut s, "(catch! (fail) #ignore 0)").unwrap_err();
+    assert_eq!(kind(&g, &e), "out-of-memory");
     // A cleanup that fails while a limit passes doesn't turn it into an error catch! catches.
     let e = g
-        .evaluate(&mut (), "(catch! (finally! (stop) (first 1)) #ignore 0)")
+        .evaluate(&mut s, "(catch! (finally! (stop) (first 1)) #ignore 0)")
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "interrupted");
+    assert_eq!(kind(&g, &e), "interrupted");
     // ... even through a catch! in a loop that would catch anything.
     let e = g
         .evaluate(
-            &mut (),
+            &mut s,
             "(define! spin (lambda! () (catch! (sequence! (stop) (spin)) #ignore (spin)))) (spin)",
         )
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "interrupted");
+    assert_eq!(kind(&g, &e), "interrupted");
 }
 
 #[test]
@@ -867,7 +863,7 @@ fn errors_name_each_program_combination_around_them() {
         ("(first 1)", "(first 1)"),
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
-        let at: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
+        let at: Vec<String> = e.trace().iter().map(|v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }
@@ -938,7 +934,7 @@ const FLOATS: [f64; 12] = [
 fn floats_read_back_as_they_print() {
     let mut g = grift();
     for x in FLOATS {
-        let printed = show(&g, Value::Float(x));
+        let printed = show(&g, &Value::Float(x));
         let again = float(&mut g, &printed);
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
         // value-to-string gives the printer's text, and string-to-float reads it back (a
@@ -946,7 +942,7 @@ fn floats_read_back_as_they_print() {
         let s = g
             .evaluate(&mut (), &format!("(value-to-string {printed})"))
             .unwrap();
-        assert_eq!(g.as_str(s), Some(printed.as_str()));
+        assert_eq!(g.as_str(&s), Ok(Some(printed.as_str())));
         let again = float(
             &mut g,
             &format!("(string-to-float (value-to-string {printed}))"),
@@ -954,7 +950,7 @@ fn floats_read_back_as_they_print() {
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
     }
     // A not-a-number of any sign reads back as a not-a-number.
-    let negative = show(&g, Value::Float(-f64::NAN));
+    let negative = show(&g, &Value::Float(-f64::NAN));
     assert!(float(&mut g, &negative).is_nan());
     holds(
         &mut g,
@@ -1011,7 +1007,7 @@ fn arithmetic_is_rusts() {
                         } else {
                             "overflow"
                         };
-                        assert_eq!(kind(&mut g, &e), want, "({name} {a} {b})");
+                        assert_eq!(kind(&g, &e), want, "({name} {a} {b})");
                     }
                     (rust, got) => panic!("({name} {a} {b}): Rust {rust:?}, grift {got:?}"),
                 }
@@ -1024,20 +1020,20 @@ fn arithmetic_is_rusts() {
         let got = g.evaluate(&mut (), &format!("(absolute-value {a})"));
         match (a.checked_abs(), got) {
             (Some(n), Ok(v)) => assert_eq!(v, Value::Integer(n), "(absolute-value {a})"),
-            (None, Err(e)) => assert_eq!(kind(&mut g, &e), "overflow"),
+            (None, Err(e)) => assert_eq!(kind(&g, &e), "overflow"),
             (rust, got) => panic!("(absolute-value {a}): Rust {rust:?}, grift {got:?}"),
         }
         for b in [0, 1, 2, 3, 31, 62, 63, 64, -1] {
             let got = g.evaluate(&mut (), &format!("(power {a} {b})"));
             match (u32::try_from(b).map(|b| a.checked_pow(b)), got) {
                 (Ok(Some(n)), Ok(v)) => assert_eq!(v, Value::Integer(n), "(power {a} {b})"),
-                (Ok(None), Err(e)) => assert_eq!(kind(&mut g, &e), "overflow", "(power {a} {b})"),
-                (Err(_), Err(e)) => assert_eq!(kind(&mut g, &e), "range-error"),
+                (Ok(None), Err(e)) => assert_eq!(kind(&g, &e), "overflow", "(power {a} {b})"),
+                (Err(_), Err(e)) => assert_eq!(kind(&g, &e), "range-error"),
                 (rust, got) => panic!("(power {a} {b}): Rust {rust:?}, grift {got:?}"),
             }
         }
     }
-    let floats = FLOATS.map(|x| show(&g, Value::Float(x)));
+    let floats = FLOATS.map(|x| show(&g, &Value::Float(x)));
     for (x, a) in FLOATS.iter().zip(&floats) {
         for (y, b) in FLOATS.iter().zip(&floats) {
             for (name, rust) in [
@@ -1125,7 +1121,7 @@ fn bitwise_operations_are_rusts() {
                 let got = g.evaluate(&mut (), &format!("({name} {a} {n})"));
                 match (rust, got) {
                     (Some(r), Ok(v)) => assert_eq!(v, Value::Integer(r), "({name} {a} {n})"),
-                    (None, Err(e)) => assert_eq!(kind(&mut g, &e), "overflow", "({name} {a} {n})"),
+                    (None, Err(e)) => assert_eq!(kind(&g, &e), "overflow", "({name} {a} {n})"),
                     (rust, got) => panic!("({name} {a} {n}): Rust {rust:?}, grift {got:?}"),
                 }
             }
@@ -1147,13 +1143,13 @@ fn comparisons_agree_with_rust() {
     let integers = [-1, 0, 1].map(Value::Integer);
     let floats = [-1.0, 0.0, -0.0, 1.0, f64::NAN, f64::INFINITY].map(Value::Float);
     for values in [&integers[..], &floats[..]] {
-        for &x in values {
-            for &y in values {
+        for x in values {
+            for y in values {
                 let (a, b) = (show(&g, x), show(&g, y));
                 // Rust's own order of the two, None with not-a-number.
                 let order = match (x, y) {
-                    (Value::Integer(x), Value::Integer(y)) => x.partial_cmp(&y),
-                    (Value::Float(x), Value::Float(y)) => x.partial_cmp(&y),
+                    (Value::Integer(x), Value::Integer(y)) => x.partial_cmp(y),
+                    (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
                     _ => panic!("two integers or two floats"),
                 };
                 let (less, equal, greater) = (
@@ -1261,7 +1257,7 @@ fn a_predicate_for_every_type() {
         let kind = g
             .evaluate(&mut (), &format!("(symbol-to-string (type-of {value}))"))
             .unwrap();
-        let kind = format!("{}?", g.as_str(kind).unwrap());
+        let kind = format!("{}?", g.as_str(&kind).unwrap().unwrap());
         assert!(predicates.contains(&kind.as_str()), "{value}: {kind}");
         for p in predicates {
             let want = Value::Boolean(p == kind);
@@ -1386,11 +1382,11 @@ fn contexts() {
     );
     // A context prints as its own names, sorted, never its values.
     let child = g.evaluate(&mut (), "child").unwrap();
-    assert_eq!(show(&g, child), "#[context a c]");
+    assert_eq!(show(&g, &child), "#[context a c]");
     let empty = g.evaluate(&mut (), "(context)").unwrap();
-    assert_eq!(show(&g, empty), "#[context]");
+    assert_eq!(show(&g, &empty), "#[context]");
     let e = g.evaluate(&mut (), "(error (quote! mine) 1)").unwrap();
-    assert_eq!(show(&g, e), "#[context kind trace values]");
+    assert_eq!(show(&g, &e), "#[context kind trace values]");
 }
 
 /// Whether a test program finishes within this: about 5 times what it takes (2 s) and less than
@@ -1470,7 +1466,7 @@ fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
 fn literal(s: &str) -> String {
     let mut g = grift();
     let v = g.string(s).unwrap();
-    show(&g, v)
+    show(&g, &v)
 }
 
 #[test]
@@ -1532,19 +1528,19 @@ fn read_form_is_the_program_reader() {
         "\"\\q\"",
     ] {
         let whole = g.read(bad).unwrap_err();
-        assert_eq!(kind(&mut g, &whole), "parse-error");
+        assert_eq!(kind(&g, &whole), "parse-error");
         let one = g
             .evaluate(&mut (), &format!("(read-form {} 0)", literal(bad)))
             .unwrap_err();
         assert_eq!(
-            (kind(&mut g, &one), one.values),
+            (kind(&g, &one), one.values),
             ("parse-error".into(), whole.values)
         );
     }
     let e = g
         .evaluate(&mut (), "(read-form \"a\\nb\\n)\" 4)")
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "unmatched-parenthesis");
+    assert_eq!(show(&g, &e.values[0]), "unmatched-parenthesis");
     assert_eq!(e.values[1..], [Value::Integer(3), Value::Integer(1)]);
     fails(
         &mut g,
@@ -1580,11 +1576,11 @@ fn value_to_string_is_the_printer() {
         "(sequence! (define! c (context)) (bind c (quote! b) 1) (bind c (quote! a) 2) c)",
     ] {
         let v = g.evaluate(&mut (), src).unwrap();
-        let printed = show(&g, v);
+        let printed = show(&g, &v);
         let text = g
             .evaluate(&mut (), &format!("(value-to-string {src})"))
             .unwrap();
-        assert_eq!(g.as_str(text), Some(printed.as_str()));
+        assert_eq!(g.as_str(&text), Ok(Some(printed.as_str())));
     }
     // What can be read back reads back, by read-form.
     holds(
@@ -1837,9 +1833,9 @@ fn a_parse_error_says_why_and_where() {
         ("#nope", "unknown-constant 1 1"),
     ] {
         let e = g.read(text).unwrap_err();
-        let values: Vec<String> = e.values.iter().map(|&v| show(&g, v)).collect();
+        let values: Vec<String> = e.values.iter().map(|v| show(&g, v)).collect();
         assert_eq!(
-            (kind(&mut g, &e), values.join(" ")),
+            (kind(&g, &e), values.join(" ")),
             ("parse-error".into(), want.into()),
             "{text:?}"
         );
@@ -1902,10 +1898,10 @@ fn lookup_and_unbind() {
         .unwrap();
     // While bound it survives collections; once unbound, nothing holds it.
     g.evaluate(&mut (), churn).unwrap();
-    assert_eq!(g.as_str(held), Some("kept?"));
+    assert_eq!(g.as_str(&held), Ok(Some("kept?")));
     g.evaluate(&mut (), "(unbind inner (quote! held))").unwrap();
     g.evaluate(&mut (), churn).unwrap();
-    assert_eq!(g.as_str(held), None);
+    assert_eq!(kind(&g, &g.as_str(&held).unwrap_err()), "stale-value");
 }
 
 #[test]

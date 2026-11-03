@@ -6,7 +6,7 @@
 ; program reaches a file only through the context it was given, and can't name one by its
 ; number.
 (lambda! (top script open-host create-host read-line-host read-all-host read-bytes-host
-          write-host write-bytes-host close-host run-host read-file-host resolve-host)
+          write-host write-bytes-host close-host run-host load-host resolve-host)
   ; A new context binding `names` to `values`.
   (define! operations
     (lambda! (names values)
@@ -33,45 +33,14 @@
   ; The file whose forms are being loaded, at first the script; a relative path given `load` is
   ; relative to it.
   (define! loading (operations (quote! (file)) (list script)))
-  ; A caught error again, its trace ending with where in a loaded file it happened.
-  (define! placed
-    (lambda! (e where)
-      (operations (quote! (kind values trace))
-                  (list (evaluate-in! kind e)
-                        (evaluate-in! values e)
-                        (append (evaluate-in! trace e) (list where))))))
-  ; The forms of `text`, the file `path`, from offset `at`, as read-form gives them, after those in
-  ; `done`; one that doesn't read is a parse-error saying the file.
-  (define! forms-of
-    (lambda! (text path at done)
-      (forms-after text path (catch! (read-form text at) e (raise (placed e path))) done)))
-  (define! forms-after
-    (lambda! (text path read done)
-      (if! (pair? read)
-        (forms-of text path (third read) (pair (append read (list text)) done))
-        (reverse done))))
-  ; Each form in turn, evaluated in `c`; an error says the file and the form's line, counted in the
-  ; file's text, which each form carries.
-  (define! each-form
-    (lambda! (forms path c)
-      (when! (pair? forms)
-        (evaluate-form (first forms) path c)
-        (each-form (rest forms) path c))))
-  (define! evaluate-form
-    (lambda! ((form start #ignore text) path c)
-      (catch! (evaluate form c)
-              e
-              (let! ((line (length (string-split (byte-substring text 0 start) "\n"))))
-                (raise (placed e (string-append path ":" (integer-to-string line))))))))
-  ; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in `c`
-  ; while a relative path given load is relative to the file.
+  ; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in
+  ; `c` while a relative path given load is relative to the file. Each combination knows its line
+  ; in the file, so an error's trace says it.
   (define! load-file
     (lambda! (path c)
-      (load-forms (forms-of (read-file-host path) path 0 ()) path c (evaluate-in! file loading))))
-  (define! load-forms
-    (lambda! (forms path c outer)
-      (bind loading (quote! file) path)
-      (finally! (each-form forms path c) (bind loading (quote! file) outer))))
+      (let! ((outer (evaluate-in! file loading)))
+        (bind loading (quote! file) path)
+        (finally! (load-host path c) (bind loading (quote! file) outer)))))
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
                      run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))

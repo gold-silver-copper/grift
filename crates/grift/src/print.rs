@@ -1,8 +1,9 @@
 //! The printer, with an explicit stack. Pairs can't form cycles (they are immutable, and a
 //! pair only refers to older values), and a context prints only its names, so it ends.
 
+use crate::Grift;
 use crate::heap::Object;
-use crate::{Error, Grift, Growing, Value};
+use crate::local::{Error, Growing, Value};
 use std::fmt::{self, Write};
 
 enum Item {
@@ -16,14 +17,12 @@ impl<T> Grift<T> {
     /// A new string of the text [`Grift::write`] writes for `v`.
     pub(crate) fn printed(&mut self, v: Value) -> Result<Value, Error> {
         let mut s = Growing::default();
-        self.write(v, &mut s).map_err(|_| Error::oom())?;
-        self.string(&s.0)
+        self.print(v, &mut s).map_err(|_| Error::oom())?;
+        self.string_local(&s.0)
     }
 
-    /// Writes `v` as grift would read it back, where it can be read back. Combiners show their
-    /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive first]]`;
-    /// a context shows its own names, sorted: `#[context a b]`.
-    pub fn write(&self, v: Value, out: &mut dyn Write) -> fmt::Result {
+    /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in.
+    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> fmt::Result {
         let mut todo = Vec::new();
         let push = |todo: &mut Vec<Item>, it| {
             todo.try_reserve(1).map_err(|_| fmt::Error)?;
@@ -76,13 +75,12 @@ impl<T> Grift<T> {
                         .map_or("", |&(s, _)| self.name(s));
                     write!(out, "#[host {name}]")?;
                 }
-                Value::Context(r) if self.heap.get(r).is_err() => out.write_str("#[stale]")?,
                 Value::Context(r) => {
                     let names = self.names_of(r).map_err(|_| fmt::Error)?;
                     out.write_str("#[context")?;
                     for name in names {
                         out.write_char(' ')?;
-                        self.write(name, out)?;
+                        self.print(name, out)?;
                     }
                     out.write_char(']')?;
                 }
@@ -102,6 +100,7 @@ impl<T> Grift<T> {
                                     '"' => out.write_str("\\\"")?,
                                     '\\' => out.write_str("\\\\")?,
                                     '\n' => out.write_str("\\n")?,
+                                    '\r' => out.write_str("\\r")?,
                                     '\t' => out.write_str("\\t")?,
                                     c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
                                     c => out.write_char(c)?,
@@ -125,7 +124,7 @@ impl<T> Grift<T> {
                             push(&mut todo, Item::Text("]"))?;
                             push(&mut todo, Item::Value(*c))?;
                         }
-                        _ => out.write_str("#[stale]")?,
+                        _ => return Err(fmt::Error),
                     }
                 }
             }

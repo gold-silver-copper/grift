@@ -282,14 +282,14 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     let program = r#"
         (define! loads 0)
         (define! write-trace (lambda! (place) (display (value-to-string place) " ")))
-        (catch-kind! (load "lib/a.grift") type-error e (write-trace (last (evaluate-in! trace e))))
+        (catch-kind! (load "lib/a.grift") type-error e (write-trace (first (evaluate-in! trace e))))
         (display (b 1) " " loads " ")
         ; Each load runs the file again; in a child context, its definitions are the child's.
         (define! child (context (current-context)))
         (catch! (evaluate (quote! (load "lib/b.grift")) child) #ignore #inert)
         (display loads " " (evaluate (quote! loads) child) " ")
-        ; A file that doesn't read runs nothing, and says where the form opened.
-        (catch! (load "lib/bad.grift") e (sequence! (display (evaluate-in! values e)) (write-trace (second (evaluate-in! trace e)))))
+        ; A file that doesn't read runs nothing, and says where the form opened, at the load.
+        (catch! (load "lib/bad.grift") e (sequence! (display (evaluate-in! values e)) (write-trace (first (evaluate-in! trace e)))))
         (display (string-ends-with? script-path "script.grift"))
         (load "lib/b.grift")
     "#;
@@ -299,16 +299,19 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(status, Some(1));
     assert_eq!(
         out,
-        format!("\"{lib}/a.grift:2\" 2 1 1 2 (unclosed-list 3 3)\"{lib}/bad.grift\" #true")
+        "(first 2) 2 1 1 2 (unclosed-list 3 3)(load \"lib/bad.grift\") #true"
     );
-    // The trace says the file and the line of the form, between its combinations and the load.
-    assert!(
-        err.contains(&format!(
-            "in (first 2)\n  from (define! c (first 2))\n  from \"{lib}/b.grift:4\""
-        )),
-        "{err}"
+    // Each combination in the trace says its file and line, the loaded file's and the script's.
+    let script = dir.join("script.grift");
+    let script = script.to_str().unwrap();
+    assert_eq!(
+        err,
+        format!(
+            "{script}: type-error #[primitive first] 2 in (first 2) at {lib}/b.grift:4\n  \
+             from (define! c (first 2)) at {lib}/b.grift:4\n  \
+             from (load \"lib/b.grift\") at {script}:13\n"
+        )
     );
-    assert!(err.ends_with("from (load \"lib/b.grift\")\n"), "{err}");
 }
 
 #[test]

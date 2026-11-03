@@ -1,15 +1,16 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
 //! sweep.
 
-use crate::{Error, K, Symbol, Value, push};
+use crate::evaluate::Native;
+use crate::local::{Error, K, Symbol, Value, push};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Reference {
-    idx: u32,
-    generation: u32,
+pub(crate) struct Reference {
+    pub idx: u32,
+    pub generation: u32,
 }
 
 impl Hash for Reference {
@@ -19,14 +20,16 @@ impl Hash for Reference {
 }
 
 /// A compound operative: its parameter tree, its context parameter, its body, the context it
-/// was made in, and how many bindings a call makes.
+/// was made in, how many bindings a call makes, and the native twin that runs it, for the few
+/// library forms that have one.
 #[derive(Clone, Copy)]
 pub(crate) struct Operative {
     pub parameters: Value,
     pub context_parameter: Value,
     pub body: Value,
     pub context: Reference,
-    pub size: usize,
+    pub size: u32,
+    pub native: Option<Native>,
 }
 
 pub(crate) enum Object {
