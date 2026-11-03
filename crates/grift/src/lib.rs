@@ -192,8 +192,10 @@ pub struct Grift<T = ()> {
     kept_free: Vec<u32>,
     kept_next: u32,
     machine: evaluate::Machine,
-    /// Shared with the interrupters; also this interpreter's identity.
+    /// Shared with the interrupters; its allocation is this interpreter's identity, which every
+    /// value handed out holds.
     control: Arc<Control>,
+    identity: Weak<Control>,
     /// The generation of the outer run in progress, 0 for none, and the last one given out.
     run: u64,
     runs: u64,
@@ -223,6 +225,7 @@ impl<T> Grift<T> {
             kept_free: Vec::new(),
             kept_next: 0,
             machine: evaluate::Machine::default(),
+            identity: Weak::new(),
             control: Arc::new(Control::default()),
             run: 0,
             runs: 0,
@@ -233,6 +236,7 @@ impl<T> Grift<T> {
             #[cfg(test)]
             definitions: heap::Reference::NONE,
         };
+        g.identity = Arc::downgrade(&g.control);
         let loaded = g.load();
         g.out(loaded).map(|()| g)
     }
@@ -668,7 +672,7 @@ impl<T> Grift<T> {
         });
         match kept {
             Ok(name) => Ok(Kept {
-                owner: Arc::downgrade(&self.control),
+                owner: self.identity.clone(),
                 name,
             }),
             Err(e) => Err(self.export_error(e)),
@@ -857,7 +861,7 @@ impl<T> Grift<T> {
     pub(crate) fn export(&self, v: local::Value) -> Value {
         use local::Value as L;
         let reference = |local| Reference {
-            owner: Arc::downgrade(&self.control),
+            owner: self.identity.clone(),
             local,
         };
         match v {
@@ -875,7 +879,7 @@ impl<T> Grift<T> {
             L::Operative(r) => Value::Operative(reference(r)),
             L::Applicative(r) => Value::Applicative(reference(r)),
             L::Host(h) => Value::Host(Host {
-                owner: Arc::downgrade(&self.control),
+                owner: self.identity.clone(),
                 index: h.0,
             }),
         }
@@ -883,7 +887,7 @@ impl<T> Grift<T> {
 
     fn export_symbol(&self, s: local::Symbol) -> Symbol {
         Symbol {
-            owner: Arc::downgrade(&self.control),
+            owner: self.identity.clone(),
             index: s.0,
         }
     }

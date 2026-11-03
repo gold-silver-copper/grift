@@ -30,12 +30,14 @@ struct Mailbox {
 }
 
 impl Control {
+    /// Publishes the run in progress. Release suffices: a stop that reads an older number stores
+    /// a generation no later run has, so it can't reach one.
     pub fn begin(&self, run: u64) {
-        self.active.store(run, Ordering::SeqCst);
+        self.active.store(run, Ordering::Release);
     }
 
     pub fn end(&self) {
-        self.active.store(0, Ordering::SeqCst);
+        self.active.store(0, Ordering::Release);
     }
 
     /// Whether a stop of `run` was asked for. Read at every step: one load, unless one was.
@@ -129,7 +131,7 @@ impl Interrupter {
 
     /// Stops the run in progress, if there is one.
     pub fn stop(&mut self) {
-        let run = self.control.active.load(Ordering::SeqCst);
+        let run = self.control.active.load(Ordering::Acquire);
         if run != 0 {
             self.mailbox.requested.store(run, Ordering::SeqCst);
             self.control.asked.store(true, Ordering::SeqCst);
