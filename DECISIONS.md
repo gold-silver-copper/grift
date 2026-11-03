@@ -835,8 +835,21 @@ items, then fewer lines.
   and is placed at the `(load ...)` that read it.
 - **G-125. A stop is one load a step.** Besides its mailbox, a stop stores a shared "asked" flag after
   it, and the machine reads the mailboxes only when that is set, so a step pays one load whatever the
-  number of interrupters. The editor's input thread holds an interrupter: a C-g while `(key)` waits is
+  number of interrupters; the run's number is published with release stores, since a stop that reads
+  an older one stores a generation no later run has. The editor's input thread holds an interrupter: a C-g while `(key)` waits is
   a key, and one while a command runs stops it (`(key)` then ends the run at once).
 - **G-126. The definitions of the natives load in tests only.** `natives.grift` is evaluated, with the
   library, only in the crate's own tests, where the switch lives; it is 167 lines of grift.
   `if!`, `sequence!` and `string-search` keep their definitions in `library.grift`, which is what runs.
+- **G-127. What twins of `let!`, `lambda!` and `conditional!` would gain** (owner item 12 asked for the
+  measurement, not the twins). Above a loop of one native `if!` and a call (0.32 µs a turn, release, one
+  run of 200,000): `let!` of one binding costs 1.95 µs, making a `lambda!` 1.0 µs, `conditional!` of three
+  clauses 2.1 µs more than nested `if!`s, where another `if!` costs 0.05 µs and a `sequence!` of two
+  0.07 µs. That is about what a twin of each could save a use; none is in this change.
+- **G-128. Measured with the twins** (one run each, release, box2, load under 1): `fib 25` 123 ms to 85 ms
+  (1.44x); every `programs/` test faster, from build's 1.09x to markdown's 1.46x (meta 14.5 s to 13.1 s,
+  format 4.26 s to 3.15 s). A host function call is cheaper too (0.56 µs against 2.1 µs in a grift loop),
+  though each value crossing the boundary now costs an identity check and a reference count: about
+  0.1 µs of a 0.73 µs `Grift::call` of a small handler (perf: `export` 5%, the imports 4%). `crates/grift`
+  grew from 1,764 to 2,621 lines of Rust code, comments and blank lines aside (2,119 to 3,302 lines
+  in all: the rest are the docs and examples every new item has).
