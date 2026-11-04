@@ -1075,6 +1075,15 @@ fewer new public items, then fewer lines.
   the work. The tight one, base64 decode of 565 KB at least 5x faster than on lists, is met by the port's
   shape: one read of a 256-byte `#bytes(...)` table per input byte, four digits a call while they come,
   no `let!` in the loop. Orientation on box2 (busy, load about 10, one run each): decode 8.7 s on lists
-  to 1.07 s on bytes (8x), `tail -c 100` of 589 KB 1.58 s to 2-3 ms, `fib 25` and every `programs/`
-  test within the noise of 5% (fib's instructions +1.3%). The real timings are taken later on a quiet
-  machine. Dissent (P2): revise the base64 band to 3.5x before the port is timed.
+  to 1.07 s on bytes (8x), `tail -c 100` of 589 KB 1.58 s to 2-3 ms, `fib 25` 97 ms both (its
+  instructions +1.3%), and every `programs/` test within 5% but format's (G-150). The real timings
+  are taken later on a quiet machine. Dissent (P2): revise the base64 band to 3.5x before the port is timed.
+- **G-150. A band revised: format's test formats the natives' definitions** (CLAUDE.md's rule, as
+  G-107 did for the library). Original target: every `programs/` test within 5% of the base. Evidence
+  (box2, base and branch alternated, one run each): format's test 3.40, 3.85, 3.62 s on the base,
+  4.02, 4.51, 4.11 s here (+13% to +18%). It formats and reads back every `crates/*.grift`, and two of
+  them grew: `natives.grift` from 200 to 281 lines (the eight definitions, which load only in tests,
+  G-126) and `library.grift` from 554 to 576. On the same input it is unchanged: the base's
+  `library.grift` 0.44-0.48 s with either, its `natives.grift` 0.23 s, `runner.grift` 0.05 s. Every
+  other program's test is within 5%. New target: format's test within 5% on the same input; cost: it
+  takes about 0.6 s longer, by the length of what it formats.
