@@ -171,7 +171,7 @@ which a test shows no program can tell from the Rust.
 | `(symbol-to-string s)` | A symbol's name. |
 | `(float-to-string f)` | A float's printed text, which reads back as the same float: `(float-to-string 1.0)` is `"1.0"`. Anything else is a `type-error`. |
 | `(string-search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. A `start` out of range or off a character boundary is a `range-error`. |
-| `(bytes-search b pattern start)` | `string-search` over bytes: the offset of the first place at or after `start` where `pattern`'s bytes are in `b`, or `()`; an empty pattern is at `start`. A `start` out of range is `bytes-slice`'s `range-error`. It has no native twin, as no program searches bytes yet: 9 KB takes about 15 ms. |
+| `(bytes-search b pattern start)` | `string-search` over bytes: the offset of the first place at or after `start` where `pattern`'s bytes are in `b`, or `()`; an empty pattern is at `start`. A `start` out of range is `bytes-slice`'s `range-error`. It has no native twin, as no program searches bytes yet: 9 KB takes about 12 ms. |
 | `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)` | Whether `s` starts or ends with those bytes. |
 | `(string-split text separator)`, `(string-join strings separator)` | The parts of `text` between the separators, empty ones too, so `(string-split "a,,b" ",")` is `("a" "" "b")` and `(string-split "" ",")` is `("")`; an empty separator is a `range-error`. The strings with the separator between them. `string-join` undoes `string-split`. |
 | `(string-trim s)` | `s` without the ASCII whitespace at either end (space, tab, newline, form feed, return), as Rust's `trim_ascii`. |

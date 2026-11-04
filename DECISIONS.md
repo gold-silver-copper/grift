@@ -1019,7 +1019,13 @@ fewer new public items, then fewer lines.
   size, not their number, says. Scheduling, not a limit. Only a bytes allocation pays for that count
   (`Heap::alloc_bytes`), so pairs and contexts allocate as before. Dissent (P1): `Box<[u8]>`, and only
   the allocation side counted. The ballot sent this one split (P3 for the survival count, P2 and P4
-  against) to an experiment on the built branches, whose result outranks the vote.
+  against) to an experiment on the built branches, whose result outranks the vote. It ran
+  (`bytes-2026-11-04/adv/q3/results.md`, box2, one run each), each side's rule set before measuring,
+  and both rules keep the credits. Win: a host replacing 64 KB slices of a 64 MB stream peaks at 3.8 MB
+  with them against 51 MB without (13x); 1 MB grown by 1,024 appends, 9 MB against 530 MB. Cost: a
+  program holding a large live value lets more garbage build up before the next collection
+  (`big-live`, 32 MB held: 144 MB against 69 MB, and about 1.2x slower). Strings earn no credits, so
+  a string grown the same way stays at 530 MB either way.
 - **G-144. Eight native primitives, and two library forms** (q4, a 2-1-1-0 plurality, by P3; q5, a
   2-1-1-0 plurality, by P4). `bytes-length`, `bytes-byte`, `bytes-slice`, `bytes-append`,
   `string-to-bytes`, `bytes-to-string`, `list-to-bytes` and `bytes-to-list` are native under G-110:
@@ -1067,7 +1073,7 @@ fewer new public items, then fewer lines.
   `range-error` for a start out of range, which names `bytes-slice` as `string-search`'s names
   `byte-substring`. G-110's bar for a twin is a measurement on a program, and no program in
   `programs/`, the ports or the editor searches bytes; fux's logic only passes chunks on (F2). One
-  quick check, for the first program that does: 9 KB searched to its end in 14.5 ms (box2, busy), where
+  quick check, for the first program that does: 9 KB searched to its end in 12 ms (box2, busy), where
   `string-search`'s twin takes 4 µs on the same text. A twin would be about 20 lines and a flag
   (`windows(p.len()).position(...)`, never `windows(0)`). Dissent (P2): the body shared with
   `string-search` through a maker over the two accessors.
@@ -1076,14 +1082,25 @@ fewer new public items, then fewer lines.
   shape: one read of a 256-byte `#bytes(...)` table per input byte, four digits a call while they come,
   no `let!` in the loop. Orientation on box2 (busy, load about 10, one run each): decode 8.7 s on lists
   to 1.07 s on bytes (8x), `tail -c 100` of 589 KB 1.58 s to 2-3 ms, `fib 25` 97 ms both (its
-  instructions +1.3%), and every `programs/` test within 5% but format's (G-150). The real timings
-  are taken later on a quiet machine. Dissent (P2): revise the base64 band to 3.5x before the port is timed.
-- **G-150. A band revised: format's test formats the natives' definitions** (CLAUDE.md's rule, as
-  G-107 did for the library). Original target: every `programs/` test within 5% of the base. Evidence
-  (box2, base and branch alternated, one run each): format's test 3.40, 3.85, 3.62 s on the base,
-  4.02, 4.51, 4.11 s here (+13% to +18%). It formats and reads back every `crates/*.grift`, and two of
-  them grew: `natives.grift` from 200 to 281 lines (the eight definitions, which load only in tests,
-  G-126) and `library.grift` from 554 to 576. On the same input it is unchanged: the base's
-  `library.grift` 0.44-0.48 s with either, its `natives.grift` 0.23 s, `runner.grift` 0.05 s. Every
-  other program's test is within 5%. New target: format's test within 5% on the same input; cost: it
-  takes about 0.6 s longer, by the length of what it formats.
+  instructions +0.6% after G-150). On desk, the quiet machine, every `programs/` test was within 5%
+  of the base but meta's (G-150), and format's, which box2 had put outside, was within it. Dissent
+  (P2): revise the base64 band to 3.5x before the port is timed.
+- **G-150. What meta's test paid, and the part that was the code's** (the band stands). On desk (base
+  7ff695e against 8da8b50, one run each, twice) meta's test took 21.3 s and 22.5 s (+5.3%, +5.6%),
+  outside the 5% band; every other program was inside it. Two causes, told apart on box2 by
+  instruction counts (`perf stat`), as times there are noise at this size, on meta running meta on
+  `tests/square.grift`, the bulk of the test:
+  1. **The code, fixed.** With the base's `library.grift` and the base's meta as the input, the new
+     binary ran 2.4% more instructions (45.14 G against 46.24 G), from no new work on the path: the
+     new `Bytes` variants sat in the middle of the machine's `Value` and the heap's `Object`, so every
+     later kind changed its tag and the compiler laid the machine's common paths out differently
+     (`perf report`: `find`, `push` and `next_argument` traded places). Put last, the other kinds keep
+     their tags: 45.47 G (+0.75%), and `fib 25` +0.6% where it was +1.3%.
+  2. **The input, as G-107 found.** meta loads `library.grift` in every run, twice over when it runs
+     itself, and the library grew by `bytes?` and `bytes-search`. `bytes-search` was 3.9% of a
+     library load (16 M of 414 M instructions loading for an empty program), more than its lines, as
+     each `lambda!` meta interprets is dear; written with one helper in place of two, it is 2.95%,
+     shorter, and searches 9 KB in 12 ms where it took 14.5 ms. `bytes?` is 0.75%.
+  The whole test: 222.35 G instructions at the base, 232.46 G at 8da8b50 (+4.5%), 227.88 G now
+  (+2.5%); on the same input its time is the base's (box2, alternated: 3.96/3.96, 2.93/2.83,
+  2.77/2.80 s). Target unchanged: within 5% of the base; desk times the head.
