@@ -9,7 +9,7 @@
 //! `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
 //! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
 
-use grift::{Error, Grift, HostFunction, Value};
+use grift::{Error, Grift, HostFunction, Interrupter, Value, WriteError};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -27,9 +27,6 @@ const RUNNER: &str = include_str!("runner.grift");
 /// Set once a write to stdout found the pipe closed: the run then ends quietly.
 static CLOSED: AtomicBool = AtomicBool::new(false);
 
-/// grift's interrupt flag, set by `exit` to stop the program.
-static STOP: AtomicBool = AtomicBool::new(false);
-
 /// A file a program opened: its path, and what is left of it until it is closed.
 struct Opened {
     path: String,
@@ -42,10 +39,11 @@ enum Stream {
 }
 
 /// The runner's state: the files opened, standard input, error and output first, the status `exit`
-/// gave, and when the run started.
+/// gave, what stops the program when it does, and when the run started.
 struct Runner {
     files: Vec<Opened>,
     exit: Option<u8>,
+    stop: Interrupter,
     started: Instant,
 }
 
@@ -78,26 +76,26 @@ fn put(
     stdout: bool,
 ) -> Result<Value, Error> {
     let mut out = Sink { w, error: None };
-    let mut written = values.iter().try_for_each(|&v| match g.as_str(v) {
-        Some(s) if raw => fmt::Write::write_str(&mut out, s),
+    let mut written = values.iter().try_for_each(|v| match g.as_str(v) {
+        Ok(Some(s)) if raw => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
         _ => g.write(v, &mut out),
     });
-    written = written.and_then(|()| fmt::Write::write_str(&mut out, end));
+    written =
+        written.and_then(|()| fmt::Write::write_str(&mut out, end).map_err(|_| WriteError::Output));
     if written.is_ok()
         && let Err(e) = out.w.flush()
     {
         out.error = Some(e);
-        written = Err(fmt::Error);
+        written = Err(WriteError::Output);
     }
     match (written, out.error) {
         (Ok(()), _) => Ok(Value::Inert),
+        (Err(WriteError::Value(e)), _) => Err(e),
         (Err(_), Some(e)) if stdout && e.kind() == io::ErrorKind::BrokenPipe => {
             CLOSED.store(true, Ordering::Relaxed);
             Err(g.error("stdout-closed", &[]))
         }
-        (Err(_), Some(_)) => Err(g.error("output-error", values)),
-        // The printer stops only when its own stack can't grow.
-        (Err(_), None) => Err(g.error("out-of-memory", &[])),
+        (Err(_), _) => Err(g.error("output-error", values)),
     }
 }
 
@@ -126,7 +124,7 @@ fn resolve_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Erro
     let (Some(base), Some(path)) = (args.first(), args.get(1)) else {
         return Err(g.error("arity-error", args));
     };
-    let (Some(base), Some(path)) = (g.as_str(*base), g.as_str(*path)) else {
+    let (Some(base), Some(path)) = (g.as_str(base)?, g.as_str(path)?) else {
         return Err(g.error("type-error", args));
     };
     let full = Path::new(base).parent().unwrap_or(Path::new("")).join(path);
@@ -167,10 +165,10 @@ fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, 
 /// The one string argument, or a `type-error` or an `arity-error`.
 fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
     match args {
-        [v] => g
-            .as_str(*v)
-            .map(String::from)
-            .ok_or_else(|| g.error("type-error", args)),
+        [v] => match g.as_string(v)? {
+            Some(s) => Ok(s),
+            None => Err(g.error("type-error", args)),
+        },
         _ => Err(g.error("arity-error", args)),
     }
 }
@@ -225,9 +223,9 @@ fn create_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error
 }
 
 /// The open file whose number is `id`, and its path; `closed` once it is closed.
-fn file<'r>(g: &mut G, r: &'r mut Runner, id: Value) -> Result<(&'r str, &'r mut Stream), Error> {
+fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mut Stream), Error> {
     let opened = match id {
-        Value::Integer(n) => usize::try_from(n).ok().and_then(|i| r.files.get_mut(i)),
+        Value::Integer(n) => usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i)),
         _ => None,
     };
     match opened {
@@ -239,7 +237,7 @@ fn file<'r>(g: &mut G, r: &'r mut Runner, id: Value) -> Result<(&'r str, &'r mut
             let path = g.string(path)?;
             Err(g.error("closed", &[path]))
         }
-        None => Err(g.error("type-error", &[id])),
+        None => Err(g.error("type-error", std::slice::from_ref(id))),
     }
 }
 
@@ -253,7 +251,7 @@ fn reading(
     let [id] = args else {
         return Err(g.error("arity-error", args));
     };
-    let (path, Stream::Reading(input)) = file(g, r, *id)? else {
+    let (path, Stream::Reading(input)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
     let mut s = String::new();
@@ -280,11 +278,11 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
     let [id, count] = args else {
         return Err(g.error("arity-error", args));
     };
-    let Value::Integer(n) = count else {
-        return Err(g.error("type-error", &[*count]));
+    let &Value::Integer(n) = count else {
+        return Err(g.error("type-error", std::slice::from_ref(count)));
     };
-    let n = u64::try_from(*n).map_err(|_| g.error("range-error", &[*count]))?;
-    let (path, Stream::Reading(input)) = file(g, r, *id)? else {
+    let n = u64::try_from(n).map_err(|_| g.error("range-error", std::slice::from_ref(count)))?;
+    let (path, Stream::Reading(input)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
     let mut bytes = Vec::new();
@@ -301,23 +299,23 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     let [id, text] = args else {
         return Err(g.error("arity-error", args));
     };
-    let (path, Stream::Writing(out)) = file(g, r, *id)? else {
+    let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
-    let Some(text) = g.as_str(*text) else {
-        return Err(g.error("type-error", &[*text]));
+    let Some(text) = g.as_str(text)? else {
+        return Err(g.error("type-error", std::slice::from_ref(text)));
     };
     let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-    written(g, *id, path, wrote)
+    written(g, id, path, wrote)
 }
 
 /// `(write-bytes bytes)` on a file: the list of integers 0-255, as bytes.
 fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let &[id, mut list] = args else {
+    let [id, list] = args else {
         return Err(g.error("arity-error", args));
     };
     let mut bytes = Vec::new();
-    while let Some((b, rest)) = g.as_pair(list) {
+    for b in g.list_items(list)? {
         match b {
             Value::Integer(n) => match u8::try_from(n) {
                 Ok(b) => bytes.push(b),
@@ -325,10 +323,6 @@ fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, 
             },
             _ => return Err(g.error("type-error", &[b])),
         }
-        list = rest;
-    }
-    if list != Value::EmptyList {
-        return Err(g.error("type-error", &[list]));
     }
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
@@ -339,10 +333,10 @@ fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, 
 
 /// After a write to file `id`: `#inert`, or the error; a closed stdout ends the run quietly, as
 /// for `display`.
-fn written(g: &mut G, id: Value, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
+fn written(g: &mut G, id: &Value, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe && id == Value::Integer(2) => {
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe && *id == Value::Integer(2) => {
             CLOSED.store(true, Ordering::Relaxed);
             Err(g.error("stdout-closed", &[]))
         }
@@ -355,7 +349,7 @@ fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     let [id] = args else {
         return Err(g.error("arity-error", args));
     };
-    file(g, r, *id)?;
+    file(g, r, id)?;
     if let Value::Integer(n) = id
         && let Some(opened) = usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i))
     {
@@ -381,7 +375,7 @@ fn exit(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
         [Value::Integer(n)] => {
             let status = u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
             r.exit = Some(status);
-            STOP.store(true, Ordering::Relaxed);
+            r.stop.stop();
             Ok(Value::Inert)
         }
         [_] => Err(g.error("type-error", args)),
@@ -393,10 +387,10 @@ fn exit(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 /// (`#inert` if a signal ended it) and what it wrote to stdout and stderr, as a list.
 fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let mut words = Vec::new();
-    for &v in args {
-        match g.as_str(v) {
-            Some(s) => words.push(String::from(s)),
-            None => return Err(g.error("type-error", &[v])),
+    for v in args {
+        match g.as_string(v)? {
+            Some(s) => words.push(s),
+            None => return Err(g.error("type-error", std::slice::from_ref(v))),
         }
     }
     let Some((program, arguments)) = words.split_first() else {
@@ -421,7 +415,8 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     g.pair(status, list)
 }
 
-/// Prints an error to stderr as its kind followed by its values and where it happened, unless
+/// Prints an error to stderr as its kind followed by its values and where it happened, the
+/// innermost combination on the error's line and each one around it on a line of its own, unless
 /// stdout closed.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     if CLOSED.load(Ordering::Relaxed) {
@@ -432,24 +427,13 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
         error: None,
     };
     let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
-    let _ = g.write(Value::Symbol(e.kind), &mut err);
-    for &v in &e.values {
-        let _ = fmt::Write::write_str(&mut err, " ");
-        let _ = g.write(v, &mut err);
-    }
-    // The innermost combination on the error's line, then each one around it on a line of
-    // its own.
-    for (i, &at) in e.trace().iter().enumerate() {
-        let _ = fmt::Write::write_str(&mut err, if i == 0 { " in " } else { "\n  from " });
-        let _ = g.write(at, &mut err);
-    }
+    let _ = g.describe(e, &mut err);
     let _ = fmt::Write::write_str(&mut err, "\n");
     ExitCode::FAILURE
 }
 
 /// After an evaluation: the status `exit` gave, or success once stdout closed.
 fn ended(r: &Runner) -> Option<ExitCode> {
-    STOP.store(false, Ordering::Relaxed);
     match r.exit {
         Some(status) => Some(ExitCode::from(status)),
         None if CLOSED.load(Ordering::Relaxed) => Some(ExitCode::SUCCESS),
@@ -459,15 +443,15 @@ fn ended(r: &Runner) -> Option<ExitCode> {
 
 /// Whether `e` is a parse error for a list or string left open: the input isn't finished yet.
 fn unfinished(g: &mut G, e: &Error) -> bool {
-    let reason = e.values.first().copied();
-    g.symbol("parse-error").is_ok_and(|k| k == e.kind)
-        && ["unclosed-list", "unclosed-string"].iter().any(|&open| {
-            g.symbol(open)
-                .is_ok_and(|s| reason == Some(Value::Symbol(s)))
-        })
+    let reason = match e.values.first() {
+        Some(Value::Symbol(s)) => g.symbol_name(s).unwrap_or_default(),
+        _ => "",
+    };
+    g.is_kind(e, "parse-error").unwrap_or(false)
+        && ["unclosed-list", "unclosed-string"].contains(&reason)
 }
 
-fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
+fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
     let mut status = ExitCode::SUCCESS;
     let mut src = String::new();
     let mut pending = None;
@@ -494,7 +478,7 @@ fn interactive(g: &mut G, r: &mut Runner) -> ExitCode {
             eprint!("  ");
             continue;
         }
-        let done = match g.evaluate(r, &src) {
+        let done = match g.evaluate_in(r, top, "stdin", &src) {
             Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), true),
             Err(e) => Err(e),
         };
@@ -537,9 +521,38 @@ const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
     ("write-bytes-host", write_bytes_host),
     ("close-host", close_host),
     ("run-host", run_host),
-    ("read-file-host", read_file),
+    ("load-host", load_host),
     ("resolve-host", resolve_host),
 ];
+
+/// `(load-host path caller)`: evaluates the forms of the file in the caller's context, each
+/// combination with its line in the file. If the file doesn't read, its `parse-error`, with the
+/// path innermost in its trace, as the line and column are the file's: a record for `load` to raise.
+fn load_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [path, caller] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let path = one_string(g, std::slice::from_ref(path))?;
+    let text = std::fs::read_to_string(&path).map_err(|e| failed(g, "file-error", &path, &e))?;
+    match g.evaluate_in(r, caller, &path, &text) {
+        // An error with no trace yet is the reader's: nothing ran.
+        Err(e) if e.trace().is_empty() && g.is_kind(&e, "parse-error")? => {
+            let record = g.context(None)?;
+            let (path, values) = (g.string(&path)?, g.list(&e.values)?);
+            let trace = g.list(&[path])?;
+            for (name, v) in [
+                ("kind", Value::Symbol(e.kind)),
+                ("values", values),
+                ("trace", trace),
+            ] {
+                let name = Value::Symbol(g.symbol(name)?);
+                g.bind(&record, &name, v)?;
+            }
+            Ok(record)
+        }
+        done => done.map(|_| Value::Inert),
+    }
+}
 
 /// Binds the runner's operations in the top-level context, and `script-path` if there is a script.
 fn set_up(
@@ -563,26 +576,17 @@ fn set_up(
         g.define("script-path", path)?;
     }
     // The setup is made in a private context, so the operations it makes look names up there,
-    // never where the program could redefine them. An evaluation may reclaim a value held only
-    // here, so `form`, `private`, `setup` and the host functions are each made after the last
-    // evaluation before their use; `top` and `evaluate` are always kept.
-    let (top, evaluate) = (
-        g.evaluate(r, "(current-context)")?,
-        g.evaluate(r, "evaluate")?,
-    );
-    let forms = g.read(RUNNER)?;
-    // runner.grift is one form, the setup combiner.
-    let Some((form, Value::EmptyList)) = g.as_pair(forms) else {
-        return Err(g.error("parse-error", &[forms]));
-    };
-    let private = g.context()?;
-    let setup = g.call(r, evaluate, &[form, private])?;
+    // never where the program could redefine them. It counts as library code from then on, so
+    // an error's trace has only the program's combinations.
+    let private = g.private_context()?;
+    let setup = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
     let script = g.string(script.unwrap_or_default())?;
-    let mut hosts = vec![top, script];
+    let mut hosts = vec![g.top_level(), script];
     for (name, f) in PRIVATE {
         hosts.push(g.host_function(name, f)?);
     }
-    g.call(r, setup, &hosts)?;
+    g.call(r, &setup, &hosts)?;
+    g.seal_library();
     Ok(())
 }
 
@@ -597,6 +601,16 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     let arguments: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
+    let mut g: G = match Grift::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!(
+                "grift: the library failed to load ({} values)",
+                e.values.len()
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let mut r = Runner {
         files: vec![
             Opened {
@@ -613,25 +627,16 @@ fn main() -> ExitCode {
             },
         ],
         exit: None,
+        stop: g.interrupter(),
         started: Instant::now(),
     };
-    let mut g: G = match Grift::new() {
-        Ok(g) => g,
-        Err(e) => {
-            eprintln!(
-                "grift: the library failed to load ({} values)",
-                e.values.len()
-            );
-            return ExitCode::FAILURE;
-        }
-    };
-    g.set_interrupt_flag(&STOP);
     let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
     if let Err(e) = set_up(&mut g, &mut r, &arguments, script_path.as_deref()) {
         return report(&g, "grift", &e);
     }
+    let top = g.top_level();
     let (name, text) = match script {
-        None if io::stdin().is_terminal() => return interactive(&mut g, &mut r),
+        None if io::stdin().is_terminal() => return interactive(&mut g, &mut r, &top),
         None => {
             // The program is standard input, so it can't read it as data too.
             if let Some(input) = r.files.first_mut() {
@@ -655,7 +660,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let done = g.evaluate(&mut r, &text);
+    let done = g.evaluate_in(&mut r, &top, &name, &text);
     match (ended(&r), done) {
         (Some(status), _) => status,
         (None, Ok(_)) => ExitCode::SUCCESS,

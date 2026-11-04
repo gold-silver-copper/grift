@@ -5,22 +5,51 @@
     clippy::indexing_slicing
 )]
 
-use crate::{Error, Grift, Value};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::heap::{Bindings, Object};
+use crate::{Error, Grift, Interrupter, Primitive, Value, local};
 use std::time::{Duration, Instant};
+
+/// The grift definitions of the native primitives, run in their place when natives are off.
+const MEANINGS: &str = include_str!("natives.grift");
+
+impl<T> Grift<T> {
+    /// Evaluates the definitions of the native primitives, while the library loads.
+    pub(crate) fn load_definitions(&mut self) -> Result<(), local::Error> {
+        let here = Object::Context(Some(self.built_in), Bindings::default());
+        let here = self.heap.alloc(here)?;
+        let forms = self.read_local(MEANINGS, None)?;
+        self.evaluate_forms(None, forms, here)?;
+        let name = self.intern("meanings")?;
+        if let Some(local::Value::Context(meanings)) = self.find(here, name)? {
+            self.definitions = meanings;
+        }
+        Ok(())
+    }
+
+    /// With the natives off, the grift definition of native primitive `p`.
+    pub(crate) fn definition(&self, p: Primitive) -> Result<Option<local::Value>, local::Error> {
+        if self.natives {
+            return Ok(None);
+        }
+        let Some(name) = self.interned(p.name()) else {
+            return Ok(None);
+        };
+        Ok(self.context_at(self.definitions)?.1.get(&name).copied())
+    }
+}
 
 fn grift() -> Grift {
     Grift::new().expect("the library loads")
 }
 
-fn show<T>(g: &Grift<T>, v: Value) -> String {
+fn show<T>(g: &Grift<T>, v: &Value) -> String {
     let mut s = String::new();
     g.write(v, &mut s).unwrap();
     s
 }
 
-fn kind<T>(g: &mut Grift<T>, e: &Error) -> String {
-    show(g, Value::Symbol(e.kind))
+fn kind<T>(g: &Grift<T>, e: &Error) -> String {
+    g.symbol_name(&e.kind).unwrap().to_string()
 }
 
 /// Binds a host function in the top-level context.
@@ -34,7 +63,7 @@ fn holds(g: &mut Grift, cases: &[&str]) {
     for src in cases {
         match g.evaluate(&mut (), src) {
             Ok(Value::Boolean(true)) => {}
-            Ok(v) => panic!("{src} gave {}", show(g, v)),
+            Ok(v) => panic!("{src} gave {}", show(g, &v)),
             Err(e) => panic!("{src} failed: {}", kind(g, &e)),
         }
     }
@@ -44,7 +73,7 @@ fn holds(g: &mut Grift, cases: &[&str]) {
 fn fails(g: &mut Grift, cases: &[(&str, &str)]) {
     for (src, want) in cases {
         match g.evaluate(&mut (), src) {
-            Ok(v) => panic!("{src} gave {}", show(g, v)),
+            Ok(v) => panic!("{src} gave {}", show(g, &v)),
             Err(e) => assert_eq!(kind(g, &e), *want, "{src}"),
         }
     }
@@ -185,9 +214,9 @@ fn error_kinds() {
         .unwrap_err();
     assert_eq!(e.values.len(), 2);
     assert_eq!(e.values[0], Value::Integer(1));
-    assert_eq!(g.as_str(e.values[1]), Some("two"));
+    assert_eq!(g.as_str(&e.values[1]), Ok(Some("two")));
     let e = g.evaluate(&mut (), "(foo bar)").unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "foo");
+    assert_eq!(show(&g, &e.values[0]), "foo");
 }
 
 #[test]
@@ -227,7 +256,7 @@ fn deep_nesting_needs_no_rust_stack() {
     let depth = 100_000;
     let nested = format!("{}{}", "(".repeat(depth), ")".repeat(depth));
     let v = g.evaluate(&mut (), &format!("(quote! {nested})")).unwrap();
-    assert_eq!(show(&g, v), nested);
+    assert_eq!(show(&g, &v), nested);
     let sum = format!("{}0{}", "(add 1 ".repeat(depth), ")".repeat(depth));
     assert_eq!(g.evaluate(&mut (), &sum), Ok(Value::Integer(100_000)));
     // equal? is library code, so it needs no Rust stack either; a shallower tree keeps the
@@ -273,9 +302,9 @@ fn printing_reads_back() {
         "x",
     ] {
         let v = g.evaluate(&mut (), &format!("(quote! {src})")).unwrap();
-        let printed = show(&g, v);
+        let printed = show(&g, &v);
         let again = g.evaluate(&mut (), &format!("(quote! {printed})")).unwrap();
-        let again = show(&g, again);
+        let again = show(&g, &again);
         let same = g
             .evaluate(
                 &mut (),
@@ -286,23 +315,23 @@ fn printing_reads_back() {
     }
     let f = g.evaluate(&mut (), "(lambda! (x) (multiply x x))").unwrap();
     assert_eq!(
-        show(&g, f),
+        show(&g, &f),
         "#[applicative #[operative (x) #ignore (multiply x x)]]"
     );
     // A body of several forms prints as written, not as sequence!'s own source.
     let f = g.evaluate(&mut (), "(lambda! (x) (f x) x)").unwrap();
     assert_eq!(
-        show(&g, f),
+        show(&g, &f),
         "#[applicative #[operative (x) #ignore (sequence! (f x) x)]]"
     );
     // Control characters print as escapes that read back.
     let v = g
         .evaluate(&mut (), "\"\\x1b;[2J\\ta\\x7f;\\x3bb;\"")
         .unwrap();
-    let printed = show(&g, v);
+    let printed = show(&g, &v);
     assert_eq!(printed, "\"\\x1b;[2J\\ta\\x7f;\u{3bb}\"");
     let again = g.evaluate(&mut (), &printed).unwrap();
-    assert_eq!(g.as_str(again), g.as_str(v));
+    assert_eq!(g.as_str(&again), g.as_str(&v));
     fails(
         &mut g,
         &[
@@ -316,7 +345,7 @@ fn printing_reads_back() {
 fn reading_evaluates_nothing() {
     let mut g = grift();
     let forms = g.read("(first 1) undefined").unwrap();
-    assert_eq!(show(&g, forms), "((first 1) undefined)");
+    assert_eq!(show(&g, &forms), "((first 1) undefined)");
 }
 
 #[test]
@@ -343,7 +372,7 @@ fn errors_name_the_program_combination() {
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
         assert_eq!(
-            e.trace().first().map(|&v| show(&g, v)).as_deref(),
+            e.trace().first().map(|v| show(&g, v)).as_deref(),
             Some(at),
             "{src}"
         );
@@ -360,7 +389,7 @@ fn errors_name_the_program_combination() {
         Err(g.error("mine", &[]))
     });
     let e = g.evaluate(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, e.trace()[0]), "(fail-after-churn)");
+    assert_eq!(show(&g, &e.trace()[0]), "(fail-after-churn)");
 }
 
 #[test]
@@ -376,9 +405,9 @@ fn redefinition_and_names() {
         .unwrap();
     assert_eq!(g.evaluate(&mut (), "(g 1)"), Ok(Value::Integer(10)));
     let top = g.evaluate(&mut (), "(names ((vau! () e e)))").unwrap();
-    assert_eq!(show(&g, top), "(f g)");
+    assert_eq!(show(&g, &top), "(f g)");
     let built_in = g.evaluate(&mut (), "built-in-names").unwrap();
-    let built_in = show(&g, built_in);
+    let built_in = show(&g, &built_in);
     for name in [
         "vau!",
         "first",
@@ -416,7 +445,7 @@ fn twice(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
 
 fn reenter(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
     g.evaluate(&mut (), "(churn 2000)")?;
-    Ok(args[0])
+    Ok(args[0].clone())
 }
 
 #[test]
@@ -429,7 +458,7 @@ fn host_functions() {
         Ok(Value::Integer(6))
     );
     let f = g.evaluate(&mut (), "twice").unwrap();
-    assert_eq!(show(&g, f), "#[applicative #[host twice]]");
+    assert_eq!(show(&g, &f), "#[applicative #[host twice]]");
     fails(&mut g, &[("(twice 1 2)", "type-error")]);
     // A host function may evaluate; collections inside keep the caller's values.
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
@@ -442,14 +471,14 @@ fn host_functions() {
 
 /// `(halves "ab")` is `("ab" . "ab")`, made from Rust; `(sum (1 2 3))` walks a list from Rust.
 fn halves(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    let s = String::from(g.as_str(args[0]).unwrap());
+    let s = g.as_string(&args[0])?.unwrap();
     let (a, b) = (g.string(&s)?, g.string(&s)?);
     g.pair(a, b)
 }
 
 fn sum(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    let (mut list, mut n) = (args[0], 0);
-    while let Some((Value::Integer(x), rest)) = g.as_pair(list) {
+    let (mut list, mut n) = (args[0].clone(), 0);
+    while let Some((Value::Integer(x), rest)) = g.as_pair(&list)? {
         (list, n) = (rest, n + x);
     }
     Ok(Value::Integer(n))
@@ -467,7 +496,7 @@ fn host_functions_make_and_read_data() {
             "(equal? (sum (list 1 2 3)) 6)",
         ],
     );
-    assert_eq!(g.as_pair(Value::Integer(1)), None);
+    assert_eq!(g.as_pair(&Value::Integer(1)), Ok(None));
 }
 
 /// Counts its calls in the host's state, and calls back into grift with it.
@@ -498,43 +527,16 @@ fn the_host_calls_combiners_with_values() {
     // The arguments are values: a symbol and a list are not evaluated again.
     let x = g.evaluate(&mut (), "(quote! undefined)").unwrap();
     let ys = g.evaluate(&mut (), "(quote! (first 1))").unwrap();
-    let v = g.call(&mut (), f, &[x, ys]).unwrap();
-    assert_eq!(show(&g, v), "(undefined first 1)");
+    let v = g.call(&mut (), &f, &[x, ys]).unwrap();
+    assert_eq!(show(&g, &v), "(undefined first 1)");
     let first = g.evaluate(&mut (), "first").unwrap();
-    let e = g.call(&mut (), first, &[Value::Integer(1)]).unwrap_err();
-    assert_eq!(kind(&mut g, &e), "type-error");
+    let e = g.call(&mut (), &first, &[Value::Integer(1)]).unwrap_err();
+    assert_eq!(kind(&g, &e), "type-error");
     let quote = g.evaluate(&mut (), "quote!").unwrap();
     assert_eq!(
-        g.call(&mut (), quote, &[Value::Integer(1)]),
+        g.call(&mut (), &quote, &[Value::Integer(1)]),
         Ok(Value::Integer(1))
     );
-}
-
-static STOP: AtomicBool = AtomicBool::new(false);
-
-#[test]
-fn the_host_interrupts_a_runaway_evaluation() {
-    let mut g = grift();
-    g.set_interrupt_flag(&STOP);
-    g.evaluate(&mut (), "(define! log ()) (define! here (current-context))")
-        .unwrap();
-    g.evaluate(&mut (), "(define! spin (lambda! () (spin)))")
-        .unwrap();
-    let setter = std::thread::spawn(|| {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        STOP.store(true, Ordering::Relaxed);
-    });
-    let e = g
-        .evaluate(
-            &mut (),
-            "(finally! (spin) (bind here (quote! log) (pair 1 log)))",
-        )
-        .unwrap_err();
-    setter.join().unwrap();
-    assert_eq!(kind(&mut g, &e), "interrupted");
-    // The cleanup ran, the flag is clear again and the interpreter goes on.
-    assert!(!STOP.load(Ordering::Relaxed));
-    assert_eq!(g.evaluate(&mut (), "(length log)"), Ok(Value::Integer(1)));
 }
 
 #[test]
@@ -558,20 +560,20 @@ fn cleanup_runs_and_the_error_goes_on() {
             "(finally! (finally! (raise (error (quote! mine) 7 (list 8))) (note 3)) (note 4))",
         )
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "mine");
+    assert_eq!(kind(&g, &e), "mine");
     assert_eq!(e.values[0], Value::Integer(7));
-    assert_eq!(show(&g, e.values[1]), "(8)");
+    assert_eq!(show(&g, &e.values[1]), "(8)");
     assert_eq!(
-        show(&g, e.trace()[0]),
+        show(&g, &e.trace()[0]),
         "(raise (error (quote! mine) 7 (list 8)))"
     );
     let log = g.evaluate(&mut (), "log").unwrap();
-    assert_eq!(show(&g, log), "(4 3 2 1)");
+    assert_eq!(show(&g, &log), "(4 3 2 1)");
     // A cleanup that fails replaces the error; the outer cleanup still runs.
     let e = g
         .evaluate(&mut (), "(finally! (finally! (first 1) (rest 2)) (note 5))")
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "#[primitive rest]");
+    assert_eq!(show(&g, &e.values[0]), "#[primitive rest]");
     assert_eq!(g.evaluate(&mut (), "(first log)"), Ok(Value::Integer(5)));
     // A cleanup that succeeds doesn't lend the error its own location.
     let (protect, here) = (
@@ -581,10 +583,10 @@ fn cleanup_runs_and_the_error_goes_on() {
     let missing = Value::Symbol(g.symbol("missing").unwrap());
     let cleanup = g.evaluate(&mut (), "(lambda! () (list 1))").unwrap();
     let e = g
-        .call(&mut (), protect, &[missing, here, cleanup])
+        .call(&mut (), &protect, &[missing, here, cleanup])
         .unwrap_err();
     assert_eq!(
-        (kind(&mut g, &e), e.trace()),
+        (kind(&g, &e), e.trace()),
         (String::from("unbound-symbol"), &[][..])
     );
     // The waiting error's values survive collections in the cleanup.
@@ -596,7 +598,7 @@ fn cleanup_runs_and_the_error_goes_on() {
             "(finally! (raise (error (quote! mine) (list 1 2))) (churn 20000))",
         )
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "(1 2)");
+    assert_eq!(show(&g, &e.values[0]), "(1 2)");
 }
 
 #[test]
@@ -606,13 +608,8 @@ fn stale_values_are_refused() {
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
         .unwrap();
     g.evaluate(&mut (), "(churn 10000)").unwrap();
-    assert_eq!(show(&g, old), "#[stale]");
-    assert_eq!(g.as_str(old), None);
-    let Value::Pair(r) = old else {
-        panic!("a pair")
-    };
-    let e = g.pair_at(r).unwrap_err();
-    assert_eq!(kind(&mut g, &e), "stale-value");
+    let e = g.as_pair(&old).unwrap_err();
+    assert_eq!(kind(&g, &e), "stale-value");
 }
 
 /// The machine steps taken and the operatives made evaluating `src`.
@@ -626,8 +623,9 @@ fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
 fn library_forms_build_no_code() {
     // Each form against the same thing written by hand: a use makes no operative and takes at
     // most six times the steps. They used to build new code each time: let! made two
-    // operatives, and conditional! took 29 times the steps.
+    // operatives, and conditional! took 29 times the steps. Both as grift: the natives off.
     let mut g = grift();
+    g.natives = false;
     g.evaluate(&mut (), "(define! n 3) (define! e (current-context))")
         .unwrap();
     for (form, by_hand) in [
@@ -728,8 +726,8 @@ fn catch_catches_errors_as_contexts() {
     let e = g
         .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "not-integer");
-    let trace: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
+    assert_eq!(kind(&g, &e), "not-integer");
+    let trace: Vec<String> = e.trace().iter().map(|v| show(&g, v)).collect();
     assert_eq!(
         trace,
         [
@@ -745,14 +743,14 @@ fn catch_catches_errors_as_contexts() {
             "(catch! (catch! (first 1) e (raise e)) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, trace), "((first 1))");
+    assert_eq!(show(&g, &trace), "((first 1))");
     let trace = g
         .evaluate(
             &mut (),
             "(catch! (raise (error (quote! mine))) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, trace), "((raise (error (quote! mine))))");
+    assert_eq!(show(&g, &trace), "((raise (error (quote! mine))))");
     assert!(
         g.heap.len() < 100_000,
         "heap grew to {} slots",
@@ -760,13 +758,13 @@ fn catch_catches_errors_as_contexts() {
     );
 }
 
-fn stop(_: &mut Grift, _: &mut (), _: &[Value]) -> Result<Value, Error> {
-    STOP.store(true, Ordering::Relaxed);
+fn stop(_: &mut Grift<Interrupter>, s: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
+    s.stop();
     Ok(Value::Inert)
 }
 
 /// A host function that fails as the program's mistake, or reports that memory ran out.
-fn fail(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
+fn fail<T>(g: &mut Grift<T>, _: &mut T, args: &[Value]) -> Result<Value, Error> {
     match args {
         [] => Err(g.error("out-of-memory", &[])),
         _ => Err(g.error("bad-input", args)),
@@ -775,33 +773,31 @@ fn fail(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
 
 #[test]
 fn catch_catches_errors_about_the_program_and_never_the_limits() {
-    let mut g = grift();
-    g.set_interrupt_flag(&STOP);
+    let mut g: Grift<Interrupter> = Grift::new().unwrap();
+    let mut s = g.interrupter();
     define(&mut g, "stop", stop);
     define(&mut g, "fail", fail);
     // An error about the program, a host function's included, is caught.
     let caught = g
-        .evaluate(&mut (), "(catch! (fail 7) e (evaluate-in! kind e))")
+        .evaluate(&mut s, "(catch! (fail 7) e (evaluate-in! kind e))")
         .unwrap();
-    assert_eq!(show(&g, caught), "bad-input");
+    assert_eq!(show(&g, &caught), "bad-input");
     // The allocator's limit and the host's go through every catch! to the host.
-    let e = g
-        .evaluate(&mut (), "(catch! (fail) #ignore 0)")
-        .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "out-of-memory");
+    let e = g.evaluate(&mut s, "(catch! (fail) #ignore 0)").unwrap_err();
+    assert_eq!(kind(&g, &e), "out-of-memory");
     // A cleanup that fails while a limit passes doesn't turn it into an error catch! catches.
     let e = g
-        .evaluate(&mut (), "(catch! (finally! (stop) (first 1)) #ignore 0)")
+        .evaluate(&mut s, "(catch! (finally! (stop) (first 1)) #ignore 0)")
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "interrupted");
+    assert_eq!(kind(&g, &e), "interrupted");
     // ... even through a catch! in a loop that would catch anything.
     let e = g
         .evaluate(
-            &mut (),
+            &mut s,
             "(define! spin (lambda! () (catch! (sequence! (stop) (spin)) #ignore (spin)))) (spin)",
         )
         .unwrap_err();
-    assert_eq!(kind(&mut g, &e), "interrupted");
+    assert_eq!(kind(&g, &e), "interrupted");
 }
 
 #[test]
@@ -867,7 +863,7 @@ fn errors_name_each_program_combination_around_them() {
         ("(first 1)", "(first 1)"),
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
-        let at: Vec<String> = e.trace().iter().map(|&v| show(&g, v)).collect();
+        let at: Vec<String> = e.trace().iter().map(|v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }
@@ -938,7 +934,7 @@ const FLOATS: [f64; 12] = [
 fn floats_read_back_as_they_print() {
     let mut g = grift();
     for x in FLOATS {
-        let printed = show(&g, Value::Float(x));
+        let printed = show(&g, &Value::Float(x));
         let again = float(&mut g, &printed);
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
         // value-to-string gives the printer's text, and string-to-float reads it back (a
@@ -946,7 +942,7 @@ fn floats_read_back_as_they_print() {
         let s = g
             .evaluate(&mut (), &format!("(value-to-string {printed})"))
             .unwrap();
-        assert_eq!(g.as_str(s), Some(printed.as_str()));
+        assert_eq!(g.as_str(&s), Ok(Some(printed.as_str())));
         let again = float(
             &mut g,
             &format!("(string-to-float (value-to-string {printed}))"),
@@ -954,7 +950,7 @@ fn floats_read_back_as_they_print() {
         assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
     }
     // A not-a-number of any sign reads back as a not-a-number.
-    let negative = show(&g, Value::Float(-f64::NAN));
+    let negative = show(&g, &Value::Float(-f64::NAN));
     assert!(float(&mut g, &negative).is_nan());
     holds(
         &mut g,
@@ -1011,7 +1007,7 @@ fn arithmetic_is_rusts() {
                         } else {
                             "overflow"
                         };
-                        assert_eq!(kind(&mut g, &e), want, "({name} {a} {b})");
+                        assert_eq!(kind(&g, &e), want, "({name} {a} {b})");
                     }
                     (rust, got) => panic!("({name} {a} {b}): Rust {rust:?}, grift {got:?}"),
                 }
@@ -1024,20 +1020,20 @@ fn arithmetic_is_rusts() {
         let got = g.evaluate(&mut (), &format!("(absolute-value {a})"));
         match (a.checked_abs(), got) {
             (Some(n), Ok(v)) => assert_eq!(v, Value::Integer(n), "(absolute-value {a})"),
-            (None, Err(e)) => assert_eq!(kind(&mut g, &e), "overflow"),
+            (None, Err(e)) => assert_eq!(kind(&g, &e), "overflow"),
             (rust, got) => panic!("(absolute-value {a}): Rust {rust:?}, grift {got:?}"),
         }
         for b in [0, 1, 2, 3, 31, 62, 63, 64, -1] {
             let got = g.evaluate(&mut (), &format!("(power {a} {b})"));
             match (u32::try_from(b).map(|b| a.checked_pow(b)), got) {
                 (Ok(Some(n)), Ok(v)) => assert_eq!(v, Value::Integer(n), "(power {a} {b})"),
-                (Ok(None), Err(e)) => assert_eq!(kind(&mut g, &e), "overflow", "(power {a} {b})"),
-                (Err(_), Err(e)) => assert_eq!(kind(&mut g, &e), "range-error"),
+                (Ok(None), Err(e)) => assert_eq!(kind(&g, &e), "overflow", "(power {a} {b})"),
+                (Err(_), Err(e)) => assert_eq!(kind(&g, &e), "range-error"),
                 (rust, got) => panic!("(power {a} {b}): Rust {rust:?}, grift {got:?}"),
             }
         }
     }
-    let floats = FLOATS.map(|x| show(&g, Value::Float(x)));
+    let floats = FLOATS.map(|x| show(&g, &Value::Float(x)));
     for (x, a) in FLOATS.iter().zip(&floats) {
         for (y, b) in FLOATS.iter().zip(&floats) {
             for (name, rust) in [
@@ -1125,7 +1121,7 @@ fn bitwise_operations_are_rusts() {
                 let got = g.evaluate(&mut (), &format!("({name} {a} {n})"));
                 match (rust, got) {
                     (Some(r), Ok(v)) => assert_eq!(v, Value::Integer(r), "({name} {a} {n})"),
-                    (None, Err(e)) => assert_eq!(kind(&mut g, &e), "overflow", "({name} {a} {n})"),
+                    (None, Err(e)) => assert_eq!(kind(&g, &e), "overflow", "({name} {a} {n})"),
                     (rust, got) => panic!("({name} {a} {n}): Rust {rust:?}, grift {got:?}"),
                 }
             }
@@ -1147,13 +1143,13 @@ fn comparisons_agree_with_rust() {
     let integers = [-1, 0, 1].map(Value::Integer);
     let floats = [-1.0, 0.0, -0.0, 1.0, f64::NAN, f64::INFINITY].map(Value::Float);
     for values in [&integers[..], &floats[..]] {
-        for &x in values {
-            for &y in values {
+        for x in values {
+            for y in values {
                 let (a, b) = (show(&g, x), show(&g, y));
                 // Rust's own order of the two, None with not-a-number.
                 let order = match (x, y) {
-                    (Value::Integer(x), Value::Integer(y)) => x.partial_cmp(&y),
-                    (Value::Float(x), Value::Float(y)) => x.partial_cmp(&y),
+                    (Value::Integer(x), Value::Integer(y)) => x.partial_cmp(y),
+                    (Value::Float(x), Value::Float(y)) => x.partial_cmp(y),
                     _ => panic!("two integers or two floats"),
                 };
                 let (less, equal, greater) = (
@@ -1261,7 +1257,7 @@ fn a_predicate_for_every_type() {
         let kind = g
             .evaluate(&mut (), &format!("(symbol-to-string (type-of {value}))"))
             .unwrap();
-        let kind = format!("{}?", g.as_str(kind).unwrap());
+        let kind = format!("{}?", g.as_str(&kind).unwrap().unwrap());
         assert!(predicates.contains(&kind.as_str()), "{value}: {kind}");
         for p in predicates {
             let want = Value::Boolean(p == kind);
@@ -1380,17 +1376,21 @@ fn contexts() {
             "(sequence! (bind child (quote! a) 10) (and!? (same? (evaluate-in! a child) 10) \
                                                        (same? (evaluate-in! a parent) 2)))",
             "(equal? (names child) (quote! (a c)))",
+            // bindings gives a context's own bindings as data, a record's fields.
+            "(equal? (bindings child) (quote! ((a 10) (c 3))))",
+            "(equal? (second (find-association (quote! values) (bindings (error (quote! e) 1)))) (list 1))",
+            "(same? (bindings (context child)) ())",
             // current-context is the context it is called in.
             "(same? ((lambda! (x) (evaluate-in! x (current-context))) 5) 5)",
         ],
     );
     // A context prints as its own names, sorted, never its values.
     let child = g.evaluate(&mut (), "child").unwrap();
-    assert_eq!(show(&g, child), "#[context a c]");
+    assert_eq!(show(&g, &child), "#[context a c]");
     let empty = g.evaluate(&mut (), "(context)").unwrap();
-    assert_eq!(show(&g, empty), "#[context]");
+    assert_eq!(show(&g, &empty), "#[context]");
     let e = g.evaluate(&mut (), "(error (quote! mine) 1)").unwrap();
-    assert_eq!(show(&g, e), "#[context kind trace values]");
+    assert_eq!(show(&g, &e), "#[context kind trace values]");
 }
 
 /// Whether a test program finishes within this: about 5 times what it takes (2 s) and less than
@@ -1470,7 +1470,7 @@ fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
 fn literal(s: &str) -> String {
     let mut g = grift();
     let v = g.string(s).unwrap();
-    show(&g, v)
+    show(&g, &v)
 }
 
 #[test]
@@ -1532,19 +1532,19 @@ fn read_form_is_the_program_reader() {
         "\"\\q\"",
     ] {
         let whole = g.read(bad).unwrap_err();
-        assert_eq!(kind(&mut g, &whole), "parse-error");
+        assert_eq!(kind(&g, &whole), "parse-error");
         let one = g
             .evaluate(&mut (), &format!("(read-form {} 0)", literal(bad)))
             .unwrap_err();
         assert_eq!(
-            (kind(&mut g, &one), one.values),
+            (kind(&g, &one), one.values),
             ("parse-error".into(), whole.values)
         );
     }
     let e = g
         .evaluate(&mut (), "(read-form \"a\\nb\\n)\" 4)")
         .unwrap_err();
-    assert_eq!(show(&g, e.values[0]), "unmatched-parenthesis");
+    assert_eq!(show(&g, &e.values[0]), "unmatched-parenthesis");
     assert_eq!(e.values[1..], [Value::Integer(3), Value::Integer(1)]);
     fails(
         &mut g,
@@ -1580,11 +1580,11 @@ fn value_to_string_is_the_printer() {
         "(sequence! (define! c (context)) (bind c (quote! b) 1) (bind c (quote! a) 2) c)",
     ] {
         let v = g.evaluate(&mut (), src).unwrap();
-        let printed = show(&g, v);
+        let printed = show(&g, &v);
         let text = g
             .evaluate(&mut (), &format!("(value-to-string {src})"))
             .unwrap();
-        assert_eq!(g.as_str(text), Some(printed.as_str()));
+        assert_eq!(g.as_str(&text), Ok(Some(printed.as_str())));
     }
     // What can be read back reads back, by read-form.
     holds(
@@ -1837,9 +1837,9 @@ fn a_parse_error_says_why_and_where() {
         ("#nope", "unknown-constant 1 1"),
     ] {
         let e = g.read(text).unwrap_err();
-        let values: Vec<String> = e.values.iter().map(|&v| show(&g, v)).collect();
+        let values: Vec<String> = e.values.iter().map(|v| show(&g, v)).collect();
         assert_eq!(
-            (kind(&mut g, &e), values.join(" ")),
+            (kind(&g, &e), values.join(" ")),
             ("parse-error".into(), want.into()),
             "{text:?}"
         );
@@ -1902,10 +1902,10 @@ fn lookup_and_unbind() {
         .unwrap();
     // While bound it survives collections; once unbound, nothing holds it.
     g.evaluate(&mut (), churn).unwrap();
-    assert_eq!(g.as_str(held), Some("kept?"));
+    assert_eq!(g.as_str(&held), Ok(Some("kept?")));
     g.evaluate(&mut (), "(unbind inner (quote! held))").unwrap();
     g.evaluate(&mut (), churn).unwrap();
-    assert_eq!(g.as_str(held), None);
+    assert_eq!(kind(&g, &g.as_str(&held).unwrap_err()), "stale-value");
 }
 
 #[test]
@@ -2034,4 +2034,693 @@ fn list_access_by_index() {
             ("(drop 2 xs)", "type-error"),
         ],
     );
+}
+
+/// A small deterministic generator (xorshift*), so the generated programs need no dependency and
+/// a failure names its seed.
+struct Random(u64);
+
+impl Random {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        (self.0.wrapping_mul(0x2545_f491_4f6c_dd1d) >> 33) as usize % n
+    }
+
+    fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
+        xs[self.below(xs.len())]
+    }
+}
+
+/// Values of every kind, by what the natives take: integers at the ends and the shift bounds,
+/// floats with signed zero, the infinities and not-a-number, UTF-8 strings and number texts,
+/// symbols, contexts, combiners, pairs and the constants.
+const INTEGER_TEXTS: &[&str] = &[
+    "0",
+    "1",
+    "-1",
+    "2",
+    "7",
+    "-8",
+    "62",
+    "63",
+    "64",
+    "255",
+    "1114111",
+    "1114112",
+    "55296",
+    "57343",
+    "9223372036854775807",
+    "-9223372036854775808",
+    "4611686018427387904",
+    "-4611686018427387905",
+    "-6148914691236517206",
+];
+const FLOAT_TEXTS: &[&str] = &[
+    "0.0",
+    "-0.0",
+    "1.5",
+    "-1.5",
+    "0.5",
+    "-0.99",
+    "#infinity",
+    "#-infinity",
+    "#not-a-number",
+    "9.3e18",
+    "-9.3e18",
+    "9223372036854775807.0",
+    "-9223372036854775808.0",
+    "4.5e15",
+    "1e300",
+];
+const STRING_TEXTS: &[&str] = &[
+    "\"\"",
+    "\"a\"",
+    "\"h\\xe9;llo\"",
+    "\"\\x3bb;x\\x3bb;\\x1f600;\"",
+    "\"a\\rb\\rb\"",
+    "\"abcabc\"",
+    "\"bcabcab\"",
+    "\"bc\"",
+    "\"+12\"",
+    "\"-0\"",
+    "\"0042\"",
+    "\"9223372036854775807\"",
+    "\"9223372036854775808\"",
+    "\"-9223372036854775808\"",
+    "\"-9223372036854775809\"",
+    "\"12x\"",
+    "\"+\"",
+    "\"-\"",
+    "\" 1\"",
+];
+const OTHER_TEXTS: &[&str] = &[
+    "()",
+    "#true",
+    "#false",
+    "#inert",
+    "#ignore",
+    "(quote! x)",
+    "(quote! first)",
+    "here",
+    "(context)",
+    "record",
+    "(list 1 2)",
+    "(pair 1 2)",
+    "(quote! (a . b))",
+    "first",
+    "if!",
+    "(unwrap first)",
+    "(wrap if!)",
+    "sequence!",
+    "string-search",
+    "double",
+    "note",
+    "(malformed 0)",
+    "(malformed 1)",
+    "(malformed 2)",
+];
+
+/// Each native with what each of its arguments usually is: `i` an integer, `f` a float, `s` a
+/// string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a symbol, `p` a
+/// pair, `b` a test, `x` anything.
+const NATIVES: &[(&str, &str)] = &[
+    ("first", "p"),
+    ("rest", "p"),
+    ("select", "bxx"),
+    ("lookup", "cyx"),
+    ("bitwise-and", "ii"),
+    ("bitwise-or", "ii"),
+    ("bitwise-exclusive-or", "ii"),
+    ("shift-left", "in"),
+    ("shift-right", "in"),
+    ("integer-to-string", "i"),
+    ("string-to-integer", "s"),
+    ("integer-to-float", "i"),
+    ("float-to-integer", "f"),
+    ("string-byte-length", "s"),
+    ("byte-substring", "soo"),
+    ("code-point-to-string", "i"),
+    ("if!", "bxx"),
+    ("sequence!", "xxx"),
+    ("string-search", "sto"),
+];
+
+/// Where a generated call stands: at top level, as an operand, in a body's tail, in a branch
+/// taken or not, before or as the last of a sequence, in a handler and a cleanup, applied,
+/// unwrapped, wrapped again, and bound and read back.
+const PLACES: &[&str] = &[
+    "{}",
+    "(list {} (note 2))",
+    "((lambda! () {}))",
+    "(double {})",
+    "(if! #true {} (note 0))",
+    "(if! #false (note 0) {})",
+    "(sequence! {} (note 3))",
+    "(sequence! (note 3) {})",
+    "(catch! {} e (list (evaluate-in! kind e) (evaluate-in! values e) (evaluate-in! trace e)))",
+    "(catch! (raise (error (quote! mine) 1)) #ignore {})",
+    "(finally! {} (note 9))",
+    "(finally! (note 9) {})",
+    "(sequence! (bind record (quote! x) {}) (lookup record (quote! x) 0))",
+    "(catch-kind! {} type-error e (evaluate-in! values e))",
+    // A form that isn't a combination failing after one that returned through deeper ones: where
+    // the error is reported depends on the twin restoring the place.
+    "(sequence! (double {}) nope)",
+    "((lambda! () (double {}) nope))",
+];
+
+/// One generated expression.
+fn generated(r: &mut Random, depth: usize) -> String {
+    let (name, kinds) = NATIVES[r.below(NATIVES.len())];
+    let mut arguments: Vec<String> = kinds.chars().map(|k| argument(r, k, depth)).collect();
+    // Missing and excess operands now and then.
+    match r.below(12) {
+        0 => {
+            arguments.pop();
+        }
+        1 => arguments.push(argument(r, 'x', depth)),
+        _ => {}
+    }
+    let arguments = arguments.join(" ");
+    let call = match r.below(14) {
+        0 if !name.ends_with('!') => format!("(apply {name} (list {arguments}))"),
+        1 => format!("((unwrap {name}) {arguments})"),
+        2 => format!("((wrap {name}) {arguments})"),
+        3 => format!("({name} . {arguments})"),
+        4 => format!(
+            "(list (type-of {name}) (operative? {name}) (applicative? {name}) (value-to-string {name}) (same? {name} (unwrap (wrap {name}))))"
+        ),
+        5 => format!("({name} {arguments} . 1)"),
+        _ => format!("({name} {arguments})"),
+    };
+    r.pick(PLACES).replace("{}", &call)
+}
+
+fn argument(r: &mut Random, kind: char, depth: usize) -> String {
+    let pool = match (r.below(8), kind) {
+        (0, _) => OTHER_TEXTS,
+        (1, _) => [INTEGER_TEXTS, FLOAT_TEXTS, STRING_TEXTS, OTHER_TEXTS][r.below(4)],
+        (_, 'i' | 'o' | 'n') if r.below(3) == 0 && depth > 0 => {
+            return generated(r, depth - 1);
+        }
+        (_, 'i') => INTEGER_TEXTS,
+        (_, 'o') => &["-1", "0", "1", "2", "3", "4", "6", "7", "100"],
+        (_, 'n') => &["-1", "0", "1", "2", "13", "62", "63", "64"],
+        (_, 'f') => FLOAT_TEXTS,
+        (_, 's') => STRING_TEXTS,
+        (_, 't') => &[
+            "\"\"",
+            "\"b\"",
+            "\"bc\"",
+            "\"ca\"",
+            "\"l\"",
+            "\"\\x3bb;\"",
+            "\"\\rb\"",
+            "\"0\"",
+        ],
+        (_, 'c') => &[
+            "here",
+            "record",
+            "(context)",
+            "(context record)",
+            "1",
+            "(malformed 0)",
+        ],
+        (_, 'y') => &[
+            "(quote! x)",
+            "(quote! y)",
+            "(quote! first)",
+            "(quote! nope)",
+            "nope",
+            "\"x\"",
+        ],
+        (_, 'p') => &[
+            "(list 1 2)",
+            "(pair 1 2)",
+            "(quote! (a . b))",
+            "()",
+            "1",
+            "(list (list))",
+            "(malformed 2)",
+        ],
+        (_, 'b') => &["#true", "#false", "(same? 1 1)", "(note #false)", "1", "()"],
+        _ if depth > 0 && r.below(2) == 0 => return generated(r, depth - 1),
+        _ => [INTEGER_TEXTS, FLOAT_TEXTS, STRING_TEXTS, OTHER_TEXTS][r.below(4)],
+    };
+    r.pick(pool).to_string()
+}
+
+/// What a host sees of a value, compared across two interpreters: the same structure, and the
+/// same identities, so aliasing is the same too.
+struct Comparison<'a> {
+    left: &'a Grift<Vec<String>>,
+    right: &'a Grift<Vec<String>>,
+    matched: Vec<(Value, Value)>,
+}
+
+impl Comparison<'_> {
+    fn values(&mut self, a: &Value, b: &Value) -> Result<(), String> {
+        let (l, r) = (self.left, self.right);
+        let mut todo = vec![(a.clone(), b.clone())];
+        while let Some((a, b)) = todo.pop() {
+            let differ = || Err(format!("{} against {}", show(l, &a), show(r, &b)));
+            match (&a, &b) {
+                (Value::Float(x), Value::Float(y)) if x.to_bits() != y.to_bits() => {
+                    return differ();
+                }
+                (Value::Symbol(x), Value::Symbol(y))
+                    if l.symbol_name(x).unwrap() != r.symbol_name(y).unwrap() =>
+                {
+                    return differ();
+                }
+                (Value::String(_), Value::String(_)) if l.as_str(&a) != r.as_str(&b) => {
+                    return differ();
+                }
+                (Value::Host(_), Value::Host(_)) if show(l, &a) != show(r, &b) => return differ(),
+                (Value::Float(_), Value::Float(_))
+                | (Value::Symbol(_), Value::Symbol(_))
+                | (Value::String(_), Value::String(_))
+                | (Value::Host(_), Value::Host(_)) => {}
+                (Value::Pair(_), Value::Pair(_))
+                | (Value::Context(_), Value::Context(_))
+                | (Value::Operative(_), Value::Operative(_))
+                | (Value::Applicative(_), Value::Applicative(_)) => {
+                    let known = self.matched.iter().find(|(x, y)| *x == a || *y == b);
+                    match known {
+                        Some((x, y)) if *x == a && *y == b => continue,
+                        Some(_) => return Err(format!("aliasing differs at {}", show(l, &a))),
+                        None => self.matched.push((a.clone(), b.clone())),
+                    }
+                    if let (Some((a1, a2)), Some((b1, b2))) =
+                        (l.as_pair(&a).unwrap(), r.as_pair(&b).unwrap())
+                    {
+                        todo.push((a1, b1));
+                        todo.push((a2, b2));
+                    } else if let Value::Context(_) = a {
+                        let (x, y) = (l.names(&a).unwrap(), r.names(&b).unwrap());
+                        let names = |g: &Grift<Vec<String>>, n: &[crate::Symbol]| {
+                            n.iter()
+                                .map(|s| g.symbol_name(s).unwrap().to_string())
+                                .collect::<Vec<_>>()
+                        };
+                        if names(l, &x) != names(r, &y) {
+                            return differ();
+                        }
+                        for (s, t) in x.iter().zip(&y) {
+                            todo.push((
+                                l.lookup(&a, s).unwrap().unwrap(),
+                                r.lookup(&b, t).unwrap().unwrap(),
+                            ));
+                        }
+                    } else if show(l, &a) != show(r, &b) {
+                        return differ();
+                    }
+                }
+                _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
+                    return differ();
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn outcomes(
+        &mut self,
+        a: &Result<Value, Error>,
+        b: &Result<Value, Error>,
+    ) -> Result<(), String> {
+        match (a, b) {
+            (Ok(a), Ok(b)) => self.values(a, b),
+            (Err(a), Err(b)) => {
+                let (l, r) = (self.left, self.right);
+                if kind(l, a) != kind(r, b) || a.values.len() != b.values.len() {
+                    return Err(format!(
+                        "{} {:?} against {} {:?}",
+                        kind(l, a),
+                        a.values,
+                        kind(r, b),
+                        b.values
+                    ));
+                }
+                if a.trace().len() != b.trace().len() {
+                    return Err(format!(
+                        "trace {} against {}",
+                        a.trace().len(),
+                        b.trace().len()
+                    ));
+                }
+                for (x, y) in a.trace().iter().zip(b.trace()) {
+                    if l.position(x) != r.position(y) {
+                        return Err(format!(
+                            "{} placed {:?} against {:?}",
+                            show(l, x),
+                            l.position(x),
+                            r.position(y)
+                        ));
+                    }
+                    self.values(x, y)?;
+                }
+                a.values
+                    .iter()
+                    .zip(&b.values)
+                    .try_for_each(|(x, y)| self.values(x, y))
+            }
+            _ => Err(String::from("a value against an error")),
+        }
+    }
+}
+
+/// `(note x)`: logs x as it prints, and gives it back: the order and number of evaluations.
+fn note(g: &mut Grift<Vec<String>>, log: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
+    log.push(
+        args.iter()
+            .map(|v| show(g, v))
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    Ok(args.first().cloned().unwrap_or(Value::Inert))
+}
+
+/// What a host might hand back wrongly: an object's reference in another kind's variant.
+fn malformed(
+    g: &mut Grift<Vec<String>>,
+    _: &mut Vec<String>,
+    args: &[Value],
+) -> Result<Value, Error> {
+    let string = g.string("not a context")?;
+    let pair = g.pair(Value::Integer(1), Value::Integer(2))?;
+    let (Value::String(s), Value::Pair(p)) = (string, pair) else {
+        return Err(g.error("not-made", &[]));
+    };
+    Ok(match args.first() {
+        Some(Value::Integer(0)) => Value::Context(s),
+        Some(Value::Integer(1)) => Value::String(p),
+        _ => Value::Pair(s),
+    })
+}
+
+/// Two interpreters alike, one running the natives and one their grift definitions.
+fn twins() -> [Grift<Vec<String>>; 2] {
+    [true, false].map(|natives| {
+        let mut g: Grift<Vec<String>> = Grift::new().unwrap();
+        for (name, f) in [
+            ("note", note as crate::HostFunction<Vec<String>>),
+            ("malformed", malformed),
+        ] {
+            let f = g.host_function(name, f).unwrap();
+            g.define(name, f).unwrap();
+        }
+        g.evaluate(
+            &mut Vec::new(),
+            "(define! here (current-context))
+             (define! record (context))
+             (bind record (quote! (x first)) (list 5 6))
+             (define! double (lambda! (x) (list x x)))",
+        )
+        .unwrap();
+        g.natives = natives;
+        g
+    })
+}
+
+#[test]
+fn natives_are_their_definitions() {
+    let [mut native, mut defined] = twins();
+    // Every native primitive has its definition, and no core one has.
+    for &p in Primitive::ALL {
+        let has = defined.definition(p).unwrap().is_some();
+        assert_eq!(has, Primitive::NATIVE.contains(&p), "{}", p.name());
+    }
+    let mut random = Random(0x9e37_79b9_7f4a_7c15);
+    let mut counts = [0usize; 2];
+    let grids = boundary_cases();
+    let cases = grids.len() + 2500;
+    for case in 0..cases {
+        let src = match grids.get(case) {
+            Some(src) => src.clone(),
+            None => generated(&mut random, 2),
+        };
+        let place = format!("case-{case}.grift");
+        let (mut a_log, mut b_log) = (Vec::new(), Vec::new());
+        let a_scope = native.context(Some(&native.top_level())).unwrap();
+        let b_scope = defined.context(Some(&defined.top_level())).unwrap();
+        let a = native.evaluate_in(&mut a_log, &a_scope, &place, &src);
+        let b = defined.evaluate_in(&mut b_log, &b_scope, &place, &src);
+        counts[usize::from(a.is_err())] += 1;
+        let mut compare = Comparison {
+            left: &native,
+            right: &defined,
+            matched: Vec::new(),
+        };
+        if let Err(why) = compare.outcomes(&a, &b) {
+            panic!("case {case}: {src}\n  {why}");
+        }
+        // What a case changed persists: the top level and the record, bindings and all.
+        let (a_top, b_top) = (native.top_level(), defined.top_level());
+        if let Err(why) = compare.values(&a_top, &b_top) {
+            panic!("case {case}: {src}\n  afterwards, the top level: {why}");
+        }
+        assert_eq!(a_log, b_log, "case {case}: {src}: what ran");
+    }
+    // Floats from Rust, with any bits, not-a-number's payloads included, through Rust calls.
+    for bits in [
+        0,
+        1,
+        1 << 63,
+        0x7ff8_0000_0000_0011,
+        0xfff0_0000_0000_0000,
+        0x7ff0_0000_0000_0001,
+    ] {
+        let f = Value::Float(f64::from_bits(bits));
+        for (name, arguments) in [
+            ("float-to-integer", vec![f.clone()]),
+            (
+                "select",
+                vec![Value::Boolean(true), f.clone(), Value::Integer(0)],
+            ),
+            (
+                "if!",
+                vec![Value::Boolean(false), Value::Integer(0), f.clone()],
+            ),
+            ("sequence!", vec![Value::Integer(0), f.clone()]),
+            ("integer-to-float", vec![f.clone()]),
+        ] {
+            let (fa, fb) = (
+                native.evaluate(&mut Vec::new(), name),
+                defined.evaluate(&mut Vec::new(), name),
+            );
+            let fa = native.call(&mut Vec::new(), &fa.unwrap(), &arguments);
+            let fb = defined.call(&mut Vec::new(), &fb.unwrap(), &arguments);
+            let mut compare = Comparison {
+                left: &native,
+                right: &defined,
+                matched: Vec::new(),
+            };
+            if let Err(why) = compare.outcomes(&fa, &fb) {
+                panic!("({name} {bits:#x}) from Rust: {why}");
+            }
+        }
+    }
+    // Both kinds of outcome are well represented.
+    assert!(
+        counts.iter().all(|&n| n > 500),
+        "values and errors: {counts:?}"
+    );
+}
+
+/// The edges no generator should have to find: every byte offset pair of a text of one-, two-,
+/// four- and one-byte characters, the scalar values' edges, the bitwise operations on the
+/// integers' ends and the shift bounds, and mutations that persist.
+fn boundary_cases() -> Vec<String> {
+    let mut cases = Vec::new();
+    for start in -1..10 {
+        for end in -1..10 {
+            cases.push(format!(
+                "(byte-substring \"\\xe9;\\x1f603;a\" {start} {end})"
+            ));
+        }
+        cases.push(format!(
+            "(string-search \"\\xe9;ab\\xe9;ab\" \"ab\" {start})"
+        ));
+    }
+    for n in [
+        -1, 0, 31, 127, 128, 55295, 55296, 57343, 57344, 65535, 65536, 1114111, 1114112,
+    ] {
+        cases.push(format!("(code-point-to-string {n})"));
+    }
+    let ends = [i64::MIN, -1, 0, 1, 31, 62, 63, 64, i64::MAX];
+    for x in ends {
+        for y in ends {
+            for p in [
+                "bitwise-and",
+                "bitwise-or",
+                "bitwise-exclusive-or",
+                "shift-left",
+                "shift-right",
+            ] {
+                cases.push(format!("({p} {x} {y})"));
+            }
+        }
+    }
+    for text in [
+        "\"-9223372036854775808\"",
+        "\"9223372036854775807\"",
+        "\"-0\"",
+        "\"+\"",
+        "\"0x1\"",
+    ] {
+        cases.push(format!("(string-to-integer {text})"));
+    }
+    cases.extend([
+        "(sequence! (bind record (quote! answer) (note 17)) (bind record (quote! last) (note 18)) #inert)".into(),
+        "(if! #true (bind record (quote! answer) (note 19)) (bind record (quote! answer) (note 99)))".into(),
+        // Definitions inside the twins bind where the library's would: in the caller's context.
+        "(sequence! (define! made 1) (define! made-too 2) 3) (list made made-too)".into(),
+        "(if! #true (define! made 3) 0) made".into(),
+        "((lambda! () (sequence! (define! inner 4) inner)))".into(),
+        // Errors in each place of a twin, for their traces and lines.
+        "(sequence! (first 1) 2)".into(),
+        "(sequence! 1 (first 1))".into(),
+        "((lambda! () (sequence! (rest 2) 3)))".into(),
+        "(if! (first 1) 2 3)".into(),
+        "(if! #true (first 1) 3)".into(),
+        "(string-search \"ab\" (first 1) 0)".into(),
+        "(lookup (malformed 0) (quote! x) 42)".into(),
+        "(catch! (lookup (malformed 0) (quote! x) 42) e (evaluate-in! kind e))".into(),
+    ]);
+    cases
+}
+
+#[test]
+fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
+    for mut g in twins() {
+        g.evaluate(
+            &mut Vec::new(),
+            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (shift-right n 1) (loop (subtract n 1))))))
+             (define! count (lambda! (n) (if! (same? n 0) 0 (count (subtract n 1)))))",
+        )
+        .unwrap();
+        let mut high = Vec::new();
+        for n in [100, 3000] {
+            for f in ["loop", "count"] {
+                let r = g.evaluate(&mut Vec::new(), &format!("({f} {n})"));
+                assert_eq!(r, Ok(Value::Integer(0)), "({f} {n})");
+            }
+            high.push(g.machine.frames_high());
+        }
+        assert_eq!(
+            high[0], high[1],
+            "frames grew with the loop (natives {})",
+            g.natives
+        );
+    }
+}
+
+#[test]
+fn string_escapes_are_rusts() {
+    let mut g = grift();
+    // Every letter grift takes after `\` means what Rust's escape of it does; any other ASCII
+    // character there is a bad-escape.
+    let rust = [
+        ('\\', '\\'),
+        ('"', '"'),
+        ('n', '\n'),
+        ('r', '\r'),
+        ('t', '\t'),
+    ];
+    for c in (32u8..127).map(char::from).filter(|&c| c != 'x') {
+        let read = g.evaluate(&mut (), &format!("\"\\{c}\""));
+        match rust.iter().find(|(letter, _)| *letter == c) {
+            Some(&(_, meant)) => {
+                let v = read.unwrap();
+                assert_eq!(g.as_str(&v), Ok(Some(meant.to_string().as_str())), "\\{c}");
+            }
+            None => {
+                let e = read.unwrap_err();
+                assert_eq!(show(&g, &e.values[0]), "bad-escape", "\\{c}");
+            }
+        }
+    }
+    // Every control character prints as an escape that reads back as it.
+    let controls: String = (0u8..32).map(char::from).chain(['\u{7f}']).collect();
+    let v = g.string(&controls).unwrap();
+    let printed = show(&g, &v);
+    assert!(printed.contains("\\r") && printed.contains("\\n") && !printed.contains('\r'));
+    let again = g.evaluate(&mut (), &printed).unwrap();
+    assert_eq!(g.as_str(&again), Ok(Some(controls.as_str())));
+}
+
+#[test]
+fn positions_name_each_combination_s_source_and_line() {
+    let mut g = grift();
+    let top = g.top_level();
+    let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(f 1)";
+    let e = g.evaluate_in(&mut (), &top, "f.grift", src).unwrap_err();
+    let lines: Vec<_> = e.trace().iter().map(|at| g.position(at).unwrap()).collect();
+    assert_eq!(lines, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
+    // Text evaluated with no name, and pairs a program makes, have none.
+    let e = g.evaluate(&mut (), "(f 2)").unwrap_err();
+    assert_eq!(g.position(&e.trace()[1]), Ok(None));
+    let made = g.evaluate(&mut (), "(list 1 2)").unwrap();
+    assert_eq!(g.position(&made), Ok(None));
+    // A slot reused by a pair read later answers with its own line, never the old one.
+    for n in 0..30 {
+        let src = format!("{}(f {n})", "\n".repeat(n));
+        let e = g.evaluate_in(&mut (), &top, "g.grift", &src).unwrap_err();
+        assert_eq!(
+            g.position(&e.trace()[1]),
+            Ok(Some(("g.grift", n as u32 + 1)))
+        );
+        g.evaluate(&mut (), "(length (map list (range 0 5000)))")
+            .unwrap();
+    }
+}
+
+/// A host function's state for leaving its run: the interpreter swapped out, and two stoppers.
+struct Leaving {
+    saved: Option<Grift<Leaving>>,
+    stops: Vec<Interrupter>,
+}
+
+/// A stop of the run in progress, whole, then the interpreter swapped out.
+fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+    if let Some(whole) = s.stops.first_mut() {
+        assert!(whole.stop(), "a run to stop");
+    }
+    s.saved = Some(std::mem::replace(g, Grift::new()?));
+    Ok(Value::Inert)
+}
+
+/// Gives up a run inside by swapping the interpreter out and back; then another stop makes only
+/// its first store.
+fn restore(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+    let _ = g.evaluate(s, "(swap-out)");
+    if let Some(old) = s.saved.take() {
+        *g = old;
+    }
+    if let Some(half) = s.stops.get_mut(1) {
+        half.stop_halfway();
+    }
+    Err(g.error("restored", &[]))
+}
+
+#[test]
+fn a_poll_with_no_run_in_progress_acts_on_nothing() {
+    // The interleaving the q2 model found (abandon_poll_race), made here in order: a run its host
+    // function left is given up, and the poll that follows finds no run in progress, while one
+    // stop is whole and another has stored its count but not its run. Neither acts.
+    let mut g: Grift<Leaving> = Grift::new().unwrap();
+    define(&mut g, "swap-out", swap_out);
+    define(&mut g, "restore", restore);
+    let mut s = Leaving {
+        saved: None,
+        stops: vec![g.interrupter(), g.interrupter()],
+    };
+    let e = g.evaluate(&mut s, "(restore)").unwrap_err();
+    assert_eq!(kind(&g, &e), "foreign-value", "the run its host left");
+    assert!(!g.interrupted(), "a poll with no run in progress acted");
+    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
 }

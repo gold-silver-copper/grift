@@ -305,6 +305,10 @@
      (lambda! (c symbol) (not? (same? (lookup c symbol absent) absent))))
    (context)))
 
+; bindings: a context's own bindings as data, (name value) for each, sorted by name as names is,
+; so a record's fields are a list a program reads with find-association and second.
+(define! bindings (lambda! (c) (map (lambda! (name) (list name (evaluate name c))) (names c))))
+
 ; symbol-to-string, float-to-string: the printer's text, refusing any other type.
 (define! symbol-to-string
   (lambda! (s)

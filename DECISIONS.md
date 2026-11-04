@@ -694,3 +694,286 @@ them. Each has a test stating a property, a LANGUAGE.md or README entry, and its
   `tests/square.grift` with the base library 0.023 s to 0.021 s, meta on meta 2.06 s to 2.11 s, format
   of the base `library.grift` 0.379 s to 0.394 s. New target: within 10% on the same input; cost: these
   two tests take longer by the library's growth.
+
+## Owner decisions, 2026-11-02, for embedding grift in fux
+
+Evidence: five spikes that put grift where fuxth is in fux, with friction logs, and their synthesis
+(`~/code/notes/projects/grift/mux-2026-11-02/`: `owner-decisions.md` items 3, 4, 5 and 12,
+`synthesis/report.md` section 2, cited `S<n>`), and `apps4-2026-11-02/tally.md` section 8.
+
+- **G-108. Kept values** (owner item 3; amends G-21's wording, not its rule: a value lives while a
+  binding holds it). `Grift::keep(value)` gives a `Kept`, `kept(&k)` reads it, `release(k)` unbinds it.
+  A kept value is a binding in a context the interpreter owns, a collector root like the top level,
+  under a name no program can reach. `Kept` is neither `Copy` nor `Clone`, so a double release or a use
+  after release doesn't compile; another interpreter's `Kept` is `foreign-value`. Nothing else about
+  collection changes. (S1: reactive kept handlers as `(run-binding "...")` text, config re-evaluated
+  each key's code.)
+- **G-109. The interrupt, fixed, no clock** (owner item 4; G-5 stands word for word; replaces G-17 and
+  G-32's first bullet). The interpreter owns its stop state (no `&'static`: G-17's reason, the chip,
+  went with G-25) and hands out an `Interrupter`, `Send` and cloneable. `stop()` stops only the run in
+  progress when it is called, never a later one, and does nothing with no run in progress; it only
+  loads and stores. `interrupted` stays uncatchable and cleanups still run. Time limits stay the
+  host's: a test shows a timer thread setting one, and the runner and the editor use the new API.
+  (S3: a stop at a host function's end leaked into the next run; layouts F1, reactive F2.)
+- **G-110. Core and native primitives; native twins** (owner item 12, with 5; reverses G-56 under this
+  rule; amends G-33 and VISION "Implementation"). A primitive is core when no grift definition could
+  behave the same, native when it exists only for speed; each native keeps its grift definition as its
+  meaning, in the repo, and a generated test shows no program can tell the two apart: results, error
+  kinds and values, traces, tail calls, `type-of`, `operative?`, `applicative?` and printing. A library
+  form may have a native twin on the same terms, justified by a measurement on `programs/`: `if!` and
+  `sequence!` (G-56 measured 1.5-2.3x) and `string-search` (S7: about 1.1 µs a byte as library, and
+  fux's waits search screens). No other twins in this change, and no change to how calls or contexts
+  are represented (owner item 11; G-33, G-34 stand).
+
+## Settled by the design ballot, 2026-11-03 (four models; the owner may overrule any)
+
+Evidence: `~/code/notes/projects/grift/embed-2026-11-03/design.md` (each answer verbatim) and
+`design/tally.md` (votes and dissents; P1-P4 are the four panelists). Ties went to fewer new public
+items, then fewer lines.
+
+- **G-111. A kept value is a binding in a third root context** (q1, plurality 2-1-1, by P1). The
+  context `kept`, made in `Grift::new` beside the built-in and top-level ones, has no parent and is a
+  collector root. A kept value's name is a symbol id with the top bit set (`KEPT = 1 << 31`), which
+  interning refuses to give out, so no text, not even `string-to-symbol`, names one. Released names
+  are reused from a free list, so a host that keeps and releases on every key press never runs out and
+  never grows the symbol table. A foreign `release` hands the token back with the error,
+  `Err((foreign-value, k))`. Dissent (P3): a checked counter, never reused.
+- **G-112. Stops by run generation, one mailbox per handle** (q2, 1-1 tie, by P3). Each outer run gets
+  the next of a checked, never-wrapping `u64` count, published while it runs and 0 otherwise; nested
+  evaluations share it. `stop(&mut self)` loads the active run and, if it isn't 0, stores it in its own
+  handle's mailbox; the machine stops only for its own number, once per run, so its cleanups run.
+  Every clone registers a mailbox of its own, kept until the interpreter and the clones are dropped:
+  one shared mailbox loses a stop when a late one for an earlier run overwrites it (P3's and P4's
+  schedules). Dissent (P4): the same protocol, with a fallible `try_clone`.
+- **G-113. Values carry their interpreter's identity at the boundary** (q3, plurality 2-1-1-0, by P4).
+  The public `Value`, `Symbol`, `Reference` and `Host` hold a `Weak` to the interpreter's control
+  allocation; every operation compares it before reading a slot, a symbol or a host function, and a
+  mismatch is `foreign-value`. A surviving `Weak` keeps the address from being reused after the
+  interpreter is dropped. Integers, floats, booleans, the constants and primitives are not branded. The
+  machine keeps its own compact `Copy` values (`local.rs`); values are converted only where they cross.
+  Cost: the public `Value` is no longer `Copy` (hosts clone or borrow) and grows from 16 to 24 bytes.
+  Dissent (P3): an `Arc` token in each, `Clone`.
+- **G-114. A reclaimed value is refused at every way in** (q4, plurality 2-1-1-0, by P1). Every value the
+  host hands in (a call's combiner and arguments, `define`, `pair`, `list`, `bind`, `keep`, a host
+  function's value and its error) is checked for its interpreter and its slot's generation, so nothing
+  stale or foreign is ever stored and a live object holds only live objects; `as_pair` and `as_str` are
+  `Result<Option<_>, Error>`, keeping "not that type" apart from "gone"; `same?` and the string readers
+  read through the heap, and `byte-substring` reads its string before its offsets. One change from the
+  ballot's answer: `write` refuses a stale value (`WriteError::Value`) instead of writing `#[stale]`,
+  since done-item 4 asks every Rust reader to say `stale-value` (the Stage 2 test that counted). Dissent
+  (P3): one private validator, with a closed audit of every site.
+- **G-115. Which primitives are core and which native** (q5, plurality 2-1-1-0, by P3). Core: `vau!`
+  `wrap` `unwrap` `evaluate` (the machine); `evaluate-with-cleanup` `call-with-handler` `raise`
+  (unwinding); `context` `bind` `unbind` `names` (bindings); `pair`, `same?` (identity, float bits),
+  `type-of` (representation); `add` `subtract` `multiply` `divide` `remainder` `less-than?` (checked
+  integers, IEEE floats) and the float functions of G-42; `string-byte` (bytes), `string-append`
+  (arbitrary text), `string-to-symbol` (names), `string-to-float` (correctly rounded parsing),
+  `read-form` (the one reader, G-77) and `value-to-string` (combiners, names and floats as they print).
+  Native, each with its definition in `natives.grift`: `first`, `rest` (parameter trees), `select`
+  (a boolean's printed name picks a binding, so it needs neither `select` nor `if!`), `lookup` (the
+  symbol evaluated under a handler for `unbound-symbol`), the bitwise operations and shifts (a bit at
+  a time, wrapping doublings), `integer-to-string` (the printer), `string-to-integer` (digits added up
+  negative), `integer-to-float` (through text), `float-to-integer` (saturation, then powers of two),
+  `string-byte-length` (probing `string-byte`), `byte-substring` (decoding and re-encoding) and
+  `code-point-to-string` (an escape, read). They keep their `Primitive` values, wrappers and error
+  values; a definition names its primitive as data and never calls it. Dissent (P1): `first`, `rest`,
+  `select`, `names` core.
+- **G-116. One generated test of indistinguishability** (q6, 1-1 tie, by P3). A test-only switch runs the
+  definitions in place of the natives without touching a binding. A small deterministic generator makes
+  calls of every native and twin with every kind of value (integer ends, shift bounds, float bits,
+  UTF-8 and number texts, contexts, combiners), missing and excess operands, through `apply`, `unwrap`
+  and `wrap`, at top level, as operands, in tails, branches, sequences, handlers and cleanups; two
+  interpreters run each, and the outcomes are compared as data with a bijection of identities, every
+  error value and trace entry with its position, and a log of host calls. A second test shows tail loops
+  in constant frames either way. Dissent (P4): the same, with direct Rust calls too.
+- **G-117. A twin is the library's own operative, flagged** (q7, 2-2 tie, by P2). After the library
+  loads, `Grift::new` flags the operatives bound to `if!`, `sequence!` and the one inside
+  `string-search`; a call runs the twin only for the shape it handles (three operands for `if!`, a
+  proper list for `sequence!`, two strings and a start on a boundary for `string-search`) and the
+  body for any other, so printing, `type-of`, `same?`, `unwrap` and every odd shape's error are the
+  library's by construction. Native `if!` evaluates its test under a frame and its branch as a tail
+  call; a test that isn't a boolean is `select`'s own `type-error`. Dissent (P3): metadata beside the
+  operatives rather than in them.
+- **G-118. Contexts from Rust, with the primitives' rules** (q8, 1-1-1-1 tie, by P1; G-59's same words).
+  `context(parent)`, `private_context()` (the old `context()`), `top_level()`, `bind(context,
+  parameters, value)`, `lookup(context, symbol)` (`None` where `lookup` gives its default) and
+  `names(context)` run none of the machine; `evaluate_in(state, context, source, text)` reads all of
+  `text` first; `seal_library()` makes everything live count as library code, as `Grift::new` does for
+  grift's own. No `define_in`: that is `bind` with a symbol, as G-85 removed `define-in!` for `bind`.
+- **G-119. Where a combination was read is a side table** (q9, 1-1-1-1 tie, by P2; replaces G-98's
+  `"path:line"` strings in traces). The reader records, for a combination read under a source name, its
+  slot, the slot's generation, the source and the line of its `(`; a lookup checks the generation, so a
+  reused slot never answers with an old line, and the table stays within the heap. Only `evaluate_in`
+  reads under a name; `evaluate`, `read` and `read-form` don't. The runner evaluates its script and
+  loaded files so, and its `load` became one host function over `evaluate_in`: about 35 lines of
+  runner grift that counted lines went, and a loaded file's errors say `at lib/b.grift:4` beside the
+  combination. Dissent (P1): the table in the heap, entries freed by the sweep.
+- **G-120. The small conversions and one description** (q10, 2-2 tie, by P3). `symbol_name`, `list`,
+  `list_items` (a `Vec`: pairs hold no slice), `as_string` (an owned copy), `is_kind` (interning
+  nothing) and `describe(error, out)`, which writes the kind, the values and each trace entry with its
+  position into any `fmt::Write` and keeps an output failure apart from the interpreter's
+  (`WriteError`). Dissent (P1): the same items, `describe` to a `String`.
+- **G-121. `(bindings c)`** (q11, 2-2 tie, by P2; G-54 stands). A context's own bindings as `(name
+  value)` lists, sorted by name as `names` gives them, so a record's fields are data `find-association`
+  reads (config C6, automation F4; owner item 7's shape). Two lines of library grift. The name: VISION
+  "Terms" calls one name with its value a binding, and `names` is its precedent. Dissent (P1): the same.
+- **G-122. `\r`, and the escape set checked against Rust's** (q12, 1-1-1-1 tie, by P1). The reader takes
+  `\r` and the printer writes it. The set is `\\ \" \n \r \t` and `\xHEX;`; Rust's `\0`, `\'` and
+  backslash-newline aren't added (`\x0;` says `\0`, a `'` needs no escape), and `\xHEX;` covers Rust's
+  `\xNN` and `\u{...}`. Three spikes typed every Enter as `"\xd;"`. Dissent (P3): the same.
+- **G-123. A target revised: the interrupter's allocations may abort** (q13, plurality 2-1-1-0, by P4;
+  amends G-32's "never an abort"). The interpreter's control and each interrupter's mailbox are
+  `Arc::new`, and stable Rust has no fallible `Arc::new` (`Arc::try_new` needs `allocator_api`), so
+  making an interpreter or an interrupter can abort under real allocator exhaustion. Every collection
+  that grows with a program stays fallible. Dissent (P1): nothing impossible.
+
+## Made while building G-108 to G-123, 2026-11-03 (the owner may overrule any)
+
+- **G-124. The runner seals its setup.** After `runner.grift` has made the operations, the runner calls
+  `seal_library`, so a trace lists only the program's combinations: the two loader combinations G-98
+  accepted as a cost are gone. A parse error in a loaded file keeps its values `(reason line column)`
+  and is placed at the `(load ...)` that read it.
+- **G-125. A stop is one load a step.** Besides its mailbox, a stop stores a shared "asked" flag after
+  it, and the machine reads the mailboxes only when that is set, so a step pays one load whatever the
+  number of interrupters; the run's number is published with release stores, since a stop that reads
+  an older one stores a generation no later run has. The editor's input thread holds an interrupter: a C-g while `(key)` waits is
+  a key, and one while a command runs stops it (`(key)` then ends the run at once).
+- **G-126. The definitions of the natives load in tests only.** `natives.grift` is evaluated, with the
+  library, only in the crate's own tests, where the switch lives; it is 167 lines of grift.
+  `if!`, `sequence!` and `string-search` keep their definitions in `library.grift`, which is what runs.
+- **G-127. What twins of `let!`, `lambda!` and `conditional!` would gain** (owner item 12 asked for the
+  measurement, not the twins). Above a loop of one native `if!` and a call (0.32 µs a turn, release, one
+  run of 200,000): `let!` of one binding costs 1.95 µs, making a `lambda!` 1.0 µs, `conditional!` of three
+  clauses 2.1 µs more than nested `if!`s, where another `if!` costs 0.05 µs and a `sequence!` of two
+  0.07 µs. That is about what a twin of each could save a use; none is in this change.
+- **G-128. Measured with the twins** (one run each, release, box2, load under 1): `fib 25` 123 ms to 85 ms
+  (1.44x); every `programs/` test faster, from build's 1.09x to markdown's 1.46x (meta 14.5 s to 13.1 s,
+  format 4.26 s to 3.15 s). A host function call is cheaper too (0.56 µs against 2.1 µs in a grift loop),
+  though each value crossing the boundary now costs an identity check and a reference count: about
+  0.1 µs of a 0.73 µs `Grift::call` of a small handler (perf: `export` 5%, the imports 4%). `crates/grift`
+  grew from 1,764 to 2,621 lines of Rust code, comments and blank lines aside (2,119 to 3,302 lines
+  in all: the rest are the docs and examples every new item has).
+
+## Made after the red team and the picking panel, 2026-11-03 (the owner may overrule any)
+
+Evidence: the red team's findings (`~/code/notes/projects/grift/embed-2026-11-03/redteam/P<n>/findings/<name>/`,
+each a `run.sh` that exits 1 when the guarantee breaks), the close-call experiments (`adv/q2`, `adv/q3`, `adv/q6`)
+and the picking panel's carry-overs from the other writer's branch (`pick/tally.md`, each 4 votes of 4).
+
+- **G-129. Each stop is acted on once, and a later stop again** (replaces G-112's "once per outer run").
+  A stop stores its handle's count beside the run's number, and the machine remembers, per mailbox, the
+  last count it acted on: one interruption answers every stop waiting, the cleanups then run, and a stop
+  issued after that interrupts again, so a cleanup that never ends, or a run whose host function handled
+  its nested run's `interrupted` and went on, can still be ended. Evidence: `P1/stops-lost-after-the-first`
+  (58 stops over 2.9 s lost while a cleanup looped) and `P2/interrupt-swallowed-by-host`, both broken before
+  and holding now. The machine also checks for a stop when a host function returns, as there may be no
+  step after it (`P3/final-host-stop`, `P4/stop-final-host`: a stop completed during the last host call
+  was lost). `Interrupter::stop` says whether it found a run in progress, so a watchdog whose deadline
+  passed while the program was still being read asks again until one lands, rather than stopping on every
+  tick, which would now interrupt the cleanups too.
+- **G-130. A run its host function leaves is over** (amends G-112; carries the other branch's run-identity
+  guard). A host function may panic (a host that catches it goes on with the interpreter), replace the
+  interpreter it was given (`std::mem::swap`), or put it back after a run inside it was given up. While it
+  runs, the machine holds its interpreter's control; if the function doesn't return to that interpreter
+  with its run still published, or unwinds, the control publishes 0. The interpreter then answers
+  `foreign-value` with an empty trace, drops its machine's state, and its next evaluation is a fresh outer
+  run; a run that the interpreter holds but its control no longer publishes is one of these. So a stop
+  with no run in progress does nothing after any of them. Evidence: `P1/idle-stop-after-host-panic`,
+  `P4/idle-stop-after-unwind`, `P1/idle-stop-after-parked-run`, `P4/idle-stop-after-replace`, and adv/q3's
+  restore and replacement rows (an abandoned run's cleanup ran and its frames reached the outer trace).
+  Cost: one `Arc` clone and drop per host call (about 8 ns, q2's measurement), none per run.
+- **G-131. The mailboxes are a list under a lock the stops never take** (replaces G-125's chain). Making
+  an interrupter, dropping one and the machine's scan take the lock; the scan happens only after a stop
+  has set the shared flag, so a step still pays one load. This closes adv/q2's one modeled lost stop
+  (`clone_registered_leftover`): a late stop's flag was cleared by a scan that could not yet see a
+  handle linked on another thread. Under the lock, a scan either sees the new handle or began before its
+  link, and then the handle's flag, stored after the link, is stored after the scan's clear and stays set.
+  A dropped handle's mailbox goes at once unless a stop of the run in progress waits in it, which a later
+  sweep lets go, so storage follows the live handles.
+- **G-132. Every way in checks the object's kind, and every argument before the context's kind**
+  (amends G-114; carries the other branch's validation). A live reference in another variant's place
+  (`Value::Context` around a string's reference: safe Rust) is `stale-value`; `bind` and `lookup` check
+  every value they are given before saying the context isn't one, as the primitives' arguments are;
+  `Grift::position` is `Result<Option<_>, Error>`, so a reclaimed or foreign combination is an error, not
+  "no position". `lookup`'s definition answers its default only for the symbol's own `unbound-symbol`.
+  Evidence: `P3/lookup-retagged-context` (a native/definition difference), `P3/stale-bind-validation`,
+  `P4/validation-precedence`, and the four position findings.
+- **G-133. A slot is retired at its last generation** (amends G-11). A slot freed for the
+  4,294,967,295th time is never reused, so a reference held across every reuse stays `stale-value`; a
+  heap read still compares one generation.
+- **G-134. The editor stops its run at every C-g** (replaces G-125's editor sentence; carries the other
+  branch's bookkeeping). The input thread stops the run and queues the C-g; after an interrupted run the
+  editor marks that C-g handled, and `(key)` skips a queued C-g so marked. Before, a C-g that stopped a
+  runaway command was read again by the recovery and stopped it too, losing a key (driven through fux:
+  `embedok` saved for `embed ok`).
+- **G-135. The equivalence test's edges** (amends G-116). Beside the generated programs: every byte offset
+  pair of a text of one-, two- and four-byte characters, the scalar values' and integers' edges for each
+  bitwise operation, raw float bits (not-a-number payloads) handed in from Rust, host functions returning
+  retagged references in the generator's pools, the top level compared after every case (mutations
+  persist), definitions and errors inside the twins, and a `sequence!` tail loop that now runs. With
+  G-132's fix taken out, the unchanged test fails on the retag (a generated case among them).
+
+## Made in review round 1 of the embedding PR, 2026-11-03 (the owner may overrule any)
+
+Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-11-03/review/r1/P<n>/repro/`.
+
+- **G-136. A loaded file's parse error names the file** (amends G-119 and G-124; restores G-98's rule).
+  When the text a runner `load` reads doesn't read, its `parse-error` keeps its values `(reason line
+  column)` and has the file's path, as a string, innermost in its trace, before the `(load ...)` that read
+  it: `parse-error unclosed-list 3 1 in "broken.grift" from (load d) at main.grift:2`. G-119 had placed it
+  at the load alone, which names the file only when the load's operand is a literal path
+  (`P1/load-parse-error-loses-file`). The runner's host function hands such an error back as a record,
+  which the runner's `load` raises, so a program still catches it.
+- **G-137. A run checks for a stop as it ends** (amends G-129). A run's last step can be a long native call
+  (`string-to-integer` of 16 MiB of digits) or a host call, with no safe point after it; the machine now
+  checks once more as the run returns, and an error raised while a stop waits becomes `interrupted`, its
+  cleanups running. This replaces G-129's check after each host call, which missed natives
+  (`P4/stop-final-native`: `stop()` said it found the run, 12 ms before the call answered a value).
+- **G-138. Corrections.** `natives.grift` is 172 lines of grift, comments and blank lines aside (200 in
+  all), not G-126's 167; the private walker there is `element-of` (VISION "Names": no abbreviations).
+  The line band for `crates/grift` is read, as reported throughout, as lines of code, comments and blank
+  lines aside: 1,764 to 2,660 (+896); in all lines 2,119 to 3,386, the rest doc comments and doc-test
+  examples. G-128's 2,621 was the count at 0064860.
+
+## Made in review round 2 of the embedding PR, 2026-11-03 (the owner may overrule any)
+
+- **G-139. A stop waiting when a step fails is that failure, whatever its kind** (amends G-137). G-137
+  turned an ordinary error raised while a stop waited into `interrupted`, but left a limit error
+  (`interrupted` or `out-of-memory` a host function returns) alone, so the waiting stop was first acted
+  on inside the cleanup and stopped it before it ran: `(catch! (finally! (fail) (cleanup)) e 42)`, with
+  `fail` stopping once and returning a limit, ran no cleanup (`review/r2/P3` and `P4`
+  `stop-limit-skips-cleanup`, exit 1 at cb83ca2, 0 at 375431a). Now any error raised while a stop waits
+  consumes the stop and becomes `interrupted`, and the cleanups run once, as before G-137.
+
+## Made after the q2 model was re-run on the embedding PR's head, 2026-11-03 (the owner may overrule any)
+
+- **G-140. A poll with no run in progress acts on nothing** (amends G-129 and G-130). The q2 interleaving
+  model, adapted to c85356b (`adv/q2/rerun/results-head.md`, `abandon_poll_race`: 2,806,824 states, complete,
+  40 violating; 0 on either branch's earlier head) found that after a host function left its run (G-130's
+  restored case), `abandon()` set the run to 0 and the failing step's poll (G-139) then read the mailboxes
+  for run 0, while another handle's stop had stored its count but not yet its run: its mailbox, still 0
+  from before, matched, so the abandoned call answered `interrupted` instead of `foreign-value`, a poll with
+  no run acting on a request. Now each step still reads the shared flag first, its one load; only when a
+  stop has set it does the cold path run, and that path's first act, before it clears the flag or reads
+  any mailbox, is to answer false for run 0, leaving the flag set for the next run's first check. (A first
+  version, d1284e9, tested the run on every step before the flag: `fib 25` 1.33x on desk.) The q2 model,
+  run by its half A on dec88e5, finds the violation gone (0 states). A test makes the interleaving in
+  order through a test-only seam that makes a stop's first store alone
+  (`a_poll_with_no_run_in_progress_acts_on_nothing`). The fix adds three lines of non-test Rust (the cold
+  path's test); the seam's five are `#[cfg(test)]`. Counted as the band says, non-test Rust with
+  `#[cfg(test)]` items, comments and blank lines aside on both sides, `crates/grift` is 1,742 at the base
+  and 2,613 at dec88e5 (+871); counting the test-only items in, as G-138 did, 1,764 to 2,668 (+904, the
+  four over being the seam).
+- **G-141. A band revised: `fib 25` at least 1.33x the base, not 1.4x** (CLAUDE.md's rule: a target is
+  revised only when meeting it would hurt correctness). Original target: `fib 25` at least 1.4x faster than
+  the base (the embedding brief's band). Evidence: desk, one run each, alternated with the base: 0064860
+  1.63x, 375431a 1.51x, cb83ca2 1.42x, c85356b 1.44x; dec88e5 1.34x (`timings/desk-20261103-2122.md`) and
+  1.396x in one job with the base and c85356b (c85356b 1.44x there). dec88e5's per-step code is c85356b's
+  source; what changed is G-140's three lines in the cold path, which grew `.eh_frame`, the unwind tables
+  linked before the code, by 24 bytes, so the whole `.text` and every loop in it moved 16 bytes (`start`,
+  the machine loop, the same 0x2920 bytes at 0x37630 against 0x37620). On box2 the order is reversed: dec88e5
+  98-101 ms, c85356b 101-110 ms, alternated. Moving the cold path out of line (`#[inline(never)]`) left the
+  machine loop where it was and was dropped. G-140 is needed for correctness (a poll with no run acted on a
+  request; the q2 model's 40 violating states), so it stays. New target: at least 1.33x, the lowest desk
+  measurement at dec88e5. Cost: `fib 25` about 3% slower on desk than at c85356b, from code placement, not
+  from the work a step does; every `programs/` test stays inside its band (1.08x-1.44x).

@@ -282,14 +282,14 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     let program = r#"
         (define! loads 0)
         (define! write-trace (lambda! (place) (display (value-to-string place) " ")))
-        (catch-kind! (load "lib/a.grift") type-error e (write-trace (last (evaluate-in! trace e))))
+        (catch-kind! (load "lib/a.grift") type-error e (write-trace (first (evaluate-in! trace e))))
         (display (b 1) " " loads " ")
         ; Each load runs the file again; in a child context, its definitions are the child's.
         (define! child (context (current-context)))
         (catch! (evaluate (quote! (load "lib/b.grift")) child) #ignore #inert)
         (display loads " " (evaluate (quote! loads) child) " ")
-        ; A file that doesn't read runs nothing, and says where the form opened.
-        (catch! (load "lib/bad.grift") e (sequence! (display (evaluate-in! values e)) (write-trace (second (evaluate-in! trace e)))))
+        ; A file that doesn't read runs nothing, and says where the form opened, at the load.
+        (catch! (load "lib/bad.grift") e (sequence! (display (evaluate-in! values e)) (write-trace (first (evaluate-in! trace e)))))
         (display (string-ends-with? script-path "script.grift"))
         (load "lib/b.grift")
     "#;
@@ -297,18 +297,32 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     let lib = dir.join("lib");
     let lib = lib.to_str().unwrap();
     assert_eq!(status, Some(1));
+    // A file that doesn't read is innermost in the trace, by its path: the line and column are its.
     assert_eq!(
         out,
-        format!("\"{lib}/a.grift:2\" 2 1 1 2 (unclosed-list 3 3)\"{lib}/bad.grift\" #true")
+        format!("(first 2) 2 1 1 2 (unclosed-list 3 3)\"{lib}/bad.grift\" #true")
     );
-    // The trace says the file and the line of the form, between its combinations and the load.
-    assert!(
-        err.contains(&format!(
-            "in (first 2)\n  from (define! c (first 2))\n  from \"{lib}/b.grift:4\""
-        )),
-        "{err}"
+    // Each combination in the trace says its file and line, the loaded file's and the script's.
+    let path = dir.join("script.grift");
+    let path = path.to_str().unwrap();
+    assert_eq!(
+        err,
+        format!(
+            "{path}: type-error #[primitive first] 2 in (first 2) at {lib}/b.grift:4\n  \
+             from (define! c (first 2)) at {lib}/b.grift:4\n  \
+             from (load \"lib/b.grift\") at {path}:13\n"
+        )
     );
-    assert!(err.ends_with("from (load \"lib/b.grift\")\n"), "{err}");
+    // Uncaught, it names the file, then the load.
+    let (status, _, err) = script(&dir, "(define! d \"lib/bad.grift\")\n(load d)\n", &[], "");
+    assert_eq!(status, Some(1));
+    assert_eq!(
+        err,
+        format!(
+            "{path}: parse-error unclosed-list 3 3 in \"{lib}/bad.grift\"\n  \
+             from (load d) at {path}:2\n"
+        )
+    );
 }
 
 #[test]

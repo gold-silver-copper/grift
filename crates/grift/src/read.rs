@@ -1,26 +1,29 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
+use crate::Grift;
 use crate::evaluate::integer;
-use crate::heap::Object;
-use crate::{Error, Grift, K, Value, push};
+use crate::heap::{Object, Reference};
+use crate::local::{Error, K, Symbol, Value, push};
 use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
-/// of its `(`.
+/// and line of its `(`.
 struct List {
     head: Value,
     last: Value,
     dot: Dot,
     start: usize,
+    line: u32,
 }
 
 impl List {
-    fn new(start: usize) -> List {
+    fn new(start: usize, line: u32) -> List {
         List {
             head: Value::EmptyList,
             last: Value::EmptyList,
             dot: Dot::No,
             start,
+            line,
         }
     }
 }
@@ -36,8 +39,9 @@ enum Dot {
 
 struct Cursor<'a> {
     src: &'a str,
-    /// The byte offset of the next character.
+    /// The byte offset of the next character, and its line.
     at: usize,
+    line: u32,
 }
 
 impl Cursor<'_> {
@@ -48,6 +52,9 @@ impl Cursor<'_> {
     fn next(&mut self) -> Option<char> {
         let c = self.peek()?;
         self.at += c.len_utf8();
+        if c == '\n' {
+            self.line = self.line.saturating_add(1);
+        }
         Some(c)
     }
 
@@ -94,26 +101,32 @@ pub(crate) fn float_name(token: &str) -> Option<f64> {
 }
 
 impl<T> Grift<T> {
-    /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
-    /// the line and column: of the `(` or `"` left open, or of what didn't read.
-    pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let mut forms = List::new(0);
-        let mut at = 0;
-        while let Some((form, place)) = self.read_form(src, at)? {
+    /// Reads every form in `src` into a list. Under a `source` name, each combination's line goes
+    /// in the positions table.
+    pub(crate) fn read_local(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
+        let mut forms = List::new(0, 1);
+        let (mut at, mut line) = (0, 1);
+        while let Some((form, place, after)) = self.read_form(src, at, line, source)? {
             self.add(&mut forms, form)?;
-            at = place.end;
+            (at, line) = (place.end, after);
         }
         Ok(forms.head)
     }
 
-    /// Reads the form after byte offset `from` of `src`, a character boundary: the form and where
-    /// it is, or `None` if only space and comments are left.
+    /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
+    /// form, where it is and the line it ends on, or `None` if only space and comments are left.
     pub(crate) fn read_form(
         &mut self,
         src: &str,
         from: usize,
-    ) -> Result<Option<(Value, Range<usize>)>, Error> {
-        let mut cur = Cursor { src, at: from };
+        line: u32,
+        source: Option<Symbol>,
+    ) -> Result<Option<(Value, Range<usize>, u32)>, Error> {
+        let mut cur = Cursor {
+            src,
+            at: from,
+            line,
+        };
         // A first line starting with `#!` reads as a comment, so a script can run itself.
         if from == 0 && src.starts_with("#!") {
             cur.at = src.find('\n').unwrap_or(src.len());
@@ -133,11 +146,16 @@ impl<T> Grift<T> {
             };
             let datum = match c {
                 '(' => {
-                    push(&mut open, List::new(begin))?;
+                    push(&mut open, List::new(begin, cur.line))?;
                     continue;
                 }
                 ')' => match open.pop() {
-                    Some(list) if list.dot != Dot::Tail => list.head,
+                    Some(list) if list.dot != Dot::Tail => {
+                        if let (Some(source), Value::Pair(r)) = (source, list.head) {
+                            self.place(r, source, list.line)?;
+                        }
+                        list.head
+                    }
                     Some(_) => return Err(fail(K::MisplacedDot)),
                     None => return Err(fail(K::UnmatchedParenthesis)),
                 },
@@ -165,7 +183,7 @@ impl<T> Grift<T> {
                 }
             };
             let Some(list) = open.last_mut() else {
-                return Ok(Some((datum, start..cur.at)));
+                return Ok(Some((datum, start..cur.at, cur.line)));
             };
             if list.dot == Dot::Done {
                 return Err(fail(K::MisplacedDot));
@@ -183,7 +201,7 @@ impl<T> Grift<T> {
             list.dot = Dot::Done;
             return Ok(());
         }
-        let pair = self.pair(datum, Value::EmptyList)?;
+        let pair = self.pair_local(datum, Value::EmptyList)?;
         match list.last {
             Value::Pair(r) => self.set_rest(r, pair)?,
             _ => list.head = pair,
@@ -192,8 +210,16 @@ impl<T> Grift<T> {
         Ok(())
     }
 
+    /// Records that combination `r` was read from `source` at `line`; a reused slot's entry is
+    /// replaced, so the table stays within the heap's size.
+    fn place(&mut self, r: Reference, source: Symbol, line: u32) -> Result<(), Error> {
+        self.positions.try_reserve(1).map_err(|_| Error::oom())?;
+        self.positions.insert(r.idx, (r.generation, source, line));
+        Ok(())
+    }
+
     /// Sets the rest of a pair the reader made and nobody else has seen yet.
-    fn set_rest(&mut self, r: crate::Reference, v: Value) -> Result<(), Error> {
+    fn set_rest(&mut self, r: Reference, v: Value) -> Result<(), Error> {
         if let Object::Pair(_, d) = self.heap.get_mut(r)? {
             *d = v;
         }
@@ -220,13 +246,13 @@ impl<T> Grift<T> {
                     Err(_) => return None,
                 }
             }
-            _ => return Some(self.symbol(token).map(Value::Symbol)),
+            _ => return Some(self.intern(token).map(Value::Symbol)),
         };
         Some(Ok(v))
     }
 
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,
-    /// `\t` and `\xHEX;` (a Unicode scalar value in hex).
+    /// `\r`, `\t` and `\xHEX;` (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor, start: usize) -> Result<Value, Error> {
         let mut s = String::new();
         loop {
@@ -237,6 +263,7 @@ impl<T> Grift<T> {
                     Some('\\') => '\\',
                     Some('"') => '"',
                     Some('n') => '\n',
+                    Some('r') => '\r',
                     Some('t') => '\t',
                     Some('x') => {
                         let begin = cur.at;
@@ -262,6 +289,6 @@ impl<T> Grift<T> {
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);
         }
-        self.string(&s)
+        self.string_local(&s)
     }
 }
