@@ -12,9 +12,10 @@
 //! handles; any other shape runs the operative's body, so what a program sees never differs.
 
 use crate::Grift;
+use crate::collected;
 use crate::heap::{Bindings, Object, Operative, Reference, Seen};
 use crate::interrupt::Control;
-use crate::local::{Error, Host, K, Symbol, Value, boxed, copied, push};
+use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::read::float_name;
 use std::sync::Arc;
 
@@ -1104,7 +1105,7 @@ impl<T> Grift<T> {
                 };
                 let part =
                     part.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y, z]))?;
-                self.bytes_local(copied(part)?)?
+                self.bytes_local(collected(part.iter().copied())?)?
             }
             P::BytesAppend => {
                 let given = self.machine.arguments.get(base..).unwrap_or_default();
@@ -1122,7 +1123,7 @@ impl<T> Grift<T> {
                 self.bytes_local(joined)?
             }
             P::StringToBytes => {
-                let b = copied(self.text(p, x)?.as_bytes())?;
+                let b = collected(self.text(p, x)?.bytes())?;
                 self.bytes_local(b)?
             }
             P::BytesToString => {
@@ -1155,7 +1156,7 @@ impl<T> Grift<T> {
                 self.bytes_local(bytes)?
             }
             P::BytesToList => {
-                let b = copied(self.bytes_of(p, x)?)?;
+                let b = collected(self.bytes_of(p, x)?.iter().copied())?;
                 b.iter().rev().try_fold(Value::EmptyList, |list, &byte| {
                     self.pair_local(Value::Integer(i64::from(byte)), list)
                 })?

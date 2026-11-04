@@ -617,3 +617,26 @@ fn a_reference_in_another_variant_is_stale_value_everywhere() {
         broken.join("\n")
     );
 }
+
+#[test]
+fn bytes_copy_the_input_and_borrow_the_payload() {
+    let mut g = grift();
+    let all: Vec<u8> = (0..=255).collect();
+    let mut input = all.clone();
+    let v = g.bytes(&input).unwrap();
+    input.fill(0);
+    assert_eq!(g.as_bytes(&v).unwrap(), Some(all.as_slice()));
+    assert_eq!(g.as_str(&v).unwrap(), None);
+    let kept = g.keep(v).unwrap();
+    churn(&mut g);
+    assert_eq!(
+        g.as_bytes(&g.kept(&kept).unwrap()).unwrap(),
+        Some(all.as_slice())
+    );
+    g.release(kept).unwrap();
+    let empty = g.bytes(&[]).unwrap();
+    assert_eq!(g.as_bytes(&empty).unwrap(), Some(&[][..]));
+    assert_eq!(g.as_bytes(&Value::Integer(0)).unwrap(), None);
+    let text = g.string("abc").unwrap();
+    assert_eq!(g.as_bytes(&text).unwrap(), None);
+}

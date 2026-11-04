@@ -291,6 +291,19 @@ fn collection_reclaims_garbage_and_keeps_live_data() {
         g.evaluate(&mut (), "(length keep)"),
         Ok(Value::Integer(1000))
     );
+    // A large discarded byte payload requests collection without thousands of new objects;
+    // a kept payload remains a leaf root through that collection.
+    let garbage = g.bytes(&vec![255; 1_000_000]).unwrap();
+    let live = g.bytes(&[0, 255]).unwrap();
+    let kept = g.keep(live).unwrap();
+    assert!(g.heap.due());
+    g.evaluate(&mut (), "#inert").unwrap();
+    assert_eq!(kind(&g, &g.as_bytes(&garbage).unwrap_err()), "stale-value");
+    assert_eq!(
+        g.as_bytes(&g.kept(&kept).unwrap()).unwrap(),
+        Some(&[0, 255][..])
+    );
+    g.release(kept).unwrap();
 }
 
 #[test]

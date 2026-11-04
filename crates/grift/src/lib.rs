@@ -11,7 +11,7 @@ mod tests;
 
 use heap::{Bindings, Heap, IdHasher, Object};
 use interrupt::Control;
-use local::{K, KEPT, boxed, copied, push};
+use local::{K, KEPT, boxed, push};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -503,7 +503,7 @@ impl<T> Grift<T> {
 
     /// A new bytes value holding a copy of `b`.
     pub fn bytes(&mut self, b: &[u8]) -> Result<Value, Error> {
-        let made = copied(b).and_then(|b| self.bytes_local(b));
+        let made = collected(b.iter().copied()).and_then(|b| self.bytes_local(b));
         self.exported(made)
     }
 

@@ -22,3 +22,6 @@
 ; at the end
 (define! poem "a string
 over two lines" (list 1 2))
+
+(list #bytes(0 127 128 255) #bytes(1
+2) #bytes())

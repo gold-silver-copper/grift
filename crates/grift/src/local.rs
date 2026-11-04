@@ -108,14 +108,6 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     Ok(b.into_boxed_str())
 }
 
-/// A copy of `b`, exactly its length, reporting `out-of-memory` instead of aborting.
-pub(crate) fn copied(b: &[u8]) -> Result<Vec<u8>, Error> {
-    let mut v = Vec::new();
-    v.try_reserve_exact(b.len()).map_err(|_| Error::oom())?;
-    v.extend_from_slice(b);
-    Ok(v)
-}
-
 /// A string to format into, failing when it can't grow instead of aborting.
 #[derive(Default)]
 pub(crate) struct Growing(pub String);
