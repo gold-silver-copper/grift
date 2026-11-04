@@ -119,7 +119,7 @@ which a test shows no program can tell from the Rust.
 | `(byte-substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
 | `(string-append s ...)` | The strings joined. |
 | `(code-point-to-string n)` | The string of the one character whose Unicode code point is `n`; a `range-error` for a surrogate or past `#x10FFFF`. |
-| `(bytes-length b)`, `(bytes-byte b i)` | The number of bytes in bytes value `b`; the byte at offset `i`, an integer 0–255, a `range-error` unless `i` is below the length. Both O(1). |
+| `(bytes-length b)`, `(bytes-byte b i)` | The number of bytes in bytes value `b`; the byte at offset `i`, an integer 0–255, a `range-error` unless `0 <= i <` the length. Both O(1). |
 | `(bytes-slice b start end)` | A copy of the bytes of `b` from offset `start` to `end`; a `range-error` unless `0 <= start <= end <=` the length. |
 | `(bytes-append b ...)` | The bytes values joined; `#bytes()` for none. |
 | `(string-to-bytes s)`, `(bytes-to-string b)` | A string's UTF-8 bytes; and back, by Rust's `str::from_utf8`, keeping NUL and a byte-order mark. Bytes that aren't UTF-8 are an `encoding-error` with the primitive, `b` and the offset of the first sequence that isn't (Rust's `valid_up_to`): `(bytes-to-string #bytes(97 255))` is `encoding-error #[primitive bytes-to-string] #bytes(97 255) 1`. |
