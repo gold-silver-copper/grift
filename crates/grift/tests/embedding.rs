@@ -158,7 +158,17 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
         ("bind, the value", g.bind(&top, &x, bad.clone())),
         ("bind, the context", g.bind(bad, &x, Value::Inert)),
         ("bind, the parameters", g.bind(&top, bad, Value::Inert)),
+        // Before the context's kind is checked, as a primitive's arguments are.
+        (
+            "bind, the value, with no context",
+            g.bind(&Value::Integer(1), &x, bad.clone()),
+        ),
+        (
+            "bind, the parameters, with no context",
+            g.bind(&Value::Integer(1), bad, Value::Inert),
+        ),
         ("lookup", g.lookup(bad, &symbol).map(drop)),
+        ("position", g.position(bad).map(drop)),
         ("names", g.names(bad).map(drop)),
         ("context", g.context(Some(bad)).map(drop)),
         ("keep", g.keep(bad.clone()).map(drop)),
@@ -258,6 +268,10 @@ fn another_interpreters_value_is_foreign_value_everywhere() {
     let Value::Symbol(s) = &symbol else { panic!() };
     if ours.symbol_name(s).is_ok() {
         broken.push("symbol_name of their symbol".into());
+    }
+    match ours.lookup(&Value::Integer(1), s) {
+        Err(e) if kind(&ours, &e) == "foreign-value" => {}
+        r => broken.push(format!("lookup of their symbol, with no context: {r:?}")),
     }
     // A host function of theirs never runs ours, whatever its number.
     let host = evaluate(&mut theirs, "(unwrap stop)");
@@ -504,4 +518,50 @@ fn a_kept_value_lives_until_it_is_released() {
     let (e, theirs) = g.release(theirs).unwrap_err();
     assert_eq!(kind(&g, &e), "foreign-value");
     other.release(theirs).unwrap();
+}
+
+/// `v`'s reference in every other heap variant.
+fn retagged(v: &Value) -> Vec<Value> {
+    let r = match v {
+        Value::Pair(r)
+        | Value::String(r)
+        | Value::Context(r)
+        | Value::Operative(r)
+        | Value::Applicative(r) => r.clone(),
+        _ => return Vec::new(),
+    };
+    let all = [
+        Value::Pair(r.clone()),
+        Value::String(r.clone()),
+        Value::Context(r.clone()),
+        Value::Operative(r.clone()),
+        Value::Applicative(r),
+    ];
+    all.into_iter()
+        .filter(|w| std::mem::discriminant(w) != std::mem::discriminant(v))
+        .collect()
+}
+
+#[test]
+fn a_reference_in_another_variant_is_stale_value_everywhere() {
+    // Safe Rust can put a live object's reference in any variant: it is no value of the
+    // interpreter's, and never read as an object of another kind.
+    let mut g = grift();
+    let live = objects(&mut g);
+    let mut broken = Vec::new();
+    for (what, v) in &live {
+        for w in retagged(v) {
+            let what = format!(
+                "{what} as {}",
+                format!("{w:?}").split('(').next().unwrap_or("")
+            );
+            broken.extend(every_entry_refuses(&mut g, &what, &w, "stale-value"));
+        }
+    }
+    assert!(
+        broken.is_empty(),
+        "{} broken:\n{}",
+        broken.len(),
+        broken.join("\n")
+    );
 }

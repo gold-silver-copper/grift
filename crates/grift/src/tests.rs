@@ -2137,6 +2137,9 @@ const OTHER_TEXTS: &[&str] = &[
     "string-search",
     "double",
     "note",
+    "(malformed 0)",
+    "(malformed 1)",
+    "(malformed 2)",
 ];
 
 /// Each native with what each of its arguments usually is: `i` an integer, `f` a float, `s` a
@@ -2233,7 +2236,14 @@ fn argument(r: &mut Random, kind: char, depth: usize) -> String {
             "\"\\rb\"",
             "\"0\"",
         ],
-        (_, 'c') => &["here", "record", "(context)", "(context record)", "1"],
+        (_, 'c') => &[
+            "here",
+            "record",
+            "(context)",
+            "(context record)",
+            "1",
+            "(malformed 0)",
+        ],
         (_, 'y') => &[
             "(quote! x)",
             "(quote! y)",
@@ -2248,6 +2258,7 @@ fn argument(r: &mut Random, kind: char, depth: usize) -> String {
             "()",
             "1",
             "(list (list))",
+            "(malformed 2)",
         ],
         (_, 'b') => &["#true", "#false", "(same? 1 1)", "(note #false)", "1", "()"],
         _ if depth > 0 && r.below(2) == 0 => return generated(r, depth - 1),
@@ -2388,12 +2399,35 @@ fn note(g: &mut Grift<Vec<String>>, log: &mut Vec<String>, args: &[Value]) -> Re
     Ok(args.first().cloned().unwrap_or(Value::Inert))
 }
 
+/// What a host might hand back wrongly: an object's reference in another kind's variant.
+fn malformed(
+    g: &mut Grift<Vec<String>>,
+    _: &mut Vec<String>,
+    args: &[Value],
+) -> Result<Value, Error> {
+    let string = g.string("not a context")?;
+    let pair = g.pair(Value::Integer(1), Value::Integer(2))?;
+    let (Value::String(s), Value::Pair(p)) = (string, pair) else {
+        return Err(g.error("not-made", &[]));
+    };
+    Ok(match args.first() {
+        Some(Value::Integer(0)) => Value::Context(s),
+        Some(Value::Integer(1)) => Value::String(p),
+        _ => Value::Pair(s),
+    })
+}
+
 /// Two interpreters alike, one running the natives and one their grift definitions.
 fn twins() -> [Grift<Vec<String>>; 2] {
     [true, false].map(|natives| {
         let mut g: Grift<Vec<String>> = Grift::new().unwrap();
-        let f = g.host_function("note", note).unwrap();
-        g.define("note", f).unwrap();
+        for (name, f) in [
+            ("note", note as crate::HostFunction<Vec<String>>),
+            ("malformed", malformed),
+        ] {
+            let f = g.host_function(name, f).unwrap();
+            g.define(name, f).unwrap();
+        }
         g.evaluate(
             &mut Vec::new(),
             "(define! here (current-context))
@@ -2417,8 +2451,13 @@ fn natives_are_their_definitions() {
     }
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
     let mut counts = [0usize; 2];
-    for case in 0..2500 {
-        let src = generated(&mut random, 2);
+    let grids = boundary_cases();
+    let cases = grids.len() + 2500;
+    for case in 0..cases {
+        let src = match grids.get(case) {
+            Some(src) => src.clone(),
+            None => generated(&mut random, 2),
+        };
         let place = format!("case-{case}.grift");
         let (mut a_log, mut b_log) = (Vec::new(), Vec::new());
         let a_scope = native.context(Some(&native.top_level())).unwrap();
@@ -2434,7 +2473,51 @@ fn natives_are_their_definitions() {
         if let Err(why) = compare.outcomes(&a, &b) {
             panic!("case {case}: {src}\n  {why}");
         }
+        // What a case changed persists: the top level and the record, bindings and all.
+        let (a_top, b_top) = (native.top_level(), defined.top_level());
+        if let Err(why) = compare.values(&a_top, &b_top) {
+            panic!("case {case}: {src}\n  afterwards, the top level: {why}");
+        }
         assert_eq!(a_log, b_log, "case {case}: {src}: what ran");
+    }
+    // Floats from Rust, with any bits, not-a-number's payloads included, through Rust calls.
+    for bits in [
+        0,
+        1,
+        1 << 63,
+        0x7ff8_0000_0000_0011,
+        0xfff0_0000_0000_0000,
+        0x7ff0_0000_0000_0001,
+    ] {
+        let f = Value::Float(f64::from_bits(bits));
+        for (name, arguments) in [
+            ("float-to-integer", vec![f.clone()]),
+            (
+                "select",
+                vec![Value::Boolean(true), f.clone(), Value::Integer(0)],
+            ),
+            (
+                "if!",
+                vec![Value::Boolean(false), Value::Integer(0), f.clone()],
+            ),
+            ("sequence!", vec![Value::Integer(0), f.clone()]),
+            ("integer-to-float", vec![f.clone()]),
+        ] {
+            let (fa, fb) = (
+                native.evaluate(&mut Vec::new(), name),
+                defined.evaluate(&mut Vec::new(), name),
+            );
+            let fa = native.call(&mut Vec::new(), &fa.unwrap(), &arguments);
+            let fb = defined.call(&mut Vec::new(), &fb.unwrap(), &arguments);
+            let mut compare = Comparison {
+                left: &native,
+                right: &defined,
+                matched: Vec::new(),
+            };
+            if let Err(why) = compare.outcomes(&fa, &fb) {
+                panic!("({name} {bits:#x}) from Rust: {why}");
+            }
+        }
     }
     // Both kinds of outcome are well represented.
     assert!(
@@ -2443,19 +2526,84 @@ fn natives_are_their_definitions() {
     );
 }
 
+/// The edges no generator should have to find: every byte offset pair of a text of one-, two-,
+/// four- and one-byte characters, the scalar values' edges, the bitwise operations on the
+/// integers' ends and the shift bounds, and mutations that persist.
+fn boundary_cases() -> Vec<String> {
+    let mut cases = Vec::new();
+    for start in -1..10 {
+        for end in -1..10 {
+            cases.push(format!(
+                "(byte-substring \"\\xe9;\\x1f603;a\" {start} {end})"
+            ));
+        }
+        cases.push(format!(
+            "(string-search \"\\xe9;ab\\xe9;ab\" \"ab\" {start})"
+        ));
+    }
+    for n in [
+        -1, 0, 31, 127, 128, 55295, 55296, 57343, 57344, 65535, 65536, 1114111, 1114112,
+    ] {
+        cases.push(format!("(code-point-to-string {n})"));
+    }
+    let ends = [i64::MIN, -1, 0, 1, 31, 62, 63, 64, i64::MAX];
+    for x in ends {
+        for y in ends {
+            for p in [
+                "bitwise-and",
+                "bitwise-or",
+                "bitwise-exclusive-or",
+                "shift-left",
+                "shift-right",
+            ] {
+                cases.push(format!("({p} {x} {y})"));
+            }
+        }
+    }
+    for text in [
+        "\"-9223372036854775808\"",
+        "\"9223372036854775807\"",
+        "\"-0\"",
+        "\"+\"",
+        "\"0x1\"",
+    ] {
+        cases.push(format!("(string-to-integer {text})"));
+    }
+    cases.extend([
+        "(sequence! (bind record (quote! answer) (note 17)) (bind record (quote! last) (note 18)) #inert)".into(),
+        "(if! #true (bind record (quote! answer) (note 19)) (bind record (quote! answer) (note 99)))".into(),
+        // Definitions inside the twins bind where the library's would: in the caller's context.
+        "(sequence! (define! made 1) (define! made-too 2) 3) (list made made-too)".into(),
+        "(if! #true (define! made 3) 0) made".into(),
+        "((lambda! () (sequence! (define! inner 4) inner)))".into(),
+        // Errors in each place of a twin, for their traces and lines.
+        "(sequence! (first 1) 2)".into(),
+        "(sequence! 1 (first 1))".into(),
+        "((lambda! () (sequence! (rest 2) 3)))".into(),
+        "(if! (first 1) 2 3)".into(),
+        "(if! #true (first 1) 3)".into(),
+        "(string-search \"ab\" (first 1) 0)".into(),
+        "(lookup (malformed 0) (quote! x) 42)".into(),
+        "(catch! (lookup (malformed 0) (quote! x) 42) e (evaluate-in! kind e))".into(),
+    ]);
+    cases
+}
+
 #[test]
 fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
     for mut g in twins() {
         g.evaluate(
             &mut Vec::new(),
-            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (loop (shift-right (add n 2) 1))))))
+            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (shift-right n 1) (loop (subtract n 1))))))
              (define! count (lambda! (n) (if! (same? n 0) 0 (count (subtract n 1)))))",
         )
         .unwrap();
         let mut high = Vec::new();
         for n in [100, 3000] {
-            g.evaluate(&mut Vec::new(), &format!("(count {n})"))
-                .unwrap();
+            for f in ["loop", "count"] {
+                let r = g.evaluate(&mut Vec::new(), &format!("({f} {n})"));
+                assert_eq!(r, Ok(Value::Integer(0)), "({f} {n})");
+            }
             high.push(g.machine.frames_high());
         }
         assert_eq!(
