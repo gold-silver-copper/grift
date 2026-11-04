@@ -955,4 +955,7 @@ Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-
   from before, matched, so the abandoned call answered `interrupted` instead of `foreign-value`, a poll with
   no run acting on a request. The check now answers false for run 0 before reading anything. A test makes
   the interleaving in order through a test-only seam that makes a stop's first store alone
-  (`a_poll_with_no_run_in_progress_acts_on_nothing`).
+  (`a_poll_with_no_run_in_progress_acts_on_nothing`). The fix adds no line of non-test Rust; the seam's
+  five lines are `#[cfg(test)]`. Counted as the band says, non-test Rust with `#[cfg(test)]` items, comments
+  and blank lines aside on both sides, `crates/grift` is 1,742 at the base and 2,610 here (+868); counting
+  the test-only items in, as G-138 did, 1,764 to 2,665 (+901, the one over being the seam).
