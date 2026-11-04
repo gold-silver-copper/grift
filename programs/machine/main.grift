@@ -22,11 +22,6 @@
   (lambda! (text at) (if! (less-than? at (string-byte-length text)) (string-byte text at) 0)))
 (define! text-from (lambda! (text at) (byte-substring text at (string-byte-length text))))
 
-; The bytes of a string as a list.
-(define! string-to-bytes
-  (lambda! (text)
-    (map (lambda! (at) (string-byte text at)) (range 0 (string-byte-length text)))))
-
 ; n in lowercase hexadecimal, at least `width` digits.
 (define! hexadecimal
   (lambda! (n width)
@@ -50,7 +45,7 @@
 (define! instruction-table (context))   ; mnemonic -> (opcode mnemonic shape)
 (define! descriptions (context))        ; opcode -> (opcode mnemonic shape)
 (define! executors (context))           ; opcode -> combiner (next a b c), giving the next pc
-(define! machine (context))             ; pc, count, left, right, and the output's partial character
+(define! machine (context))             ; pc, count, left, right
 (define! memory (context))              ; address -> byte, bound when first written or read
 (define! registers (context))           ; number -> value, unsigned
 
@@ -139,40 +134,9 @@
 (define! nonzero
   (lambda! (x) (if! (same? x 0) (machine-fault "division by zero") x)))
 
-; The output instruction writes bytes, but grift writes only strings, and a string is UTF-8: a byte
-; above 127 waits here for the rest of its character, and a byte that can't be part of one is a fault.
-; Each row of lead-bytes: the smallest lead byte, the largest, the bits to take off, the bytes to come,
-; and the smallest code point a character of that length may be.
-(define! lead-bytes (quote! ((194 223 192 1 128) (224 239 224 2 2048) (240 244 240 3 65536))))
-(bind machine (quote! (partial left-to-come smallest)) (list 0 0 0))
-(define! not-text
-  (lambda! (byte)
-    (machine-fault "byte " (integer-to-string byte) " can't be written: grift's output is UTF-8 text")))
-(define! write-output-byte
-  (lambda! (byte)
-    (let! ((to-come (evaluate-in! left-to-come machine)))
-      (conditional!
-        ((same? to-come 0)
-         (if! (less-than? byte 128) (display (code-point-to-string byte)) (start-character byte)))
-        ((or!? (less-than? byte 128) (less-than? 191 byte)) (not-text byte))
-        (#true
-         (let! ((value (add (multiply 64 (evaluate-in! partial machine)) (subtract byte 128))))
-           (bind machine (quote! partial) value)
-           (bind machine (quote! left-to-come) (subtract to-come 1))
-           (when! (same? to-come 1) (finish-character value byte))))))))
-(define! start-character
-  (lambda! (byte)
-    (let! ((rows (filter (lambda! ((low high . #ignore))
-                           (and!? (not? (less-than? byte low)) (not? (less-than? high byte))))
-                         lead-bytes)))
-      (when! (empty-list? rows) (not-text byte))
-      (let! ((((#ignore #ignore base to-come smallest)) rows))
-        (bind machine (quote! (partial left-to-come smallest))
-          (list (subtract byte base) to-come smallest))))))
-(define! finish-character
-  (lambda! (value byte)
-    (when! (less-than? value (evaluate-in! smallest machine)) (not-text byte))
-    (catch-kind! (display (code-point-to-string value)) range-error #ignore (not-text byte))))
+; The output instruction writes its byte to standard output as it is.
+(define! write-output (evaluate-in! write-bytes standard-output))
+(define! write-output-byte (lambda! (byte) (write-output (list-to-bytes (list byte)))))
 
 (instruction! halt () (#ignore #ignore #ignore #ignore) (raise (error (quote! halted))))
 (instruction! nop () (next #ignore #ignore #ignore) next)
@@ -513,7 +477,7 @@
     (when! (same? word "0x") (problem "'0x' has no digits"))
     (fold (lambda! (value byte) (add (multiply 16 value) (hexadecimal-digit byte word)))
           0
-          (string-to-bytes (text-from word 2)))))
+          (bytes-to-list (string-to-bytes (text-from word 2))))))
 (define! hexadecimal-digit
   (lambda! (byte word)
     (conditional!
@@ -530,8 +494,8 @@
         (problem "unfinished character " (byte-substring text at end)))
       (let! ((bytes (string-to-bytes
                       (if! (same? inner "\"") inner (read-string (string-append "\"" inner "\""))))))
-        (if! (same? (length bytes) 1)
-          (list (first bytes) end)
+        (if! (same? (bytes-length bytes) 1)
+          (list (bytes-byte bytes 0) end)
           (problem "'" inner "' isn't one byte"))))))
 (define! read-name
   (lambda! (text at)
@@ -724,7 +688,7 @@
        (apply append
          (map (lambda! (text) (encode-value text 4 -2147483648 4294967295 "the word")) operands)))
       ((same? word ".string")
-       (apply append (map (lambda! (text) (string-to-bytes (read-string text))) operands)))
+       (apply append (map (lambda! (text) (bytes-to-list (string-to-bytes (read-string text)))) operands)))
       (#true ()))))
 ; .space leaves memory as it is, which reads as zero.
 (define! encode-statement
@@ -831,10 +795,7 @@
   (lambda! (path trace? count?)
     (load-rows (assemble path))
     (start-machine)
-    (catch-kind! (sequence!
-                   (run-machine (if! trace? traced-step step))
-                   (when! (not? (same? (evaluate-in! left-to-come machine) 0))
-                     (machine-fault "the program halted in the middle of a UTF-8 character")))
+    (catch-kind! (run-machine (if! trace? traced-step step))
                  machine-fault
                  e
                  (report-fault path (first (evaluate-in! values e))))

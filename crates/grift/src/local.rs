@@ -24,6 +24,7 @@ pub(crate) enum Value {
     Applicative(Reference),
     Primitive(Primitive),
     Host(Host),
+    Bytes(Reference),
 }
 
 /// An interned symbol: its index among the names. Indices at or above [`KEPT`] name kept values.
@@ -69,6 +70,7 @@ known_symbols! {
     UnclosedList "unclosed-list" UnclosedString "unclosed-string"
     UnmatchedParenthesis "unmatched-parenthesis" MisplacedDot "misplaced-dot"
     BadEscape "bad-escape" BadNumber "bad-number" UnknownConstant "unknown-constant"
+    Bytes "bytes" BadByte "bad-byte" EncodingError "encoding-error"
 }
 
 impl From<K> for Symbol {

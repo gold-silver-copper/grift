@@ -39,7 +39,8 @@ grift has few kinds of value, and each earns its place:
 - symbols;
 - pairs, and the empty list `()`; a list is a chain of pairs ending in `()`, and `first` and `rest`
   take a pair apart, named for their use on lists;
-- strings (immutable, addressed by byte);
+- strings (immutable UTF-8 text, addressed by byte);
+- bytes (immutable, any bytes: what a file, a pipe or a host gives that isn't text);
 - contexts;
 - combiners (operatives, applicatives, primitives and host functions);
 - `#inert` (the value of a form with nothing useful to return) and `#ignore` (a parameter that
@@ -49,8 +50,8 @@ There is no truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and
 booleans, and anything else is a type error. Nothing is guessed for a missing branch either: `if!`
 needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers
 and floats never mix implicitly: `(add 1 1.5)` is a type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
-and no vector type. Bytes that aren't UTF-8 text, read from a file or standard input or written
-to one, are a list of integers 0-255, not a new value: strings stay UTF-8 text. Host types are not grift values: the host converts at the boundary (checked;
+and no vector type. Strings stay UTF-8 text and bytes are never a string: converting bytes to a
+string refuses any that aren't UTF-8, and says where. Host types are not grift values: the host converts at the boundary (checked;
 `range-error` when a number doesn't fit) or gives grift a context of operations.
 
 ## Numbers
@@ -82,8 +83,8 @@ follows `lambda!`: both name the abstraction they make).
   about bindings: `define!`, `bind` and `unbind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
 became the verb itself. Equality is `same?` and `equal?`: `same?` is identity for pairs, contexts
-and combiners, equality of value for integers, symbols and strings, and equality of the stored bits
-for floats; `equal?` compares pairs by structure, floats as IEEE does (NaN is never equal), and
+and combiners, equality of value for integers, symbols, strings and bytes, and equality of the
+stored bits for floats; `equal?` compares pairs by structure, floats as IEEE does (NaN is never equal), and
 everything else as `same?` does. Values of different types are never equal (`(equal? 1 1.0)` is
 `#false`).
 

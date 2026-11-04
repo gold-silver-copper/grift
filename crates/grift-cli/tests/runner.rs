@@ -328,19 +328,31 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
 #[test]
 fn bytes_that_are_not_text_go_in_and_out() {
     let dir = scratch("bytes");
-    let every: Vec<u8> = (0..=255).collect();
+    // Nine full reads of 65536 and seven bytes more, every byte value, and not UTF-8.
+    let input: Vec<u8> = (0..9 * 65536 + 7_u32)
+        .map(|at| ((at * 73 + at / 251) % 256) as u8)
+        .collect();
+    assert!(std::str::from_utf8(&input).is_err());
     let path = dir.join("bytes.grift");
-    // Standard input to standard output in pieces of 100 bytes, and to a file in one.
+    // Standard input read in counted pieces until an empty one, joined, to a file whole, and its
+    // last 100 bytes to standard output: tail -c 100.
     let program = r#"
         (define! (copy) command-line-arguments)
         (define! read (evaluate-in! read-bytes standard-input))
         (define! put (evaluate-in! write-bytes standard-output))
-        (define! pass (lambda! (all) (let! ((bytes (read 100))) (if! (empty-list? bytes) all (sequence! (put bytes) (pass (append all bytes)))))))
+        (define! whole
+          (lambda! (chunks)
+            (let! ((chunk (read 65536)))
+              (if! (same? chunk #bytes()) (apply bytes-append (reverse chunks)) (whole (pair chunk chunks))))))
+        (define! all (whole ()))
+        (put (bytes-slice all (subtract (bytes-length all) 100) (bytes-length all)))
         (define! out (create-file copy))
-        ((evaluate-in! write-bytes out) (pass ()))
+        ((evaluate-in! write-bytes out) all)
         ((evaluate-in! close out))
-        (display-error (length ((evaluate-in! read-bytes (open-file copy)) 1000)) " "
-                       (catch! (put (list 256)) e (evaluate-in! kind e)))
+        (define! in (open-file copy))
+        (display-error (bytes-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "
+                       (catch! (put (list 1)) e (evaluate-in! kind e)) " "
+                       (catch! (put (list-to-bytes (list 256))) e (evaluate-in! kind e)))
     "#;
     std::fs::write(&path, program).unwrap();
     let copy = dir.join("copy");
@@ -351,11 +363,15 @@ fn bytes_that_are_not_text_go_in_and_out() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(&every).unwrap();
+    // A runner that fails before reading closes its end; what it said is the assertion below.
+    let _ = child.stdin.take().unwrap().write_all(&input);
     let out = child.wait_with_output().unwrap();
-    assert_eq!(out.stdout, every);
-    assert_eq!(std::fs::read(&copy).unwrap(), every);
-    assert_eq!(out.stderr, b"256 range-error");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        "1000 #bytes() type-error range-error"
+    );
+    assert_eq!(out.stdout, input[input.len() - 100..]);
+    assert_eq!(std::fs::read(&copy).unwrap(), input);
     // A file that isn't text can't be read as text, but its bytes can be.
     let program = format!(
         "(display (catch! (read-file {copy:?}) e (evaluate-in! kind e)) (catch! (load {copy:?}) e (evaluate-in! kind e)))"

@@ -39,8 +39,9 @@ check fault-division 1 "" "fault-division.asm:2: machine fault at 0004: division
 check fault-illegal 1 "" "machine fault at 0004: illegal instruction, opcode 0" run tests/fault-illegal.asm
 check fault-register-read 1 "" "no such register: 9" run tests/fault-register-read.asm
 check fault-register-write 1 "" "no such register: 9" run tests/fault-register-write.asm
-check fault-byte 1 "" "byte 255 can't be written" run tests/fault-byte.asm
-check fault-partial 1 "" "halted in the middle of a UTF-8 character" run tests/fault-partial.asm
+# Bytes that aren't text are written as they are: one that is no character, and half of one.
+check raw-byte 0 "$(printf '\377')" "" run tests/raw-byte.asm
+check raw-partial 0 "$(printf '\303')" "" run tests/raw-partial.asm
 check fault-stack 1 "" "is outside memory" run tests/fault-stack.asm
 
 # Item 1: the assembler's listing and its errors, each naming the line.

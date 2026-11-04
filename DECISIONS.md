@@ -977,3 +977,130 @@ Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-
   request; the q2 model's 40 violating states), so it stays. New target: at least 1.33x, the lowest desk
   measurement at dec88e5. Cost: `fib 25` about 3% slower on desk than at c85356b, from code placement, not
   from the work a step does; every `programs/` test stays inside its band (1.08x-1.44x).
+
+## Settled by the bytes design ballot, 2026-11-04 (four models; the owner may overrule any)
+
+Evidence: owner decision 10 (`~/code/notes/projects/grift/mux-2026-11-02/owner-decisions.md`), K4 in
+`apps4-2026-11-02/tally.md` section 2, PR #195's measured costs and the logic spike's F2
+(`mux-2026-11-02/logic/friction.md`). The answers are `~/code/notes/projects/grift/bytes-2026-11-04/design.md`
+(each verbatim) and `design/tally.md` (votes and dissents; P1-P4 are the four panelists). Ties went to
+fewer new public items, then fewer lines.
+
+- **G-142. Bytes are a value of their own** (replaces G-100; owner decision 10; q1 settled 3/4, by P2;
+  q2 a 1-1-1-1 tie, by P4). The kind is `bytes`, `type-of` names it and `bytes?` is library. Immutable,
+  any bytes; strings stay UTF-8 text and are never bytes, and a bytes value is never `same?` or
+  `equal?` to a string. The literal is `#bytes(` with each byte as a decimal integer 0 to 255, and `)`:
+  `#bytes(104 105 255)`, `#bytes()`. The printer writes that for every bytes value and the reader reads
+  it back as the same bytes, by program text and by `read-form`. Inside, only integers 0 to 255 (as the
+  reader reads an integer), space and comments: anything else is `parse-error bad-byte` at it, a `.` is
+  `misplaced-dot`, a missing `)` is `unclosed-list` at the `(`; `#bytes` with no `(` stays
+  `unknown-constant`. Why this literal: bytes aren't text, so they must not look like it. A `#"..."` form
+  (Racket, Python's `b''`) would make `\xff;` mean a byte there and a scalar value in a string, and must
+  refuse or re-encode a non-ASCII character in it; `#bytes(255)` and `"\xff;"` can't be confused. A
+  byte's printed form is the integer `bytes-byte` gives for it, as `string-byte` gives one. VISION
+  "Names" rules out `#u8(` and `b"` (abbreviations; `b"x"` reads today as a symbol and a string), and
+  `#[...]` is what grift prints for values that don't read back. Cost: 2 to 4 characters a byte, in
+  debugging output only; `display` prints the literal, and bytes leave as they are only through
+  `write-bytes`. The vocabulary mirrors the string one name for name and argument for argument:
+  `bytes-length`, `bytes-byte`, `bytes-slice`, `bytes-append`, `bytes-search`, and the conversions
+  `string-to-bytes`, `bytes-to-string`, `list-to-bytes`, `bytes-to-list`; offsets are zero-based,
+  a slice's end exclusive; no aliases, sequence operations, mutation, ordering or encoding parameter.
+  G-100's evidence stands (K4: Brainfuck's `-.`, base64 of binary, `head -c 1` on `é`, `cat` of a binary
+  file), and so do its runner names and its counted reads. What changed is its cost: lists made `tail -c 100`
+  of 589 KB take 1.8 s where text took 2 ms (PR #195), and converting a 9 KB chunk 107 µs (F2). Dissent
+  (q1, P3): the same literal, with a reason of its own, `unclosed-bytes`, at the `#`. Dissent (q2, P2):
+  the same names, `bytes-slice` read as Rust's word for `byte-substring`.
+- **G-143. One owned buffer each, copied** (q3, a 1-1-1-1 tie, by P3). A bytes object holds its own
+  `Vec<u8>`; a value copies its reference, never the payload. A slice copies exactly its bytes, so a
+  100-byte tail never keeps 589 KB alive; `bytes-append` sums the lengths, checked, and reserves once;
+  the literal, a list and a read grow with `try_reserve`. For the collector a bytes object is a leaf,
+  and it counts as one object plus the slots its capacity would fill, both when it is made and when it
+  survives a collection, so large chunks dropped one after another bring a collection nearer as their
+  size, not their number, says. Scheduling, not a limit. Only a bytes allocation pays for that count
+  (`Heap::alloc_bytes`), so pairs and contexts allocate as before. Dissent (P1): `Box<[u8]>`, and only
+  the allocation side counted. The ballot sent this one split (P3 for the survival count, P2 and P4
+  against) to an experiment on the built branches, whose result outranks the vote. It ran
+  (`bytes-2026-11-04/adv/q3/results.md`, box2, one run each), each side's rule set before measuring,
+  and both rules keep the credits. Win: a host replacing 64 KB slices of a 64 MB stream peaks at 3.8 MB
+  with them against 51 MB without (13x); 1 MB grown by 1,024 appends, 9 MB against 530 MB. Cost: a
+  program holding a large live value lets more garbage build up before the next collection
+  (`big-live`, 32 MB held: 144 MB against 69 MB, and about 1.2x slower). Strings earn no credits, so
+  a string grown the same way stays at 530 MB either way.
+- **G-144. Eight native primitives, and two library forms** (q4, a 2-1-1-0 plurality, by P3; q5, a
+  2-1-1-0 plurality, by P4). `bytes-length`, `bytes-byte`, `bytes-slice`, `bytes-append`,
+  `string-to-bytes`, `bytes-to-string`, `list-to-bytes` and `bytes-to-list` are native under G-110:
+  the printer writes a bytes value's integers and the reader reads them back, so each has its grift
+  definition in `natives.grift`, which never calls the primitive it defines, and joins the one
+  equivalence test (G-116, G-135) with every offset pair of a bytes value, UTF-8 that is cut short,
+  overlong, a surrogate or past U+10FFFF, and lists that aren't of bytes. No new core primitive: the kind
+  itself is the reader's, the printer's, `type-of`'s and `same?`'s. `bytes?` and `bytes-search` are
+  library grift. Errors as the string ones: a wrong kind is `type-error` with the primitive and the
+  value, an offset out of range `range-error` with the primitive and the operands. `bytes-to-string` is
+  Rust's `str::from_utf8`: bytes that aren't UTF-8 are `encoding-error`, now a core kind (the runner's
+  name and meaning), with the primitive, the bytes and `valid_up_to`, the offset of the first sequence
+  that isn't; NUL and a byte-order mark are kept; no `error_len` and no lossy form, which no program
+  needs. `list-to-bytes` walks the list in order: an element that isn't an integer, or a tail that isn't
+  `()` (a non-list at position 0), is `type-error`, and an integer outside 0-255 `range-error`, each
+  with the value and its position. Who needs each: `bytes-length` and `bytes-slice` tail's and head's
+  `-c`; `bytes-byte` base64 on every byte and Brainfuck's `,`; `bytes-append` joining read chunks;
+  `list-to-bytes` base64's output and a byte written alone; `string-to-bytes` and `bytes-to-list` the
+  machine's assembler. Dissent (q4, P1): `bytes-to-list` library, as no program needs it fast. Dissent
+  (q5, P1): a non-list or improper list refused whole, with the list, before any element.
+- **G-145. `same?` compares bytes by content** (q6, a 1-1-1-1 tie, by P1). As strings (G-13): two
+  bytes values with the same bytes are the same, so `(same? chunk #bytes())` ends a read loop.
+  `equal?` falls through to `same?`. No `bytes-less-than?`: no program needs one. Dissent (P2): the
+  same.
+- **G-146. The runner's `read-bytes` and `write-bytes` take and give bytes** (q7, settled 3/4, by P4).
+  `(read-bytes count)` gives a bytes value of up to `count` bytes, `#bytes()` at the end or for 0,
+  reading only until it has them, so Brainfuck's `,` answers a pipe that stays open; its buffer grows
+  with `try_reserve`. `(write-bytes bytes)` writes a bytes value as it is; a list, G-100's form, is a
+  `type-error`, so a program on lists fails loudly. No `read-file` counterpart: `read-bytes` on
+  `open-file`'s context is that (G-106). In `programs/`, meta knows the new kind and primitives;
+  format lays out every atom with a newline in it (a bytes literal can have one) as lines, not only a
+  string; the machine drops its own `string-to-bytes` and writes each output byte as it is, so its
+  UTF-8 workaround and the check for a halt in the middle of a character are gone and its tests expect
+  the raw byte. The editor keeps its contracts: keys are integers, files text. Dissent (P1): the same.
+- **G-147. Bytes from Rust** (q8, a 1-1-1-1 tie, by P3). `Grift::bytes(&[u8])` makes a value from a
+  copy, and `Grift::as_bytes(&Value)` borrows its contents, `None` for a live value of another kind.
+  Both go through import and export, so a reclaimed bytes value is `stale-value`, another
+  interpreter's `foreign-value`, and a reference under `Value::Bytes` of another kind of object
+  `stale-value` (G-132); the embedding test's pools have a bytes value and its retaggings, at every
+  way in. `keep` keeps one across evaluations. No owned copy and no constructor taking a buffer over:
+  fux's PTY feed (F2) copies a chunk into its own parser while it holds only `&g`. Dissent (P1): the
+  same.
+- **G-148. `bytes-search` is library grift, with no twin yet** (q9, a 1-1-1-1 tie, by P1). It has
+  `string-search`'s order, its `()` when nothing is found, its empty pattern at `start`, and its
+  `range-error` for a start out of range, which names `bytes-slice` as `string-search`'s names
+  `byte-substring`. G-110's bar for a twin is a measurement on a program, and no program in
+  `programs/`, the ports or the editor searches bytes; fux's logic only passes chunks on (F2). One
+  quick check, for the first program that does: 9 KB searched to its end in 12 ms (box2, busy), where
+  `string-search`'s twin takes 4 µs on the same text. A twin would be about 20 lines and a flag
+  (`windows(p.len()).position(...)`, never `windows(0)`). Dissent (P2): the body shared with
+  `string-search` through a maker over the two accessors.
+- **G-149. The bands, as set** (q10, a 1-1-1-1 tie, by P1). Nothing in the brief needed revising before
+  the work. The tight one, base64 decode of 565 KB at least 5x faster than on lists, is met by the port's
+  shape: one read of a 256-byte `#bytes(...)` table per input byte, four digits a call while they come,
+  no `let!` in the loop. Orientation on box2 (busy, load about 10, one run each): decode 8.7 s on lists
+  to 1.07 s on bytes (8x), `tail -c 100` of 589 KB 1.58 s to 2-3 ms, `fib 25` 97 ms both (its
+  instructions +0.6% after G-150). On desk, the quiet machine, every `programs/` test was within 5%
+  of the base but meta's (G-150), and format's, which box2 had put outside, was within it. Dissent
+  (P2): revise the base64 band to 3.5x before the port is timed.
+- **G-150. What meta's test paid, and the part that was the code's** (the band stands). On desk (base
+  7ff695e against 8da8b50, one run each, twice) meta's test took 21.3 s and 22.5 s (+5.3%, +5.6%),
+  outside the 5% band; every other program was inside it. Two causes, told apart on box2 by
+  instruction counts (`perf stat`), as times there are noise at this size, on meta running meta on
+  `tests/square.grift`, the bulk of the test:
+  1. **The code, fixed.** With the base's `library.grift` and the base's meta as the input, the new
+     binary ran 2.4% more instructions (45.14 G against 46.24 G), from no new work on the path: the
+     new `Bytes` variants sat in the middle of the machine's `Value` and the heap's `Object`, so every
+     later kind changed its tag and the compiler laid the machine's common paths out differently
+     (`perf report`: `find`, `push` and `next_argument` traded places). Put last, the other kinds keep
+     their tags: 45.47 G (+0.75%), and `fib 25` +0.6% where it was +1.3%.
+  2. **The input, as G-107 found.** meta loads `library.grift` in every run, twice over when it runs
+     itself, and the library grew by `bytes?` and `bytes-search`. `bytes-search` was 3.9% of a
+     library load (16 M of 414 M instructions loading for an empty program), more than its lines, as
+     each `lambda!` meta interprets is dear; written with one helper in place of two, it is 2.95%,
+     shorter, and searches 9 KB in 12 ms where it took 14.5 ms. `bytes?` is 0.75%.
+  The whole test: 222.35 G instructions at the base, 232.46 G at 8da8b50 (+4.5%), 227.88 G now
+  (+2.5%); on the same input its time is the base's (box2, alternated: 3.96/3.96, 2.93/2.83,
+  2.77/2.80 s). Target unchanged: within 5% of the base; desk times the head.

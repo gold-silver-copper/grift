@@ -174,12 +174,18 @@ impl<T> Grift<T> {
                             _ => return Err(fail(K::MisplacedDot)),
                         }
                     }
-                    let reason = if token.starts_with('#') {
-                        K::UnknownConstant
+                    if token == "#bytes" && cur.peek() == Some('(') {
+                        let open = cur.at;
+                        cur.next();
+                        self.read_bytes(&mut cur, open)?
                     } else {
-                        K::BadNumber
-                    };
-                    self.atom(token).ok_or_else(|| fail(reason))??
+                        let reason = if token.starts_with('#') {
+                            K::UnknownConstant
+                        } else {
+                            K::BadNumber
+                        };
+                        self.atom(token).ok_or_else(|| fail(reason))??
+                    }
                 }
             };
             let Some(list) = open.last_mut() else {
@@ -249,6 +255,36 @@ impl<T> Grift<T> {
             _ => return Some(self.intern(token).map(Value::Symbol)),
         };
         Some(Ok(v))
+    }
+
+    /// The bytes of a `#bytes(...)` literal after its `(`, at offset `open`: integers 0 to 255,
+    /// as the reader reads an integer, with space and comments between them, up to the `)`.
+    fn read_bytes(&mut self, cur: &mut Cursor, open: usize) -> Result<Value, Error> {
+        let src = cur.src;
+        let mut bytes = Vec::new();
+        loop {
+            cur.skip_space();
+            let begin = cur.at;
+            match cur.next() {
+                None => return Err(parse_error(src, open, K::UnclosedList)),
+                Some(')') => break,
+                Some(c) if delimiter(c) => return Err(parse_error(src, begin, K::BadByte)),
+                Some(_) => {
+                    while cur.peek().is_some_and(|c| !delimiter(c)) {
+                        cur.next();
+                    }
+                    let token = src.get(begin..cur.at).unwrap_or_default();
+                    match token.parse::<i64>().ok().and_then(|n| u8::try_from(n).ok()) {
+                        Some(byte) => push(&mut bytes, byte)?,
+                        None if token == "." => {
+                            return Err(parse_error(src, begin, K::MisplacedDot));
+                        }
+                        None => return Err(parse_error(src, begin, K::BadByte)),
+                    }
+                }
+            }
+        }
+        self.bytes_local(bytes)
     }
 
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,

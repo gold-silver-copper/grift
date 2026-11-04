@@ -129,6 +129,7 @@
 (define! symbol? (lambda! (x) (same? (type-of x) (quote! symbol))))
 (define! pair? (lambda! (x) (same? (type-of x) (quote! pair))))
 (define! string? (lambda! (x) (same? (type-of x) (quote! string))))
+(define! bytes? (lambda! (x) (same? (type-of x) (quote! bytes))))
 (define! context? (lambda! (x) (same? (type-of x) (quote! context))))
 (define! operative? (lambda! (x) (same? (type-of x) (quote! operative))))
 (define! applicative? (lambda! (x) (same? (type-of x) (quote! applicative))))
@@ -546,6 +547,25 @@
                      (pair (code-point-to-string (add byte 32)) (parts s next next end)))
                (parts s from next end))))))
      (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
+
+; bytes-search: string-search over bytes, the offset of the first place at or after start where
+; pattern is, or (). The empty slice refuses a start out of range.
+(define! bytes-search
+  ((lambda! ()
+     ; The first place from at, up to last, where pattern is, its first i bytes matched at at.
+     (define! from
+       (lambda! (b pattern at last size i)
+         (if! (less-than? last at)
+           ()
+           (if! (same? i size)
+             at
+             (if! (same? (bytes-byte b (add at i)) (bytes-byte pattern i))
+               (from b pattern at last size (add i 1))
+               (from b pattern (add at 1) last size 0))))))
+     (lambda! (b pattern start)
+       (bytes-slice b start start)
+       (let! ((size (bytes-length pattern)))
+         (from b pattern start (subtract (bytes-length b) size) size 0))))))
 
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
 ; list them. The built-in context itself stays out of reach, so no program can change what the

@@ -50,6 +50,8 @@ pub enum Value {
     Pair(Reference),
     /// An immutable string.
     String(Reference),
+    /// An immutable sequence of bytes, any bytes: what isn't text.
+    Bytes(Reference),
     /// A context.
     Context(Reference),
     /// A compound operative made by `vau!`.
@@ -499,6 +501,32 @@ impl<T> Grift<T> {
         self.out(reserved).map(|()| Some(copy + s))
     }
 
+    /// A new bytes value holding a copy of `b`.
+    pub fn bytes(&mut self, b: &[u8]) -> Result<Value, Error> {
+        let made = collected(b.iter().copied()).and_then(|b| self.bytes_local(b));
+        self.exported(made)
+    }
+
+    /// The contents of a bytes value; `None` for anything else.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let chunk = g.bytes(&[104, 105, 255])?;
+    /// g.define("chunk", chunk)?;
+    /// let head = g.evaluate(&mut (), "(bytes-slice chunk 0 2)")?;
+    /// assert_eq!(g.as_bytes(&head)?, Some(&b"hi"[..]));
+    /// let text = g.evaluate(&mut (), "(bytes-to-string (bytes-slice chunk 0 2))")?;
+    /// assert_eq!((g.as_bytes(&text)?, g.as_str(&text)?), (None, Some("hi")));
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn as_bytes(&self, v: &Value) -> Result<Option<&[u8]>, Error> {
+        let b = self.import(v).and_then(|v| match v {
+            local::Value::Bytes(_) => self.bytes_of(Primitive::BytesLength, v).map(Some),
+            _ => Ok(None),
+        });
+        self.out(b)
+    }
+
     /// The new pair `(a . b)`.
     pub fn pair(&mut self, a: Value, b: Value) -> Result<Value, Error> {
         let made = self
@@ -817,6 +845,7 @@ impl<T> Grift<T> {
             Value::Symbol(s) => L::Symbol(self.import_symbol(s)?),
             Value::Pair(r) => L::Pair(live(r, |o| matches!(o, Object::Pair(..)))?),
             Value::String(r) => L::String(live(r, |o| matches!(o, Object::String(_)))?),
+            Value::Bytes(r) => L::Bytes(live(r, |o| matches!(o, Object::Bytes(_)))?),
             Value::Context(r) => L::Context(live(r, |o| matches!(o, Object::Context(..)))?),
             Value::Operative(r) => L::Operative(live(r, |o| matches!(o, Object::Operative(_)))?),
             Value::Applicative(r) => {
@@ -878,6 +907,7 @@ impl<T> Grift<T> {
             L::Symbol(s) => Value::Symbol(self.export_symbol(s)),
             L::Pair(r) => Value::Pair(reference(r)),
             L::String(r) => Value::String(reference(r)),
+            L::Bytes(r) => Value::Bytes(reference(r)),
             L::Context(r) => Value::Context(reference(r)),
             L::Operative(r) => Value::Operative(reference(r)),
             L::Applicative(r) => Value::Applicative(reference(r)),

@@ -36,7 +36,7 @@
 
 ; The tree. Each item is a list (kind a b):
 ;   (atom text ())             a symbol, number, constant or string, as written
-;   (lines text ())            a string with a newline in it, as written; never on one line
+;   (lines text ())            an atom with a newline in it (a string, bytes), as written; never on one line
 ;   (list flat children)       flat: the list on one line, or () when it holds a comment
 ;   (comment text trailing?)   trailing?: #true when it ended a line that had something before it
 ;   (blank () ())              a blank line between two items
@@ -57,7 +57,7 @@
 
 (define! atom-item
   (lambda! (text)
-    (if! (and!? (same? (string-byte text 0) 34) (integer? (string-search text "\n" 0)))
+    (if! (integer? (string-search text "\n" 0))
       (list (quote! lines) () text)
       (list (quote! atom) text ()))))
 
