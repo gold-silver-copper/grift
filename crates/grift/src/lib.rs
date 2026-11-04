@@ -63,56 +63,41 @@ pub enum Value {
 }
 
 /// An interned symbol of one [`Grift`]; its name is [`Grift::symbol_name`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Symbol {
-    owner: Weak<Control>,
+    owner: Owner,
     index: u32,
 }
 
 /// An object in the heap of one [`Grift`]: a slot and its generation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Reference {
-    owner: Weak<Control>,
+    owner: Owner,
     local: heap::Reference,
 }
 
 /// A host function registered with one [`Grift`].
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Host {
-    owner: Weak<Control>,
+    owner: Owner,
     index: u32,
 }
 
-/// Interpreter identities are the same allocation, so values from two interpreters are never
-/// equal, even after one is dropped: a value keeps the allocation's address from being reused.
-fn same_owner(a: &Weak<Control>, b: &Weak<Control>) -> bool {
-    Weak::ptr_eq(a, b)
-}
+/// The interpreter a value belongs to: its control's allocation. Two are the same only if the
+/// allocation is, even after one interpreter is dropped: a value keeps the address from reuse.
+#[derive(Clone, Debug)]
+struct Owner(Weak<Control>);
 
-impl PartialEq for Symbol {
-    fn eq(&self, other: &Symbol) -> bool {
-        self.index == other.index && same_owner(&self.owner, &other.owner)
+impl PartialEq for Owner {
+    fn eq(&self, other: &Owner) -> bool {
+        Weak::ptr_eq(&self.0, &other.0)
     }
 }
 
-impl Eq for Symbol {}
+impl Eq for Owner {}
 
-impl Hash for Symbol {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.index.hash(state);
-    }
-}
-
-impl PartialEq for Reference {
-    fn eq(&self, other: &Reference) -> bool {
-        self.local == other.local && same_owner(&self.owner, &other.owner)
-    }
-}
-
-impl PartialEq for Host {
-    fn eq(&self, other: &Host) -> bool {
-        self.index == other.index && same_owner(&self.owner, &other.owner)
-    }
+impl Hash for Owner {
+    fn hash<H: Hasher>(&self, _: &mut H) {}
 }
 
 /// A host function. It receives the interpreter, the host's state (the one passed to
@@ -171,7 +156,7 @@ pub enum WriteError {
 #[must_use]
 #[derive(Debug)]
 pub struct Kept {
-    owner: Weak<Control>,
+    owner: Owner,
     name: u32,
 }
 
@@ -195,7 +180,7 @@ pub struct Grift<T = ()> {
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
-    identity: Weak<Control>,
+    identity: Owner,
     /// The generation of the outer run in progress, 0 for none, and the last one given out.
     run: u64,
     runs: u64,
@@ -223,7 +208,7 @@ impl<T> Grift<T> {
             kept_free: Vec::new(),
             kept_next: 0,
             machine: evaluate::Machine::default(),
-            identity: Weak::new(),
+            identity: Owner(Weak::new()),
             control: Arc::new(Control::default()),
             run: 0,
             runs: 0,
@@ -233,7 +218,7 @@ impl<T> Grift<T> {
             #[cfg(test)]
             definitions: heap::Reference::NONE,
         };
-        g.identity = Arc::downgrade(&g.control);
+        g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();
         g.out(loaded).map(|()| g)
     }
@@ -801,8 +786,8 @@ impl<T> Grift<T> {
         context_kind(self.import(v)?, p)
     }
 
-    fn owns(&self, owner: &Weak<Control>) -> bool {
-        std::ptr::eq(owner.as_ptr(), Arc::as_ptr(&self.control))
+    fn owns(&self, owner: &Owner) -> bool {
+        std::ptr::eq(owner.0.as_ptr(), Arc::as_ptr(&self.control))
     }
 
     /// `v` as this interpreter's own: `foreign-value` if another made it, `stale-value` if it was

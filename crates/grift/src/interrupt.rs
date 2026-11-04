@@ -167,9 +167,3 @@ impl Clone for Interrupter {
         Interrupter::new(&self.control)
     }
 }
-
-impl std::fmt::Debug for Interrupter {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Interrupter")
-    }
-}
