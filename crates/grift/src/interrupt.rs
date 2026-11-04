@@ -59,15 +59,19 @@ impl Control {
     }
 
     /// Whether a stop of `run` was asked for since the last one acted on. Read at every step: one
-    /// load, unless one was. With no run in progress, never: a mailbox a stop is still writing
-    /// may hold its new count beside 0.
+    /// load, unless one was.
     #[inline(always)]
     pub fn stopped(&self, run: u64) -> bool {
-        run != 0 && self.asked.load(Ordering::Acquire) && self.requested(run)
+        self.asked.load(Ordering::Acquire) && self.requested(run)
     }
 
     #[cold]
     fn requested(&self, run: u64) -> bool {
+        // With no run in progress, never: a mailbox a stop is still writing may hold its new count
+        // beside 0. The flag stays for the next run to read.
+        if run == 0 {
+            return false;
+        }
         // Cleared before reading, so a stop that leaves its request after the read sets it again.
         self.asked.store(false, Ordering::SeqCst);
         let mut stopped = false;
