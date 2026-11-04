@@ -13,8 +13,10 @@
 
 use crate::Grift;
 use crate::heap::{Bindings, Object, Operative, Reference, Seen};
+use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::read::float_name;
+use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
 /// fewest and most operands it takes. The core ones are what grift can't express; each native
@@ -232,6 +234,18 @@ impl Default for Machine {
     }
 }
 
+/// Held while a host function runs: if it doesn't return to the interpreter it was called from,
+/// by a panic or by replacing it, that interpreter's run ends.
+struct Hosting(Option<Arc<Control>>);
+
+impl Drop for Hosting {
+    fn drop(&mut self) {
+        if let Some(c) = &self.0 {
+            c.end();
+        }
+    }
+}
+
 pub(crate) fn type_error(p: Primitive, v: Value) -> Error {
     Error::new(K::TypeError, &[Value::Primitive(p), v])
 }
@@ -279,6 +293,9 @@ impl<T> Grift<T> {
         mode: Mode,
     ) -> Result<Value, Error> {
         let outer = self.begin_run()?;
+        // A host function may replace the interpreter or abandon this run: then the machine
+        // state is gone and nothing is restored into another's.
+        let (owner, run) = (Arc::as_ptr(&self.control), self.run);
         let m = &mut self.machine;
         let (base, arguments, raised, here) =
             (m.frames.len(), m.arguments.len(), m.raised.len(), m.here);
@@ -289,6 +306,9 @@ impl<T> Grift<T> {
                 .try_for_each(|&(what, context)| self.frame(what, context, Reference::NONE))
         });
         let result = result.and_then(|()| self.run(state, mode, base + 1));
+        if !std::ptr::eq(owner, Arc::as_ptr(&self.control)) || self.run != run {
+            return result;
+        }
         let m = &mut self.machine;
         m.frames.truncate(base);
         m.arguments.truncate(arguments);
@@ -528,8 +548,25 @@ impl<T> Grift<T> {
             .try_reserve_exact(given.len())
             .map_err(|_| Error::oom())?;
         arguments.extend(given.iter().map(|&v| self.export(v)));
+        let run = self.run;
+        let mut hosting = Hosting(Some(Arc::clone(&self.control)));
         let v = f(self, state, &arguments);
+        // Replaced, or restored after a run inside was abandoned: this run is over, and its
+        // control says so (as it does if `f` panics).
+        let same = hosting
+            .0
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && self.run == run && c.active() == run);
+        if !same {
+            self.abandon();
+            return Err(Error::new(K::ForeignValue, &[]));
+        }
+        hosting.0 = None;
         self.machine.arguments.truncate(base);
+        // A stop that came while the host ran stops the run here: there may be no step after.
+        if self.interrupted() {
+            return Err(Error::new(K::Interrupted, &[]));
+        }
         // What comes back is checked as everything the host hands in is.
         match v {
             Ok(v) => Ok(Mode::Return(self.import(&v)?)),

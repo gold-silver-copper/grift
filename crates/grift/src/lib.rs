@@ -199,8 +199,6 @@ pub struct Grift<T = ()> {
     /// The generation of the outer run in progress, 0 for none, and the last one given out.
     run: u64,
     runs: u64,
-    /// Whether the run in progress was interrupted already: it is once, and its cleanups run.
-    stopped: bool,
     /// Where each combination read under a name is: its slot's index -> (the slot's generation,
     /// the source's name, the line of its `(`).
     positions: HashMap<u32, (u32, local::Symbol, u32), BuildHasherDefault<IdHasher>>,
@@ -229,7 +227,6 @@ impl<T> Grift<T> {
             control: Arc::new(Control::default()),
             run: 0,
             runs: 0,
-            stopped: false,
             positions: HashMap::default(),
             #[cfg(test)]
             natives: true,
@@ -288,7 +285,7 @@ impl<T> Grift<T> {
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let keys = g.context(Some(&g.top_level()))?;
     /// let e = g.evaluate_in(&mut (), &keys, "keys.grift", "(define! a 1)\n(first a)").unwrap_err();
-    /// assert_eq!(g.position(&e.trace()[0]), Some(("keys.grift", 2)));
+    /// assert_eq!(g.position(&e.trace()[0])?, Some(("keys.grift", 2)));
     /// let mut text = String::new();
     /// g.describe(&e, &mut text).unwrap();
     /// assert_eq!(text, "type-error #[primitive first] 1 in (first a) at keys.grift:2");
@@ -394,8 +391,10 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn bind(&mut self, context: &Value, parameters: &Value, value: Value) -> Result<(), Error> {
-        let done = self.context_of(context, Primitive::Bind).and_then(|c| {
+        // Every value is checked before the context's kind, as the primitive's arguments are.
+        let done = self.import(context).and_then(|c| {
             let (parameters, value) = (self.import(parameters)?, self.import(&value)?);
+            let c = context_kind(c, Primitive::Bind)?;
             self.bind_tree(c, parameters, value)
         });
         self.out(done)
@@ -404,9 +403,10 @@ impl<T> Grift<T> {
     /// `(lookup context name otherwise)` without the default: the value bound to `name` in
     /// `context` or its nearest parent that binds it, `None` if none does.
     pub fn lookup(&self, context: &Value, name: &Symbol) -> Result<Option<Value>, Error> {
-        let found = self
-            .context_of(context, Primitive::Lookup)
-            .and_then(|c| self.find(c, self.import_symbol(name)?));
+        let found = self.import(context).and_then(|c| {
+            let name = self.import_symbol(name)?;
+            self.find(context_kind(c, Primitive::Lookup)?, name)
+        });
         self.out(found.map(|v| v.map(|v| self.export(v))))
     }
 
@@ -635,11 +635,11 @@ impl<T> Grift<T> {
     }
 
     /// The source and line of a combination read by [`Grift::evaluate_in`], such as an entry of an
-    /// error's trace; `None` for anything else.
-    pub fn position(&self, combination: &Value) -> Option<(&str, u32)> {
-        self.import(combination)
-            .ok()
-            .and_then(|c| self.position_local(c))
+    /// error's trace; `None` for any other value. A reclaimed value is `stale-value`, another
+    /// interpreter's `foreign-value`.
+    pub fn position(&self, combination: &Value) -> Result<Option<(&str, u32)>, Error> {
+        let c = self.import(combination);
+        self.out(c.map(|c| self.position_local(c)))
     }
 
     fn position_local(&self, combination: local::Value) -> Option<(&str, u32)> {
@@ -754,27 +754,30 @@ impl<T> Grift<T> {
         self.names.get(s.0 as usize).map_or("", |n| n)
     }
 
-    /// Whether the run in progress was asked to stop; it stops once.
+    /// Whether a stop of the run in progress came since the last one acted on: each stops it
+    /// once, so its cleanups run, and a later one stops it again.
     #[inline(always)]
-    pub(crate) fn interrupted(&mut self) -> bool {
-        !self.stopped && self.control.stopped(self.run) && {
-            self.stopped = true;
-            true
-        }
+    pub(crate) fn interrupted(&self) -> bool {
+        self.control.stopped(self.run)
     }
 
     /// Starts an outer run, unless one is in progress: the next generation, published for
-    /// interrupters. Whether it started one, which [`Grift::end_run`] then ends.
+    /// interrupters. Whether it started one, which [`Grift::end_run`] then ends. A run this
+    /// interpreter holds that its control no longer publishes was abandoned (a host function
+    /// replaced the interpreter, or panicked): its machine state goes, and this run is an outer one.
     pub(crate) fn begin_run(&mut self) -> Result<bool, local::Error> {
         if self.run != 0 {
-            return Ok(false);
+            if self.control.active() == self.run {
+                return Ok(false);
+            }
+            self.machine = evaluate::Machine::default();
         }
         // Generations never repeat, so a late stop can't match a later run.
         self.runs = self
             .runs
             .checked_add(1)
             .ok_or_else(|| local::Error::new(K::Overflow, &[]))?;
-        (self.run, self.stopped) = (self.runs, false);
+        self.run = self.runs;
         self.control.begin(self.run);
         Ok(true)
     }
@@ -784,12 +787,18 @@ impl<T> Grift<T> {
         self.run = 0;
     }
 
+    /// Gives up the run in progress and the machine's state: what a host function left behind
+    /// when it replaced or restored the interpreter, or panicked.
+    pub(crate) fn abandon(&mut self) {
+        self.machine = evaluate::Machine::default();
+        if self.run != 0 {
+            self.end_run();
+        }
+    }
+
     /// The context `v` is, or a `type-error` naming `p`.
     fn context_of(&self, v: &Value, p: Primitive) -> Result<heap::Reference, local::Error> {
-        match self.import(v)? {
-            local::Value::Context(c) => Ok(c),
-            v => Err(evaluate::type_error(p, v)),
-        }
+        context_kind(self.import(v)?, p)
     }
 
     fn owns(&self, owner: &Weak<Control>) -> bool {
@@ -801,8 +810,13 @@ impl<T> Grift<T> {
     /// is ever stored, and a live object holds only live objects.
     pub(crate) fn import(&self, v: &Value) -> Result<local::Value, local::Error> {
         use local::Value as L;
-        let live = |r: &Reference| match self.owns(&r.owner) {
-            true => self.heap.get(r.local).map(|_| r.local),
+        // The object must be live and of the kind the variant says: a reference put in another
+        // variant is no value of this interpreter's.
+        let live = |r: &Reference, kind: fn(&Object) -> bool| match self.owns(&r.owner) {
+            true => match self.heap.get(r.local)? {
+                o if kind(o) => Ok(r.local),
+                _ => Err(local::Error::new(K::StaleValue, &[])),
+            },
             false => Err(local::Error::new(K::ForeignValue, &[])),
         };
         Ok(match v {
@@ -814,11 +828,13 @@ impl<T> Grift<T> {
             Value::Float(f) => L::Float(*f),
             Value::Primitive(p) => L::Primitive(*p),
             Value::Symbol(s) => L::Symbol(self.import_symbol(s)?),
-            Value::Pair(r) => L::Pair(live(r)?),
-            Value::String(r) => L::String(live(r)?),
-            Value::Context(r) => L::Context(live(r)?),
-            Value::Operative(r) => L::Operative(live(r)?),
-            Value::Applicative(r) => L::Applicative(live(r)?),
+            Value::Pair(r) => L::Pair(live(r, |o| matches!(o, Object::Pair(..)))?),
+            Value::String(r) => L::String(live(r, |o| matches!(o, Object::String(_)))?),
+            Value::Context(r) => L::Context(live(r, |o| matches!(o, Object::Context(..)))?),
+            Value::Operative(r) => L::Operative(live(r, |o| matches!(o, Object::Operative(_)))?),
+            Value::Applicative(r) => {
+                L::Applicative(live(r, |o| matches!(o, Object::Applicative(_)))?)
+            }
             Value::Host(h) if self.owns(&h.owner) => L::Host(local::Host(h.index)),
             Value::Host(_) => return Err(local::Error::new(K::ForeignValue, &[])),
         })
@@ -911,6 +927,14 @@ impl<T> Grift<T> {
 
     fn out<R>(&self, r: Result<R, local::Error>) -> Result<R, Error> {
         r.map_err(|e| self.export_error(e))
+    }
+}
+
+/// The context `v` is, or a `type-error` naming `p`.
+fn context_kind(v: local::Value, p: Primitive) -> Result<heap::Reference, local::Error> {
+    match v {
+        local::Value::Context(c) => Ok(c),
+        v => Err(evaluate::type_error(p, v)),
     }
 }
 

@@ -306,20 +306,34 @@ fn a_stop_reaches_only_the_run_in_progress() {
     expect(&mut g, &mut h, "a stop before any run", "(add 1 2)", "ok 3");
     h.stop.as_mut().unwrap().stop();
     expect(&mut g, &mut h, "a stop between runs", "(add 1 2)", "ok 3");
-    // A stop stops its run, once: the cleanups run, and can't be stopped again.
+    // A stop stops its run once: the cleanups run. A later stop stops it again, so a cleanup that
+    // never ends can still be ended.
     expect(
         &mut g,
         &mut h,
         "a stop in a run",
         "(define! log ()) (define! here (current-context))
-         (finally! (sequence! (stop) (add 1 2)) (stop) (bind here (quote! log) (pair 1 log)))",
+         (finally! (sequence! (stop) (add 1 2)) (bind here (quote! log) (pair 1 log)))",
         "interrupted",
     );
     expect(&mut g, &mut h, "the cleanup ran", "log", "ok (1)");
-    // A stop at the very end of a run, which then takes no step, never reaches the next one.
+    expect(
+        &mut g,
+        &mut h,
+        "a second stop, in a cleanup that doesn't end",
+        "(define! spin (lambda! () (spin))) (finally! (stop) (stop) (spin))",
+        "interrupted",
+    );
+    // A stop in the run's last host call, after which it takes no step, still stops it, and never
+    // reaches the next run.
     for f in ["stop", "stop-and-fail"] {
         let f = evaluate(&mut g, f);
-        let _ = g.call(&mut h, &f, &[]);
+        let r = g.call(&mut h, &f, &[]);
+        assert_eq!(
+            outcome(&g, r),
+            "interrupted",
+            "a stop in the last host call"
+        );
         expect(&mut g, &mut h, "a stop as a run ended", "(add 1 2)", "ok 3");
     }
     // An evaluation inside a host function is part of the run that called it.
@@ -333,7 +347,104 @@ fn a_stop_reaches_only_the_run_in_progress() {
         "interrupted",
     );
     expect(&mut g, &mut h, "the run after it", "(add 1 2)", "ok 3");
+    // A host function that handles its nested run's interruption itself lets the run go on, and
+    // the next stop stops it.
+    let f = g.host_function("swallow", swallow).unwrap();
+    g.define("swallow", f).unwrap();
+    expect(
+        &mut g,
+        &mut h,
+        "a stop after a swallowed one",
+        "(swallow) (stop) (spin)",
+        "interrupted",
+    );
     assert!(broken.is_empty(), "{}", broken.join("\n"));
+}
+
+/// `(swallow)`: a nested run that is stopped, its `interrupted` handled here.
+fn swallow(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
+    let _ = g.evaluate(h, "(stop) (add 1 2)");
+    Ok(Value::Inert)
+}
+
+/// A host whose functions leave the run they were called from: by a panic, by replacing the
+/// interpreter, or by putting it back after a run inside was given up.
+#[derive(Default)]
+struct Leaving {
+    saved: Option<Grift<Leaving>>,
+}
+
+fn panics(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+    panic!("a host function's bug")
+}
+
+fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+    s.saved = Some(std::mem::replace(g, leaving()));
+    Ok(Value::Integer(0))
+}
+
+fn restore(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+    let _ = g.evaluate(s, "(finally! (swap-out) (note))");
+    if let Some(old) = s.saved.take() {
+        *g = old;
+    }
+    Err(g.error("restored", &[]))
+}
+
+fn note(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+    Ok(Value::Inert)
+}
+
+fn leaving() -> Grift<Leaving> {
+    let mut g = Grift::new().unwrap();
+    for (name, f) in [
+        ("panics", panics as grift::HostFunction<Leaving>),
+        ("swap-out", swap_out),
+        ("restore", restore),
+        ("note", note),
+    ] {
+        let f = g.host_function(name, f).unwrap();
+        g.define(name, f).unwrap();
+    }
+    g
+}
+
+#[test]
+fn a_run_its_host_function_left_is_over() {
+    let kind = |g: &Grift<Leaving>, r: &Result<Value, Error>| match r {
+        Ok(_) => "ok".to_string(),
+        Err(e) => g.symbol_name(&e.kind).unwrap().to_string(),
+    };
+    let quiet = |g: &mut Grift<Leaving>, s: &mut Leaving| {
+        // A stop with no run in progress does nothing; the next run runs.
+        g.interrupter().stop();
+        let r = g.evaluate(s, "(add 1 2)");
+        assert_eq!(r, Ok(Value::Integer(3)), "{}", kind(g, &r));
+    };
+    let mut s = Leaving::default();
+    // A panic the host catches ends the run.
+    let mut g = leaving();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.evaluate(&mut s, "(panics)")
+    }));
+    assert!(caught.is_err());
+    quiet(&mut g, &mut s);
+    // Replaced: the run ends with foreign-value, and the rest of the program doesn't run.
+    let mut g = leaving();
+    let r = g.evaluate(&mut s, "(swap-out) (quote! rest)");
+    assert_eq!(kind(&g, &r), "foreign-value");
+    assert!(r.unwrap_err().trace().is_empty());
+    quiet(&mut g, &mut s);
+    // The one swapped out, put back: its run is over, and it runs the next.
+    let mut parked = s.saved.take().unwrap();
+    quiet(&mut parked, &mut s);
+    // Put back after a run inside it was given up: neither that run's cleanup nor its frames
+    // reach the run around it.
+    let mut g = leaving();
+    let r = g.evaluate(&mut s, "(restore)");
+    assert_eq!(kind(&g, &r), "foreign-value");
+    assert!(r.unwrap_err().trace().is_empty());
+    quiet(&mut g, &mut s);
 }
 
 /// `(nested)`: evaluates `(stop)` from inside the host.

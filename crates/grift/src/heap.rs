@@ -177,11 +177,13 @@ impl Heap {
             .ok_or_else(|| Error::new(K::StaleValue, &[]))
     }
 
+    /// The slot `r` refers to, if it still holds that object: a slot freed since has another
+    /// generation, or none left (it is retired), and is free.
     #[inline]
     fn slot(&self, r: Reference) -> Option<&Slot> {
         self.slots
             .get(r.idx as usize)
-            .filter(|s| s.generation == r.generation)
+            .filter(|s| s.generation == r.generation && !matches!(s.obj, Object::Free(_)))
     }
 
     #[inline]
@@ -194,7 +196,9 @@ impl Heap {
     #[inline]
     pub fn get_mut(&mut self, r: Reference) -> Result<&mut Object, Error> {
         match self.slots.get_mut(r.idx as usize) {
-            Some(s) if s.generation == r.generation => Ok(&mut s.obj),
+            Some(s) if s.generation == r.generation && !matches!(s.obj, Object::Free(_)) => {
+                Ok(&mut s.obj)
+            }
             _ => Err(Error::new(K::StaleValue, &[])),
         }
     }
@@ -224,8 +228,12 @@ impl Heap {
             } else if !matches!(s.obj, Object::Free(_)) {
                 s.obj = Object::Free(self.free);
                 s.library = false;
-                s.generation = s.generation.wrapping_add(1);
-                self.free = idx;
+                // A slot whose generations ran out is retired, never reused: a reference held
+                // across all of them must stay stale.
+                if let Some(next) = s.generation.checked_add(1) {
+                    s.generation = next;
+                    self.free = idx;
+                }
             }
         }
         self.since_gc = 0;

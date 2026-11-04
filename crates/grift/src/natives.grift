@@ -45,9 +45,15 @@
   (lambda! (primitive (c s otherwise))
     (if! (context? c)
       (if! (symbol? s)
-        (call-with-handler (wrap (vau! () #ignore (evaluate s c))) (wrap (vau! (#ignore) #ignore otherwise)))
+        (call-with-handler (wrap (vau! () #ignore (evaluate s c))) (wrap (vau! (e) #ignore (absent e s otherwise))))
         (type-failed primitive s))
       (type-failed primitive c))))
+; otherwise where the symbol itself is unbound; any other error goes on as it was.
+(define! absent
+  (lambda! (e s otherwise)
+    (if! (and!? (same? (evaluate-in! kind e) (quote! unbound-symbol)) (same? (first (evaluate-in! values e)) s))
+      otherwise
+      (raise e))))
 
 ; Rust's as: not-a-number is 0, the integers' ends saturate, the rest is the integer part, read
 ; off in powers of two from 2 to the 62nd.

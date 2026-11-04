@@ -2506,18 +2506,21 @@ fn positions_name_each_combination_s_source_and_line() {
     let top = g.top_level();
     let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(f 1)";
     let e = g.evaluate_in(&mut (), &top, "f.grift", src).unwrap_err();
-    let lines: Vec<_> = e.trace().iter().map(|at| g.position(at)).collect();
+    let lines: Vec<_> = e.trace().iter().map(|at| g.position(at).unwrap()).collect();
     assert_eq!(lines, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
     // Text evaluated with no name, and pairs a program makes, have none.
     let e = g.evaluate(&mut (), "(f 2)").unwrap_err();
-    assert_eq!(g.position(&e.trace()[1]), None);
+    assert_eq!(g.position(&e.trace()[1]), Ok(None));
     let made = g.evaluate(&mut (), "(list 1 2)").unwrap();
-    assert_eq!(g.position(&made), None);
+    assert_eq!(g.position(&made), Ok(None));
     // A slot reused by a pair read later answers with its own line, never the old one.
     for n in 0..30 {
         let src = format!("{}(f {n})", "\n".repeat(n));
         let e = g.evaluate_in(&mut (), &top, "g.grift", &src).unwrap_err();
-        assert_eq!(g.position(&e.trace()[1]), Some(("g.grift", n as u32 + 1)));
+        assert_eq!(
+            g.position(&e.trace()[1]),
+            Ok(Some(("g.grift", n as u32 + 1)))
+        );
         g.evaluate(&mut (), "(length (map list (range 0 5000)))")
             .unwrap();
     }

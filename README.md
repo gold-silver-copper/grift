@@ -214,7 +214,7 @@ fn main() -> Result<(), Error> {
 - `Error { kind: Symbol, values: Vec<Value>, .. }`, with `Error::trace()`, which lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
-  not inside `if!`. A call in tail position has finished, so it isn't listed. `position(&at)` is a
+  not inside `if!`. A call in tail position has finished, so it isn't listed. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
