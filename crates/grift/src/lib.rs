@@ -101,7 +101,9 @@ impl Hash for Owner {
 }
 
 /// A host function. It receives the interpreter, the host's state (the one passed to
-/// [`Grift::evaluate`] or [`Grift::call`]) and the evaluated arguments.
+/// [`Grift::evaluate`] or [`Grift::call`]) and the evaluated arguments. One that panics, or
+/// replaces the interpreter it was given, ends the run it was called from: the interpreter answers
+/// `foreign-value` and starts its next evaluation afresh.
 pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>;
 
 /// What went wrong: a symbol naming the kind of error, the values involved, and where.

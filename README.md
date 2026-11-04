@@ -218,9 +218,12 @@ fn main() -> Result<(), Error> {
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
-  any thread stops the run in progress at its next step with the error `interrupted` (cleanups
-  run). A stop when no run is in progress does nothing, and one never reaches a later run. grift
-  sets no limit of its own; a timer thread holding an interrupter is how the host applies one.
+  any thread stops the run in progress at its next step, or as its last host call returns, with the
+  error `interrupted` (cleanups run), and says whether there was a run to stop. A stop when no run is
+  in progress does nothing, and one never reaches a later run; each stop is acted on once, so a later
+  one stops a cleanup that doesn't end. grift sets no limit of its own; a timer thread holding an
+  interrupter is how the host applies one. A host function that panics, or replaces the interpreter
+  it was given, ends the run it was called from (`foreign-value`).
 - **A returned `Value` stays valid until the next `evaluate` or `call`**, which may collect it.
   `keep(value)` gives a `Kept` that holds it until `release(kept)`; `kept(&k)` reads it. Every
   value carries its interpreter's identity and each heap reference its slot's generation, so a

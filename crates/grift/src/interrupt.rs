@@ -2,8 +2,9 @@
 //! another) gets the next number, its generation, published in the interpreter's [`Control`] while
 //! it runs and 0 otherwise. A stop reads it and, if a run is in progress, leaves that number in
 //! the stopping handle's own mailbox; the machine stops only for its own number. So a stop asked
-//! for between runs does nothing, and a late one never reaches a later run. Everything is a load
-//! or a store: no read-modify-write.
+//! for between runs does nothing, and a late one never reaches a later run. A stop is a load and
+//! three stores, never a lock or a read-modify-write; the machine reads one flag a step, and only
+//! once a stop has set it takes the lock and reads the mailboxes.
 
 use std::cell::Cell;
 use std::marker::PhantomData;

@@ -853,3 +853,62 @@ items, then fewer lines.
   0.1 µs of a 0.73 µs `Grift::call` of a small handler (perf: `export` 5%, the imports 4%). `crates/grift`
   grew from 1,764 to 2,621 lines of Rust code, comments and blank lines aside (2,119 to 3,302 lines
   in all: the rest are the docs and examples every new item has).
+
+## Made after the red team and the picking panel, 2026-11-03 (the owner may overrule any)
+
+Evidence: the red team's findings (`~/code/notes/projects/grift/embed-2026-11-03/redteam/P<n>/findings/<name>/`,
+each a `run.sh` that exits 1 when the guarantee breaks), the close-call experiments (`adv/q2`, `adv/q3`, `adv/q6`)
+and the picking panel's carry-overs from the other writer's branch (`pick/tally.md`, each 4 votes of 4).
+
+- **G-129. Each stop is acted on once, and a later stop again** (replaces G-112's "once per outer run").
+  A stop stores its handle's count beside the run's number, and the machine remembers, per mailbox, the
+  last count it acted on: one interruption answers every stop waiting, the cleanups then run, and a stop
+  issued after that interrupts again, so a cleanup that never ends, or a run whose host function handled
+  its nested run's `interrupted` and went on, can still be ended. Evidence: `P1/stops-lost-after-the-first`
+  (58 stops over 2.9 s lost while a cleanup looped) and `P2/interrupt-swallowed-by-host`, both broken before
+  and holding now. The machine also checks for a stop when a host function returns, as there may be no
+  step after it (`P3/final-host-stop`, `P4/stop-final-host`: a stop completed during the last host call
+  was lost). `Interrupter::stop` says whether it found a run in progress, so a watchdog whose deadline
+  passed while the program was still being read asks again until one lands, rather than stopping on every
+  tick, which would now interrupt the cleanups too.
+- **G-130. A run its host function leaves is over** (amends G-112; carries the other branch's run-identity
+  guard). A host function may panic (a host that catches it goes on with the interpreter), replace the
+  interpreter it was given (`std::mem::swap`), or put it back after a run inside it was given up. While it
+  runs, the machine holds its interpreter's control; if the function doesn't return to that interpreter
+  with its run still published, or unwinds, the control publishes 0. The interpreter then answers
+  `foreign-value` with an empty trace, drops its machine's state, and its next evaluation is a fresh outer
+  run; a run that the interpreter holds but its control no longer publishes is one of these. So a stop
+  with no run in progress does nothing after any of them. Evidence: `P1/idle-stop-after-host-panic`,
+  `P4/idle-stop-after-unwind`, `P1/idle-stop-after-parked-run`, `P4/idle-stop-after-replace`, and adv/q3's
+  restore and replacement rows (an abandoned run's cleanup ran and its frames reached the outer trace).
+  Cost: one `Arc` clone and drop per host call (about 8 ns, q2's measurement), none per run.
+- **G-131. The mailboxes are a list under a lock the stops never take** (replaces G-125's chain). Making
+  an interrupter, dropping one and the machine's scan take the lock; the scan happens only after a stop
+  has set the shared flag, so a step still pays one load. This closes adv/q2's one modeled lost stop
+  (`clone_registered_leftover`): a late stop's flag was cleared by a scan that could not yet see a
+  handle linked on another thread. Under the lock, a scan either sees the new handle or began before its
+  link, and then the handle's flag, stored after the link, is stored after the scan's clear and stays set.
+  A dropped handle's mailbox goes at once unless a stop of the run in progress waits in it, which a later
+  sweep lets go, so storage follows the live handles.
+- **G-132. Every way in checks the object's kind, and every argument before the context's kind**
+  (amends G-114; carries the other branch's validation). A live reference in another variant's place
+  (`Value::Context` around a string's reference: safe Rust) is `stale-value`; `bind` and `lookup` check
+  every value they are given before saying the context isn't one, as the primitives' arguments are;
+  `Grift::position` is `Result<Option<_>, Error>`, so a reclaimed or foreign combination is an error, not
+  "no position". `lookup`'s definition answers its default only for the symbol's own `unbound-symbol`.
+  Evidence: `P3/lookup-retagged-context` (a native/definition difference), `P3/stale-bind-validation`,
+  `P4/validation-precedence`, and the four position findings.
+- **G-133. A slot is retired at its last generation** (amends G-11). A slot freed for the
+  4,294,967,295th time is never reused, so a reference held across every reuse stays `stale-value`; a
+  heap read still compares one generation.
+- **G-134. The editor stops its run at every C-g** (replaces G-125's editor sentence; carries the other
+  branch's bookkeeping). The input thread stops the run and queues the C-g; after an interrupted run the
+  editor marks that C-g handled, and `(key)` skips a queued C-g so marked. Before, a C-g that stopped a
+  runaway command was read again by the recovery and stopped it too, losing a key (driven through fux:
+  `embedok` saved for `embed ok`).
+- **G-135. The equivalence test's edges** (amends G-116). Beside the generated programs: every byte offset
+  pair of a text of one-, two- and four-byte characters, the scalar values' and integers' edges for each
+  bitwise operation, raw float bits (not-a-number payloads) handed in from Rust, host functions returning
+  retagged references in the generator's pools, the top level compared after every case (mutations
+  persist), definitions and errors inside the twins, and a `sequence!` tail loop that now runs. With
+  G-132's fix taken out, the unchanged test fails on the retag (a generated case among them).

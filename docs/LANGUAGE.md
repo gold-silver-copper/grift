@@ -266,7 +266,7 @@ is `parse-error unclosed-list 2 2`.
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
-| `interrupted` | the host stopped the run in progress | none |
+| `interrupted` | the host stopped the run in progress; each stop once, so the cleanups run and a later stop stops them too | none |
 | any symbol | a program raised an error it made | the values given |
 
 The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
