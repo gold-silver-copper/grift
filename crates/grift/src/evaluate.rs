@@ -338,7 +338,13 @@ impl<T> Grift<T> {
             if let Mode::Return(v) = mode
                 && self.machine.frames.len() <= floor
             {
-                return Ok(v);
+                // The last step may have been a long native or host call, with no safe point
+                // after it: a stop that came during it stops the run here.
+                if !self.interrupted() {
+                    return Ok(v);
+                }
+                mode = self.unwind(Error::new(K::Interrupted, &[]), floor)?;
+                continue;
             }
             let next = self.safe_point(mode).and_then(|()| match mode {
                 Mode::Host(h, base) => self.host(state.as_deref_mut(), h, base),
@@ -346,6 +352,10 @@ impl<T> Grift<T> {
             });
             mode = match next {
                 Ok(mode) => mode,
+                // So too a stop that came during a step that failed.
+                Err(e) if !limit(e.kind) && self.interrupted() => {
+                    self.unwind(Error::new(K::Interrupted, &[]), floor)?
+                }
                 Err(e) => self.unwind(e, floor)?,
             };
         }
@@ -563,10 +573,6 @@ impl<T> Grift<T> {
         }
         hosting.0 = None;
         self.machine.arguments.truncate(base);
-        // A stop that came while the host ran stops the run here: there may be no step after.
-        if self.interrupted() {
-            return Err(Error::new(K::Interrupted, &[]));
-        }
         // What comes back is checked as everything the host hands in is.
         match v {
             Ok(v) => Ok(Mode::Return(self.import(&v)?)),

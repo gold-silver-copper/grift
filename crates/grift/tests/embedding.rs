@@ -490,6 +490,34 @@ fn a_timer_thread_sets_a_time_limit() {
     assert_eq!(outcome(&g, r), "interrupted");
     let r = g.evaluate(&mut h, "(add 1 2)");
     assert_eq!(outcome(&g, r), "ok 3");
+    // A stop that finds the run while its last step, a long native call, is under way stops it:
+    // a stop that says it found a run is never lost.
+    let parse = evaluate(&mut g, "string-to-integer");
+    let digits = g.string(&"0".repeat(16 << 20)).unwrap();
+    let (go, gone) = mpsc::channel();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (mut timer, finished) = (g.interrupter(), std::sync::Arc::clone(&done));
+    let thread = std::thread::spawn(move || {
+        gone.recv().unwrap();
+        while !finished.load(std::sync::atomic::Ordering::SeqCst) {
+            if timer.stop() {
+                return true;
+            }
+        }
+        false
+    });
+    go.send(()).unwrap();
+    let r = g.call(&mut h, &parse, &[digits]);
+    done.store(true, std::sync::atomic::Ordering::SeqCst);
+    if thread.join().unwrap() {
+        assert_eq!(
+            outcome(&g, r),
+            "interrupted",
+            "a stop found the run, and was lost"
+        );
+    }
+    let r = g.evaluate(&mut h, "(add 1 2)");
+    assert_eq!(outcome(&g, r), "ok 3");
 }
 
 #[test]
