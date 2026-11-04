@@ -526,15 +526,32 @@ const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
 ];
 
 /// `(load-host path caller)`: evaluates the forms of the file in the caller's context, each
-/// combination with its line in the file.
+/// combination with its line in the file. If the file doesn't read, its `parse-error`, with the
+/// path innermost in its trace, as the line and column are the file's: a record for `load` to raise.
 fn load_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [path, caller] = args else {
         return Err(g.error("arity-error", args));
     };
     let path = one_string(g, std::slice::from_ref(path))?;
     let text = std::fs::read_to_string(&path).map_err(|e| failed(g, "file-error", &path, &e))?;
-    g.evaluate_in(r, caller, &path, &text)?;
-    Ok(Value::Inert)
+    match g.evaluate_in(r, caller, &path, &text) {
+        // An error with no trace yet is the reader's: nothing ran.
+        Err(e) if e.trace().is_empty() && g.is_kind(&e, "parse-error")? => {
+            let record = g.context(None)?;
+            let (path, values) = (g.string(&path)?, g.list(&e.values)?);
+            let trace = g.list(&[path])?;
+            for (name, v) in [
+                ("kind", Value::Symbol(e.kind)),
+                ("values", values),
+                ("trace", trace),
+            ] {
+                let name = Value::Symbol(g.symbol(name)?);
+                g.bind(&record, &name, v)?;
+            }
+            Ok(record)
+        }
+        done => done.map(|_| Value::Inert),
+    }
 }
 
 /// Binds the runner's operations in the top-level context, and `script-path` if there is a script.

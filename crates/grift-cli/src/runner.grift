@@ -40,7 +40,9 @@
     (lambda! (path c)
       (let! ((outer (evaluate-in! file loading)))
         (bind loading (quote! file) path)
-        (finally! (load-host path c) (bind loading (quote! file) outer)))))
+        (finally! (raised (load-host path c)) (bind loading (quote! file) outer)))))
+  ; A file that didn't read gives its error as a record: raised here, so the program can catch it.
+  (define! raised (lambda! (r) (when! (context? r) (raise r))))
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
                      run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
