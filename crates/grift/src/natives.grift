@@ -176,13 +176,10 @@
           (fail (quote! overflow) (list primitive a n)))))))
 (define! repeated (lambda! (f x n) (if! (same? n 0) x (repeated f (f x) (subtract n 1)))))
 
-; Bytes, by the printer and the reader: a bytes value prints as #bytes(...) and its list of
-; integers reads from what follows #bytes, and a list of integers 0 to 255 is the literal's text,
-; read.
+; Bytes, by the printer and the reader: a bytes value prints as #bytes(...), and the list of its
+; integers reads from after #bytes; a list of integers 0 to 255 is the literal's text, read.
 (define! byte-list
-  (lambda! (primitive b)
-    (let! ((text (value-to-string (typed primitive b (quote! bytes)))))
-      (head (read-form (byte-substring text 6 (string-byte-length text)) 0)))))
+  (lambda! (primitive b) (head (read-form (value-to-string (typed primitive b (quote! bytes))) 6))))
 (define! literal
   (lambda! (texts) (head (read-form (string-append "#bytes(" (apply string-append texts) ")") 0))))
 ; The list's elements as a literal's texts, each an integer 0 to 255, or the error at the first that

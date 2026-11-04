@@ -2791,7 +2791,7 @@ fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
     for mut g in twins() {
         g.evaluate(
             &mut Vec::new(),
-            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (shift-right n 1) (loop (subtract n 1))))))
+            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (shift-right n 1) (bytes-slice #bytes(1 2) 1 2) (loop (subtract n 1))))))
              (define! count (lambda! (n) (if! (same? n 0) 0 (count (subtract n 1)))))",
         )
         .unwrap();
