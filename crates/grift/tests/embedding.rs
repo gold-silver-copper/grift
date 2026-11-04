@@ -97,13 +97,14 @@ fn churn(g: &mut G) {
 }
 
 /// One value of every kind that lives in the heap, held by nothing in the interpreter, and a
-/// symbol: a pair, two strings, a context, an operative, an applicative and a host function.
+/// symbol: a pair, two strings, bytes, a context, an operative, an applicative and a host function.
 fn objects(g: &mut G) -> Vec<(&'static str, Value)> {
     let unwrapped_host = evaluate(g, "(unwrap give)");
     vec![
         ("pair", g.pair(Value::Integer(1), Value::EmptyList).unwrap()),
         ("string", g.string("one").unwrap()),
         ("other string", g.string("two").unwrap()),
+        ("bytes", g.bytes(&[0, 255]).unwrap()),
         ("context", g.context(None).unwrap()),
         ("operative", evaluate(g, "(vau! () #ignore 1)")),
         ("applicative", evaluate(g, "(lambda! () 1)")),
@@ -179,6 +180,7 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
         ("as_pair", g.as_pair(bad).map(drop)),
         ("as_str", g.as_str(bad).map(drop)),
         ("as_string", g.as_string(bad).map(drop)),
+        ("as_bytes", g.as_bytes(bad).map(drop)),
         ("list_items", g.list_items(bad).map(drop)),
     ];
     for (entry, r) in results {
@@ -573,6 +575,7 @@ fn retagged(v: &Value) -> Vec<Value> {
     let r = match v {
         Value::Pair(r)
         | Value::String(r)
+        | Value::Bytes(r)
         | Value::Context(r)
         | Value::Operative(r)
         | Value::Applicative(r) => r.clone(),
@@ -581,6 +584,7 @@ fn retagged(v: &Value) -> Vec<Value> {
     let all = [
         Value::Pair(r.clone()),
         Value::String(r.clone()),
+        Value::Bytes(r.clone()),
         Value::Context(r.clone()),
         Value::Operative(r.clone()),
         Value::Applicative(r),

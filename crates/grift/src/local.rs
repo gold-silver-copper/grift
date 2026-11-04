@@ -19,6 +19,7 @@ pub(crate) enum Value {
     Symbol(Symbol),
     Pair(Reference),
     String(Reference),
+    Bytes(Reference),
     Context(Reference),
     Operative(Reference),
     Applicative(Reference),
@@ -69,6 +70,7 @@ known_symbols! {
     UnclosedList "unclosed-list" UnclosedString "unclosed-string"
     UnmatchedParenthesis "unmatched-parenthesis" MisplacedDot "misplaced-dot"
     BadEscape "bad-escape" BadNumber "bad-number" UnknownConstant "unknown-constant"
+    Bytes "bytes" BadByte "bad-byte" EncodingError "encoding-error"
 }
 
 impl From<K> for Symbol {
@@ -104,6 +106,14 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
     b.push_str(s);
     Ok(b.into_boxed_str())
+}
+
+/// A copy of `b`, exactly its length, reporting `out-of-memory` instead of aborting.
+pub(crate) fn copied(b: &[u8]) -> Result<Vec<u8>, Error> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(b.len()).map_err(|_| Error::oom())?;
+    v.extend_from_slice(b);
+    Ok(v)
 }
 
 /// A string to format into, failing when it can't grow instead of aborting.

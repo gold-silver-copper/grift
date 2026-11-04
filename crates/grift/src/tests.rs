@@ -332,6 +332,25 @@ fn printing_reads_back() {
     assert_eq!(printed, "\"\\x1b;[2J\\ta\\x7f;\u{3bb}\"");
     let again = g.evaluate(&mut (), &printed).unwrap();
     assert_eq!(g.as_str(&again), g.as_str(&v));
+    // Bytes print as their literal, every byte as the integer bytes-byte gives, and read back as
+    // the same bytes, by the program reader and by read-form.
+    let every: Vec<u8> = (0..=255).collect();
+    let v = g.bytes(&every).unwrap();
+    let printed = show(&g, &v);
+    let integers: Vec<String> = every.iter().map(u8::to_string).collect();
+    assert_eq!(printed, format!("#bytes({})", integers.join(" ")));
+    let again = g.evaluate(&mut (), &printed).unwrap();
+    assert_eq!(g.as_bytes(&again).unwrap(), Some(&every[..]));
+    g.define("every", v).unwrap();
+    holds(
+        &mut g,
+        &[
+            "(same? (first (read-form (value-to-string every) 0)) every)",
+            "(equal? (bytes-to-list every) (range 0 256))",
+            "(same? (first (read-form \"#bytes( 1 ; one\n 2)\" 0)) (list-to-bytes (list 1 2)))",
+            "(same? (value-to-string (list-to-bytes ())) \"#bytes()\")",
+        ],
+    );
     fails(
         &mut g,
         &[
@@ -907,6 +926,84 @@ fn strings_by_byte_offsets() {
     );
 }
 
+#[test]
+fn bytes_by_offsets_and_their_conversions() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            // The string operations' shapes, offsets counting bytes, a slice's end exclusive.
+            "(same? (bytes-length #bytes(0 255 9)) 3)",
+            "(same? (bytes-byte #bytes(0 255 9) 1) 255)",
+            "(same? (bytes-slice #bytes(0 255 9) 1 3) #bytes(255 9))",
+            "(same? (bytes-append #bytes(1) #bytes() #bytes(2 3)) #bytes(1 2 3))",
+            "(same? (bytes-append) #bytes())",
+            "(equal? (map (lambda! (start) (bytes-search #bytes(1 2 1 2) #bytes(1 2) start)) (range 0 5)) (list 0 2 2 () ()))",
+            "(same? (bytes-search #bytes(1 2) #bytes() 2) 2)",
+            // Text to bytes and back, whatever the text holds, NUL and a byte-order mark too.
+            "(same? (string-to-bytes \"\\xe9;\") #bytes(195 169))",
+            "(sequence! (define! s (string-append (code-point-to-string 0) \"\\xfeff;h\\xe9;\\x1f600;\")) (same? (bytes-to-string (string-to-bytes s)) s))",
+            "(equal? (bytes-to-list (list-to-bytes (list 0 128 255))) (list 0 128 255))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(bytes-byte #bytes(1) 1)", "range-error"),
+            ("(bytes-slice #bytes(1 2) 2 1)", "range-error"),
+            ("(bytes-search #bytes(1) #bytes(1) 2)", "range-error"),
+            // A string is never bytes, nor bytes a string.
+            ("(bytes-to-string \"abc\")", "type-error"),
+            ("(bytes-append #bytes(97) \"b\")", "type-error"),
+            ("(string-append \"a\" #bytes(98))", "type-error"),
+        ],
+    );
+    // What isn't a list of bytes is refused with the value and its place in the list.
+    for (list, want) in [
+        ("(list 1 256)", "(range-error (256 1))"),
+        ("(list -1)", "(range-error (-1 0))"),
+        ("(list 1 \"a\")", "(type-error (\"a\" 1))"),
+        ("(pair 1 2)", "(type-error (2 1))"),
+        ("5", "(type-error (5 0))"),
+    ] {
+        let src = format!(
+            "(catch! (list-to-bytes {list}) e (list (evaluate-in! kind e) (rest (evaluate-in! values e))))"
+        );
+        let v = g.evaluate(&mut (), &src).unwrap();
+        assert_eq!(show(&g, &v), want, "{list}");
+    }
+    // Bytes that aren't UTF-8 aren't a string: encoding-error, with the primitive, the bytes
+    // themselves and Rust's valid_up_to, the offset of the first sequence that is cut short,
+    // overlong, a surrogate, past U+10FFFF or no sequence at all.
+    for bytes in [
+        &b"a\xff"[..],
+        b"hi\xc0\x80",
+        b"\xe2\x82",
+        b"\xed\xa0\x80",
+        b"\xf4\x90\x80\x80",
+        b"A\xf0\x9f\x98",
+        b"\xc3\xa9\xe2(\xa1",
+        b"\0\xef\xbb\xbf\xc3\xa9\x80",
+    ] {
+        let at = std::str::from_utf8(bytes).unwrap_err().valid_up_to();
+        let b = g.bytes(bytes).unwrap();
+        g.define("b", b).unwrap();
+        let v = g
+            .evaluate(
+                &mut (),
+                "(catch! (bytes-to-string b) e
+                   (let! (((p original at) (evaluate-in! values e)))
+                     (list (evaluate-in! kind e) (same? p (unwrap bytes-to-string)) (same? original b) at)))",
+            )
+            .unwrap();
+        assert_eq!(
+            show(&g, &v),
+            format!("(encoding-error #true #true {at})"),
+            "{bytes:?}"
+        );
+    }
+}
+
 /// The value of `src`, which must be a float.
 fn float(g: &mut Grift, src: &str) -> f64 {
     match g.evaluate(&mut (), src) {
@@ -1203,6 +1300,11 @@ fn same_and_equal() {
             "(not? (same? (lambda! () 1) (lambda! () 1)))",
             "(sequence! (define! p (list 1)) (same? p p))",
             "(same? first first)",
+            // Bytes, like strings, by their contents.
+            "(same? #bytes(97 98) (bytes-append #bytes(97) (string-to-bytes \"b\")))",
+            "(same? #bytes() (bytes-slice #bytes(1) 1 1))",
+            "(not? (same? #bytes(1) #bytes(1 0)))",
+            "(equal? (list #bytes(1)) (list (list-to-bytes (list 1))))",
             // Floats: same? compares the stored bits, equal? as IEEE does.
             "(not? (same? 0.0 -0.0))",
             "(equal? 0.0 -0.0)",
@@ -1218,6 +1320,8 @@ fn same_and_equal() {
             "(not? (equal? 1 1.0))",
             "(not? (same? 1 1.0))",
             "(not? (equal? \"a\" (quote! a)))",
+            "(not? (same? \"a\" #bytes(97)))",
+            "(not? (equal? (list 97) #bytes(97)))",
             "(not? (equal? () #false))",
             "(not? (equal? (list 1.0) (list 1)))",
         ],
@@ -1235,6 +1339,7 @@ fn a_predicate_for_every_type() {
         "symbol?",
         "pair?",
         "string?",
+        "bytes?",
         "context?",
         "operative?",
         "applicative?",
@@ -1247,6 +1352,7 @@ fn a_predicate_for_every_type() {
         "(quote! a)",
         "(list 1)",
         "\"s\"",
+        "#bytes(115)",
         "(context)",
         "if!",
         "first",
@@ -1835,6 +1941,13 @@ fn a_parse_error_says_why_and_where() {
         ("(1.2.3)", "bad-number 1 2"),
         ("99999999999999999999", "bad-number 1 1"),
         ("#nope", "unknown-constant 1 1"),
+        // Inside #bytes( only integers 0 to 255, each at its own place.
+        ("#bytes(1\n 256)", "bad-byte 2 2"),
+        ("#bytes(1 \"a\" x)", "bad-byte 1 10"),
+        ("(#bytes((1)))", "bad-byte 1 9"),
+        ("#bytes(1.0)", "bad-byte 1 8"),
+        ("#bytes(1 . 2)", "misplaced-dot 1 10"),
+        ("#bytes (1)", "unknown-constant 1 1"),
     ] {
         let e = g.read(text).unwrap_err();
         let values: Vec<String> = e.values.iter().map(|v| show(&g, v)).collect();
@@ -1848,6 +1961,16 @@ fn a_parse_error_says_why_and_where() {
             let more = g.read(&format!("{text}\n(g 3)\n")).unwrap_err();
             assert_eq!(more.values, e.values);
         }
+    }
+    // An unclosed literal of bytes is placed at its `(`; a list after it is no more of it but a
+    // byte that isn't one.
+    for (text, want) in [
+        ("(#bytes(1 2", "unclosed-list 1 8"),
+        ("(#bytes(1 2\n(g 3)", "bad-byte 2 1"),
+    ] {
+        let e = g.read(text).unwrap_err();
+        let values: Vec<String> = e.values.iter().map(|v| show(&g, v)).collect();
+        assert_eq!(values.join(" "), want, "{text:?}");
     }
 }
 
@@ -2140,11 +2263,12 @@ const OTHER_TEXTS: &[&str] = &[
     "(malformed 0)",
     "(malformed 1)",
     "(malformed 2)",
+    "#bytes(0 255)",
 ];
 
 /// Each native with what each of its arguments usually is: `i` an integer, `f` a float, `s` a
 /// string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a symbol, `p` a
-/// pair, `b` a test, `x` anything.
+/// pair, `b` a test, `B` a bytes value, `l` a list of bytes, `x` anything.
 const NATIVES: &[(&str, &str)] = &[
     ("first", "p"),
     ("rest", "p"),
@@ -2165,6 +2289,14 @@ const NATIVES: &[(&str, &str)] = &[
     ("if!", "bxx"),
     ("sequence!", "xxx"),
     ("string-search", "sto"),
+    ("bytes-length", "B"),
+    ("bytes-byte", "Bo"),
+    ("bytes-slice", "Boo"),
+    ("bytes-append", "BB"),
+    ("string-to-bytes", "s"),
+    ("bytes-to-string", "B"),
+    ("list-to-bytes", "l"),
+    ("bytes-to-list", "B"),
 ];
 
 /// Where a generated call stands: at top level, as an operand, in a body's tail, in a branch
@@ -2266,6 +2398,29 @@ fn argument(r: &mut Random, kind: char, depth: usize) -> String {
             "(malformed 2)",
         ],
         (_, 'b') => &["#true", "#false", "(same? 1 1)", "(note #false)", "1", "()"],
+        (_, 'B') => &[
+            "#bytes()",
+            "#bytes(97)",
+            "#bytes(0 98 255 99)",
+            "#bytes(104 195 169)",
+            "#bytes(240 159 152 128)",
+            "#bytes(195)",
+            "#bytes(237 160 128)",
+            "(string-to-bytes \"bc\")",
+            "\"bc\"",
+            "(malformed 3)",
+        ],
+        (_, 'l') => &[
+            "()",
+            "(list 1 2)",
+            "(list 0 255)",
+            "(list 256)",
+            "(list 1 -1)",
+            "(pair 1 2)",
+            "(list 1 \"a\")",
+            "5",
+            "(list (note 7))",
+        ],
         _ if depth > 0 && r.below(2) == 0 => return generated(r, depth - 1),
         _ => [INTEGER_TEXTS, FLOAT_TEXTS, STRING_TEXTS, OTHER_TEXTS][r.below(4)],
     };
@@ -2298,10 +2453,14 @@ impl Comparison<'_> {
                 (Value::String(_), Value::String(_)) if l.as_str(&a) != r.as_str(&b) => {
                     return differ();
                 }
+                (Value::Bytes(_), Value::Bytes(_)) if l.as_bytes(&a) != r.as_bytes(&b) => {
+                    return differ();
+                }
                 (Value::Host(_), Value::Host(_)) if show(l, &a) != show(r, &b) => return differ(),
                 (Value::Float(_), Value::Float(_))
                 | (Value::Symbol(_), Value::Symbol(_))
                 | (Value::String(_), Value::String(_))
+                | (Value::Bytes(_), Value::Bytes(_))
                 | (Value::Host(_), Value::Host(_)) => {}
                 (Value::Pair(_), Value::Pair(_))
                 | (Value::Context(_), Value::Context(_))
@@ -2418,6 +2577,7 @@ fn malformed(
     Ok(match args.first() {
         Some(Value::Integer(0)) => Value::Context(s),
         Some(Value::Integer(1)) => Value::String(p),
+        Some(Value::Integer(3)) => Value::Bytes(s),
         _ => Value::Pair(s),
     })
 }
@@ -2532,10 +2692,42 @@ fn natives_are_their_definitions() {
 }
 
 /// The edges no generator should have to find: every byte offset pair of a text of one-, two-,
-/// four- and one-byte characters, the scalar values' edges, the bitwise operations on the
-/// integers' ends and the shift bounds, and mutations that persist.
+/// four- and one-byte characters and of a bytes value, the scalar values' edges, UTF-8 that is cut
+/// short, overlong, a surrogate or past U+10FFFF, lists of bytes that aren't, the bitwise
+/// operations on the integers' ends and the shift bounds, and mutations that persist.
 fn boundary_cases() -> Vec<String> {
     let mut cases = Vec::new();
+    for start in -1..5 {
+        for end in -1..5 {
+            cases.push(format!("(bytes-slice #bytes(1 2 3) {start} {end})"));
+        }
+        cases.push(format!("(bytes-byte #bytes(1 2 3) {start})"));
+    }
+    for utf8 in [
+        "0 195 169 255 90",
+        "97 255",
+        "104 105 192 128",
+        "195 169 226 40 161",
+        "65 240 159 152",
+        "226 130",
+        "237 160 128",
+        "237 159 191",
+        "224 160 128",
+        "224 159 191",
+        "244 143 191 191",
+        "244 144 128 128",
+        "248 128",
+        "0 239 187 191 195 169 128",
+    ] {
+        cases.push(format!("(bytes-to-string #bytes({utf8}))"));
+    }
+    cases.extend([
+        "(list-to-bytes (list 0 1 255 256))".into(),
+        "(list-to-bytes (pair 1 (pair 2 3)))".into(),
+        "(bytes-append #bytes(1) (note #bytes()) #bytes(2 3) 4)".into(),
+        "(bytes-append)".into(),
+        "(bytes-to-list (string-to-bytes \"\\xe9;\\x1f600;\"))".into(),
+    ]);
     for start in -1..10 {
         for end in -1..10 {
             cases.push(format!(

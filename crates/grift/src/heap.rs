@@ -37,6 +37,7 @@ pub(crate) enum Object {
     Free(u32),
     Pair(Value, Value),
     String(Box<str>),
+    Bytes(Vec<u8>),
     /// An optional parent and the bindings.
     Context(Option<Reference>, Bindings),
     Operative(Operative),
@@ -78,8 +79,19 @@ struct Slot {
 const NONE: u32 = u32::MAX;
 
 /// Collections start once this many objects were allocated since the last one, or as many as
-/// survived it if that is more, so the heap stays within about twice the live data.
+/// survived it if that is more, so the heap stays within about twice the live data. A bytes value
+/// counts as many objects as its storage would fill slots, so large chunks dropped one after
+/// another bring the next collection nearer as their size, not their number, says.
 const GC_MIN: usize = 4096;
+
+/// How many objects `obj` counts as, for when to collect.
+#[inline]
+fn weight(obj: &Object) -> usize {
+    match obj {
+        Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
+        _ => 1,
+    }
+}
 
 pub(crate) struct Heap {
     slots: Vec<Slot>,
@@ -110,6 +122,7 @@ fn reference(v: Value) -> Option<Reference> {
     match v {
         Value::Pair(r)
         | Value::String(r)
+        | Value::Bytes(r)
         | Value::Context(r)
         | Value::Operative(r)
         | Value::Applicative(r) => Some(r),
@@ -128,7 +141,7 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
-        self.since_gc = self.since_gc.saturating_add(1);
+        self.since_gc = self.since_gc.saturating_add(weight(&obj));
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -222,7 +235,7 @@ impl Heap {
         for (idx, s) in (0..).zip(self.slots.iter_mut()) {
             if s.marked {
                 s.marked = false;
-                self.live += 1;
+                self.live = self.live.saturating_add(weight(&s.obj));
             } else if !matches!(s.obj, Object::Free(_)) {
                 s.obj = Object::Free(self.free);
                 s.library = false;
@@ -259,7 +272,7 @@ impl Heap {
                     None => Ok(()),
                 };
                 match &s.obj {
-                    Object::Free(_) | Object::String(_) => {}
+                    Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
                     Object::Pair(a, d) => {
                         child(*a)?;
                         child(*d)?;

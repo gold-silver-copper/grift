@@ -176,11 +176,86 @@
           (fail (quote! overflow) (list primitive a n)))))))
 (define! repeated (lambda! (f x n) (if! (same? n 0) x (repeated f (f x) (subtract n 1)))))
 
+; Bytes, by the printer and the reader: a bytes value prints as #bytes(...) and its list of
+; integers reads from what follows #bytes, and a list of integers 0 to 255 is the literal's text,
+; read.
+(define! byte-list
+  (lambda! (primitive b)
+    (let! ((text (value-to-string (typed primitive b (quote! bytes)))))
+      (head (read-form (byte-substring text 6 (string-byte-length text)) 0)))))
+(define! literal
+  (lambda! (texts) (head (read-form (string-append "#bytes(" (apply string-append texts) ")") 0))))
+; The list's elements as a literal's texts, each an integer 0 to 255, or the error at the first that
+; isn't, or at an improper tail: the value and its position.
+(define! byte-texts
+  (lambda! (primitive xs at done)
+    (conditional!
+      ((same? xs ()) (reverse done))
+      ((not? (pair? xs)) (fail (quote! type-error) (list primitive xs at)))
+      ((not? (integer? (head xs))) (fail (quote! type-error) (list primitive (head xs) at)))
+      ((or!? (less-than? (head xs) 0) (less-than? 255 (head xs)))
+       (fail (quote! range-error) (list primitive (head xs) at)))
+      (#true (byte-texts primitive (tail xs) (add at 1) (pair " " (pair (integer-to-string (head xs)) done)))))))
+(define! packed (lambda! (primitive xs) (literal (byte-texts primitive xs 0 ()))))
+(define! byte-index
+  (lambda! (primitive (b i))
+    (sequence!
+      (typed primitive b (quote! bytes))
+      (typed primitive i (quote! integer))
+      (if! (and!? (not? (less-than? i 0)) (less-than? i (length (byte-list primitive b))))
+        (element-of (byte-list primitive b) i)
+        (fail (quote! range-error) (list primitive b i))))))
+(define! byte-part
+  (lambda! (primitive (b start end))
+    (sequence!
+      (typed primitive b (quote! bytes))
+      (typed primitive start (quote! integer))
+      (typed primitive end (quote! integer))
+      (if! (and!? (not? (less-than? start 0)) (not? (less-than? end start))
+                  (not? (less-than? (length (byte-list primitive b)) end)))
+        (packed primitive (take (drop (byte-list primitive b) start) (subtract end start)))
+        (fail (quote! range-error) (list primitive b start end))))))
+(define! joined
+  (lambda! (primitive bs) (if! (same? bs ()) () (append (byte-list primitive (head bs)) (joined primitive (tail bs))))))
+(define! string-bytes
+  (lambda! (text at done)
+    (if! (same? at 0) done (string-bytes text (subtract at 1) (pair (string-byte text (subtract at 1)) done)))))
+; UTF-8, decoded a character at a time, as Rust's str::from_utf8 checks it: a sequence that is
+; cut short, overlong, a surrogate or past U+10FFFF fails at its first byte, Rust's valid_up_to.
+(define! decoded (lambda! (primitive b) (characters-of primitive b (byte-list primitive b) 0 ())))
+(define! characters-of
+  (lambda! (primitive b xs at done)
+    (if! (same? xs ())
+      (apply string-append (reverse done))
+      (let! ((byte (head xs)))
+        (conditional!
+          ((less-than? byte 128)
+           (characters-of primitive b (tail xs) (add at 1) (pair (code-point-to-string byte) done)))
+          ((less-than? byte 194) (fail (quote! encoding-error) (list primitive b at)))
+          ((less-than? byte 224) (continued-by primitive b (tail xs) (add at 1) at 1 (subtract byte 192) 128 done))
+          ((less-than? byte 240) (continued-by primitive b (tail xs) (add at 1) at 2 (subtract byte 224) 2048 done))
+          ((less-than? byte 245) (continued-by primitive b (tail xs) (add at 1) at 3 (subtract byte 240) 65536 done))
+          (#true (fail (quote! encoding-error) (list primitive b at))))))))
+; The rest of a character from offset start: `left` more bytes to add to `scalar`, which must then
+; be at least `smallest` and a Unicode scalar value.
+(define! continued-by
+  (lambda! (primitive b xs at start left scalar smallest done)
+    (conditional!
+      ((and!? (same? left 0) (not? (less-than? scalar smallest)) (less-than? scalar 1114112)
+              (or!? (less-than? scalar 55296) (less-than? 57343 scalar)))
+       (characters-of primitive b xs at (pair (code-point-to-string scalar) done)))
+      ((or!? (same? left 0) (same? xs ()) (less-than? (head xs) 128) (less-than? 191 (head xs)))
+       (fail (quote! encoding-error) (list primitive b start)))
+      (#true
+       (continued-by primitive b (tail xs) (add at 1) start (subtract left 1)
+                     (add (multiply scalar 64) (subtract (head xs) 128)) smallest done)))))
+
 (define! meanings
   (record
     (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
              string-to-integer string-byte-length code-point-to-string byte-substring bitwise-and
-             bitwise-or bitwise-exclusive-or shift-left shift-right))
+             bitwise-or bitwise-exclusive-or shift-left shift-right bytes-length bytes-byte
+             bytes-slice bytes-append string-to-bytes bytes-to-string list-to-bytes bytes-to-list))
     (list (several (unwrap select) 3 picked)
           (one (unwrap first) (quote! pair) (lambda! (#ignore x) (head x)))
           (one (unwrap rest) (quote! pair) (lambda! (#ignore x) (tail x)))
@@ -197,4 +272,13 @@
           (several (unwrap bitwise-or) 2 (bitwise (lambda! (x y) (subtract (add x y) (multiply x y)))))
           (several (unwrap bitwise-exclusive-or) 2 (bitwise (lambda! (x y) (remainder (add x y) 2))))
           (several (unwrap shift-left) 2 (shift doubled))
-          (several (unwrap shift-right) 2 (shift halved)))))
+          (several (unwrap shift-right) 2 (shift halved))
+          (one (unwrap bytes-length) (quote! bytes) (lambda! (primitive b) (length (byte-list primitive b))))
+          (several (unwrap bytes-byte) 2 byte-index)
+          (several (unwrap bytes-slice) 3 byte-part)
+          (vau! bs #ignore (packed (unwrap bytes-append) (joined (unwrap bytes-append) bs)))
+          (one (unwrap string-to-bytes) (quote! string)
+               (lambda! (primitive s) (packed primitive (string-bytes s (string-byte-length s) ()))))
+          (one (unwrap bytes-to-string) (quote! bytes) decoded)
+          (several (unwrap list-to-bytes) 1 (lambda! (primitive (xs)) (packed primitive xs)))
+          (one (unwrap bytes-to-list) (quote! bytes) byte-list))))

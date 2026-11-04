@@ -14,7 +14,7 @@
 use crate::Grift;
 use crate::heap::{Bindings, Object, Operative, Reference, Seen};
 use crate::interrupt::Control;
-use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
+use crate::local::{Error, Host, K, Symbol, Value, boxed, copied, push};
 use crate::read::float_name;
 use std::sync::Arc;
 
@@ -112,6 +112,15 @@ native {
     CodePointToString "code-point-to-string" 1 1;
     IntegerToString "integer-to-string" 1 1;
     StringToInteger "string-to-integer" 1 1;
+    // A bytes value's contents: the printer writes them and the reader reads them back.
+    BytesLength "bytes-length" 1 1;
+    BytesByte "bytes-byte" 2 2;
+    BytesSlice "bytes-slice" 3 3;
+    BytesAppend "bytes-append" 0 usize::MAX;
+    StringToBytes "string-to-bytes" 1 1;
+    BytesToString "bytes-to-string" 1 1;
+    ListToBytes "list-to-bytes" 1 1;
+    BytesToList "bytes-to-list" 1 1;
 }
 }
 
@@ -1002,6 +1011,82 @@ impl<T> Grift<T> {
                 }
                 Value::String(self.heap.alloc(Object::String(s.into_boxed_str()))?)
             }
+            P::BytesLength => integer(self.bytes_of(p, x)?.len()),
+            P::BytesByte => {
+                let (b, i) = (self.bytes_of(p, x)?, integer_of(p, y)?);
+                let byte = usize::try_from(i).ok().and_then(|i| b.get(i));
+                let byte =
+                    byte.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                Value::Integer(i64::from(*byte))
+            }
+            P::BytesSlice => {
+                let b = self.bytes_of(p, x)?;
+                let range = (
+                    usize::try_from(integer_of(p, y)?),
+                    usize::try_from(integer_of(p, z)?),
+                );
+                let part = match range {
+                    (Ok(start), Ok(end)) => b.get(start..end),
+                    _ => None,
+                };
+                let part =
+                    part.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y, z]))?;
+                self.bytes_local(copied(part)?)?
+            }
+            P::BytesAppend => {
+                let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let mut len = 0usize;
+                for &v in given {
+                    len = len
+                        .checked_add(self.bytes_of(p, v)?.len())
+                        .ok_or_else(Error::oom)?;
+                }
+                let mut joined = Vec::new();
+                joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                for &v in given {
+                    joined.extend_from_slice(self.bytes_of(p, v)?);
+                }
+                self.bytes_local(joined)?
+            }
+            P::StringToBytes => {
+                let b = copied(self.text(p, x)?.as_bytes())?;
+                self.bytes_local(b)?
+            }
+            P::BytesToString => {
+                let text = std::str::from_utf8(self.bytes_of(p, x)?).map_err(|e| {
+                    let at = integer(e.valid_up_to());
+                    Error::new(K::EncodingError, &[Value::Primitive(p), x, at])
+                })?;
+                let text = boxed(text)?;
+                Value::String(self.heap.alloc(Object::String(text))?)
+            }
+            P::ListToBytes => {
+                let mut bytes = Vec::new();
+                let mut rest = x;
+                while let Value::Pair(r) = rest {
+                    let (v, next) = self.pair_at(r)?;
+                    let at = integer(bytes.len());
+                    let byte = match v {
+                        Value::Integer(n) => u8::try_from(n).map_err(|_| {
+                            Error::new(K::RangeError, &[Value::Primitive(p), v, at])
+                        })?,
+                        _ => return Err(Error::new(K::TypeError, &[Value::Primitive(p), v, at])),
+                    };
+                    push(&mut bytes, byte)?;
+                    rest = next;
+                }
+                if rest != Value::EmptyList {
+                    let at = integer(bytes.len());
+                    return Err(Error::new(K::TypeError, &[Value::Primitive(p), rest, at]));
+                }
+                self.bytes_local(bytes)?
+            }
+            P::BytesToList => {
+                let b = copied(self.bytes_of(p, x)?)?;
+                b.iter().rev().try_fold(Value::EmptyList, |list, &byte| {
+                    self.pair_local(Value::Integer(i64::from(byte)), list)
+                })?
+            }
             P::CodePointToString => {
                 let c = u32::try_from(integer_of(p, x)?)
                     .ok()
@@ -1116,6 +1201,9 @@ impl<T> Grift<T> {
             (Value::String(_), Value::String(_)) => {
                 self.text(Primitive::Same, x)? == self.text(Primitive::Same, y)?
             }
+            (Value::Bytes(_), Value::Bytes(_)) => {
+                self.bytes_of(Primitive::Same, x)? == self.bytes_of(Primitive::Same, y)?
+            }
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             _ => x == y,
         })
@@ -1126,6 +1214,17 @@ impl<T> Grift<T> {
         match v {
             Value::String(r) => match self.heap.get(r)? {
                 Object::String(s) => Ok(s),
+                _ => Err(Error::new(K::StaleValue, &[v])),
+            },
+            _ => Err(type_error(p, v)),
+        }
+    }
+
+    /// The contents of bytes value `v`, or a type error naming `p`.
+    pub(crate) fn bytes_of(&self, p: Primitive, v: Value) -> Result<&[u8], Error> {
+        match v {
+            Value::Bytes(r) => match self.heap.get(r)? {
+                Object::Bytes(b) => Ok(b),
                 _ => Err(Error::new(K::StaleValue, &[v])),
             },
             _ => Err(type_error(p, v)),
@@ -1146,6 +1245,10 @@ impl<T> Grift<T> {
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
         let s = boxed(s)?;
         Ok(Value::String(self.heap.alloc(Object::String(s))?))
+    }
+
+    pub(crate) fn bytes_local(&mut self, b: Vec<u8>) -> Result<Value, Error> {
+        Ok(Value::Bytes(self.heap.alloc(Object::Bytes(b))?))
     }
 
     /// Checks a parameter tree: symbols, `#ignore`, `()` and pairs, no symbol twice, and a
@@ -1376,6 +1479,7 @@ fn type_of(v: Value) -> K {
         Value::Symbol(_) => K::Symbol,
         Value::Pair(_) => K::Pair,
         Value::String(_) => K::String,
+        Value::Bytes(_) => K::Bytes,
         Value::Context(_) => K::Context,
         Value::Operative(_) | Value::Primitive(_) | Value::Host(_) => K::Operative,
         Value::Applicative(_) => K::Applicative,

@@ -84,7 +84,11 @@ impl<T> Grift<T> {
                     }
                     out.write_char(']')?;
                 }
-                Value::Pair(r) | Value::String(r) | Value::Operative(r) | Value::Applicative(r) => {
+                Value::Pair(r)
+                | Value::String(r)
+                | Value::Bytes(r)
+                | Value::Operative(r)
+                | Value::Applicative(r) => {
                     match self.heap.get(r) {
                         Ok(Object::Pair(a, b)) => {
                             if opens {
@@ -107,6 +111,17 @@ impl<T> Grift<T> {
                                 }
                             }
                             out.write_char('"')?;
+                        }
+                        // The literal: each byte as the integer `bytes-byte` gives for it.
+                        Ok(Object::Bytes(b)) => {
+                            out.write_str("#bytes(")?;
+                            for (i, byte) in b.iter().enumerate() {
+                                if i > 0 {
+                                    out.write_char(' ')?;
+                                }
+                                write!(out, "{byte}")?;
+                            }
+                            out.write_char(')')?;
                         }
                         Ok(Object::Operative(op)) => {
                             out.write_str("#[operative ")?;

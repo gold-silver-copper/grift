@@ -272,8 +272,9 @@ fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Err
     reading(g, r, args, |input, s| input.read_to_string(s))
 }
 
-/// `(read-bytes count)` on a file: the next `count` bytes, fewer at the end, as a list of integers
-/// 0-255; `()` at the end.
+/// `(read-bytes count)` on a file: the next `count` bytes, fewer at the end, as a bytes value;
+/// `#bytes()` at the end. It reads only as much as it gives, so a pipe that stays open answers as
+/// soon as `count` bytes have come.
 fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id, count] = args else {
         return Err(g.error("arity-error", args));
@@ -285,13 +286,23 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
     let (path, Stream::Reading(input)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
+    let mut input = input.as_mut().take(n);
     let mut bytes = Vec::new();
-    if let Err(e) = input.as_mut().take(n).read_to_end(&mut bytes) {
-        return Err(failed(g, "file-error", path, &e));
+    loop {
+        let chunk = match input.fill_buf() {
+            Ok([]) => break,
+            Ok(chunk) => chunk,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(failed(g, "file-error", path, &e)),
+        };
+        if bytes.try_reserve(chunk.len()).is_err() {
+            return Err(g.error("out-of-memory", &[]));
+        }
+        bytes.extend_from_slice(chunk);
+        let used = chunk.len();
+        input.consume(used);
     }
-    bytes.iter().rev().try_fold(Value::EmptyList, |list, &b| {
-        g.pair(Value::Integer(i64::from(b)), list)
-    })
+    g.bytes(&bytes)
 }
 
 /// `(write text)` on a file: all of the string's bytes.
@@ -309,25 +320,18 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     written(g, id, path, wrote)
 }
 
-/// `(write-bytes bytes)` on a file: the list of integers 0-255, as bytes.
+/// `(write-bytes bytes)` on a file: all of the bytes value's bytes.
 fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, list] = args else {
+    let [id, bytes] = args else {
         return Err(g.error("arity-error", args));
     };
-    let mut bytes = Vec::new();
-    for b in g.list_items(list)? {
-        match b {
-            Value::Integer(n) => match u8::try_from(n) {
-                Ok(b) => bytes.push(b),
-                Err(_) => return Err(g.error("range-error", &[b])),
-            },
-            _ => return Err(g.error("type-error", &[b])),
-        }
-    }
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
-    let wrote = out.write_all(&bytes).and_then(|()| out.flush());
+    let Some(bytes) = g.as_bytes(bytes)? else {
+        return Err(g.error("type-error", std::slice::from_ref(bytes)));
+    };
+    let wrote = out.write_all(bytes).and_then(|()| out.flush());
     written(g, id, path, wrote)
 }
 
