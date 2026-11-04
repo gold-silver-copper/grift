@@ -1011,6 +1011,79 @@ impl<T> Grift<T> {
                 }
                 Value::String(self.heap.alloc(Object::String(s.into_boxed_str()))?)
             }
+            P::BytesLength
+            | P::BytesByte
+            | P::BytesSlice
+            | P::BytesAppend
+            | P::StringToBytes
+            | P::BytesToString
+            | P::ListToBytes
+            | P::BytesToList => self.bytes_primitive(p, [x, y, z], base)?,
+            P::CodePointToString => {
+                let c = u32::try_from(integer_of(p, x)?)
+                    .ok()
+                    .and_then(char::from_u32);
+                let c = c.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x]))?;
+                self.string_local(c.encode_utf8(&mut [0; 4]))?
+            }
+            P::StringToSymbol => {
+                let name = boxed(self.text(p, x)?)?;
+                Value::Symbol(self.intern(&name)?)
+            }
+            P::IntegerToString => {
+                integer_of(p, x)?;
+                self.printed(x)?
+            }
+            P::ValueToString => self.printed(x)?,
+            P::StringToInteger | P::StringToFloat => {
+                let s = self.text(p, x)?;
+                let n = match p {
+                    P::StringToInteger => s.parse().ok().map(Value::Integer),
+                    _ => float_name(s).or_else(|| s.parse().ok()).map(Value::Float),
+                };
+                n.ok_or_else(|| Error::new(K::ParseError, &[Value::Primitive(p), x]))?
+            }
+            P::ReadForm => {
+                let Value::String(r) = x else {
+                    return Err(type_error(p, x));
+                };
+                let offset = usize::try_from(integer_of(p, y)?).ok();
+                // The text is lent to the reader, not copied: a program reads a long text one
+                // form at a time.
+                let Object::String(text) = self.heap.get_mut(r)? else {
+                    return Err(Error::new(K::StaleValue, &[x]));
+                };
+                let text = std::mem::take(text);
+                let read = offset
+                    .filter(|&i| text.is_char_boundary(i))
+                    .map(|i| self.read_form(&text, i, 1, None));
+                if let Object::String(s) = self.heap.get_mut(r)? {
+                    *s = text;
+                }
+                let read =
+                    read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                match read? {
+                    Some((form, place, _)) => {
+                        self.list_local(&[form, integer(place.start), integer(place.end)])?
+                    }
+                    None => Value::EmptyList,
+                }
+            }
+        };
+        Ok(Mode::Return(v))
+    }
+
+    /// The primitives on bytes, apart from [`Grift::primitive`] so that its common cases stay
+    /// small enough for the compiler to inline it into the machine's loop.
+    #[inline(never)]
+    fn bytes_primitive(
+        &mut self,
+        p: Primitive,
+        [x, y, z]: [Value; 3],
+        base: usize,
+    ) -> Result<Value, Error> {
+        use Primitive as P;
+        Ok(match p {
             P::BytesLength => integer(self.bytes_of(p, x)?.len()),
             P::BytesByte => {
                 let (b, i) = (self.bytes_of(p, x)?, integer_of(p, y)?);
@@ -1087,58 +1160,8 @@ impl<T> Grift<T> {
                     self.pair_local(Value::Integer(i64::from(byte)), list)
                 })?
             }
-            P::CodePointToString => {
-                let c = u32::try_from(integer_of(p, x)?)
-                    .ok()
-                    .and_then(char::from_u32);
-                let c = c.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x]))?;
-                self.string_local(c.encode_utf8(&mut [0; 4]))?
-            }
-            P::StringToSymbol => {
-                let name = boxed(self.text(p, x)?)?;
-                Value::Symbol(self.intern(&name)?)
-            }
-            P::IntegerToString => {
-                integer_of(p, x)?;
-                self.printed(x)?
-            }
-            P::ValueToString => self.printed(x)?,
-            P::StringToInteger | P::StringToFloat => {
-                let s = self.text(p, x)?;
-                let n = match p {
-                    P::StringToInteger => s.parse().ok().map(Value::Integer),
-                    _ => float_name(s).or_else(|| s.parse().ok()).map(Value::Float),
-                };
-                n.ok_or_else(|| Error::new(K::ParseError, &[Value::Primitive(p), x]))?
-            }
-            P::ReadForm => {
-                let Value::String(r) = x else {
-                    return Err(type_error(p, x));
-                };
-                let offset = usize::try_from(integer_of(p, y)?).ok();
-                // The text is lent to the reader, not copied: a program reads a long text one
-                // form at a time.
-                let Object::String(text) = self.heap.get_mut(r)? else {
-                    return Err(Error::new(K::StaleValue, &[x]));
-                };
-                let text = std::mem::take(text);
-                let read = offset
-                    .filter(|&i| text.is_char_boundary(i))
-                    .map(|i| self.read_form(&text, i, 1, None));
-                if let Object::String(s) = self.heap.get_mut(r)? {
-                    *s = text;
-                }
-                let read =
-                    read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
-                match read? {
-                    Some((form, place, _)) => {
-                        self.list_local(&[form, integer(place.start), integer(place.end)])?
-                    }
-                    None => Value::EmptyList,
-                }
-            }
-        };
-        Ok(Mode::Return(v))
+            _ => return Err(type_error(p, x)),
+        })
     }
 
     /// Calls combiner `f` with no arguments in `context`.
@@ -1248,7 +1271,7 @@ impl<T> Grift<T> {
     }
 
     pub(crate) fn bytes_local(&mut self, b: Vec<u8>) -> Result<Value, Error> {
-        Ok(Value::Bytes(self.heap.alloc(Object::Bytes(b))?))
+        Ok(Value::Bytes(self.heap.alloc_bytes(b)?))
     }
 
     /// Checks a parameter tree: symbols, `#ignore`, `()` and pairs, no symbol twice, and a

@@ -515,7 +515,7 @@ impl<T> Grift<T> {
     /// g.define("chunk", chunk)?;
     /// let head = g.evaluate(&mut (), "(bytes-slice chunk 0 2)")?;
     /// assert_eq!(g.as_bytes(&head)?, Some(&b"hi"[..]));
-    /// let text = g.evaluate(&mut (), "(bytes-to-string head)")?;
+    /// let text = g.evaluate(&mut (), "(bytes-to-string (bytes-slice chunk 0 2))")?;
     /// assert_eq!((g.as_bytes(&text)?, g.as_str(&text)?), (None, Some("hi")));
     /// # Ok::<(), grift::Error>(())
     /// ```

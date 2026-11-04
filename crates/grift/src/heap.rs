@@ -141,7 +141,7 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
-        self.since_gc = self.since_gc.saturating_add(weight(&obj));
+        self.since_gc = self.since_gc.saturating_add(1);
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -171,6 +171,13 @@ impl Heap {
             },
         )?;
         Ok(Reference { idx, generation: 0 })
+    }
+
+    /// A new bytes object, counted as the slots its storage would fill besides its own.
+    pub fn alloc_bytes(&mut self, b: Vec<u8>) -> Result<Reference, Error> {
+        let bytes = Object::Bytes(b);
+        self.since_gc = self.since_gc.saturating_add(weight(&bytes) - 1);
+        self.alloc(bytes)
     }
 
     /// Marks every object now in the heap as the library's. A slot loses the mark when it is

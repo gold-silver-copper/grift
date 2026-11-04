@@ -57,6 +57,7 @@ built-in-names                              ; every primitive and library name
 (read-form " (add 1 2) x" 0)                ; => ((add 1 2) 1 10): the form, its start and end
 (value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
 (string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
+(bytes-to-string #bytes(104 105))           ; => "hi"; bytes that aren't UTF-8 are encoding-error
 ```
 
 The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup call-with-handler raise
@@ -65,15 +66,16 @@ remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shif
 square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
 integer-to-float float-to-integer string-byte-length string-byte byte-substring string-append
 code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
-value-to-string`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
+value-to-string bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
+list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
 let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? boolean? integer?
-float? symbol? pair? string? context? operative? applicative? and!? or!? apply any? all? map
+float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? apply any? all? map
 for-each error length append reverse equal? greater-than? less-than-or-equal?
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-search string-starts-with? string-ends-with? string-split string-join string-trim
-string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bindings
-built-in-names`.
+string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bytes-search
+bindings built-in-names`.
 
 ## The runner
 
@@ -98,8 +100,8 @@ For scripting, the program gets a small fixed set of operations, and the core do
 |---|---|
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
-| `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a list of integers 0-255, `()` at the end. A program read from stdin can't read it again (`closed`). |
-| `standard-output`, `standard-error` | Contexts of operations: `(write string)`, and `(write-bytes bytes)`, a list of integers 0-255, as a file's, to stdout or stderr. |
+| `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin can't read it again (`closed`). |
+| `standard-output`, `standard-error` | Contexts of operations: `(write string)`, and `(write-bytes bytes)`, a bytes value, as a file's, to stdout or stderr. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `(write-bytes bytes)`, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
@@ -200,8 +202,8 @@ fn main() -> Result<(), Error> {
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `seal_library()` after a host's prelude makes its code
   count as library code, as grift's own: traces skip it.
-- **Values:** `string`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`, `as_string` (an
-  owned copy), `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
+- **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
+  `as_string` (an owned copy), `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
