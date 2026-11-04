@@ -61,9 +61,13 @@ fn started(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
 }
 
 /// `(stop-and-fail)`: stops the run it is part of, and fails.
-fn stop_and_fail(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
+fn stop_and_fail(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
     h.stop.as_mut().unwrap().stop();
-    Err(g.error("failed", &[]))
+    let kind = match args.first() {
+        Some(Value::Symbol(s)) => g.symbol_name(s)?.to_string(),
+        _ => "failed".to_string(),
+    };
+    Err(g.error(&kind, &[]))
 }
 
 fn kind(g: &G, e: &Error) -> String {
@@ -361,6 +365,22 @@ fn a_stop_reaches_only_the_run_in_progress() {
         "interrupted",
     );
     expect(&mut g, &mut h, "the run after it", "(add 1 2)", "ok 3");
+    // A host function that stops its run and then fails, even with a limit, fails it with that
+    // stop: the cleanups run, once.
+    for failure in ["failed", "interrupted", "out-of-memory"] {
+        let src = format!(
+            "(define! cleaned 0)
+             (catch! (finally! (stop-and-fail (quote! {failure})) (bind here (quote! cleaned) (add cleaned 1))) e 42)"
+        );
+        expect(
+            &mut g,
+            &mut h,
+            "a stop, then a failure",
+            &src,
+            "interrupted",
+        );
+        expect(&mut g, &mut h, "the cleanup ran once", "cleaned", "ok 1");
+    }
     // A host function that handles its nested run's interruption itself lets the run go on, and
     // the next stop stops it.
     let f = g.host_function("swallow", swallow).unwrap();

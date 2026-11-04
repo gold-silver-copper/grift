@@ -934,3 +934,13 @@ Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-
   The line band for `crates/grift` is read, as reported throughout, as lines of code, comments and blank
   lines aside: 1,764 to 2,660 (+896); in all lines 2,119 to 3,386, the rest doc comments and doc-test
   examples. G-128's 2,621 was the count at 0064860.
+
+## Made in review round 2 of the embedding PR, 2026-11-03 (the owner may overrule any)
+
+- **G-139. A stop waiting when a step fails is that failure, whatever its kind** (amends G-137). G-137
+  turned an ordinary error raised while a stop waited into `interrupted`, but left a limit error
+  (`interrupted` or `out-of-memory` a host function returns) alone, so the waiting stop was first acted
+  on inside the cleanup and stopped it before it ran: `(catch! (finally! (fail) (cleanup)) e 42)`, with
+  `fail` stopping once and returning a limit, ran no cleanup (`review/r2/P3` and `P4`
+  `stop-limit-skips-cleanup`, exit 1 at cb83ca2, 0 at 375431a). Now any error raised while a stop waits
+  consumes the stop and becomes `interrupted`, and the cleanups run once, as before G-137.

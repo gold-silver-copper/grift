@@ -352,8 +352,9 @@ impl<T> Grift<T> {
             });
             mode = match next {
                 Ok(mode) => mode,
-                // So too a stop that came during a step that failed.
-                Err(e) if !limit(e.kind) && self.interrupted() => {
+                // So too a stop that came during a step that failed, even with a limit: the
+                // stop is that failure, and the cleanups then run.
+                Err(_) if self.interrupted() => {
                     self.unwind(Error::new(K::Interrupted, &[]), floor)?
                 }
                 Err(e) => self.unwind(e, floor)?,
