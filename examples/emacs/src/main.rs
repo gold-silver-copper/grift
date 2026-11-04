@@ -28,10 +28,11 @@ const ERROR_TEXT_MAX: usize = 400;
 struct Host {
     /// Terminal output waiting for the next key read.
     out: Vec<u8>,
-    /// The bytes typed, from the input thread, each with whether it stopped the command.
-    keys: Receiver<(u8, bool)>,
-    /// Set while `(key)` waits, so a C-g then is a key, not a stop.
-    waiting: Arc<AtomicBool>,
+    /// The bytes typed, from the input thread.
+    keys: Receiver<u8>,
+    /// Set by the input thread at each C-g, which also stops the run; cleared when a run ends
+    /// interrupted, so the C-g it handled isn't read again as a key.
+    quit_pending: Arc<AtomicBool>,
     /// How many keys grift has read.
     read: u64,
 }
@@ -46,24 +47,23 @@ impl Host {
 
 type G = Grift<Host>;
 
-/// `(key)`: the next byte from the terminal, after showing what was written. A C-g typed while
-/// this waits is a key. One typed while a command ran stopped it: if it comes here, the stop
-/// asked for is this run's, so it ends now with `interrupted`.
+/// `(key)`: the next byte from the terminal, after showing what was written. Every C-g stops
+/// the run in progress, and is queued too, so one typed while this waits ends it as well. A C-g
+/// whose interruption the editor has already recovered from is skipped.
 fn key(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
     if !args.is_empty() {
         return Err(g.error("arity-error", args));
     }
     h.flush();
-    h.waiting.store(true, Ordering::SeqCst);
-    let got = h.keys.recv();
-    h.waiting.store(false, Ordering::SeqCst);
-    match got {
-        Ok((_, true)) => Err(g.error("interrupted", &[])),
-        Ok((b, false)) => {
-            h.read += 1;
-            Ok(Value::Integer(i64::from(b)))
+    loop {
+        match h.keys.recv() {
+            Ok(QUIT) if !h.quit_pending.swap(false, Ordering::SeqCst) => {}
+            Ok(b) => {
+                h.read += 1;
+                return Ok(Value::Integer(i64::from(b)));
+            }
+            Err(_) => return Err(g.error("end-of-input", &[])),
         }
-        Err(_) => Err(g.error("end-of-input", &[])),
     }
 }
 
@@ -182,6 +182,10 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
             Err(e) if g.is_kind(&e, "end-of-input").unwrap_or(false) => return Ok(()),
             Err(e) => e,
         };
+        // The C-g that stopped it is handled: don't read it again as a key.
+        if g.is_kind(&e, "interrupted").unwrap_or(false) {
+            h.quit_pending.store(false, Ordering::SeqCst);
+        }
         let text = describe(g, &e);
         if h.read == 0 {
             return Err(text);
@@ -193,7 +197,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
                 "\x1b[999;1H\x1b[0m\x1b[K{text} -- the editor itself fails: q quits, any other key retries"
             );
             let _ = out.flush();
-            if !matches!(h.keys.recv(), Ok((b, _)) if b != b'q') {
+            if !matches!(h.keys.recv(), Ok(b) if b != b'q') {
                 return Ok(());
             }
         }
@@ -229,11 +233,11 @@ fn main() -> ExitCode {
         }
     };
     let (send, keys) = mpsc::channel();
-    let waiting = Arc::new(AtomicBool::new(false));
+    let quit_pending = Arc::new(AtomicBool::new(false));
     let mut h = Host {
         out: Vec::new(),
         keys,
-        waiting: Arc::clone(&waiting),
+        quit_pending: Arc::clone(&quit_pending),
         read: 0,
     };
     let mut g: G = match Grift::new() {
@@ -267,16 +271,16 @@ fn main() -> ExitCode {
         eprintln!("grift-emacs: the terminal: {e}");
         return ExitCode::FAILURE;
     }
-    // The input thread: every byte typed goes to `(key)`; a C-g typed while no key is awaited
-    // also stops the command running. It ends with the input, and when the program exits.
+    // The input thread: every byte typed goes to `(key)`; a C-g also stops what grift is
+    // running. It ends with the input, and when the program exits.
     std::thread::spawn(move || {
         let mut b = [0u8];
         while let Ok(1) = io::stdin().lock().read(&mut b) {
-            let stopped = b[0] == QUIT && !waiting.load(Ordering::SeqCst);
-            if stopped {
+            if b[0] == QUIT {
+                quit_pending.store(true, Ordering::SeqCst);
                 stop.stop();
             }
-            if send.send((b[0], stopped)).is_err() {
+            if send.send(b[0]).is_err() {
                 break;
             }
         }
