@@ -552,22 +552,20 @@
 ; pattern is, or (). The empty slice refuses a start out of range.
 (define! bytes-search
   ((lambda! ()
-     (define! matches?
-       (lambda! (b at pattern i size)
-         (if! (same? i size)
-           #true
-           (if! (same? (bytes-byte b (add at i)) (bytes-byte pattern i))
-             (matches? b at pattern (add i 1) size)
-             #false))))
+     ; The first place from at, up to last, where pattern is, its first i bytes matched at at.
      (define! from
-       (lambda! (b pattern at last size)
+       (lambda! (b pattern at last size i)
          (if! (less-than? last at)
            ()
-           (if! (matches? b at pattern 0 size) at (from b pattern (add at 1) last size)))))
+           (if! (same? i size)
+             at
+             (if! (same? (bytes-byte b (add at i)) (bytes-byte pattern i))
+               (from b pattern at last size (add i 1))
+               (from b pattern (add at 1) last size 0))))))
      (lambda! (b pattern start)
        (bytes-slice b start start)
        (let! ((size (bytes-length pattern)))
-         (from b pattern start (subtract (bytes-length b) size) size))))))
+         (from b pattern start (subtract (bytes-length b) size) size 0))))))
 
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
 ; list them. The built-in context itself stays out of reach, so no program can change what the
