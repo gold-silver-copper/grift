@@ -944,3 +944,15 @@ Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-
   `fail` stopping once and returning a limit, ran no cleanup (`review/r2/P3` and `P4`
   `stop-limit-skips-cleanup`, exit 1 at cb83ca2, 0 at 375431a). Now any error raised while a stop waits
   consumes the stop and becomes `interrupted`, and the cleanups run once, as before G-137.
+
+## Made after the q2 model was re-run on the embedding PR's head, 2026-11-03 (the owner may overrule any)
+
+- **G-140. A poll with no run in progress acts on nothing** (amends G-129 and G-130). The q2 interleaving
+  model, adapted to c85356b (`adv/q2/rerun/results-head.md`, `abandon_poll_race`: 2,806,824 states, complete,
+  40 violating; 0 on either branch's earlier head) found that after a host function left its run (G-130's
+  restored case), `abandon()` set the run to 0 and the failing step's poll (G-139) then read the mailboxes
+  for run 0, while another handle's stop had stored its count but not yet its run: its mailbox, still 0
+  from before, matched, so the abandoned call answered `interrupted` instead of `foreign-value`, a poll with
+  no run acting on a request. The check now answers false for run 0 before reading anything. A test makes
+  the interleaving in order through a test-only seam that makes a stop's first store alone
+  (`a_poll_with_no_run_in_progress_acts_on_nothing`).

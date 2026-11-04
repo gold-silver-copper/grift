@@ -59,10 +59,11 @@ impl Control {
     }
 
     /// Whether a stop of `run` was asked for since the last one acted on. Read at every step: one
-    /// load, unless one was.
+    /// load, unless one was. With no run in progress, never: a mailbox a stop is still writing
+    /// may hold its new count beside 0.
     #[inline(always)]
     pub fn stopped(&self, run: u64) -> bool {
-        self.asked.load(Ordering::Acquire) && self.requested(run)
+        run != 0 && self.asked.load(Ordering::Acquire) && self.requested(run)
     }
 
     #[cold]
@@ -159,6 +160,14 @@ impl Interrupter {
             self.control.asked.store(true, Ordering::SeqCst);
         }
         run != 0
+    }
+
+    /// A stop's first store alone, as a stop preempted before it stores its run is seen: for
+    /// tests of that interleaving.
+    #[cfg(test)]
+    pub(crate) fn stop_halfway(&mut self) {
+        self.sent += 1;
+        self.mailbox.count.store(self.sent, Ordering::Release);
     }
 }
 
