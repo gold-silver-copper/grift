@@ -265,14 +265,14 @@ can't swallow C-g; an error in one of those cleanups doesn't replace them. Wheth
 | Kind | When | Values |
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
-| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative | the combiner and the value |
+| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative; an element or a tail given `list-to-bytes` that isn't an integer or `()` | the combiner and the value; for `list-to-bytes`, the primitive, the value and its position in the list |
 | `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
 | `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the primitive and the operands |
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
-| `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative count or exponent; a fill that isn't one byte | the primitive and the operands; or the library combiner's name and the value; for a list index, the name, the index and the length |
-| `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the primitive, the bytes, and the offset of the first byte that doesn't start a UTF-8 sequence |
+| `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative count or exponent; a fill that isn't one byte | the primitive and the operands; or the library combiner's name and the value; for a list index, the name, the index and the length; for `list-to-bytes`, the primitive, the integer and its position |
+| `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the primitive, the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
 | `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1; or the primitive and the string |
 
 A text that doesn't read says why, as a symbol, and where: `unclosed-list` and `unclosed-string`
