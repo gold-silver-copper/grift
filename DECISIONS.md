@@ -953,11 +953,27 @@ Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-
   restored case), `abandon()` set the run to 0 and the failing step's poll (G-139) then read the mailboxes
   for run 0, while another handle's stop had stored its count but not yet its run: its mailbox, still 0
   from before, matched, so the abandoned call answered `interrupted` instead of `foreign-value`, a poll with
-  no run acting on a request. The check now answers false for run 0 before reading anything, in the
-  path a step takes only once a stop has set the shared flag, so the per-step check is still its one load
-  (a first version tested the run on every step: `fib 25` 1.33x on desk against 1.44x before). A test makes
-  the interleaving in order through a test-only seam that makes a stop's first store alone
-  (`a_poll_with_no_run_in_progress_acts_on_nothing`). The fix adds no line of non-test Rust; the seam's
-  five lines are `#[cfg(test)]`. Counted as the band says, non-test Rust with `#[cfg(test)]` items, comments
-  and blank lines aside on both sides, `crates/grift` is 1,742 at the base and 2,610 here (+868); counting
-  the test-only items in, as G-138 did, 1,764 to 2,665 (+901, the one over being the seam).
+  no run acting on a request. Now each step still reads the shared flag first, its one load; only when a
+  stop has set it does the cold path run, and that path's first act, before it clears the flag or reads
+  any mailbox, is to answer false for run 0, leaving the flag set for the next run's first check. (A first
+  version, d1284e9, tested the run on every step before the flag: `fib 25` 1.33x on desk.) The q2 model,
+  run by its half A on dec88e5, finds the violation gone (0 states). A test makes the interleaving in
+  order through a test-only seam that makes a stop's first store alone
+  (`a_poll_with_no_run_in_progress_acts_on_nothing`). The fix adds three lines of non-test Rust (the cold
+  path's test); the seam's five are `#[cfg(test)]`. Counted as the band says, non-test Rust with
+  `#[cfg(test)]` items, comments and blank lines aside on both sides, `crates/grift` is 1,742 at the base
+  and 2,613 at dec88e5 (+871); counting the test-only items in, as G-138 did, 1,764 to 2,668 (+904, the
+  four over being the seam).
+- **G-141. A band revised: `fib 25` at least 1.33x the base, not 1.4x** (CLAUDE.md's rule: a target is
+  revised only when meeting it would hurt correctness). Original target: `fib 25` at least 1.4x faster than
+  the base (the embedding brief's band). Evidence: desk, one run each, alternated with the base: 0064860
+  1.63x, 375431a 1.51x, cb83ca2 1.42x, c85356b 1.44x; dec88e5 1.34x (`timings/desk-20261103-2122.md`) and
+  1.396x in one job with the base and c85356b (c85356b 1.44x there). dec88e5's per-step code is c85356b's
+  source; what changed is G-140's three lines in the cold path, which grew `.eh_frame`, the unwind tables
+  linked before the code, by 24 bytes, so the whole `.text` and every loop in it moved 16 bytes (`start`,
+  the machine loop, the same 0x2920 bytes at 0x37630 against 0x37620). On box2 the order is reversed: dec88e5
+  98-101 ms, c85356b 101-110 ms, alternated. Moving the cold path out of line (`#[inline(never)]`) left the
+  machine loop where it was and was dropped. G-140 is needed for correctness (a poll with no run acted on a
+  request; the q2 model's 40 violating states), so it stays. New target: at least 1.33x, the lowest desk
+  measurement at dec88e5. Cost: `fib 25` about 3% slower on desk than at c85356b, from code placement, not
+  from the work a step does; every `programs/` test stays inside its band (1.08x-1.44x).
