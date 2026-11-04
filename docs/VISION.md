@@ -51,7 +51,7 @@ booleans, and anything else is a type error. Nothing is guessed for a missing br
 needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers
 and floats never mix implicitly: `(add 1 1.5)` is a type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
 and no vector type. Strings stay UTF-8 text and bytes are never a string: converting bytes to a
-string refuses any that aren't UTF-8, with where. Host types are not grift values: the host converts at the boundary (checked;
+string refuses any that aren't UTF-8, and says where. Host types are not grift values: the host converts at the boundary (checked;
 `range-error` when a number doesn't fit) or gives grift a context of operations.
 
 ## Numbers
