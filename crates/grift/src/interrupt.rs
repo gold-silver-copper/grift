@@ -110,7 +110,11 @@ impl Control {
 /// let mut stopper = g.interrupter();
 /// let timer = std::thread::spawn(move || {
 ///     std::thread::sleep(std::time::Duration::from_millis(20));
-///     stopper.stop();
+///     // A stop before the run has begun does nothing: ask until it has. This run never ends by
+///     // itself; a watchdog whose run may end stops asking once the host knows it has.
+///     while !stopper.stop() {
+///         std::thread::sleep(std::time::Duration::from_millis(1));
+///     }
 /// });
 /// let e = g.evaluate(&mut (), "(define! spin (lambda! () (spin))) (spin)").unwrap_err();
 /// assert!(g.is_kind(&e, "interrupted")?);
@@ -144,7 +148,8 @@ impl Interrupter {
     }
 
     /// Stops the run in progress, if there is one; whether there was. A watchdog whose deadline
-    /// passed before its run began (while its source is read, say) asks again until one is.
+    /// passed before its run began (while its source is read, say) asks again until one is, and
+    /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {
         let run = self.control.active.load(Ordering::Acquire);
         if run != 0 {

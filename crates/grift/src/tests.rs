@@ -2185,6 +2185,10 @@ const PLACES: &[&str] = &[
     "(finally! (note 9) {})",
     "(sequence! (bind record (quote! x) {}) (lookup record (quote! x) 0))",
     "(catch-kind! {} type-error e (evaluate-in! values e))",
+    // A form that isn't a combination failing after one that returned through deeper ones: where
+    // the error is reported depends on the twin restoring the place.
+    "(sequence! (double {}) nope)",
+    "((lambda! () (double {}) nope))",
 ];
 
 /// One generated expression.
@@ -2249,6 +2253,7 @@ fn argument(r: &mut Random, kind: char, depth: usize) -> String {
             "(quote! y)",
             "(quote! first)",
             "(quote! nope)",
+            "nope",
             "\"x\"",
         ],
         (_, 'p') => &[

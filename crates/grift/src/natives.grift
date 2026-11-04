@@ -109,10 +109,10 @@
       (fail (quote! range-error) (list primitive n)))))
 (define! hexadecimal
   (lambda! (n done)
-    (let! ((done (pair (nth (quote! ("0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "a" "b" "c" "d" "e" "f")) (remainder n 16)) done))
+    (let! ((done (pair (element-of (quote! ("0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "a" "b" "c" "d" "e" "f")) (remainder n 16)) done))
            (n (divide n 16)))
       (if! (same? n 0) (apply string-append done) (hexadecimal n done)))))
-(define! nth (lambda! (xs i) (if! (same? i 0) (head xs) (nth (tail xs) (subtract i 1)))))
+(define! element-of (lambda! (xs i) (if! (same? i 0) (head xs) (element-of (tail xs) (subtract i 1)))))
 ; The text between two character boundaries, decoded and made again a character at a time.
 (define! part
   (lambda! (primitive (text start end))
@@ -134,7 +134,7 @@
       (reverse done)
       (let! ((byte (string-byte text at))
              (size (conditional! ((less-than? byte 128) 1) ((less-than? byte 224) 2) ((less-than? byte 240) 3) (#true 4)))
-             (lead (remainder byte (nth (quote! (128 32 16 8)) (subtract size 1)))))
+             (lead (remainder byte (element-of (quote! (128 32 16 8)) (subtract size 1)))))
         (characters text (add at size) end
                     (pair (code-point-to-string (continued text (add at 1) (subtract size 1) lead)) done))))))
 (define! continued

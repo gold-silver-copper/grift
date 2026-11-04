@@ -912,3 +912,25 @@ and the picking panel's carry-overs from the other writer's branch (`pick/tally.
   retagged references in the generator's pools, the top level compared after every case (mutations
   persist), definitions and errors inside the twins, and a `sequence!` tail loop that now runs. With
   G-132's fix taken out, the unchanged test fails on the retag (a generated case among them).
+
+## Made in review round 1 of the embedding PR, 2026-11-03 (the owner may overrule any)
+
+Evidence: the reviewers' reproductions, `~/code/notes/projects/grift/embed-2026-11-03/review/r1/P<n>/repro/`.
+
+- **G-136. A loaded file's parse error names the file** (amends G-119 and G-124; restores G-98's rule).
+  When the text a runner `load` reads doesn't read, its `parse-error` keeps its values `(reason line
+  column)` and has the file's path, as a string, innermost in its trace, before the `(load ...)` that read
+  it: `parse-error unclosed-list 3 1 in "broken.grift" from (load d) at main.grift:2`. G-119 had placed it
+  at the load alone, which names the file only when the load's operand is a literal path
+  (`P1/load-parse-error-loses-file`). The runner's host function hands such an error back as a record,
+  which the runner's `load` raises, so a program still catches it.
+- **G-137. A run checks for a stop as it ends** (amends G-129). A run's last step can be a long native call
+  (`string-to-integer` of 16 MiB of digits) or a host call, with no safe point after it; the machine now
+  checks once more as the run returns, and an error raised while a stop waits becomes `interrupted`, its
+  cleanups running. This replaces G-129's check after each host call, which missed natives
+  (`P4/stop-final-native`: `stop()` said it found the run, 12 ms before the call answered a value).
+- **G-138. Corrections.** `natives.grift` is 172 lines of grift, comments and blank lines aside (200 in
+  all), not G-126's 167; the private walker there is `element-of` (VISION "Names": no abbreviations).
+  The line band for `crates/grift` is read, as reported throughout, as lines of code, comments and blank
+  lines aside: 1,764 to 2,660 (+896); in all lines 2,119 to 3,386, the rest doc comments and doc-test
+  examples. G-128's 2,621 was the count at 0064860.
