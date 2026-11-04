@@ -50,7 +50,7 @@ fn give(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
 
 /// `(stop)`: stops the run it is part of, and returns.
 fn stop(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
-    h.stop.as_mut().unwrap().stop();
+    assert!(h.stop.as_mut().unwrap().stop(), "a run to stop");
     Ok(Value::Inert)
 }
 
@@ -316,9 +316,9 @@ fn a_stop_reaches_only_the_run_in_progress() {
         }
     };
     // A stop with no run in progress does nothing: before any run, and between two.
-    h.stop.as_mut().unwrap().stop();
+    assert!(!h.stop.as_mut().unwrap().stop(), "no run to stop");
     expect(&mut g, &mut h, "a stop before any run", "(add 1 2)", "ok 3");
-    h.stop.as_mut().unwrap().stop();
+    assert!(!h.stop.as_mut().unwrap().stop(), "no run to stop");
     expect(&mut g, &mut h, "a stop between runs", "(add 1 2)", "ok 3");
     // A stop stops its run once: the cleanups run. A later stop stops it again, so a cleanup that
     // never ends can still be ended.

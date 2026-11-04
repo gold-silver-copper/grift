@@ -142,8 +142,9 @@ impl Interrupter {
         }
     }
 
-    /// Stops the run in progress, if there is one.
-    pub fn stop(&mut self) {
+    /// Stops the run in progress, if there is one; whether there was. A watchdog whose deadline
+    /// passed before its run began (while its source is read, say) asks again until one is.
+    pub fn stop(&mut self) -> bool {
         let run = self.control.active.load(Ordering::Acquire);
         if run != 0 {
             self.sent += 1;
@@ -151,6 +152,7 @@ impl Interrupter {
             self.mailbox.requested.store(run, Ordering::SeqCst);
             self.control.asked.store(true, Ordering::SeqCst);
         }
+        run != 0
     }
 }
 
