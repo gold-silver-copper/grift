@@ -37,11 +37,11 @@ pub(crate) enum Object {
     Free(u32),
     Pair(Value, Value),
     String(Box<str>),
-    Bytes(Vec<u8>),
     /// An optional parent and the bindings.
     Context(Option<Reference>, Bindings),
     Operative(Operative),
     Applicative(Value),
+    Bytes(Vec<u8>),
 }
 
 /// A context's bindings.

@@ -19,12 +19,12 @@ pub(crate) enum Value {
     Symbol(Symbol),
     Pair(Reference),
     String(Reference),
-    Bytes(Reference),
     Context(Reference),
     Operative(Reference),
     Applicative(Reference),
     Primitive(Primitive),
     Host(Host),
+    Bytes(Reference),
 }
 
 /// An interned symbol: its index among the names. Indices at or above [`KEPT`] name kept values.
