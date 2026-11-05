@@ -21,16 +21,23 @@ fn main() {
     let mut g = Grift::new().unwrap();
     let host = g.host_function("source", source).unwrap();
     g.define("source", host).unwrap();
+    // Cargo's test profile optimizes this target; stack.rs explicitly runs its debug build.
+    let development = std::env::args().nth(1).as_deref() == Some("debug");
+    // Debug: at least 8 KiB above the passing 292 KiB control; d9dc54a fails at 300 KiB.
+    // Release: forty entries fit in 128 KiB on pure, with over 20 KiB of measured headroom.
+    let (mut depth, stack) = if development {
+        (16, 300 * 1024)
+    } else {
+        (40, 128 * 1024)
+    };
     std::thread::Builder::new()
-        // 300 KiB leaves at least 8 KiB above the passing 292 KiB control on the measured
-        // toolchain. Sixteen fixed callbacks widen the gap: d9dc54a still overflows at 300 KiB.
-        .stack_size(300 * 1024)
+        .stack_size(stack)
         .spawn(move || {
             let context = g.top_level();
             // Fixed host nesting, independent of how many sources the grift loop processes.
             assert_eq!(
                 g.evaluate_in(
-                    &mut 16,
+                    &mut depth,
                     &context,
                     "driver.grift",
                     "

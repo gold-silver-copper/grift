@@ -47,7 +47,7 @@ fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
         String::from_utf8_lossy(&built.stderr)
     );
     // A stack overflow aborts the process, so isolate the host from the test harness.
-    let ran = Command::new(&host).output().unwrap();
+    let ran = Command::new(&host).arg("debug").output().unwrap();
     std::fs::remove_dir_all(&scratch).unwrap();
     assert!(
         ran.status.success(),
