@@ -573,6 +573,8 @@ impl<T> Grift<T> {
         Ok(())
     }
 
+    // Root iterators and marking temporaries belong only to collection, never suspended runs.
+    #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         let m = &self.machine;
         let raised = m

@@ -1250,13 +1250,15 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   G-159's entry collection and OOM recovery unchanged). A 1,000-source loading chain on a
   128 KiB host thread passed before 8d9d53f and overflowed after it. The debugger found no
   collection frame at the stack guard: a nested `read-form` exhausted the stack with a fixed
-  number of host frames below it. Forced inlining of `safe_point` retained its temporary
-  storage in each suspended run, including the roots snapshot added when collection began
-  serving host entries too. The check now permits normal optimizer-directed inlining, so an
-  unoptimized host releases its check frame before entering a callback. Collection stays at
-  both safe points with the same roots; neither the host's stack nor its loading policy changes.
-  The quick regression compiles an ordinary unoptimized embedding directly with `rustc`,
-  because the workspace's optimized test profile hides the failure. It processes 1,000 named
+  number of host frames below it. In unoptimized builds, forced inlining of `safe_point`
+  retained its temporary storage in each suspended run, including the roots snapshot added
+  when collection began serving host entries too. Permitting normal optimizer-directed inlining
+  restores that unoptimized case; it does not bound optimized hosts, where the optimizer can
+  still inline the generic collector and retain its larger root-iteration and marking storage
+  in suspended run and entry frames. G-162 completes the fix with a collector inlining barrier.
+  Collection stays at both safe points with the same roots; the host's loading policy is unchanged.
+  The initial quick regression compiles an ordinary unoptimized embedding directly with `rustc`,
+  because the workspace's optimized test profile hid that unoptimized failure. It processes 1,000 named
   sources through fixed-depth host callbacks in an isolated process: its initial 128 KiB
   fixture passes at c102859, aborts before this fix, and passes after it. G-161 widens the
   fixture's margin while retaining the original 128 KiB host check. The OOM properties still
@@ -1290,3 +1292,20 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     292 KiB control on the measured toolchain, while d9dc54a still overflows at 300 KiB.
     The original host's 1,000-load test still uses 128 KiB. There is no new public name,
     dependency, collection control, allocation in the entry helper or weakened recovery promise.
+
+- **G-162. Collection keeps its own stack frame in every build** (completes G-160; G-155,
+  G-156 and G-159/G-161 recovery unchanged). Evidence:
+  `fuxport-2026-11-04/review/r2/P1/repro/release-host-stack`: forty nested host entries fit in
+  128 KiB on pure, but overflow at b276894 and 48e4219 in a release build with one codegen
+  unit and thin LTO. Removing forced safe-point inlining only fixed unoptimized builds.
+  The generic `collect` added in 8d9d53f could still inline into optimized run and entry frames,
+  keeping collection's storage live when no collection was running. `#[inline(never)]` now
+  keeps its root iterators and marking storage inside the collection call, which returns before
+  any host callback. The rare collection call is the only new inlining boundary; allocation,
+  safe-point checks, roots and collection scheduling stay the same.
+  The already optimized Cargo host-test target now exercises forty entries in 128 KiB; it
+  aborts before the fix. The compiler-driven test runs the same source unoptimized with its
+  existing sixteen-entry, 300 KiB bound and measured margin. Both process 1,000 sources with
+  fixed host nesting. This adds no test function or compiler invocation to CI. The external
+  reproduction retains the one-codegen-unit, thin-LTO shipping configuration as evidence.
+  No new public name, dependency, allocation, collection control or weakened stack bound.
