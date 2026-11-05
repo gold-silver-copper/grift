@@ -1235,9 +1235,10 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   before it could reach a collection, just as after the failed reads in G-155.
   Scheduling now happens at the common error-export boundary, after choosing the final error
   kind; this also covers allocation failure while exporting an error's values or trace and
-  failures in immutable host operations. The existing scheduling count is atomic so those
-  operations can request collection through `&self` without changing shared access to the
-  interpreter; ordinary allocation and collection update it through exclusive `get_mut` access.
+  failures in immutable host operations. The existing scheduling count uses `Cell<usize>` so
+  those operations can request collection through `&self`; ordinary allocation and collection
+  update it through exclusive `get_mut` access. Shared cross-thread interpreter access is not
+  promised; only the interrupter needs atomic communication.
   No new flag, allocation, public control or collection inside allocation is added. The reader's
   special wrapper is removed. Reads and constructors still never collect: more reads may be
   refused until an evaluation or call reaches its preparation safe point. The first such run
@@ -1256,7 +1257,36 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   both safe points with the same roots; neither the host's stack nor its loading policy changes.
   The quick regression compiles an ordinary unoptimized embedding directly with `rustc`,
   because the workspace's optimized test profile hides the failure. It processes 1,000 named
-  sources through fixed-depth host callbacks on a 128 KiB thread in an isolated process: it
-  passes at c102859, aborts before this fix, and passes after it. The OOM properties still
+  sources through fixed-depth host callbacks in an isolated process: its initial 128 KiB
+  fixture passes at c102859, aborts before this fix, and passes after it. G-161 widens the
+  fixture's margin while retaining the original 128 KiB host check. The OOM properties still
   exercise sparse and mostly live heaps, reads, runs and host allocation. No public name,
   allocation or collection control is added.
+
+## Review round 2, 2026-11-05
+
+- **G-161. A host call gets collection before copying its arguments** (completes G-155/G-159).
+  Evidence: `fuxport-2026-11-04/review/r2/P4/repro/call-arguments-after-oom` refused 100/100
+  nonempty identity calls at b276894 after a discarded string filled the allocator budget.
+  Argument import reserved a vector before preparation could collect, so the first allocation
+  still stood between a call and recovery. An allocation-free entry helper now validates the
+  combiner and every argument, then prepares with the combiner and each checked argument's
+  reference as roots. Only then does argument copying allocate. Marking follows the reference's
+  object regardless of the temporary root's value tag. The helper returns before running the
+  call, so its validation and root-iterator temporaries do not enlarge suspended host frames.
+  No input is skipped or made valid by collection: foreign and stale inputs are refused before
+  collection. The previous preparation in `call_local` is removed, with no extra collection.
+  - The regression runs in an isolated runner-package embedding test, where a thread-local
+    allocation budget can reproduce real reservation failure without weakening the core's
+    unsafe-code prohibition or adding a production test seam. With no spare bytes, an identity
+    call must recover for an immediate argument and for six direct, unkept arguments covering
+    every heap-reference kind, also retaining an unkept function. Invalid calls leave the garbage untouched; the
+    valid call reclaims it. Existing slot-limit and external allocator cases remain.
+  - The scheduling count now uses `Cell<usize>` rather than an atomic (G-159 amended): no
+    interpreter `Sync` guarantee requires an atomic. Scheduling and collection policy are unchanged.
+    The small-stack fixture is a Cargo test target, so ordinary fmt and clippy check it; its
+    unoptimized run uses the compiler path Cargo supplies to a dependency-free build script.
+    Sixteen fixed host callbacks and a 300 KiB stack leave at least 8 KiB above a passing
+    292 KiB control on the measured toolchain, while d9dc54a still overflows at 300 KiB.
+    The original host's 1,000-load test still uses 128 KiB. There is no new public name,
+    dependency, collection control, allocation in the entry helper or weakened recovery promise.

@@ -55,7 +55,16 @@ fn a_nonempty_call_collects_before_allocating_and_keeps_all_its_inputs() {
     let foreign = other.string("foreign").unwrap();
     for references in [false, true] {
         let mut g: Grift = Grift::new().unwrap();
-        let f = g.evaluate(&mut (), "(lambda! (x) x)").unwrap();
+        let f = g
+            .evaluate(
+                &mut (),
+                if references {
+                    "(lambda! xs xs)"
+                } else {
+                    "(lambda! (x) x)"
+                },
+            )
+            .unwrap();
         let kept = g.keep(f).unwrap();
         let stale = g.string("discarded").unwrap();
         // Warm the collector and leave enough reusable slots for a call after collection.
@@ -63,22 +72,30 @@ fn a_nonempty_call_collects_before_allocating_and_keeps_all_its_inputs() {
             .unwrap();
         let f = g.kept(&kept).unwrap();
         g.call(&mut (), &f, &[Value::Integer(3)]).unwrap();
-        let argument = if references {
-            // Every heap-reference kind, with both the function and its argument unkept.
-            g.evaluate(
-                &mut (),
-                "(list (pair 1 2) \"live\" #bytes(3)
+        let arguments = if references {
+            // Each heap-reference kind is a direct argument, with no kept inputs.
+            let values = g
+                .evaluate(
+                    &mut (),
+                    "(list (pair 1 2) \"live\" #bytes(3)
                 (context) (vau! () #ignore #inert) (lambda! () #inert))",
-            )
-            .unwrap()
+                )
+                .unwrap();
+            g.list_items(&values).unwrap()
         } else {
-            Value::Integer(3)
+            vec![Value::Integer(3)]
         };
         if references {
             g.release(kept).unwrap();
         }
-        let mut before = String::new();
-        g.write(&argument, &mut before).unwrap();
+        let before: Vec<_> = arguments
+            .iter()
+            .map(|argument| {
+                let mut text = String::new();
+                g.write(argument, &mut text).unwrap();
+                text
+            })
+            .collect();
         REMAINING.set(Some(text.len()));
         let limit = Limited;
         let garbage = g.string(&text).unwrap();
@@ -86,10 +103,15 @@ fn a_nonempty_call_collects_before_allocating_and_keeps_all_its_inputs() {
         let bad_foreign = g.call(&mut (), &f, std::slice::from_ref(&foreign));
         let bad_stale = g.call(&mut (), &f, std::slice::from_ref(&stale));
         let uncollected = g.as_str(&garbage).is_ok();
-        let result = g.call(&mut (), &f, std::slice::from_ref(&argument));
+        let result = g.call(&mut (), &f, &arguments);
         drop(limit); // Restore allocation before assertions can format a failure.
         assert_eq!(g.is_kind(&exhausted, "out-of-memory"), Ok(true));
-        assert_eq!(result, Ok(argument.clone()), "references={references}");
+        let result = if references {
+            g.list_items(&result.unwrap()).unwrap()
+        } else {
+            vec![result.unwrap()]
+        };
+        assert_eq!(result, arguments, "references={references}");
         assert_eq!(
             g.is_kind(&bad_foreign.unwrap_err(), "foreign-value"),
             Ok(true)
@@ -99,9 +121,11 @@ fn a_nonempty_call_collects_before_allocating_and_keeps_all_its_inputs() {
             uncollected,
             "invalid input must be rejected before collection"
         );
-        let mut after = String::new();
-        g.write(&argument, &mut after).unwrap();
-        assert_eq!(after, before);
+        for (argument, before) in arguments.iter().zip(before) {
+            let mut after = String::new();
+            g.write(argument, &mut after).unwrap();
+            assert_eq!(after, before);
+        }
         assert_eq!(
             g.is_kind(&g.as_str(&garbage).unwrap_err(), "stale-value"),
             Ok(true)

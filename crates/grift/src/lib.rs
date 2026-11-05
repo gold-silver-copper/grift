@@ -309,7 +309,7 @@ impl<T> Grift<T> {
     /// underlying combiner gets the arguments as its operands, in a new empty context; an
     /// operative gets them as they are. Host functions get `state`.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
-        let done = self.import(f).and_then(|f| {
+        let done = self.prepare_call(f, arguments).and_then(|f| {
             let arguments = self.imported(arguments)?;
             self.call_local(Some(state), f, &arguments)
         });
@@ -902,6 +902,32 @@ impl<T> Grift<T> {
             trace,
             seen,
         })
+    }
+
+    /// Validate and root a host call before its first allocation. Return before running it, so
+    /// validation and root-iterator temporaries do not stay on a suspended host's stack.
+    fn prepare_call(
+        &mut self,
+        f: &Value,
+        arguments: &[Value],
+    ) -> Result<local::Value, local::Error> {
+        let f = self.import(f)?;
+        arguments
+            .iter()
+            .try_for_each(|v| self.import(v).map(drop))?;
+        // Validation allocates nothing. Root every checked reference before the argument
+        // buffer needs memory; marking follows the reference, independent of its value kind.
+        let roots = arguments.iter().filter_map(|v| match v {
+            Value::Pair(r)
+            | Value::String(r)
+            | Value::Bytes(r)
+            | Value::Context(r)
+            | Value::Operative(r)
+            | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
+            _ => None,
+        });
+        self.prepare(std::iter::once(f).chain(roots))?;
+        Ok(f)
     }
 
     fn imported(&self, values: &[Value]) -> Result<Vec<local::Value>, local::Error> {

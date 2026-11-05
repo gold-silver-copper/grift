@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 use grift::{Error, Grift, Value};
 
 fn source(g: &mut Grift<usize>, depth: &mut usize, _: &[Value]) -> Result<Value, Error> {
@@ -20,13 +22,15 @@ fn main() {
     let host = g.host_function("source", source).unwrap();
     g.define("source", host).unwrap();
     std::thread::Builder::new()
-        .stack_size(128 * 1024)
+        // 300 KiB leaves at least 8 KiB above the passing 292 KiB control on the measured
+        // toolchain. Sixteen fixed callbacks widen the gap: d9dc54a still overflows at 300 KiB.
+        .stack_size(300 * 1024)
         .spawn(move || {
             let context = g.top_level();
             // Fixed host nesting, independent of how many sources the grift loop processes.
             assert_eq!(
                 g.evaluate_in(
-                    &mut 4,
+                    &mut 16,
                     &context,
                     "driver.grift",
                     "

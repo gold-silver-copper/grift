@@ -282,7 +282,6 @@ impl<T> Grift<T> {
         f: Value,
         arguments: &[Value],
     ) -> Result<Value, Error> {
-        self.prepare(std::iter::once(f).chain(arguments.iter().copied()))?;
         let f = match f {
             Value::Applicative(r) => self.unwrapped(r)?,
             _ => f,

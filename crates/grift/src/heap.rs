@@ -3,9 +3,9 @@
 
 use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,7 +97,7 @@ fn weight(obj: &Object) -> usize {
 pub(crate) struct Heap {
     slots: Vec<Slot>,
     free: u32,
-    since_gc: AtomicUsize,
+    since_gc: Cell<usize>,
     live: usize,
     marks: Vec<Reference>,
     /// Operatives made, for tests of what a form costs.
@@ -113,7 +113,7 @@ impl Default for Heap {
         Heap {
             slots: Vec::new(),
             free: NONE,
-            since_gc: AtomicUsize::new(0),
+            since_gc: Cell::new(0),
             live: 0,
             marks: Vec::new(),
             #[cfg(test)]
@@ -236,12 +236,12 @@ impl Heap {
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
     #[inline]
     pub fn due(&self) -> bool {
-        self.since_gc.load(Ordering::Relaxed) >= self.live.max(GC_MIN)
+        self.since_gc.get() >= self.live.max(GC_MIN)
     }
 
     /// Any reported OOM requests collection, including failures in an `&self` host operation.
     pub fn request_collection(&self) {
-        self.since_gc.store(usize::MAX, Ordering::Relaxed);
+        self.since_gc.set(usize::MAX);
     }
 
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,

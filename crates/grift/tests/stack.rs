@@ -13,7 +13,7 @@ fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
     std::fs::create_dir_all(&scratch).unwrap();
     let library = scratch.join("libgrift.rlib");
     let host = scratch.join("host");
-    let rustc = option_env!("RUSTC").unwrap_or("rustc");
+    let rustc = env!("GRIFT_TEST_RUSTC");
     let built = Command::new(rustc)
         .args(["--edition=2024", "--crate-name=grift", "--crate-type=rlib"])
         .args(["-Copt-level=0", "-Ccodegen-units=1", "-Funsafe-code"])
@@ -34,7 +34,7 @@ fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
             "-Ccodegen-units=1",
             "-Funsafe-code",
         ])
-        .arg(source.join("tests/fixtures/host.rs"))
+        .arg(source.join("tests/host/main.rs"))
         .arg("--extern")
         .arg(format!("grift={}", library.display()))
         .arg("-o")
