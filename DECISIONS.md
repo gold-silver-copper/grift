@@ -1395,18 +1395,21 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   (`fuxport-2026-11-04/review/r2e/`) accepts this revision in all four reviews, superseding
   G-165's original time target while retaining G-84's full corpus in the workspace gate.
 
-  - Original target: before Stage 4, pure's check job read 95, 78 and 73 s across three
-    commits, a median of 78 s. The 10% budget was **85.8 s**. That baseline predates the
-    bytes merge, which raised pure's own CI time.
-  - Evidence: at head 7cbadac, run **42125210440**, attempts 1–3, read **95, 66 and 120 s**,
-    a median of **95 s**. Pure 71cb5c5, run **41934440818**, rerun immediately afterward
-    in attempts 2–4, read **86, 92 and 100 s**, a median of **92 s**. Its attempt 1 on
-    November 4 read 95 s; including all four readings gives a median of **93.5 s**.
-    The test step read **67, 46 and 79 s** at the head against **70, 80 and 79 s** on pure.
-    The job-level gap is in clippy (**13, 10 and 27 s** at the head against **5, 1 and 8 s**
-    on pure), rather than the tests.
-  - New measured target: pure's median from the same window plus 10%, **101.2 s** (or **102.9 s**
-    using all four pure readings). The head's 95 s median is **3.3%** over the comparable
-    92 s pure median and meets the revised band.
-  - Cost: **none to the code**. The full corpus test stays in the gate, as G-84 requires;
-    no tests or program checks are removed to meet this band.
+  - Original target: before Stage 4, three pure commits read **95 s** (71cb5c5, the bytes
+    merge, run **41934440818** attempt 1 on November 4), **78 s** (7ff695e) and **73 s**
+    (a0eec1c): a median of **78 s**, and a 10% budget of **85.8 s**. Two of the three
+    readings predate the bytes merge.
+  - Evidence: round 2f (`fuxport-2026-11-04/review/r2f/`) records seven readings each of
+    the same program code, with the last six alternating head and pure. Readings come from
+    the check job in `gh api repos/gold-silver-copper/grift/actions/runs/<id>/attempts/<n>/jobs`.
+    The head's code at 7cbadac, run **42125210440** attempts 1–3, read **95, 66 and 120 s**;
+    360b781, differing only in DECISIONS.md, run **42129540060** attempts 1–4, read
+    **118, 93, 67 and 100 s**. Their median is **95 s**. Pure 71cb5c5, run **41934440818**
+    attempts 1–7, read **95, 86, 92, 100, 102, 75 and 85 s**, a median of **92 s**.
+    In the strictly alternating pairs, pure read **102, 75 and 85 s** and the head
+    **93, 67 and 100 s**, medians of **85 and 93 s** respectively. The spread within
+    one commit, **66 to 120 s**, is larger than any gap between them.
+  - New target: pure's median plus 10%, **101.2 s**. The head's **95 s** median meets it,
+    at **3.3%** over pure.
+  - Cost: the budget loosens by **15.4 s (+17.9%)**, from **85.8 to 101.2 s**. Nothing
+    changes in the code, and the full corpus stays in the gate, as G-84 requires.
