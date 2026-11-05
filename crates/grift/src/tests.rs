@@ -1980,6 +1980,7 @@ fn string_helpers() {
 #[test]
 fn a_parse_error_says_why_and_where() {
     let mut g = grift();
+    let mut missing_source = Vec::new();
     // Each reason the reader has, and the line and column: of the `(` or `"` left open, wherever
     // the text ends, or else of what didn't read.
     for (text, want) in [
@@ -2017,20 +2018,34 @@ fn a_parse_error_says_why_and_where() {
             ("parse-error".into(), want.into()),
             "{text:?}"
         );
-        // Naming the source adds positions to forms, never a different reader error.
-        assert_eq!(g.read_in("broken.grift", text).unwrap_err(), e);
-        assert_eq!(
-            g.evaluate_in(&mut (), &g.top_level(), "broken.grift", text)
-                .unwrap_err(),
-            e
-        );
+        // Unnamed entries keep the bare reader error. Both named entries retain the source
+        // as the first trace entry, without adding to or rearranging (reason line column).
+        assert_eq!(g.evaluate(&mut (), text).unwrap_err(), e);
         assert!(e.trace().is_empty());
+        for entry in ["read_in", "evaluate_in"] {
+            let named = if entry == "read_in" {
+                g.read_in("broken.grift", text)
+            } else {
+                g.evaluate_in(&mut (), &g.top_level(), "broken.grift", text)
+            }
+            .unwrap_err();
+            assert_eq!((&named.kind, &named.values), (&e.kind, &e.values));
+            let trace: Vec<_> = named
+                .trace()
+                .iter()
+                .map(|at| g.as_str(at).unwrap())
+                .collect();
+            if trace != [Some("broken.grift")] {
+                missing_source.push(format!("{entry}: {want}: {trace:?}"));
+            }
+        }
         // More text after an unclosed form changes nothing.
         if want.starts_with("unclosed-list") {
             let more = g.read(&format!("{text}\n(g 3)\n")).unwrap_err();
             assert_eq!(more.values, e.values);
         }
     }
+    assert!(missing_source.is_empty(), "{}", missing_source.join("\n"));
     // An unclosed literal of bytes is placed at its `(`; a list after it is no more of it but a
     // byte that isn't one.
     for (text, want) in [

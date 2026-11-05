@@ -450,9 +450,11 @@ fn a_parse_error_says_where_the_form_opened() {
         "",
     );
     assert_eq!(status, Some(1));
-    assert!(
-        err.ends_with("script.grift: parse-error unclosed-list 2 1\n"),
-        "{err}"
+    let path = dir.join("script.grift");
+    let path = path.to_str().unwrap();
+    assert_eq!(
+        err,
+        format!("{path}: parse-error unclosed-list 2 1 in \"{path}\"\n")
     );
 }
 
