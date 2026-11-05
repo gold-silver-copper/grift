@@ -1190,3 +1190,10 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   list without a global allocator; one quick property checks all three entries after both readers,
   including live unbound call inputs and a child context. The external allocator-budget case is
   retained outside the crate as evidence of actual allocation refusal.
+- **G-156. A failed read makes collection due** (completes G-155; same
+  `read-in-oom-leaves-interpreter-stuck` case). An extension of its quick property kept 20,000
+  live pairs and left only 32 new slots: the read failed before the ordinary live-size threshold,
+  and the next evaluate still answered out-of-memory at 8d9d53f (`small-limit-before.log`). The
+  shared reader now requests collection on out-of-memory without collecting there. G-155's next
+  run reclaims the discarded forms even below that threshold. The same property covers both
+  readers and all three entries with both sparse and mostly live heaps; its count is unchanged.

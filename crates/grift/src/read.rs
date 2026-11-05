@@ -108,6 +108,14 @@ impl<T> Grift<T> {
     /// Reads every form in `src` into a list. Under a `source` name, each combination's line goes
     /// in the positions table.
     pub(crate) fn read_local(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
+        self.read_forms(src, source).inspect_err(|e| {
+            if e.kind == K::OutOfMemory.into() {
+                self.heap.request_collection();
+            }
+        })
+    }
+
+    fn read_forms(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) = self.read_form(src, at, line, source)? {

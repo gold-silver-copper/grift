@@ -236,6 +236,11 @@ impl Heap {
         self.since_gc >= self.live.max(GC_MIN)
     }
 
+    /// A read ran out of memory: reclaim its discarded forms at the next run's safe point.
+    pub fn request_collection(&mut self) {
+        self.since_gc = usize::MAX;
+    }
+
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
     /// nothing is freed and the error is `out-of-memory`.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>) -> Result<(), Error> {
