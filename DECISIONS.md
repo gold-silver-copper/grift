@@ -1161,3 +1161,18 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     P3 says the function is unnecessary for correctness; P4 objects to adding public surface for a
     formatting detail. The chosen function shares the actual printer without a transient heap copy;
     a small fixed-seed property checks both writers against `read-form`, and refusing sinks fail.
+
+## Conformance fixes, 2026-11-05
+
+- **G-154. A named outer form keeps its evaluation boundary** (G-151 and G-29 unchanged).
+  Evidence: `fuxport-2026-11-04/stress/P1/findings/load-drops-top-level-form` and
+  `read-in-loader-trace-drops-form`. The source table now distinguishes the outer forms returned
+  by the reader. When grift's `evaluate` starts one, a machine frame retains it through its tail
+  calls, as the Rust entry's forms frame does. Tail evaluations reuse an immediately enclosing
+  boundary instead of adding a frame; a non-tail nested evaluation has work above that boundary
+  and gets its own. The frame roots the form for collection and normal unwinding adds it once.
+  Sealed library forms stay excluded, and recycled slots must match their recorded generation.
+  The runner stays a grift loop; the source's final calling line now survives it. No new public
+  name and no weakened trace promise. The original position test's tail call is restored; the
+  runner compares a file's own trace with its loaded trace, and a named-form tail loop checks
+  that the retained boundary costs constant space.

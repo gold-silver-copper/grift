@@ -184,6 +184,8 @@ enum What {
     },
     /// Native `sequence!`: the forms left after the one evaluated, at least one.
     Body { rest: Value },
+    /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
+    Form,
 }
 
 impl Frame {
@@ -201,7 +203,7 @@ impl Frame {
                 consequent,
                 alternative,
             } => (consequent, alternative),
-            What::Raise => (empty, empty),
+            What::Raise | What::Form => (empty, empty),
         };
         [a, b, Value::Context(self.context), Value::Pair(self.at)]
     }
@@ -420,7 +422,7 @@ impl<T> Grift<T> {
                         self.machine.here = Reference::NONE;
                         Mode::Evaluate(form, context)
                     }
-                    What::Forms { .. } => Mode::Return(v),
+                    What::Forms { .. } | What::Form => Mode::Return(v),
                     What::Combine { operands } => {
                         self.machine.here = at;
                         self.combine(v, operands, context)?
@@ -875,7 +877,23 @@ impl<T> Grift<T> {
                 _ => return Err(type_error(p, x)),
             },
             P::Evaluate => match y {
-                Value::Context(c) => return Ok(Mode::Evaluate(x, c)),
+                Value::Context(c) => {
+                    if let Value::Pair(at) = x
+                        && self
+                            .positions
+                            .get(&at.idx)
+                            .is_some_and(|p| p.generation == at.generation && p.outer)
+                        && !self.heap.get_code(at)?.1
+                        && !self
+                            .machine
+                            .frames
+                            .last()
+                            .is_some_and(|f| matches!(f.what, What::Form))
+                    {
+                        self.frame(What::Form, Reference::NONE, at)?;
+                    }
+                    return Ok(Mode::Evaluate(x, c));
+                }
                 _ => return Err(type_error(p, y)),
             },
             P::Context => {

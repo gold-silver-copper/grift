@@ -1,9 +1,9 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
-use crate::Grift;
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
 use crate::local::{Error, K, Symbol, Value, push};
+use crate::{Grift, Position};
 use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
@@ -111,6 +111,11 @@ impl<T> Grift<T> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) = self.read_form(src, at, line, source)? {
+            if let (Some(_), Value::Pair(r)) = (source, form)
+                && let Some(position) = self.positions.get_mut(&r.idx)
+            {
+                position.outer = true;
+            }
             self.add(&mut forms, form)?;
             (at, line) = (place.end, after);
         }
@@ -224,7 +229,15 @@ impl<T> Grift<T> {
     /// replaced, so the table stays within the heap's size.
     fn place(&mut self, r: Reference, source: Symbol, line: u32) -> Result<(), Error> {
         self.positions.try_reserve(1).map_err(|_| Error::oom())?;
-        self.positions.insert(r.idx, (r.generation, source, line));
+        self.positions.insert(
+            r.idx,
+            Position {
+                generation: r.generation,
+                source,
+                line,
+                outer: false,
+            },
+        );
         Ok(())
     }
 

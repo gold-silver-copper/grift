@@ -164,6 +164,14 @@ pub struct Kept {
     name: u32,
 }
 
+/// Where a combination was read, and whether it is one of the source's outer forms.
+struct Position {
+    generation: u32,
+    source: local::Symbol,
+    line: u32,
+    outer: bool,
+}
+
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
 /// top-level context, a child of the built-in one, where programs define things. `T` is the
 /// host's state, which the host lends to each [`Grift::evaluate`] and [`Grift::call`] and which
@@ -188,9 +196,8 @@ pub struct Grift<T = ()> {
     /// The generation of the outer run in progress, 0 for none, and the last one given out.
     run: u64,
     runs: u64,
-    /// Where each combination read under a name is: its slot's index -> (the slot's generation,
-    /// the source's name, the line of its `(`).
-    positions: HashMap<u32, (u32, local::Symbol, u32), BuildHasherDefault<IdHasher>>,
+    /// Where each combination read under a name is, by its slot's index.
+    positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
     /// Off in tests: native primitives and library forms then run their grift definitions.
     #[cfg(test)]
     pub(crate) natives: bool,
@@ -585,7 +592,9 @@ impl<T> Grift<T> {
 
     /// Reads every form in `text` into a list, evaluating nothing, as [`Grift::read`] does.
     /// Each combination keeps `source` and the line of its `(` for [`Grift::position`] and
-    /// traces when evaluated later. No forms gives `()`. Errors are `read`'s: `parse-error`
+    /// traces when evaluated later. `evaluate` in grift keeps the outer form as its trace's
+    /// boundary through tail calls, as `evaluate_in` does. No forms gives `()`.
+    /// Errors are `read`'s: `parse-error`
     /// with `(reason line column)` and an empty trace, or `out-of-memory`; the host names a
     /// source when reporting a parse error, just as for [`Grift::evaluate_in`].
     ///
@@ -681,8 +690,8 @@ impl<T> Grift<T> {
         let local::Value::Pair(r) = combination else {
             return None;
         };
-        let &(generation, source, line) = self.positions.get(&r.idx)?;
-        (generation == r.generation).then(|| (self.name(source), line))
+        let position = self.positions.get(&r.idx)?;
+        (position.generation == r.generation).then(|| (self.name(position.source), position.line))
     }
 
     /// A handle that stops this interpreter's run in progress, from another thread.
