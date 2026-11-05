@@ -1370,7 +1370,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   The initial corpus move to an external gate is withdrawn by G-166: it contradicted G-84
   and VISION's completeness rule. The 60.94 s to 24.96 s fresh-target local readings included
   that invalid coverage reduction and do not establish the budget for the restored gate.
-  The fixture removals above stand; the full corpus stays in CI. The 85.8 s target is unchanged.
+  The fixture removals above stand; the full corpus stays in CI. G-167 replaces the 85.8 s
+  target using measurements of the current pure baseline.
 
 - **G-166. The workspace gate runs every program's own test** (restores G-84; corrects G-165).
   Evidence: `fuxport-2026-11-04/review/r2c/P1/repro/gate-skips-broken-program` exits 1 at
@@ -1387,5 +1388,25 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   reserve to fail. The exact zero-budget reproduction remains external evidence. Its original
   target cost 3.94 s of fresh local compilation for 0.04 s execution; restoring that separate
   optimized interpreter target is not a cheap check. No unsafe allocator or new production
-  seam is added to the core to imitate it. Gate timings and the remaining budget risk are
-  recorded with the final-head commands in the report.
+  seam is added to the core to imitate it. Final-head commands remain in the report; G-167
+  records the hosted gate timings and the accepted budget revision.
+
+- **G-167. Revise the CI band against pure measured in the same window.** Round 2e
+  (`fuxport-2026-11-04/review/r2e/`) accepts this revision in all four reviews, superseding
+  G-165's original time target while retaining G-84's full corpus in the workspace gate.
+
+  - Original target: before Stage 4, pure's check job read 95, 78 and 73 s across three
+    commits, a median of 78 s. The 10% budget was **85.8 s**. That baseline predates the
+    bytes merge, which raised pure's own CI time.
+  - Evidence: at head 7cbadac, run **42125210440**, attempts 1–3, read **95, 66 and 120 s**,
+    a median of **95 s**. Pure 71cb5c5, run **41934440818**, rerun immediately afterward
+    in attempts 2–4, read **86, 92 and 100 s**, a median of **92 s**. Its attempt 1 on
+    November 4 read 95 s; including all four readings gives a median of **93.5 s**.
+    The test step read **67, 46 and 79 s** at the head against **70, 80 and 79 s** on pure.
+    The job-level gap is in clippy (**13, 10 and 27 s** at the head against **5, 1 and 8 s**
+    on pure), rather than the tests.
+  - New measured target: pure's median from the same window plus 10%, **101.2 s** (or **102.9 s**
+    using all four pure readings). The head's 95 s median is **3.3%** over the comparable
+    92 s pure median and meets the revised band.
+  - Cost: **none to the code**. The full corpus test stays in the gate, as G-84 requires;
+    no tests or program checks are removed to meet this band.
