@@ -2059,6 +2059,44 @@ fn a_parse_error_says_why_and_where() {
 }
 
 #[test]
+fn named_parse_errors_stay_describable_after_collection() {
+    let mut broken = Vec::new();
+    for entry in ["read_in", "evaluate_in"] {
+        let mut g = grift();
+        let e = if entry == "read_in" {
+            g.read_in("config.grift", "(a\n  (b")
+        } else {
+            g.evaluate_in(&mut (), &g.top_level(), "config.grift", "(a\n  (b")
+        }
+        .unwrap_err();
+        let mut before = String::new();
+        g.describe(&e, &mut before).unwrap();
+        for _ in 0..2 {
+            // A second error with the same name must not invalidate the one the host holds.
+            let again = g.read_in("config.grift", "(").unwrap_err();
+            let garbage = g.string("collect this").unwrap();
+            g.heap.request_collection();
+            g.evaluate(&mut (), "#inert").unwrap();
+            assert_eq!(kind(&g, &g.as_str(&garbage).unwrap_err()), "stale-value");
+            for held in [&e, &again] {
+                let mut after = String::new();
+                let described = g.describe(held, &mut after);
+                let position = g.position(&held.trace()[0]);
+                if described.is_err() || position != Ok(None) {
+                    broken.push(format!(
+                        "{entry}: describe={described:?}, position={position:?}"
+                    ));
+                }
+                if std::ptr::eq(held, &e) && described.is_ok() {
+                    assert_eq!(after, before);
+                }
+            }
+        }
+    }
+    assert!(broken.is_empty(), "{}", broken.join("\n"));
+}
+
+#[test]
 fn lookup_and_unbind() {
     let mut g = grift();
     g.evaluate(
