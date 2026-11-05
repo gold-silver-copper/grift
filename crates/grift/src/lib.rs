@@ -588,6 +588,8 @@ impl<T> Grift<T> {
 
     /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
     /// the line and column: of the `(` or `"` left open, or of what didn't read.
+    /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
+    /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
         let forms = self.read_local(src, None);
         self.exported(forms)
@@ -951,6 +953,9 @@ impl<T> Grift<T> {
             (Ok(values), Ok(trace)) => (e.kind, values, trace),
             _ => (K::OutOfMemory.into(), Vec::new(), Vec::new()),
         };
+        if kind == K::OutOfMemory.into() {
+            self.heap.request_collection();
+        }
         Error {
             kind: self.export_symbol(kind),
             values,

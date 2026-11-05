@@ -1140,11 +1140,14 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   The reader returns an ASCII byte as its character, decodes other characters as before, and skips
   comments to their newline in one search. Grammar, positions and errors are unchanged. No custom
   string hasher, twins, collection switch or startup image.
-  - One before/after measurement on idle desk, release, 10,000 constructions after 100 warmups,
-    timing only `Grift::new` (destruction outside that interval): 862,384 ns to 719,015 ns, 16.6%
-    less time. Both binaries were built in the same worktree and target directory. The change meets
-    N2's condition of a measured gain and shortens interning. Cost: each name's bytes are stored
-    twice and the hash table replaces a compact integer index.
+  - Construction alone, measured in-process on idle desk: release, 10,000 constructions after
+    100 warmups, timing only `Grift::new`, excluding destruction: 862,384 ns to 719,015 ns, 16.6%
+    less time. Both binaries were built in the same worktree and target directory. A separate
+    desk measurement runs the whole runner process on an empty program, not just `Grift::new`:
+    2,113 to 1,926 µs, 8.8% less time (`timings/head1.md` under the evidence directory; medians
+    of three batches of 200 runs, `bin/desk-grift.sh`). Both show a gain for N2; their different
+    boundaries explain the different percentages. Interning is shorter. Cost: each name's bytes
+    are stored twice and the hash table replaces a compact integer index.
   - Against it: P1 says the original whole-port timings cannot attribute a gain to grift. P2 says
     the absolute startup gap is small, and the original evidence did not meet the family's bar.
     P3 objects to duplicated name storage and timings mixed with host changes. P4 likewise says
@@ -1220,3 +1223,22 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   forms directly, with no context-versus-list dispatch. The existing runner property covers the
   computed path, unchanged reader values, source traces, catches and relative-path restoration;
   the loaded-tail and small-stack properties still hold. No public operation changes.
+
+## Review round 1, 2026-11-05
+
+- **G-159. Every reported out-of-memory requests the next collection** (amends G-155/G-156's
+  reader-only scheduling, preserving G-26's usable interpreter). Evidence:
+  `fuxport-2026-11-04/review/r1/P1/repro/call-stuck-after-oom`: after either a run or host pair
+  allocation exhausted a mostly live heap, all 1,000 recovery calls were refused at both live
+  sizes. The new quick regression also failed on the first evaluate, evaluate_in and call after
+  each origin. OOM was exported without making collection due, so the next entry needed a slot
+  before it could reach a collection, just as after the failed reads in G-155.
+  Scheduling now happens at the common error-export boundary, after choosing the final error
+  kind; this also covers allocation failure while exporting an error's values or trace and
+  failures in immutable host operations. The existing scheduling count is atomic so those
+  operations can request collection through `&self` without changing shared access to the
+  interpreter; ordinary allocation and collection update it through exclusive `get_mut` access.
+  No new flag, allocation, public control or collection inside allocation is added. The reader's
+  special wrapper is removed. Reads and constructors still never collect: more reads may be
+  refused until an evaluation or call reaches its preparation safe point. The first such run
+  now gets that chance for every reported OOM, independent of the ordinary allocation threshold.

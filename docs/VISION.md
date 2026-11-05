@@ -77,7 +77,8 @@ follows `lambda!`: both name the abstraction they make).
   in `!?` (`and!?`).
 - A constructor is named after what it makes (`pair`, `list`, `context`, `error`).
 - A conversion spells out `to` (`symbol-to-string`, `string-to-integer`).
-- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`).
+- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`), as
+  in fuxth.
 - Only bindings change, so the combiners that change anything are a short, complete list of verbs
   about bindings: `define!`, `bind` and `unbind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
@@ -95,9 +96,8 @@ belongs to, and every reference which object it was, so a value from another int
 the collector reclaimed is an error, never read as another. A value the host keeps across runs is
 a binding the interpreter owns, released by the host.
 An evaluation or call can collect before it needs its first heap slot, with its checked inputs
-kept live. A read that ran out of memory can therefore leave garbage for the next run to reclaim;
+kept live. After out-of-memory, the host can start one to let discarded allocations be reclaimed;
 allocation itself never collects.
-A read that runs out of memory requests collection at the next run even before the normal threshold.
 `read_in` reads a named text without evaluating it, keeping each combination's source and line;
 the host or a loader written in grift chooses when and where to evaluate those forms. Parse errors
 are the reader's, with reason, line and column; the host supplies the source when reporting one.

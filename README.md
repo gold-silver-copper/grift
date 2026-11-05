@@ -252,9 +252,10 @@ machine loop over a frame stack, so no Rust recursion grows with a program's nes
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
 loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
 argument stack, errors waiting for a cleanup, current expression and checked call inputs are its
-roots. Allocation never collects. Thus a failed read's discarded forms can be reclaimed before
-the next run needs room to read its input or build its call context.
-An out-of-memory read requests this collection even before the usual allocation threshold.
+roots. Allocation never collects. Reporting `out-of-memory`, from any operation, requests
+collection before the next run needs room to read its input or build its call context. Reads
+and constructors do not collect: more reads may be refused until an evaluation or call provides
+that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
 `if!`, `sequence!` and `string-search` are library code with a native twin: the library's own

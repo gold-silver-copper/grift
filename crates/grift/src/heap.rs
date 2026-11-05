@@ -5,6 +5,7 @@ use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +97,7 @@ fn weight(obj: &Object) -> usize {
 pub(crate) struct Heap {
     slots: Vec<Slot>,
     free: u32,
-    since_gc: usize,
+    since_gc: AtomicUsize,
     live: usize,
     marks: Vec<Reference>,
     /// Operatives made, for tests of what a form costs.
@@ -112,7 +113,7 @@ impl Default for Heap {
         Heap {
             slots: Vec::new(),
             free: NONE,
-            since_gc: 0,
+            since_gc: AtomicUsize::new(0),
             live: 0,
             marks: Vec::new(),
             #[cfg(test)]
@@ -146,7 +147,8 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
-        self.since_gc = self.since_gc.saturating_add(1);
+        let since_gc = self.since_gc.get_mut();
+        *since_gc = since_gc.saturating_add(1);
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -185,7 +187,8 @@ impl Heap {
     /// A new bytes object, counted as the slots its storage would fill besides its own.
     pub fn alloc_bytes(&mut self, b: Vec<u8>) -> Result<Reference, Error> {
         let bytes = Object::Bytes(b);
-        self.since_gc = self.since_gc.saturating_add(weight(&bytes) - 1);
+        let since_gc = self.since_gc.get_mut();
+        *since_gc = since_gc.saturating_add(weight(&bytes) - 1);
         self.alloc(bytes)
     }
 
@@ -230,15 +233,15 @@ impl Heap {
         }
     }
 
-    /// Whether a collection is due. The machine asks only at its safe point.
+    /// Whether collection is due at a machine safe point or before a host's run needs slots.
     #[inline]
     pub fn due(&self) -> bool {
-        self.since_gc >= self.live.max(GC_MIN)
+        self.since_gc.load(Ordering::Relaxed) >= self.live.max(GC_MIN)
     }
 
-    /// A read ran out of memory: reclaim its discarded forms at the next run's safe point.
-    pub fn request_collection(&mut self) {
-        self.since_gc = usize::MAX;
+    /// Any reported OOM requests collection, including failures in an `&self` host operation.
+    pub fn request_collection(&self) {
+        self.since_gc.store(usize::MAX, Ordering::Relaxed);
     }
 
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
@@ -268,7 +271,7 @@ impl Heap {
                 }
             }
         }
-        self.since_gc = 0;
+        *self.since_gc.get_mut() = 0;
         Ok(())
     }
 
