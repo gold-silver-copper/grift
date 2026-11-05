@@ -1197,3 +1197,17 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   shared reader now requests collection on out-of-memory without collecting there. G-155's next
   run reclaims the discarded forms even below that threshold. The same property covers both
   readers and all three entries with both sparse and mostly live heaps; its count is unchanged.
+
+## Picking panel follow-through, 2026-11-05
+
+- **G-157. A named form's boundary belongs to the common evaluation step** (amends G-154;
+  G-110 holds). Evidence: `fuxport-2026-11-04/pick/tally.md`'s two trace must-fixes, reproduced
+  before changing code. A separately read `(f 1)` entered as a constructed `if!` branch gave
+  traces of two and three entries with natives on and off. The boundary check now runs when
+  the machine starts a pair, using `Position.outer`, whatever control flow entered it. Native
+  branches and sequences therefore follow the same rule as their definitions. Reusing a
+  `What::Form` updates its place to the named form now running: tail-evaluating b's form from
+  a's formerly kept a and lost b. The host's `What::Forms` entry frame remains unchanged.
+  Existing equivalence and position properties reproduce both failures; the tail-space property
+  still guards constant space. This keeps the source table as the reader's record, with no new
+  heap classification or public name. The tally carried the tail-place update 4/4.

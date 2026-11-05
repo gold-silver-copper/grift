@@ -236,9 +236,11 @@ returns the list of all forms, as `Grift::read(text)` does. `Grift::position` gi
 source and opening line, also after a loader evaluates it later. `read`, `read_in` and `evaluate_in`
 give the same parse errors: `(reason line column)` with an empty trace. A loader names the unreadable
 source in its report; the runner puts the path innermost in the error's trace, as a string.
-When grift's `evaluate` starts one of those named outer forms, its trace retains that form through
-its tail calls, as `evaluate_in` does. Tail evaluations within it reuse the boundary, so they still
-run in constant space. Nested evaluations with work left around them retain their own boundaries.
+When evaluation starts one of those named outer forms, including through a native branch or
+sequence, its trace retains a boundary for the form. A tail evaluation of another named outer
+form updates that boundary to the new form, so the finished one disappears and space stays
+constant. The host's own entry boundary stays; nested evaluations with work left around them
+retain their own boundaries too.
 
 ```lisp
 (define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x)))))

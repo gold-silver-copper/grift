@@ -595,8 +595,9 @@ impl<T> Grift<T> {
 
     /// Reads every form in `text` into a list, evaluating nothing, as [`Grift::read`] does.
     /// Each combination keeps `source` and the line of its `(` for [`Grift::position`] and
-    /// traces when evaluated later. `evaluate` in grift keeps the outer form as its trace's
-    /// boundary through tail calls, as `evaluate_in` does. No forms gives `()`.
+    /// traces when evaluated later, including entry through native control flow. A tail
+    /// evaluation of another named outer form replaces the finished form's trace boundary;
+    /// the host's entry boundary stays. No forms gives `()`.
     /// Errors are `read`'s: `parse-error`
     /// with `(reason line column)` and an empty trace, or `out-of-memory`; the host names a
     /// source when reporting a parse error, just as for [`Grift::evaluate_in`].

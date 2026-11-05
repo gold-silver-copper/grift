@@ -406,6 +406,13 @@ impl<T> Grift<T> {
                 // around a combiner value (as the library builds it), not written.
                 if !library && !is_combiner(combiner) {
                     self.machine.here = r;
+                    if self
+                        .positions
+                        .get(&r.idx)
+                        .is_some_and(|p| p.generation == r.generation && p.outer)
+                    {
+                        self.hold_form(r)?;
+                    }
                 }
                 self.frame(What::Combine { operands }, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
@@ -476,6 +483,25 @@ impl<T> Grift<T> {
             }
             Mode::Host(..) => return Err(Error::new(K::NotACombiner, &[])),
         })
+    }
+
+    /// All routes into a named outer form share this boundary, including native control flow.
+    /// A tail form replaces the finished one; the host's own forms frame stays as it was.
+    fn hold_form(&mut self, form: Reference) -> Result<(), Error> {
+        match self.machine.frames.last_mut() {
+            Some(Frame {
+                what: What::Form,
+                at,
+                ..
+            }) => *at = form,
+            Some(Frame {
+                what: What::Forms { .. },
+                at,
+                ..
+            }) if *at == form => {}
+            _ => self.frame(What::Form, Reference::NONE, form)?,
+        }
+        Ok(())
     }
 
     /// An error stops the evaluation at `here`. Frames above `floor` are dropped down to the
@@ -890,23 +916,7 @@ impl<T> Grift<T> {
                 _ => return Err(type_error(p, x)),
             },
             P::Evaluate => match y {
-                Value::Context(c) => {
-                    if let Value::Pair(at) = x
-                        && self
-                            .positions
-                            .get(&at.idx)
-                            .is_some_and(|p| p.generation == at.generation && p.outer)
-                        && !self.heap.get_code(at)?.1
-                        && !self
-                            .machine
-                            .frames
-                            .last()
-                            .is_some_and(|f| matches!(f.what, What::Form))
-                    {
-                        self.frame(What::Form, Reference::NONE, at)?;
-                    }
-                    return Ok(Mode::Evaluate(x, c));
-                }
+                Value::Context(c) => return Ok(Mode::Evaluate(x, c)),
                 _ => return Err(type_error(p, y)),
             },
             P::Context => {
