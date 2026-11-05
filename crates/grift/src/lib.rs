@@ -268,7 +268,9 @@ impl<T> Grift<T> {
     /// Returns the last form's value (`#inert` for no forms). Nothing is evaluated if `src`
     /// doesn't read. Host functions get `state`. [`Grift::evaluate_in`] names the source.
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
-        let forms = self.read_local(src, None);
+        let forms = self
+            .prepare(std::iter::empty())
+            .and_then(|()| self.read_local(src, None));
         let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top));
         self.exported(done)
     }
@@ -295,6 +297,7 @@ impl<T> Grift<T> {
         src: &str,
     ) -> Result<Value, Error> {
         let done = self.context_of(context, Primitive::Evaluate).and_then(|c| {
+            self.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = self.intern(source)?;
             let forms = self.read_local(src, Some(source))?;
             self.evaluate_forms(Some(state), forms, c)

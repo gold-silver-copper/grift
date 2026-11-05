@@ -249,9 +249,11 @@ One crate, about 2,100 lines of Rust: values and a heap that is a growable `Vec`
 (`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
-`evaluate` in tail position is a proper tail call. The collector runs only at the top of the
-machine loop, where the machine's frames, argument stack, errors waiting for a cleanup and
-current expression are all the state there is; they are its roots, so nothing is rooted by hand.
+`evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
+loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
+argument stack, errors waiting for a cleanup, current expression and checked call inputs are its
+roots. Allocation never collects. Thus a failed read's discarded forms can be reclaimed before
+the next run needs room to read its input or build its call context.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
 `if!`, `sequence!` and `string-search` are library code with a native twin: the library's own

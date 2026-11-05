@@ -2,10 +2,10 @@
 //!
 //! The machine's state is its frame stack, its argument stack, the errors waiting for a
 //! cleanup to finish, where it is in the program and the current [`Mode`]. The collector runs
-//! only at the top of the loop, with exactly that state (plus the built-in and top-level
-//! contexts) as its roots. Between two safe points Rust code may hold values in locals freely:
-//! nothing is freed until the next safe point, and by then every local is gone. The same safe
-//! point checks for a stop.
+//! at the top of the loop and before a host's evaluation or call needs its first slot, with that
+//! state, the root contexts and the new call's checked inputs as its roots. Allocation never
+//! collects: Rust locals stay valid until the next run entry or machine safe point. The loop's
+//! safe point also checks for a stop.
 //!
 //! Three library forms have a native twin: `if!`, `sequence!` and `string-search` are the
 //! library's own operatives, flagged, and run in Rust when their operands have the shape the twin
@@ -282,6 +282,7 @@ impl<T> Grift<T> {
         f: Value,
         arguments: &[Value],
     ) -> Result<Value, Error> {
+        self.prepare(std::iter::once(f).chain(arguments.iter().copied()))?;
         let f = match f {
             Value::Applicative(r) => self.unwrapped(r)?,
             _ => f,
@@ -382,7 +383,12 @@ impl<T> Grift<T> {
             return Err(Error::new(K::Interrupted, &[]));
         }
         if self.heap.due() {
-            self.collect(mode)?;
+            let current = match mode {
+                Mode::Evaluate(x, context) => [x, Value::Context(context)],
+                Mode::Return(v) => [v, Value::EmptyList],
+                Mode::Host(..) => [Value::EmptyList, Value::EmptyList],
+            };
+            self.collect(current.into_iter())?;
         }
         Ok(())
     }
@@ -529,12 +535,19 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    fn collect(&mut self, mode: Mode) -> Result<(), Error> {
-        let current = match mode {
-            Mode::Evaluate(x, context) => [x, Value::Context(context)],
-            Mode::Return(v) => [v, Value::EmptyList],
-            Mode::Host(..) => [Value::EmptyList, Value::EmptyList],
-        };
+    /// A host's next run may need slots before reaching the machine loop. Collect here first,
+    /// with its checked inputs and the suspended machine as roots; never during allocation.
+    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
+        if self.run != 0 && self.control.active() != self.run {
+            self.abandon();
+        }
+        if self.heap.due() {
+            self.collect(current)?;
+        }
+        Ok(())
+    }
+
+    fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         let m = &self.machine;
         let raised = m
             .raised

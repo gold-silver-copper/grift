@@ -94,6 +94,9 @@ limit being a thread that stops the run. Every value the host holds says which i
 belongs to, and every reference which object it was, so a value from another interpreter or one
 the collector reclaimed is an error, never read as another. A value the host keeps across runs is
 a binding the interpreter owns, released by the host.
+An evaluation or call can collect before it needs its first heap slot, with its checked inputs
+kept live. A read that ran out of memory can therefore leave garbage for the next run to reclaim;
+allocation itself never collects.
 `read_in` reads a named text without evaluating it, keeping each combination's source and line;
 the host or a loader written in grift chooses when and where to evaluate those forms. Parse errors
 are the reader's, with reason, line and column; the host supplies the source when reporting one.

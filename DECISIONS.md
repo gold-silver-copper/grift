@@ -1176,3 +1176,17 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   name and no weakened trace promise. The original position test's tail call is restored; the
   runner compares a file's own trace with its loaded trace, and a named-form tail loop checks
   that the retained boundary costs constant space.
+- **G-155. Collect before a host's run needs its first slot** (repairs G-26's recovery guarantee;
+  extends G-12's safe points). Evidence: `fuxport-2026-11-04/stress/P1/findings/
+  read-in-oom-leaves-interpreter-stuck`, also reproduced with `read` on pure at 71cb5c5. The reader
+  exhausted the heap vector while accumulating forms that then became garbage. `evaluate` needed
+  a slot to read new input before reaching the loop; even a zero-argument `call` needed a new
+  context in `call_local` before `start`, so both failed to grow the same vector forever. Free
+  allocator bytes could not pay for its next doubling, and collection was never reached.
+  The host's evaluate/evaluate_in/call entries now collect when due before those allocations,
+  using the existing machine roots plus their checked context, combiner and arguments. Abandoned
+  machine state is cleared first. Reading itself still never collects, nor does allocation; no
+  public collection control is added. A test-only heap-slot limit reproduces the exhausted free
+  list without a global allocator; one quick property checks all three entries after both readers,
+  including live unbound call inputs and a child context. The external allocator-budget case is
+  retained outside the crate as evidence of actual allocation refusal.
