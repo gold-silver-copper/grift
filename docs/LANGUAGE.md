@@ -238,6 +238,8 @@ cannot read the text, its `parse-error` keeps `(reason line column)` in the valu
 source name as a string innermost in the trace. `read` and `evaluate`, which take no source name,
 keep an empty trace for unreadable text. A loader can propagate the named error unchanged; the
 runner's loaded-file error starts with that path, followed by the outer load's combination.
+The source string lives with the interpreter, so a host can describe a held named parse error
+after later evaluations collect.
 When evaluation starts one of those named outer forms, including through a native branch or
 sequence, its trace retains a boundary for the form. A tail evaluation of another named outer
 form updates that boundary to the new form, so the finished one disappears and space stays

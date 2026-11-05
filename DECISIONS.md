@@ -1216,8 +1216,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   Existing equivalence and position properties reproduce both failures; the tail-space property
   still guards constant space. This keeps the source table as the reader's record, with no new
   heap classification or public name. The tally carried the tail-place update 4/4.
-- **G-158. The runner names parse errors in grift** (amends G-136's host-built record and
-  G-151's forms-or-record result). `pick/tally.md` carried this runner separation 4/4. Its private
+- **G-158. The runner names parse errors in grift** (superseded by G-163's owner decision;
+  originally amended G-136's host-built record and G-151's forms-or-record result). `pick/tally.md` carried this runner separation 4/4. Its private
   `read-forms-host` now only reads the file and calls `read_in`, returning forms or an error.
   The private grift `read-forms` catches `parse-error`, binds the caught record's trace to the
   path string alone and raises it; kind and values stay untouched, and ordinary unwinding adds
@@ -1324,10 +1324,30 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   uniformity objection to B. `read` and `evaluate` keep their unnamed reader errors; grammar,
   coordinates, ordinary evaluation traces and `read-form` are unchanged.
   The shared whole-text reader attaches the name once, with fallible string allocation and trace
-  growth; failure still reports `out-of-memory` through the existing recovery boundary. It never
-  collects. The runner calls its read-only host directly, removing private `read-forms` and its
+  growth. If allocating or retaining the source or trace fails, the host gets `out-of-memory`,
+  replacing the parse error: the complete named error cannot be built, and returning a bare parse
+  error would lose the promised provenance. The existing recovery boundary handles it. Reading
+  never collects. The runner calls its read-only host directly, removing private `read-forms` and its
   record rebuilding. G-136's loaded-file parse-error shape is unchanged, including the outer load;
   its existing tests stay unchanged. The top-level script diagnostic test does change because
   scripts use `evaluate_in` and therefore now retain the source string too. No new test function
   is added: the existing reader-error property checks both named and unnamed entries across its
   reasons, retaining all three values. No new public name, dependency or collection policy.
+
+## Round 2b, 2026-11-05
+
+- **G-164. Named parse errors retain their diagnostic source across collections** (completes
+  G-163). Evidence: `fuxport-2026-11-04/review/r2b/P2/repro/
+  named-parse-error-stale-after-collection`, reproduced for both named entries at af34256.
+  The exported error alone did not root its fresh heap string; after the next collection,
+  `describe` and `position` rejected it as stale. Interned source names already live with the
+  interpreter. Each source that fails to parse now gets one cached diagnostic string in the
+  existing private kept context, keyed by its interned id below KEPT; host-kept ids remain
+  disjoint at KEPT and above. Later errors reuse it, preserving older held errors too.
+  Cost: one heap string and binding per distinct source that has a parse error, retained for the
+  interpreter's lifetime. No field, element size or retention policy changes for ordinary errors
+  or their traces. The regression forces two collections, holds repeated errors from one source,
+  checks both named entries remain describable and positionable, and verifies ordinary garbage
+  strings still collect. G-163 states the allocation-failure result: out-of-memory, not a
+  nameless parse error. The runner omits its source prefix when the trace already names that
+  input, so top-level scripts and stdin are named once; loaded-file diagnostics stay unchanged.

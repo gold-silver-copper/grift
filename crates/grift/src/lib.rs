@@ -128,7 +128,8 @@ impl Error {
     /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
     /// [`Value::String`]; its values remain `(reason line column)`. An outer evaluation can add
     /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
-    /// doesn't read, its trace is empty.
+    /// doesn't read, its trace is empty. The named parse error's source string lives with the
+    /// interpreter, so that error can still be described after later evaluations collect.
     pub fn trace(&self) -> &[Value] {
         &self.trace
     }
@@ -189,6 +190,7 @@ pub struct Grift<T = ()> {
     built_in: heap::Reference,
     top: heap::Reference,
     /// The kept values' context, a root no program reaches, and the names free for the next.
+    /// Host-kept values use ids at KEPT and above; diagnostic source strings use interned ids.
     kept: heap::Reference,
     kept_free: Vec<u32>,
     kept_next: u32,
@@ -283,7 +285,8 @@ impl<T> Grift<T> {
     /// in order in `context`, as `evaluate` does at top level. Each combination read keeps its
     /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`]. If `src`
     /// doesn't read, `parse-error` keeps `(reason line column)` in its values and `source` as
-    /// a string at the start of its trace, as [`Grift::read_in`] does.
+    /// a string at the start of its trace, as [`Grift::read_in`] does. That source string survives
+    /// later collections.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -607,8 +610,8 @@ impl<T> Grift<T> {
     /// evaluation of another named outer form replaces the finished form's trace boundary;
     /// the host's entry boundary stays. No forms gives `()`.
     /// If `text` doesn't read, `parse-error` keeps `(reason line column)` in its values and
-    /// `source` as a string at the start of its trace, as [`Grift::evaluate_in`] does.
-    /// Allocation failure is `out-of-memory`.
+    /// `source` as a string at the start of its trace, as [`Grift::evaluate_in`] does. That source
+    /// string survives later collections. Allocation failure is `out-of-memory`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;

@@ -115,8 +115,7 @@ impl<T> Grift<T> {
                 if e.kind == K::ParseError.into()
                     && let Some(source) = source
                 {
-                    let name = boxed(self.name(source))?;
-                    let name = Value::String(self.heap.alloc(Object::String(name))?);
+                    let name = self.source_string(source)?;
                     push(&mut e.trace, name)?;
                 }
                 Err(e)
@@ -131,6 +130,20 @@ impl<T> Grift<T> {
             (at, line) = (place.end, after);
         }
         Ok(forms.head)
+    }
+
+    // Only malformed named input needs this allocation path; keep it out of the reader loop.
+    #[cold]
+    #[inline(never)]
+    fn source_string(&mut self, source: Symbol) -> Result<Value, Error> {
+        // Source ids are interned, below the disjoint host-kept ids at KEPT and above.
+        if let Some(name) = self.find(self.kept, source)? {
+            return Ok(name);
+        }
+        let text = boxed(self.name(source))?;
+        let name = Value::String(self.heap.alloc(Object::String(text))?);
+        self.bind_symbol(self.kept, source, name)?;
+        Ok(name)
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the

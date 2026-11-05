@@ -199,7 +199,8 @@ fn main() -> Result<(), Error> {
   combination's source and opening line for later evaluation. If `read_in` or `evaluate_in`
   cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the
   supplied source name as a string innermost in the trace. `read` and `evaluate` keep an empty
-  trace for unreadable text.
+  trace for unreadable text. A named parse error's source string lives with the interpreter,
+  so the host can still describe it after later evaluations collect.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
