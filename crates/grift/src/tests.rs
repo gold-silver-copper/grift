@@ -395,22 +395,6 @@ fn printing_reads_back() {
 }
 
 #[test]
-fn program_entry_points_are_readable() {
-    let programs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../programs");
-    let mut paths: Vec<_> = std::fs::read_dir(programs)
-        .unwrap()
-        .map(|entry| entry.unwrap().path().join("main.grift"))
-        .collect();
-    paths.sort();
-    let mut g = grift();
-    for path in paths {
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(g.read(&text).is_ok(), "{}", path.display());
-        g.evaluate(&mut (), "#inert").unwrap();
-    }
-}
-
-#[test]
 fn reading_evaluates_nothing() {
     let mut g = grift();
     let text = "(define! ran #true)\n\n(add 1\n  (multiply 2 3))\n42\nran\n()";

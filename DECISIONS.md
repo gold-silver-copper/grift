@@ -1367,11 +1367,25 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   0.68 s locally, and its source is included as an unused module for fmt, type checking and
   clippy, without generating a second optimized interpreter. The source-string allocation path
   is cold and out of line too, avoiding optimizer duplication in the normal reader loop.
-  The full program corpus also moves to the external gate: it cost 39.59 s in the af34256
-  hosted test step (25.98 s in the first fresh local run). CI retains a cheap property reading
-  every program entry point with the actual reader; execution, diagnostics, formatting and
-  memory checks remain in each program's unchanged test.sh, all run at the final head. This
-  deliberately reduces CI's corpus coverage to syntax; it does not discard the full functional
-  checks or raise the 85.8 s target. No new dependency is added. A fresh-target local test step
-  fell from 60.94 s to 24.96 s; compilation fell from 16.11 s to 10.04 s. Hosted verification
-  remains with the orchestrator. Full command readings and retained evidence are in the report.
+  The initial corpus move to an external gate is withdrawn by G-166: it contradicted G-84
+  and VISION's completeness rule. The 60.94 s to 24.96 s fresh-target local readings included
+  that invalid coverage reduction and do not establish the budget for the restored gate.
+  The fixture removals above stand; the full corpus stays in CI. The 85.8 s target is unchanged.
+
+- **G-166. The workspace gate runs every program's own test** (restores G-84; corrects G-165).
+  Evidence: `fuxport-2026-11-04/review/r2c/P1/repro/gate-skips-broken-program` exits 1 at
+  9a6b6a7: a valid but failing form in a program passes the syntax-only property and the whole
+  workspace suite while its own test.sh fails. Restore the corpus integration test from pure,
+  with three workers to honor the local resource cap; discover every program and run its full
+  script against Cargo's test-profile runner. Remove the overlapping syntax-only property.
+  CI and the local workspace suite now run the same corpus. The separate final-head release
+  checks remain useful evidence, rather than substituting for coverage in the repository.
+  G-165's removed allocator fixture uniquely checked collection before the argument vector's
+  reserve with zero allocator bytes available, including validation before collection. The
+  existing slot-limit properties check nonempty-call recovery and root every heap argument
+  kind, and embedding tests reject stale and foreign inputs, but they cannot force that vector
+  reserve to fail. The exact zero-budget reproduction remains external evidence. Its original
+  target cost 3.94 s of fresh local compilation for 0.04 s execution; restoring that separate
+  optimized interpreter target is not a cheap check. No unsafe allocator or new production
+  seam is added to the core to imitate it. Gate timings and the remaining budget risk are
+  recorded with the final-head commands in the report.

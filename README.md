@@ -245,8 +245,8 @@ fn main() -> Result<(), Error> {
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
-with its own `test.sh`. CI reads every entry point; the full local gate runs each test script
-against the release runner.
+with its own `test.sh`. `cargo test --workspace` runs all of those scripts against the test-profile
+runner, so the local suite and CI both exercise the corpus.
 
 ## Inside
 
