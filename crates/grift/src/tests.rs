@@ -248,6 +248,27 @@ fn tail_calls_run_in_constant_space() {
         "heap grew to {} slots",
         g.heap.len()
     );
+    g.evaluate(&mut (), "(define! here (current-context)) (define! n 0)")
+        .unwrap();
+    let forms = g
+        .read_in(
+            "tail.grift",
+            "(if! (same? n 0) #inert
+        (sequence! (bind here (quote! n) (subtract n 1)) (evaluate again here)))",
+        )
+        .unwrap();
+    let (form, _) = g.as_pair(&forms).unwrap().unwrap();
+    g.define("again", form).unwrap();
+    let mut high = Vec::new();
+    for n in [100, 3000] {
+        g.define("n", Value::Integer(n)).unwrap();
+        assert_eq!(
+            g.evaluate(&mut (), "(evaluate again here)"),
+            Ok(Value::Inert)
+        );
+        high.push(g.machine.frames_high());
+    }
+    assert_eq!(high[0], high[1], "evaluating named forms kept tail frames");
 }
 
 #[test]
@@ -2946,7 +2967,7 @@ fn string_literals_share_the_reader_and_both_writers() {
 fn positions_name_each_combination_s_source_and_line() {
     let mut g = grift();
     let top = g.top_level();
-    let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(list 0 (f 1))";
+    let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(f 1)";
     let e = g.evaluate_in(&mut (), &top, "f.grift", src).unwrap_err();
     let lines: Vec<_> = e.trace().iter().map(|at| g.position(at).unwrap()).collect();
     assert_eq!(lines, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
@@ -3087,4 +3108,38 @@ fn interned_names_keep_their_identity_and_read_back() {
         g.position(&g.list_items(&forms).unwrap()[0]),
         Ok(Some(("comments.grift", 3)))
     );
+}
+
+#[test]
+fn a_run_reclaims_discarded_reader_allocations_before_needing_a_slot() {
+    // Refuse new slots at a fixed length, without a global allocator. This makes the same
+    // exhausted free list as a failed heap-vector reserve; collection can reuse its garbage.
+    for named in [false, true] {
+        for entry in ["evaluate", "evaluate_in", "call"] {
+            let mut g = grift();
+            let f = g
+                .evaluate(&mut (), "(lambda! (xs) (add (first xs) 1))")
+                .unwrap();
+            let argument = g.list(&[Value::Integer(2)]).unwrap();
+            let c = g.context(Some(&g.top_level())).unwrap();
+            let x = Value::Symbol(g.symbol("x").unwrap());
+            g.bind(&c, &x, Value::Integer(2)).unwrap();
+            g.heap.slot_limit = g.heap.len() + 8192;
+            let text = "(a b c)\n".repeat(4096);
+            let error = if named {
+                g.read_in("big.grift", &text)
+            } else {
+                g.read(&text)
+            }
+            .unwrap_err();
+            assert_eq!(kind(&g, &error), "out-of-memory");
+            assert!(g.heap.due());
+            let result = match entry {
+                "evaluate" => g.evaluate(&mut (), "(add 1 2)"),
+                "evaluate_in" => g.evaluate_in(&mut (), &c, "small.grift", "(add x 1)"),
+                _ => g.call(&mut (), &f, &[argument]),
+            };
+            assert_eq!(result, Ok(Value::Integer(3)), "{entry} after named={named}");
+        }
+    }
 }

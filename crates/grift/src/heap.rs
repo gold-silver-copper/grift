@@ -102,6 +102,9 @@ pub(crate) struct Heap {
     /// Operatives made, for tests of what a form costs.
     #[cfg(test)]
     pub operatives: usize,
+    /// Refuse new slots past this length, to test recovery without replacing the allocator.
+    #[cfg(test)]
+    pub slot_limit: usize,
 }
 
 impl Default for Heap {
@@ -114,6 +117,8 @@ impl Default for Heap {
             marks: Vec::new(),
             #[cfg(test)]
             operatives: 0,
+            #[cfg(test)]
+            slot_limit: usize::MAX,
         }
     }
 }
@@ -156,6 +161,10 @@ impl Heap {
                 idx,
                 generation: slot.generation,
             });
+        }
+        #[cfg(test)]
+        if self.slots.len() >= self.slot_limit {
+            return Err(Error::oom());
         }
         let idx = u32::try_from(self.slots.len())
             .ok()

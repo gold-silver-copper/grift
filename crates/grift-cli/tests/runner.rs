@@ -475,3 +475,37 @@ fn a_closed_stderr_is_an_error_not_a_quiet_end() {
     let out = child.wait_with_output().unwrap();
     assert_eq!((out.status.code(), &out.stdout[..]), (Some(1), &b""[..]));
 }
+
+#[test]
+fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
+    let dir = scratch("loaded-tail-trace");
+    let path = dir.join("tail.grift");
+    for text in [
+        "(define! f (lambda! (x) (first x)))\n(f 2)\n",
+        "(define! f (lambda! (x) (first x)))\n(f 2)\n(define! never 1)",
+        "\n(if! #true (first 1) 2)",
+        "(finally! (first 1) (first 2))",
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let alone = run(&[path.to_str().unwrap()], "", Stdio::piped());
+        let (status, _, loaded) = script(&dir, "(load \"tail.grift\")", &[], "");
+        assert_eq!(alone.status.code(), Some(1));
+        assert_eq!(status, Some(1));
+        let alone = String::from_utf8(alone.stderr).unwrap();
+        let alone = alone
+            .strip_prefix(&format!("{}: ", path.display()))
+            .unwrap()
+            .trim_end();
+        let wrapper = dir.join("script.grift");
+        let loaded = loaded
+            .strip_prefix(&format!("{}: ", wrapper.display()))
+            .unwrap();
+        let loaded = loaded
+            .strip_suffix(&format!(
+                "\n  from (load \"tail.grift\") at {}:1\n",
+                wrapper.display()
+            ))
+            .unwrap();
+        assert_eq!(loaded, alone, "{text}");
+    }
+}
