@@ -325,6 +325,34 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn nested_loads_need_no_rust_stack() {
+    let dir = scratch("nested-loads");
+    for n in 0..1000 {
+        let text = if n == 999 {
+            "(define! answer 42)".to_string()
+        } else {
+            format!("(load \"{}.grift\")", n + 1)
+        };
+        std::fs::write(dir.join(format!("{n}.grift")), text).unwrap();
+    }
+    let path = dir.join("script.grift");
+    std::fs::write(&path, "(load \"0.grift\") (display answer)").unwrap();
+    let out = Command::new("bash")
+        .args(["-c", "ulimit -c 0; ulimit -s 512; exec \"$@\"", "load-test"])
+        .arg(env!("CARGO_BIN_EXE_grift"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"42");
+}
+
 #[test]
 fn bytes_that_are_not_text_go_in_and_out() {
     let dir = scratch("bytes");

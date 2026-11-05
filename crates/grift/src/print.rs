@@ -97,21 +97,7 @@ impl<T> Grift<T> {
                             push(&mut todo, Item::Tail(*b))?;
                             push(&mut todo, Item::Value(*a))?;
                         }
-                        Ok(Object::String(s)) => {
-                            out.write_char('"')?;
-                            for c in s.chars() {
-                                match c {
-                                    '"' => out.write_str("\\\"")?,
-                                    '\\' => out.write_str("\\\\")?,
-                                    '\n' => out.write_str("\\n")?,
-                                    '\r' => out.write_str("\\r")?,
-                                    '\t' => out.write_str("\\t")?,
-                                    c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
-                                    c => out.write_char(c)?,
-                                }
-                            }
-                            out.write_char('"')?;
-                        }
+                        Ok(Object::String(s)) => crate::write_string(s, out)?,
                         // The literal: each byte as the integer `bytes-byte` gives for it.
                         Ok(Object::Bytes(b)) => {
                             out.write_str("#bytes(")?;

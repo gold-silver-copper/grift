@@ -40,9 +40,14 @@
     (lambda! (path c)
       (let! ((outer (evaluate-in! file loading)))
         (bind loading (quote! file) path)
-        (finally! (raised (load-host path c)) (bind loading (quote! file) outer)))))
-  ; A file that didn't read gives its error as a record: raised here, so the program can catch it.
-  (define! raised (lambda! (r) (when! (context? r) (raise r))))
+        (finally! (loaded (load-host path) c) (bind loading (quote! file) outer)))))
+  ; The host only reads: evaluation stays in this run, so nested loads use the machine's stack.
+  ; A file that didn't read gives its error as a record, raised here so the program can catch it.
+  (define! loaded
+    (lambda! (forms c)
+      (if! (context? forms)
+        (raise forms)
+        (for-each (lambda! (form) (evaluate form c)) forms))))
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
                      run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))

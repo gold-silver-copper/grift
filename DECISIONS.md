@@ -1104,3 +1104,60 @@ fewer new public items, then fewer lines.
   The whole test: 222.35 G instructions at the base, 232.46 G at 8da8b50 (+4.5%), 227.88 G now
   (+2.5%); on the same input its time is the base's (box2, alternated: 3.96/3.96, 2.93/2.83,
   2.77/2.80 s). Target unchanged: within 5% of the base; desk times the head.
+
+## Earned by the port reading, 2026-11-05
+
+Evidence: `~/code/notes/projects/grift/fuxport-2026-11-04/reading/tally.md` (four readers, P1–P4)
+chose three needs: N1, N2 and N3. Its other outcomes stay outside this change. The N1 error ruling
+is `reading/design-n1.md`; test admission is `tests/counts.md`. No new language names, primitives
+or kinds. The only new public names are `Grift::read_in` and `grift::write_string`.
+
+- **G-151. Read a named text without evaluating it** (N1: 4/4 readers; eight ports, four families;
+  extends G-119). `Grift::read_in(source, text)` gives `read`'s list of every form, through the same
+  reader as `evaluate_in`; each combination keeps its source and opening line for `position` and
+  later traces. Reading does no evaluation. The runner's host now only reads a loaded file; a grift
+  `for-each` evaluates its forms in the caller's context, within the existing run. Relative paths,
+  restoration after errors, and the parse-error record from G-136 remain runner policy. A regression
+  first reproduced a Rust stack overflow on a 1,000-file chain with a 512 KiB stack; it passes with
+  evaluation in grift. No evaluator entry or optional `read-form` operand was added.
+  - Error ruling: A, unchanged reader errors, `(reason line column)` and an empty trace. The design
+    vote split 2–2; two different-family ports swapped to B (source in the trace), with unchanged
+    results (83/83 and 82/83), so the tie stood and the ruling chose A. Source attachment remains at
+    the edge for both `read_in` and `evaluate_in`; B remains the owner's choice. Strongest dissent
+    for B (P1/P4): the caller already supplied provenance; forwarding the error should retain it,
+    and hosts have distorted the values while attaching it. Strongest against B (P2/P3): it makes
+    sibling APIs disagree and moves G-136's loader responsibility into the core.
+  - Against the method: P1's unpatched loader already passed the small-stack and named-file checks,
+    so the method buys convenience and lasting API surface. P2 says a bounded nested evaluator is
+    adequate for ordinary loads. P3 says preserving positions and small-stack loading already has
+    a workaround. P4 likewise finds convenience rather than a previously impossible capability.
+    The chosen mechanism removes host evaluator recursion in a second program, the runner, while
+    keeping reading and evaluation separate and sharing the existing source table.
+- **G-152. Intern by name with the standard hash map; read ASCII directly** (N2: 4/4 readers;
+  two ports, two families). A `HashMap<Box<str>, u32>` replaces the sorted symbol-id vector; the
+  id-to-name vector stays. Both spellings are allocated and both collections reserved before either
+  entry is published; failure is still `out-of-memory`, and ids at `KEPT` and above stay excluded.
+  The reader returns an ASCII byte as its character, decodes other characters as before, and skips
+  comments to their newline in one search. Grammar, positions and errors are unchanged. No custom
+  string hasher, twins, collection switch or startup image.
+  - One before/after measurement on idle desk, release, 10,000 constructions after 100 warmups,
+    timing only `Grift::new` (destruction outside that interval): 862,384 ns to 719,015 ns, 16.6%
+    less time. Both binaries were built in the same worktree and target directory. The change meets
+    N2's condition of a measured gain and shortens interning. Cost: each name's bytes are stored
+    twice and the hash table replaces a compact integer index.
+  - Against it: P1 says the original whole-port timings cannot attribute a gain to grift. P2 says
+    the absolute startup gap is small, and the original evidence did not meet the family's bar.
+    P3 objects to duplicated name storage and timings mixed with host changes. P4 likewise says
+    startup already works and the bundled optimizations had separate evidence. This measurement
+    isolates construction; only the agreed representation and reader changes land.
+- **G-153. One string literal writer for values and host text** (N3: 4/4 readers; three ports,
+  two families; G-122's spelling unchanged). `grift::write_string(text, out)` takes a borrowed
+  `str` and a `dyn std::fmt::Write`, returns `std::fmt::Result`, and needs neither an interpreter
+  nor allocation. The string case moves out of `print.rs` to this function; `Grift::write` calls it.
+  Quoting, the five short escapes and hexadecimal control escapes have one source. Output failures
+  propagate directly. Record traversal stays with the host.
+  - Against it: P1 says a temporary interpreter string or a copied small escape table already works.
+    P2 says G-122 fixed the small table, and a large streamed-output check belongs to its host.
+    P3 says the function is unnecessary for correctness; P4 objects to adding public surface for a
+    formatting detail. The chosen function shares the actual printer without a transient heap copy;
+    a small fixed-seed property checks both writers against `read-form`, and refusing sinks fail.

@@ -77,8 +77,7 @@ follows `lambda!`: both name the abstraction they make).
   in `!?` (`and!?`).
 - A constructor is named after what it makes (`pair`, `list`, `context`, `error`).
 - A conversion spells out `to` (`symbol-to-string`, `string-to-integer`).
-- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`), as
-  in fuxth.
+- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`).
 - Only bindings change, so the combiners that change anything are a short, complete list of verbs
   about bindings: `define!`, `bind` and `unbind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
@@ -95,6 +94,9 @@ limit being a thread that stops the run. Every value the host holds says which i
 belongs to, and every reference which object it was, so a value from another interpreter or one
 the collector reclaimed is an error, never read as another. A value the host keeps across runs is
 a binding the interpreter owns, released by the host.
+`read_in` reads a named text without evaluating it, keeping each combination's source and line;
+the host or a loader written in grift chooses when and where to evaluate those forms. Parse errors
+are the reader's, with reason, line and column; the host supplies the source when reporting one.
 Bare-metal targets are not a goal; WebAssembly works wherever `std` does. grift does not isolate
 code from the host or from other code in the same interpreter; an embedder running untrusted code
 isolates it itself, for example in its own process.
@@ -165,6 +167,8 @@ parameters, its context parameter and its body (not the context it was made in, 
 can print alike and differ). A context prints as its own names, sorted
 (`#[context close path read-all read-line]`), never its values, which may reach the context
 again. An error, a context, prints its names; the host reports its kind, its values and its trace.
+`write_string` writes the same string literal spelling for host text, without an interpreter or
+allocation. It and the value printer share the quoting and escapes the reader understands.
 
 ## Terms
 - **Symbol:** a value that is a name; a symbol names a value in a context.

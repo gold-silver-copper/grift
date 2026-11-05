@@ -46,7 +46,12 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn peek(&self) -> Option<char> {
-        self.src.get(self.at..)?.chars().next()
+        let &byte = self.src.as_bytes().get(self.at)?;
+        if byte.is_ascii() {
+            Some(char::from(byte))
+        } else {
+            self.src.get(self.at..)?.chars().next()
+        }
     }
 
     fn next(&mut self) -> Option<char> {
@@ -62,9 +67,8 @@ impl Cursor<'_> {
         while let Some(c) = self.peek() {
             match c {
                 ';' => {
-                    while self.peek().is_some_and(|c| c != '\n') {
-                        self.next();
-                    }
+                    let rest = self.src.get(self.at..).unwrap_or_default();
+                    self.at += rest.find('\n').unwrap_or(rest.len());
                 }
                 c if c.is_whitespace() => {}
                 _ => return,

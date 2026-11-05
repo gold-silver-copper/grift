@@ -529,18 +529,14 @@ const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
     ("resolve-host", resolve_host),
 ];
 
-/// `(load-host path caller)`: evaluates the forms of the file in the caller's context, each
-/// combination with its line in the file. If the file doesn't read, its `parse-error`, with the
-/// path innermost in its trace, as the line and column are the file's: a record for `load` to raise.
-fn load_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [path, caller] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    let path = one_string(g, std::slice::from_ref(path))?;
+/// `(load-host path)`: reads the file's forms, each combination with its line in the file.
+/// If it doesn't read, returns its `parse-error` as a record for `load` to raise, with the path
+/// innermost in its trace, as the line and column are the file's.
+fn load_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let path = one_string(g, args)?;
     let text = std::fs::read_to_string(&path).map_err(|e| failed(g, "file-error", &path, &e))?;
-    match g.evaluate_in(r, caller, &path, &text) {
-        // An error with no trace yet is the reader's: nothing ran.
-        Err(e) if e.trace().is_empty() && g.is_kind(&e, "parse-error")? => {
+    match g.read_in(&path, &text) {
+        Err(e) if g.is_kind(&e, "parse-error")? => {
             let record = g.context(None)?;
             let (path, values) = (g.string(&path)?, g.list(&e.values)?);
             let trace = g.list(&[path])?;
@@ -554,7 +550,7 @@ fn load_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> 
             }
             Ok(record)
         }
-        done => done.map(|_| Value::Inert),
+        done => done,
     }
 }
 

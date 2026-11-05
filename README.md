@@ -194,8 +194,11 @@ fn main() -> Result<(), Error> {
 - **Evaluating:** `evaluate(&mut T, &str)` at top level; `evaluate_in(&mut T, &context, source,
   &str)` in a given context, each combination keeping its line in `source`, so errors say
   `at config.grift:12`; `call(&mut T, &f, &[Value])` (Kernel's `apply`: an applicative's combiner
-  gets the values as its operands, in a new empty context); `read(&str)`, the list of forms,
-  nothing evaluated.
+  gets the values as its operands, in a new empty context); `read(&str)` or
+  `read_in(source, text)`, the list of forms, nothing evaluated. `read_in` keeps each
+  combination's source and opening line for later evaluation. Both readers and `evaluate_in`
+  give the same parse errors, with `(reason line column)` and an empty trace; the host names
+  the source when reporting one.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
@@ -205,6 +208,9 @@ fn main() -> Result<(), Error> {
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_string` (an owned copy), `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
+  `grift::write_string(text, out)` writes host text as one string literal, with the same quoting
+  and escapes, into any `std::fmt::Write`, without an interpreter or allocation; it returns
+  `std::fmt::Result`.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a

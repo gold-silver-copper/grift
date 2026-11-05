@@ -376,8 +376,33 @@ fn printing_reads_back() {
 #[test]
 fn reading_evaluates_nothing() {
     let mut g = grift();
-    let forms = g.read("(first 1) undefined").unwrap();
-    assert_eq!(show(&g, &forms), "((first 1) undefined)");
+    let text = "(define! ran #true)\n\n(add 1\n  (multiply 2 3))\n42\nran\n()";
+    let source = "sources/λ.grift";
+    let named = g.read_in(source, text).unwrap();
+    let unnamed = g.read(text).unwrap();
+    assert_eq!(show(&g, &named), show(&g, &unnamed));
+    let forms = g.list_items(&named).unwrap();
+    assert_eq!(forms.len(), 5);
+    let inner = g.list_items(&forms[1]).unwrap();
+    // Another named read must not replace these positions. Reading never collects.
+    let other = g.read_in("other.grift", "\n\n(list 9)").unwrap();
+    let other = g.list_items(&other).unwrap();
+    for (form, line) in [(&forms[0], 1), (&forms[1], 3), (&inner[2], 4)] {
+        assert_eq!(g.position(form), Ok(Some((source, line))));
+    }
+    assert_eq!(g.position(&other[0]), Ok(Some(("other.grift", 3))));
+    for form in &forms[2..] {
+        assert_eq!(g.position(form), Ok(None));
+    }
+    let unnamed = g.list_items(&unnamed).unwrap();
+    assert_eq!(g.position(&unnamed[0]), Ok(None));
+    assert_eq!(
+        g.read_in("empty.grift", "#! ignored\n ; é"),
+        Ok(Value::EmptyList)
+    );
+    assert!(g.read_in(source, "(define! ran #true)\n(").is_err());
+    let ran = g.symbol("ran").unwrap();
+    assert_eq!(g.lookup(&g.top_level(), &ran), Ok(None));
 }
 
 #[test]
@@ -1954,6 +1979,8 @@ fn a_parse_error_says_why_and_where() {
         ("(1.2.3)", "bad-number 1 2"),
         ("99999999999999999999", "bad-number 1 1"),
         ("#nope", "unknown-constant 1 1"),
+        ("(define! unread 1)\n(a", "unclosed-list 2 1"),
+        ("α )", "unmatched-parenthesis 1 3"),
         // Inside #bytes( only integers 0 to 255, each at its own place.
         ("#bytes(1\n 256)", "bad-byte 2 2"),
         ("#bytes(1 \"a\" x)", "bad-byte 1 10"),
@@ -1969,6 +1996,14 @@ fn a_parse_error_says_why_and_where() {
             ("parse-error".into(), want.into()),
             "{text:?}"
         );
+        // Naming the source adds positions to forms, never a different reader error.
+        assert_eq!(g.read_in("broken.grift", text).unwrap_err(), e);
+        assert_eq!(
+            g.evaluate_in(&mut (), &g.top_level(), "broken.grift", text)
+                .unwrap_err(),
+            e
+        );
+        assert!(e.trace().is_empty());
         // More text after an unclosed form changes nothing.
         if want.starts_with("unclosed-list") {
             let more = g.read(&format!("{text}\n(g 3)\n")).unwrap_err();
@@ -2825,7 +2860,7 @@ fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
 }
 
 #[test]
-fn string_escapes_are_rusts() {
+fn string_literals_share_the_reader_and_both_writers() {
     let mut g = grift();
     // Every letter grift takes after `\` means what Rust's escape of it does; any other ASCII
     // character there is a bad-escape.
@@ -2856,16 +2891,93 @@ fn string_escapes_are_rusts() {
     assert!(printed.contains("\\r") && printed.contains("\\n") && !printed.contains('\r'));
     let again = g.evaluate(&mut (), &printed).unwrap();
     assert_eq!(g.as_str(&again), Ok(Some(controls.as_str())));
+    let mut texts = vec![
+        String::new(),
+        "\"\\;()\n\r\t\0a\u{1}f".into(),
+        (0..=0x9f).filter_map(char::from_u32).collect(),
+        "é e\u{301} λ 中 🦀 \u{2028}\u{2029}\u{feff}\u{10ffff}".into(),
+    ];
+    let mut random = Random(0x6d2b_79f5);
+    for length in 0..64 {
+        texts.push(
+            (0..length % 33)
+                .filter_map(|_| char::from_u32(random.below(0x11_0000) as u32))
+                .collect(),
+        );
+    }
+    let read_form = g.evaluate(&mut (), "read-form").unwrap();
+    for text in texts {
+        let mut written = String::new();
+        crate::write_string(&text, &mut written).unwrap();
+        assert!(!written.chars().any(char::is_control));
+        let value = g.string(&text).unwrap();
+        assert_eq!(show(&g, &value), written);
+        let input = g.string(&written).unwrap();
+        let read = g
+            .call(&mut (), &read_form, &[input, Value::Integer(0)])
+            .unwrap();
+        let fields = g.list_items(&read).unwrap();
+        assert_eq!(fields.len(), 3);
+        assert_eq!(g.as_str(&fields[0]), Ok(Some(text.as_str())));
+        assert_eq!(
+            fields[1..],
+            [Value::Integer(0), Value::Integer(written.len() as i64)]
+        );
+    }
+    struct RefusesAfter(usize);
+    impl std::fmt::Write for RefusesAfter {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0 = self.0.checked_sub(s.len()).ok_or(std::fmt::Error)?;
+            Ok(())
+        }
+    }
+    let sample = "a\n\"\\\0λ";
+    let mut full = String::new();
+    crate::write_string(sample, &mut full).unwrap();
+    for budget in 0..full.len() {
+        assert_eq!(
+            crate::write_string(sample, &mut RefusesAfter(budget)),
+            Err(std::fmt::Error)
+        );
+    }
 }
 
 #[test]
 fn positions_name_each_combination_s_source_and_line() {
     let mut g = grift();
     let top = g.top_level();
-    let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(f 1)";
+    let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(list 0 (f 1))";
     let e = g.evaluate_in(&mut (), &top, "f.grift", src).unwrap_err();
     let lines: Vec<_> = e.trace().iter().map(|at| g.position(at).unwrap()).collect();
     assert_eq!(lines, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
+    // A loader written in grift evaluates named forms later in the same run. Its trace keeps
+    // the same program combinations as evaluate_in, including a nested failing combination.
+    let forms = g.read_in("f.grift", src).unwrap();
+    g.define("forms", forms).unwrap();
+    let later = g
+        .evaluate(
+            &mut (),
+            "(define! here (current-context))
+        (for-each (lambda! (form) (evaluate form here)) forms)",
+        )
+        .unwrap_err();
+    assert_eq!(kind(&g, &later), kind(&g, &e));
+    let places: Vec<_> = later
+        .trace()
+        .iter()
+        .take(2)
+        .map(|at| g.position(at).unwrap())
+        .collect();
+    assert_eq!(places, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
+    let nested = g.read_in("nested.grift", "\n(add 1\n  (first 0))").unwrap();
+    g.define("forms", nested).unwrap();
+    let later = g
+        .evaluate(
+            &mut (),
+            "(for-each (lambda! (form) (evaluate form here)) forms)",
+        )
+        .unwrap_err();
+    assert_eq!(g.position(&later.trace()[0]), Ok(Some(("nested.grift", 3))));
     // Text evaluated with no name, and pairs a program makes, have none.
     let e = g.evaluate(&mut (), "(f 2)").unwrap_err();
     assert_eq!(g.position(&e.trace()[1]), Ok(None));
@@ -2928,4 +3040,51 @@ fn a_poll_with_no_run_in_progress_acts_on_nothing() {
     assert_eq!(kind(&g, &e), "foreign-value", "the run its host left");
     assert!(!g.interrupted(), "a poll with no run in progress acted");
     assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
+}
+
+#[test]
+fn interned_names_keep_their_identity_and_read_back() {
+    let mut g = grift();
+    let names: Vec<_> = (0..5000)
+        .rev()
+        .map(|n| format!("name-λ-{n}"))
+        .chain(["é", "日本語", "-", "a-b", "a", "ab", "b", "name-"].map(String::from))
+        .collect();
+    let symbols: Vec<_> = names.iter().map(|name| g.symbol(name).unwrap()).collect();
+    assert_eq!(
+        symbols
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        names.len()
+    );
+    for (name, symbol) in names.iter().zip(&symbols).rev() {
+        assert_eq!(g.symbol(name).unwrap(), *symbol);
+        assert_eq!(g.symbol_name(symbol).unwrap(), name);
+    }
+    let read = g.read(&names.join("\u{a0}")).unwrap();
+    let expected: Vec<_> = symbols.into_iter().map(Value::Symbol).collect();
+    assert_eq!(g.list_items(&read).unwrap(), expected);
+    for text in [
+        "日本語\u{a0}é",
+        "日本語 é ; end",
+        "日本語\té; é",
+        ";\n日本語 ; \n é ;",
+    ] {
+        let forms = g.read(text).unwrap();
+        let want = [
+            Value::Symbol(g.symbol("日本語").unwrap()),
+            Value::Symbol(g.symbol("é").unwrap()),
+        ];
+        assert_eq!(g.list_items(&forms).unwrap(), want);
+    }
+    assert_eq!(g.read("; only a comment"), Ok(Value::EmptyList));
+    assert_eq!(g.read("; é"), Ok(Value::EmptyList));
+    let forms = g
+        .read_in("comments.grift", "; é\n; λ\r\n\u{a0}(list 1)")
+        .unwrap();
+    assert_eq!(
+        g.position(&g.list_items(&forms).unwrap()[0]),
+        Ok(Some(("comments.grift", 3)))
+    );
 }
