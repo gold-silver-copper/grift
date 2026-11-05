@@ -40,15 +40,8 @@
     (lambda! (path c)
       (let! ((outer (evaluate-in! file loading)))
         (bind loading (quote! file) path)
-        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms path))
+        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path))
                   (bind loading (quote! file) outer)))))
-  ; The host reads; this private helper names an unreadable file without changing the reader's
-  ; kind or values. Replacing the caught trace leaves the outer load for ordinary unwinding.
-  (define! read-forms
-    (lambda! (path)
-      (catch-kind! (read-forms-host path) parse-error e
-        (bind e (quote! trace) (list path))
-        (raise e))))
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
                      run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))

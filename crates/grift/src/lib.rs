@@ -124,7 +124,11 @@ impl Error {
     /// Where: the combinations of the program that were being evaluated, innermost first, each
     /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
     /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
-    /// [`Grift::position`] gives each one's source and line.
+    /// [`Grift::position`] gives each one's source and line. If input to [`Grift::read_in`] or
+    /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
+    /// [`Value::String`]; its values remain `(reason line column)`. An outer evaluation can add
+    /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
+    /// doesn't read, its trace is empty.
     pub fn trace(&self) -> &[Value] {
         &self.trace
     }
@@ -277,7 +281,9 @@ impl<T> Grift<T> {
 
     /// Reads every form in `src`, the text of `source` (a file's path, say), then evaluates them
     /// in order in `context`, as `evaluate` does at top level. Each combination read keeps its
-    /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`].
+    /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`]. If `src`
+    /// doesn't read, `parse-error` keeps `(reason line column)` in its values and `source` as
+    /// a string at the start of its trace, as [`Grift::read_in`] does.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -600,9 +606,9 @@ impl<T> Grift<T> {
     /// traces when evaluated later, including entry through native control flow. A tail
     /// evaluation of another named outer form replaces the finished form's trace boundary;
     /// the host's entry boundary stays. No forms gives `()`.
-    /// Errors are `read`'s: `parse-error`
-    /// with `(reason line column)` and an empty trace, or `out-of-memory`; the host names a
-    /// source when reporting a parse error, just as for [`Grift::evaluate_in`].
+    /// If `text` doesn't read, `parse-error` keeps `(reason line column)` in its values and
+    /// `source` as a string at the start of its trace, as [`Grift::evaluate_in`] does.
+    /// Allocation failure is `out-of-memory`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;

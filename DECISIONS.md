@@ -1116,15 +1116,17 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   extends G-119). `Grift::read_in(source, text)` gives `read`'s list of every form, through the same
   reader as `evaluate_in`; each combination keeps its source and opening line for `position` and
   later traces. Reading does no evaluation. The runner's host now only reads a loaded file; a grift
-  `for-each` evaluates its forms in the caller's context, within the existing run. Relative paths,
-  restoration after errors, and the parse-error record from G-136 remain runner policy. A regression
-  first reproduced a Rust stack overflow on a 1,000-file chain with a 512 KiB stack; it passes with
-  evaluation in grift. No evaluator entry or optional `read-form` operand was added.
-  - Error ruling: A, unchanged reader errors, `(reason line column)` and an empty trace. The design
-    vote split 2–2; two different-family ports swapped to B (source in the trace), with unchanged
-    results (83/83 and 82/83), so the tie stood and the ruling chose A. Source attachment remains at
-    the edge for both `read_in` and `evaluate_in`; B remains the owner's choice. Strongest dissent
-    for B (P1/P4): the caller already supplied provenance; forwarding the error should retain it,
+  `for-each` evaluates its forms in the caller's context, within the existing run. Relative paths
+  and restoration after errors remain runner policy; G-163 moves G-136's source attachment into
+  the shared reader. A regression first reproduced a Rust stack overflow on a 1,000-file chain
+  with a 512 KiB stack; it passes with evaluation in grift. No evaluator entry or optional
+  `read-form` operand was added.
+  - Initial error ruling (superseded by the owner's 2026-11-05 decision in G-163): A, reader
+    errors, `(reason line column)` and an empty trace. The design vote split 2–2; two
+    different-family ports swapped to B (source in the trace), with unchanged results (83/83
+    and 82/83), so the tie stood and the provisional ruling chose A. Source attachment stayed at
+    the edge for both `read_in` and `evaluate_in`; B was left for the owner to choose.
+    Strongest dissent for B (P1/P4): the caller already supplied provenance; forwarding the error should retain it,
     and hosts have distorted the values while attaching it. Strongest against B (P2/P3): it makes
     sibling APIs disagree and moves G-136's loader responsibility into the core.
   - Against the method: P1's unpatched loader already passed the small-stack and named-file checks,
@@ -1309,3 +1311,23 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   fixed host nesting. This adds no test function or compiler invocation to CI. The external
   reproduction retains the one-codegen-unit, thin-LTO shipping configuration as evidence.
   No new public name, dependency, allocation, collection control or weakened stack bound.
+
+## Owner decision B, 2026-11-05
+
+- **G-163. Both named readers retain the source of unreadable text** (owner decision,
+  2026-11-05 11:00; supersedes G-151's design A error ruling, its 2–2 panel tie and the swap
+  experiment's provisional choice; supersedes G-158's runner-built source record).
+  The owner chose B because three ports attached the name separately and two broke the standard
+  values. `read_in(source, text)` and `evaluate_in` now agree: when the input text doesn't read,
+  `parse-error` retains exactly `(reason line column)` in its values and puts the supplied source
+  name, as a string, innermost in its trace. Changing both named entries answers the strongest
+  uniformity objection to B. `read` and `evaluate` keep their unnamed reader errors; grammar,
+  coordinates, ordinary evaluation traces and `read-form` are unchanged.
+  The shared whole-text reader attaches the name once, with fallible string allocation and trace
+  growth; failure still reports `out-of-memory` through the existing recovery boundary. It never
+  collects. The runner calls its read-only host directly, removing private `read-forms` and its
+  record rebuilding. G-136's loaded-file parse-error shape is unchanged, including the outer load;
+  its existing tests stay unchanged. The top-level script diagnostic test does change because
+  scripts use `evaluate_in` and therefore now retain the source string too. No new test function
+  is added: the existing reader-error property checks both named and unnamed entries across its
+  reasons, retaining all three values. No new public name, dependency or collection policy.

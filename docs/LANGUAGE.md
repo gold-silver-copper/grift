@@ -233,9 +233,11 @@ a named text, such as a file the runner runs or loads, keeps its source and line
 it, so the host reports `in (first x) at lib/table.grift:12`.
 Rust hosts can read such forms without evaluating them with `Grift::read_in(source, text)`, which
 returns the list of all forms, as `Grift::read(text)` does. `Grift::position` gives each combination's
-source and opening line, also after a loader evaluates it later. `read`, `read_in` and `evaluate_in`
-give the same parse errors: `(reason line column)` with an empty trace. A loader names the unreadable
-source in its report; the runner puts the path innermost in the error's trace, as a string.
+source and opening line, also after a loader evaluates it later. If `read_in` or `evaluate_in`
+cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the supplied
+source name as a string innermost in the trace. `read` and `evaluate`, which take no source name,
+keep an empty trace for unreadable text. A loader can propagate the named error unchanged; the
+runner's loaded-file error starts with that path, followed by the outer load's combination.
 When evaluation starts one of those named outer forms, including through a native branch or
 sequence, its trace retains a boundary for the form. A tail evaluation of another named outer
 form updates that boundary to the new form, so the finished one disappears and space stays

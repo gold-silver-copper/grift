@@ -196,9 +196,10 @@ fn main() -> Result<(), Error> {
   `at config.grift:12`; `call(&mut T, &f, &[Value])` (Kernel's `apply`: an applicative's combiner
   gets the values as its operands, in a new empty context); `read(&str)` or
   `read_in(source, text)`, the list of forms, nothing evaluated. `read_in` keeps each
-  combination's source and opening line for later evaluation. Both readers and `evaluate_in`
-  give the same parse errors, with `(reason line column)` and an empty trace; the host names
-  the source when reporting one.
+  combination's source and opening line for later evaluation. If `read_in` or `evaluate_in`
+  cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the
+  supplied source name as a string innermost in the trace. `read` and `evaluate` keep an empty
+  trace for unreadable text.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
@@ -222,7 +223,9 @@ fn main() -> Result<(), Error> {
 - `Error { kind: Symbol, values: Vec<Value>, .. }`, with `Error::trace()`, which lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
-  not inside `if!`. A call in tail position has finished, so it isn't listed. `position(&at)` (`Result<Option<_>, Error>`) is a
+  not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
+  input to `read_in` or `evaluate_in`, the trace starts with the supplied source string; the
+  values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from

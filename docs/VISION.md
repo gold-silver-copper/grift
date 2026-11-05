@@ -100,7 +100,8 @@ kept live. After out-of-memory, the host can start one to let discarded allocati
 allocation itself never collects.
 `read_in` reads a named text without evaluating it, keeping each combination's source and line;
 the host or a loader written in grift chooses when and where to evaluate those forms. Parse errors
-are the reader's, with reason, line and column; the host supplies the source when reporting one.
+keep their reason, line and column; named reading and evaluation retain the supplied source in
+the trace too.
 Bare-metal targets are not a goal; WebAssembly works wherever `std` does. grift does not isolate
 code from the host or from other code in the same interpreter; an embedder running untrusted code
 isolates it itself, for example in its own process.

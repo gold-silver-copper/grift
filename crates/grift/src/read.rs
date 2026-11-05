@@ -2,7 +2,7 @@
 
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
-use crate::local::{Error, K, Symbol, Value, push};
+use crate::local::{Error, K, Symbol, Value, boxed, push};
 use crate::{Grift, Position};
 use std::ops::Range;
 
@@ -110,7 +110,18 @@ impl<T> Grift<T> {
     pub(crate) fn read_local(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
-        while let Some((form, place, after)) = self.read_form(src, at, line, source)? {
+        while let Some((form, place, after)) =
+            self.read_form(src, at, line, source).or_else(|mut e| {
+                if e.kind == K::ParseError.into()
+                    && let Some(source) = source
+                {
+                    let name = boxed(self.name(source))?;
+                    let name = Value::String(self.heap.alloc(Object::String(name))?);
+                    push(&mut e.trace, name)?;
+                }
+                Err(e)
+            })?
+        {
             if let (Some(_), Value::Pair(r)) = (source, form)
                 && let Some(position) = self.positions.get_mut(&r.idx)
             {
