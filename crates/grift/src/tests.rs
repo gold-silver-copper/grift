@@ -3114,32 +3114,40 @@ fn interned_names_keep_their_identity_and_read_back() {
 fn a_run_reclaims_discarded_reader_allocations_before_needing_a_slot() {
     // Refuse new slots at a fixed length, without a global allocator. This makes the same
     // exhausted free list as a failed heap-vector reserve; collection can reuse its garbage.
-    for named in [false, true] {
-        for entry in ["evaluate", "evaluate_in", "call"] {
-            let mut g = grift();
-            let f = g
-                .evaluate(&mut (), "(lambda! (xs) (add (first xs) 1))")
-                .unwrap();
-            let argument = g.list(&[Value::Integer(2)]).unwrap();
-            let c = g.context(Some(&g.top_level())).unwrap();
-            let x = Value::Symbol(g.symbol("x").unwrap());
-            g.bind(&c, &x, Value::Integer(2)).unwrap();
-            g.heap.slot_limit = g.heap.len() + 8192;
-            let text = "(a b c)\n".repeat(4096);
-            let error = if named {
-                g.read_in("big.grift", &text)
-            } else {
-                g.read(&text)
+    for (headroom, live) in [(8192, 0), (32, 20000)] {
+        for named in [false, true] {
+            for entry in ["evaluate", "evaluate_in", "call"] {
+                let mut g = grift();
+                let retained = g.read(&"() ".repeat(live)).unwrap();
+                g.define("retained", retained).unwrap();
+                g.evaluate(&mut (), "#inert").unwrap();
+                let f = g
+                    .evaluate(&mut (), "(lambda! (xs) (add (first xs) 1))")
+                    .unwrap();
+                let argument = g.list(&[Value::Integer(2)]).unwrap();
+                let c = g.context(Some(&g.top_level())).unwrap();
+                let x = Value::Symbol(g.symbol("x").unwrap());
+                g.bind(&c, &x, Value::Integer(2)).unwrap();
+                g.heap.slot_limit = g.heap.len() + headroom;
+                let text = "(a b c)\n".repeat(32768);
+                let error = if named {
+                    g.read_in("big.grift", &text)
+                } else {
+                    g.read(&text)
+                }
+                .unwrap_err();
+                assert_eq!(kind(&g, &error), "out-of-memory");
+                let result = match entry {
+                    "evaluate" => g.evaluate(&mut (), "(add 1 2)"),
+                    "evaluate_in" => g.evaluate_in(&mut (), &c, "small.grift", "(add x 1)"),
+                    _ => g.call(&mut (), &f, &[argument]),
+                };
+                assert_eq!(
+                    result,
+                    Ok(Value::Integer(3)),
+                    "{entry} after named={named}, headroom={headroom}"
+                );
             }
-            .unwrap_err();
-            assert_eq!(kind(&g, &error), "out-of-memory");
-            assert!(g.heap.due());
-            let result = match entry {
-                "evaluate" => g.evaluate(&mut (), "(add 1 2)"),
-                "evaluate_in" => g.evaluate_in(&mut (), &c, "small.grift", "(add x 1)"),
-                _ => g.call(&mut (), &f, &[argument]),
-            };
-            assert_eq!(result, Ok(Value::Integer(3)), "{entry} after named={named}");
         }
     }
 }
