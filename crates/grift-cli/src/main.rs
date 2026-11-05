@@ -525,33 +525,15 @@ const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
     ("write-bytes-host", write_bytes_host),
     ("close-host", close_host),
     ("run-host", run_host),
-    ("load-host", load_host),
+    ("read-forms-host", read_forms_host),
     ("resolve-host", resolve_host),
 ];
 
-/// `(load-host path)`: reads the file's forms, each combination with its line in the file.
-/// If it doesn't read, returns its `parse-error` as a record for `load` to raise, with the path
-/// innermost in its trace, as the line and column are the file's.
-fn load_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+/// `(read-forms-host path)`: reads the file's forms, each combination with its source and line.
+fn read_forms_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let path = one_string(g, args)?;
     let text = std::fs::read_to_string(&path).map_err(|e| failed(g, "file-error", &path, &e))?;
-    match g.read_in(&path, &text) {
-        Err(e) if g.is_kind(&e, "parse-error")? => {
-            let record = g.context(None)?;
-            let (path, values) = (g.string(&path)?, g.list(&e.values)?);
-            let trace = g.list(&[path])?;
-            for (name, v) in [
-                ("kind", Value::Symbol(e.kind)),
-                ("values", values),
-                ("trace", trace),
-            ] {
-                let name = Value::Symbol(g.symbol(name)?);
-                g.bind(&record, &name, v)?;
-            }
-            Ok(record)
-        }
-        done => done,
-    }
+    g.read_in(&path, &text)
 }
 
 /// Binds the runner's operations in the top-level context, and `script-path` if there is a script.

@@ -1211,3 +1211,12 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   Existing equivalence and position properties reproduce both failures; the tail-space property
   still guards constant space. This keeps the source table as the reader's record, with no new
   heap classification or public name. The tally carried the tail-place update 4/4.
+- **G-158. The runner names parse errors in grift** (amends G-136's host-built record and
+  G-151's forms-or-record result). `pick/tally.md` carried this runner separation 4/4. Its private
+  `read-forms-host` now only reads the file and calls `read_in`, returning forms or an error.
+  The private grift `read-forms` catches `parse-error`, binds the caught record's trace to the
+  path string alone and raises it; kind and values stay untouched, and ordinary unwinding adds
+  the outer load. Reusing the caught record needs no second record. `load-file` evaluates the
+  forms directly, with no context-versus-list dispatch. The existing runner property covers the
+  computed path, unchanged reader values, source traces, catches and relative-path restoration;
+  the loaded-tail and small-stack properties still hold. No public operation changes.
