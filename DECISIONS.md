@@ -1399,7 +1399,7 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     merge, run **41934440818** attempt 1 on November 4), **78 s** (7ff695e) and **73 s**
     (a0eec1c): a median of **78 s**, and a 10% budget of **85.8 s**. Two of the three
     readings predate the bytes merge.
-  - Evidence: round 2f (`fuxport-2026-11-04/review/r2f/`) records seven readings each of
+  - Evidence: `fuxport-2026-11-04/review/ci-readings/` records seven readings each of
     the same program code, with the last six alternating head and pure. Readings come from
     the check job in `gh api repos/gold-silver-copper/grift/actions/runs/<id>/attempts/<n>/jobs`.
     The head's code at 7cbadac, run **42125210440** attempts 1–3, read **95, 66 and 120 s**;
