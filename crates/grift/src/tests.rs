@@ -2683,6 +2683,42 @@ fn natives_are_their_definitions() {
         let has = defined.definition(p).unwrap().is_some();
         assert_eq!(has, Primitive::NATIVE.contains(&p), "{}", p.name());
     }
+    // A separately read outer form can enter through a native branch or sequence body too.
+    // Compare the complete errors and positions, not just the form's returned value.
+    for g in [&mut native, &mut defined] {
+        let forms = g.read_in("call.grift", "(f 1)").unwrap();
+        let (form, _) = g.as_pair(&forms).unwrap().unwrap();
+        g.define("form", form).unwrap();
+        g.evaluate(&mut Vec::new(), "(define! f (lambda! (x) (first x)))")
+            .unwrap();
+    }
+    for src in [
+        "(evaluate (list (quote! if!) #true form #inert) (current-context))",
+        "(evaluate (list (quote! if!) #false #inert form) (current-context))",
+        "(evaluate (list (quote! sequence!) form #inert) (current-context))",
+        "(evaluate (list (quote! sequence!) #inert form) (current-context))",
+    ] {
+        let a = native.evaluate(&mut Vec::new(), src);
+        let b = defined.evaluate(&mut Vec::new(), src);
+        let mut compare = Comparison {
+            left: &native,
+            right: &defined,
+            matched: Vec::new(),
+        };
+        if let Err(why) = compare.outcomes(&a, &b) {
+            panic!("{src}: {why}");
+        }
+        for (g, result) in [(&native, &a), (&defined, &b)] {
+            assert!(
+                result
+                    .as_ref()
+                    .unwrap_err()
+                    .trace()
+                    .iter()
+                    .any(|at| g.position(at).unwrap() == Some(("call.grift", 1)))
+            );
+        }
+    }
     let mut random = Random(0x9e37_79b9_7f4a_7c15);
     let mut counts = [0usize; 2];
     let grids = boundary_cases();
@@ -2999,6 +3035,36 @@ fn positions_name_each_combination_s_source_and_line() {
         )
         .unwrap_err();
     assert_eq!(g.position(&later.trace()[0]), Ok(Some(("nested.grift", 3))));
+    // A named form tail-evaluating another replaces its finished boundary with the new one.
+    let target = g.read_in("b.grift", "(f 1)").unwrap();
+    let (target, _) = g.as_pair(&target).unwrap().unwrap();
+    g.define("target", target).unwrap();
+    let forms = g.read_in("a.grift", "(evaluate target here)").unwrap();
+    g.define("forms", forms).unwrap();
+    let later = g
+        .evaluate(
+            &mut (),
+            "(for-each (lambda! (form) (evaluate form here)) forms)",
+        )
+        .unwrap_err();
+    let places: Vec<_> = later
+        .trace()
+        .iter()
+        .map(|at| g.position(at).unwrap())
+        .collect();
+    assert!(places.contains(&Some(("b.grift", 1))), "{places:?}");
+    assert!(!places.contains(&Some(("a.grift", 1))), "{places:?}");
+    // The host's entry boundary is distinct and remains when its form tail-evaluates another.
+    let later = g
+        .evaluate_in(&mut (), &top, "host.grift", "(evaluate target here)")
+        .unwrap_err();
+    let places: Vec<_> = later
+        .trace()
+        .iter()
+        .map(|at| g.position(at).unwrap())
+        .collect();
+    assert!(places.contains(&Some(("b.grift", 1))), "{places:?}");
+    assert_eq!(places.last(), Some(&Some(("host.grift", 1))));
     // Text evaluated with no name, and pairs a program makes, have none.
     let e = g.evaluate(&mut (), "(f 2)").unwrap_err();
     assert_eq!(g.position(&e.trace()[1]), Ok(None));
