@@ -1242,3 +1242,21 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   special wrapper is removed. Reads and constructors still never collect: more reads may be
   refused until an evaluation or call reaches its preparation safe point. The first such run
   now gets that chance for every reported OOM, independent of the ordinary allocation threshold.
+
+## Port regression, 2026-11-05
+
+- **G-160. Safe-point temporaries need not live across host callbacks** (G-155, G-156 and
+  G-159's entry collection and OOM recovery unchanged). A 1,000-source loading chain on a
+  128 KiB host thread passed before 8d9d53f and overflowed after it. The debugger found no
+  collection frame at the stack guard: a nested `read-form` exhausted the stack with a fixed
+  number of host frames below it. Forced inlining of `safe_point` retained its temporary
+  storage in each suspended run, including the roots snapshot added when collection began
+  serving host entries too. The check now permits normal optimizer-directed inlining, so an
+  unoptimized host releases its check frame before entering a callback. Collection stays at
+  both safe points with the same roots; neither the host's stack nor its loading policy changes.
+  The quick regression compiles an ordinary unoptimized embedding directly with `rustc`,
+  because the workspace's optimized test profile hides the failure. It processes 1,000 named
+  sources through fixed-depth host callbacks on a 128 KiB thread in an isolated process: it
+  passes at c102859, aborts before this fix, and passes after it. The OOM properties still
+  exercise sparse and mostly live heaps, reads, runs and host allocation. No public name,
+  allocation or collection control is added.

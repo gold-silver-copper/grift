@@ -376,8 +376,9 @@ impl<T> Grift<T> {
     }
 
     /// The safe point: the machine's state is all there is, so the collector may run, and
-    /// stopping here leaves nothing half done.
-    #[inline(always)]
+    /// stopping here leaves nothing half done. Let the optimizer choose inlining: forcing it
+    /// keeps this check's temporaries on every suspended run's stack in unoptimized hosts.
+    #[inline]
     fn safe_point(&mut self, mode: Mode) -> Result<(), Error> {
         if self.interrupted() {
             return Err(Error::new(K::Interrupted, &[]));
