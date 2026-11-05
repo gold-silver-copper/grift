@@ -3217,3 +3217,50 @@ fn a_run_reclaims_discarded_reader_allocations_before_needing_a_slot() {
         }
     }
 }
+
+#[test]
+fn out_of_memory_from_a_run_or_host_allocation_allows_the_next_run() {
+    let mut refused = Vec::new();
+    for origin in ["run", "host"] {
+        for entry in ["evaluate", "evaluate_in", "call"] {
+            let mut g = grift();
+            let retained = g.read(&"() ".repeat(20000)).unwrap();
+            g.define("retained", retained).unwrap();
+            g.evaluate(&mut (), "#inert").unwrap();
+            let f = g.evaluate(&mut (), "(lambda! () 3)").unwrap();
+            let kept = g.keep(f).unwrap();
+            let c = g.context(Some(&g.top_level())).unwrap();
+            let x = Value::Symbol(g.symbol("x").unwrap());
+            g.bind(&c, &x, Value::Integer(2)).unwrap();
+            let scope = g.keep(c).unwrap();
+            g.evaluate(
+                &mut (),
+                "(define! churn (lambda! (n)
+                (if! (same? n 0) #inert (sequence! (pair n n) (churn (subtract n 1))))))",
+            )
+            .unwrap();
+            g.heap.slot_limit = g.heap.len() + 32;
+            let error = match origin {
+                "run" => g.evaluate(&mut (), "(churn 100000)").unwrap_err(),
+                _ => (0..100000)
+                    .try_for_each(|_| g.pair(Value::Inert, Value::Inert).map(drop))
+                    .unwrap_err(),
+            };
+            assert_eq!(kind(&g, &error), "out-of-memory");
+            let result = match entry {
+                "evaluate" => g.evaluate(&mut (), "(add 1 2)"),
+                "evaluate_in" => g.evaluate_in(
+                    &mut (),
+                    &g.kept(&scope).unwrap(),
+                    "small.grift",
+                    "(add x 1)",
+                ),
+                _ => g.call(&mut (), &g.kept(&kept).unwrap(), &[]),
+            };
+            if result != Ok(Value::Integer(3)) {
+                refused.push(format!("{entry} after {origin}: {result:?}"));
+            }
+        }
+    }
+    assert!(refused.is_empty(), "{}", refused.join("\n"));
+}
