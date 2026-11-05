@@ -395,6 +395,22 @@ fn printing_reads_back() {
 }
 
 #[test]
+fn program_entry_points_are_readable() {
+    let programs = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../programs");
+    let mut paths: Vec<_> = std::fs::read_dir(programs)
+        .unwrap()
+        .map(|entry| entry.unwrap().path().join("main.grift"))
+        .collect();
+    paths.sort();
+    let mut g = grift();
+    for path in paths {
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(g.read(&text).is_ok(), "{}", path.display());
+        g.evaluate(&mut (), "#inert").unwrap();
+    }
+}
+
+#[test]
 fn reading_evaluates_nothing() {
     let mut g = grift();
     let text = "(define! ran #true)\n\n(add 1\n  (multiply 2 3))\n42\nran\n()";
@@ -3240,10 +3256,16 @@ fn a_run_reclaims_discarded_reader_allocations_before_needing_a_slot() {
                 let retained = g.read(&"() ".repeat(live)).unwrap();
                 g.define("retained", retained).unwrap();
                 g.evaluate(&mut (), "#inert").unwrap();
-                let f = g
-                    .evaluate(&mut (), "(lambda! (xs) (add (first xs) 1))")
+                let inputs = g
+                    .evaluate(
+                        &mut (),
+                        "(list (lambda! args 3) (list 2) \"live\"
+                    #bytes(3) (context) (vau! () #ignore #inert) (lambda! () #inert))",
+                    )
                     .unwrap();
-                let argument = g.list(&[Value::Integer(2)]).unwrap();
+                let inputs = g.list_items(&inputs).unwrap();
+                let f = &inputs[0];
+                let arguments = &inputs[1..];
                 let c = g.context(Some(&g.top_level())).unwrap();
                 let x = Value::Symbol(g.symbol("x").unwrap());
                 g.bind(&c, &x, Value::Integer(2)).unwrap();
@@ -3259,7 +3281,7 @@ fn a_run_reclaims_discarded_reader_allocations_before_needing_a_slot() {
                 let result = match entry {
                     "evaluate" => g.evaluate(&mut (), "(add 1 2)"),
                     "evaluate_in" => g.evaluate_in(&mut (), &c, "small.grift", "(add x 1)"),
-                    _ => g.call(&mut (), &f, &[argument]),
+                    _ => g.call(&mut (), f, arguments),
                 };
                 assert_eq!(
                     result,
@@ -3280,7 +3302,7 @@ fn out_of_memory_from_a_run_or_host_allocation_allows_the_next_run() {
             let retained = g.read(&"() ".repeat(20000)).unwrap();
             g.define("retained", retained).unwrap();
             g.evaluate(&mut (), "#inert").unwrap();
-            let f = g.evaluate(&mut (), "(lambda! () 3)").unwrap();
+            let f = g.evaluate(&mut (), "(lambda! (x) x)").unwrap();
             let kept = g.keep(f).unwrap();
             let c = g.context(Some(&g.top_level())).unwrap();
             let x = Value::Symbol(g.symbol("x").unwrap());
@@ -3308,7 +3330,7 @@ fn out_of_memory_from_a_run_or_host_allocation_allows_the_next_run() {
                     "small.grift",
                     "(add x 1)",
                 ),
-                _ => g.call(&mut (), &g.kept(&kept).unwrap(), &[]),
+                _ => g.call(&mut (), &g.kept(&kept).unwrap(), &[Value::Integer(3)]),
             };
             if result != Ok(Value::Integer(3)) {
                 refused.push(format!("{entry} after {origin}: {result:?}"));

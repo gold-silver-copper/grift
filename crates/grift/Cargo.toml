@@ -5,12 +5,6 @@ edition.workspace = true
 license.workspace = true
 description = "A tiny Kernel-style Lisp built on fexprs, for embedding in Rust"
 
-# Check and format the same host compiled unoptimized by tests/stack.rs.
-[[test]]
-name = "host"
-path = "tests/host/main.rs"
-harness = false
-
 [lints.rust]
 unsafe_code = "forbid"
 

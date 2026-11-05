@@ -245,7 +245,8 @@ fn main() -> Result<(), Error> {
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
-with its own `test.sh`, and the gate runs them all.
+with its own `test.sh`. CI reads every entry point; the full local gate runs each test script
+against the release runner.
 
 ## Inside
 

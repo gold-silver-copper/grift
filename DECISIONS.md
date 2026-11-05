@@ -1280,7 +1280,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   call, so its validation and root-iterator temporaries do not enlarge suspended host frames.
   No input is skipped or made valid by collection: foreign and stale inputs are refused before
   collection. The previous preparation in `call_local` is removed, with no extra collection.
-  - The regression runs in an isolated runner-package embedding test, where a thread-local
+  - The original regression (moved to evidence by G-165) runs in an isolated runner-package
+    embedding test, where a thread-local
     allocation budget can reproduce real reservation failure without weakening the core's
     unsafe-code prohibition or adding a production test seam. With no spare bytes, an identity
     call must recover for an immediate argument and for six direct, unkept arguments covering
@@ -1288,7 +1289,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     valid call reclaims it. Existing slot-limit and external allocator cases remain.
   - The scheduling count now uses `Cell<usize>` rather than an atomic (G-159 amended): no
     interpreter `Sync` guarantee requires an atomic. Scheduling and collection policy are unchanged.
-    The small-stack fixture is a Cargo test target, so ordinary fmt and clippy check it; its
+    The initial small-stack fixture was a Cargo test target (G-165 later removes that optimized
+    target to meet the CI budget), so ordinary fmt and clippy checked it; its
     unoptimized run uses the compiler path Cargo supplies to a dependency-free build script.
     Sixteen fixed host callbacks and a 300 KiB stack leave at least 8 KiB above a passing
     292 KiB control on the measured toolchain, while d9dc54a still overflows at 300 KiB.
@@ -1305,8 +1307,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   keeps its root iterators and marking storage inside the collection call, which returns before
   any host callback. The rare collection call is the only new inlining boundary; allocation,
   safe-point checks, roots and collection scheduling stay the same.
-  The already optimized Cargo host-test target now exercises forty entries in 128 KiB; it
-  aborts before the fix. The compiler-driven test runs the same source unoptimized with its
+  The initial optimized Cargo host-test target exercised forty entries in 128 KiB and aborted
+  before the fix; G-165 later moves that optimized check out of CI. The compiler-driven test runs the same source unoptimized with its
   existing sixteen-entry, 300 KiB bound and measured margin. Both process 1,000 sources with
   fixed host nesting. This adds no test function or compiler invocation to CI. The external
   reproduction retains the one-codegen-unit, thin-LTO shipping configuration as evidence.
@@ -1351,3 +1353,25 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   strings still collect. G-163 states the allocation-failure result: out-of-memory, not a
   nameless parse error. The runner omits its source prefix when the trace already names that
   input, so top-level scripts and stdin are named once; loaded-file diagnostics stay unchanged.
+
+- **G-165. CI reuses interpreter instantiations; compiled stress fixtures stay as evidence.**
+  Round 2b's check job exceeded the 85.8 s target: 104 s at a15572b and 115 s at af34256,
+  against pure's 78 s median plus 10%. The separately optimized host and allocator fixture
+  targets instantiate whole interpreters again. A fresh local af34256 build attributes 3.74 s
+  of compilation to the host target and 3.94 s to the allocator target; their executions take
+  about 0.02 s and 0.04 s respectively. Both targets leave CI. Their exact release-stack and
+  allocation-budget reproductions remain required external evidence. Existing unit properties
+  now recover through a nonempty call after run or host OOM and root all six direct heap-reference
+  argument kinds before collection; they reuse the interpreter already compiled for the unit
+  suite. The debug small-stack property remains: its two unoptimized compiler invocations took
+  0.68 s locally, and its source is included as an unused module for fmt, type checking and
+  clippy, without generating a second optimized interpreter. The source-string allocation path
+  is cold and out of line too, avoiding optimizer duplication in the normal reader loop.
+  The full program corpus also moves to the external gate: it cost 39.59 s in the af34256
+  hosted test step (25.98 s in the first fresh local run). CI retains a cheap property reading
+  every program entry point with the actual reader; execution, diagnostics, formatting and
+  memory checks remain in each program's unchanged test.sh, all run at the final head. This
+  deliberately reduces CI's corpus coverage to syntax; it does not discard the full functional
+  checks or raise the 85.8 s target. No new dependency is added. A fresh-target local test step
+  fell from 60.94 s to 24.96 s; compilation fell from 16.11 s to 10.04 s. Hosted verification
+  remains with the orchestrator. Full command readings and retained evidence are in the report.

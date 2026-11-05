@@ -3,6 +3,12 @@
 use std::path::Path;
 use std::process::Command;
 
+// Include the standalone source for fmt, type checking and clippy, without compiling another
+// optimized interpreter. The test below builds and runs it unoptimized in its own process.
+#[path = "fixtures/host.rs"]
+#[allow(dead_code)]
+mod host;
+
 #[test]
 fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
     // Embedders normally develop without optimization. The workspace test profile optimizes
@@ -34,7 +40,7 @@ fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
             "-Ccodegen-units=1",
             "-Funsafe-code",
         ])
-        .arg(source.join("tests/host/main.rs"))
+        .arg(source.join("tests/fixtures/host.rs"))
         .arg("--extern")
         .arg(format!("grift={}", library.display()))
         .arg("-o")
@@ -47,7 +53,7 @@ fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
         String::from_utf8_lossy(&built.stderr)
     );
     // A stack overflow aborts the process, so isolate the host from the test harness.
-    let ran = Command::new(&host).arg("debug").output().unwrap();
+    let ran = Command::new(&host).output().unwrap();
     std::fs::remove_dir_all(&scratch).unwrap();
     assert!(
         ran.status.success(),
