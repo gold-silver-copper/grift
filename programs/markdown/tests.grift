@@ -136,3 +136,19 @@
 ("tabs in the indent, CRLF line ends"
  "\tcode\xd;\ntext\xd;\n"
  "<pre><code>code\n</code></pre>\n<p>text</p>\n")
+
+("a tab, vertical tab or form feed beside a run is white space"
+ "_a_\tb\n\na\t_b_\n\nx\t*(a)*\n\n*(a)*\ty\n\n_a_\xc;b\n\n_a_\xb;b\n"
+ "<p><em>a</em>\tb</p>\n<p>a\t<em>b</em></p>\n<p>x\t<em>(a)</em></p>\n<p><em>(a)</em>\ty</p>\n<p><em>a</em>\xc;b</p>\n<p><em>a</em>\xb;b</p>\n")
+
+("attribute text inside a description can't pass for its alt"
+ "![[x](y \"a alt=\")](z)\n\n![[x](y 'a alt=')](z)\n\n![![a](<u\" alt=\"v> \"t alt=\")](z)\n\n![![](<>)](z)\n"
+ "<p><img src=\"z\" alt=\"x\" /></p>\n<p><img src=\"z\" alt=\"x\" /></p>\n<p><img src=\"z\" alt=\"a\" /></p>\n<p><img src=\"z\" alt=\"\" /></p>\n")
+
+("punctuation and white space above ASCII beside a run count as such, a letter doesn't"
+ "**Note:**—see\n\n“*(a)*”\n\n_a_“\n\n**\"引\"**。\n\n*(a)*é\n\n_a_é\n\n*\xa0;a*\n\n*(a)*😀\n"
+ "<p><strong>Note:</strong>—see</p>\n<p>“<em>(a)</em>”</p>\n<p><em>a</em>“</p>\n<p><strong>&quot;引&quot;</strong>。</p>\n<p>*(a)*é</p>\n<p>_a_é</p>\n<p>*\xa0;a*</p>\n<p><em>(a)</em>😀</p>\n")
+
+("a link in a link isn't one, whatever emphasis lies across it, and it costs no more with depth"
+ "[a [b](c) d](e)\n\n**)[[b](/u)*** ](x)\n\n[![[f](u)](v)](w)\n\n[![f](u)](w)\n\n![[a [b](c)](d)](e)\n\n[[[[[[[[[[[[[[[[[[[[[[[[[a](b)](c)](d)](e)](f)](g)](h)](i)](j)](k)](l)](m)](n)](o)](p)](q)](r)](s)](t)](u)](v)](w)](x)](y)](z)\n"
+ "<p>[a <a href=\"c\">b</a> d](e)</p>\n<p><strong>)[<a href=\"/u\">b</a></strong>* ](x)</p>\n<p>[<img src=\"v\" alt=\"f\" />](w)</p>\n<p><a href=\"w\"><img src=\"u\" alt=\"f\" /></a></p>\n<p><img src=\"e\" alt=\"[a b](d)\" /></p>\n<p>[[[[[[[[[[[[[[[[[[[[[[[[<a href=\"b\">a</a>](c)](d)](e)](f)](g)](h)](i)](j)](k)](l)](m)](n)](o)](p)](q)](r)](s)](t)](u)](v)](w)](x)](y)](z)</p>\n")
