@@ -405,7 +405,7 @@ mod generated {
                     sub(self)
                 ),
                 7 => format!("(let! ((x {})) (note x) x)", sub(self)),
-                8 | 9 | 10 => {
+                8..=10 => {
                     let cleanup = match self.r.below(3) {
                         0 => format!("(note -{id})"),
                         1 => format!("(sequence! (note -{id}) (wait (list {id} \"cleanup\")))"),
@@ -588,7 +588,7 @@ mod generated {
         let mut missed = 0;
         for line in log {
             if let Some(id) = line.strip_prefix('-') {
-                if !stack.iter().any(|&entered| entered == id) {
+                if !stack.contains(&id) {
                     assert!(free, "{id} cleaned up, never entered: {log:?}\n{context}");
                     continue;
                 }
@@ -624,13 +624,16 @@ mod generated {
     fn check_end(
         run: usize,
         got: &Outcome,
-        log: &[String],
+        world: &World,
         meaning: &(Outcome, Log),
         touched: &Touched,
-        stops: u64,
-        stopped_at: Option<usize>,
         context: &str,
     ) {
+        let (log, stops, stopped_at) = (
+            world.logs[run].as_slice(),
+            world.stops[run],
+            world.stopped_at[run],
+        );
         let context = format!("run {run}: {got:?}\nlog {log:?}\nmeaning {meaning:?}\n{context}");
         if let Some(kind) = &got.kind {
             assert_ne!(kind, "stale-value", "{context}");
@@ -763,16 +766,7 @@ mod generated {
                     reached.abandoned += usize::from(touched[run].abandoned);
                     reached.stopped += usize::from(w.stops[run] > 0);
                     reached.refused += usize::from(touched[run].refused > 0);
-                    check_end(
-                        run,
-                        &got,
-                        &w.logs[run],
-                        &meanings[run],
-                        &touched[run],
-                        w.stops[run],
-                        w.stopped_at[run],
-                        &context,
-                    );
+                    check_end(run, &got, &w, &meanings[run], &touched[run], &context);
                 }
             }};
         }

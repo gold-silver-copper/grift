@@ -333,11 +333,9 @@ fn main() -> Result<(), Error> {
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.
 
-`examples/emacs` runs real shell commands this way: each command is a run with a `finally!` around
-its wait, and the editor stays responsive. Its driver is `examples/emacs/drive/`.
-
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
-files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
+files, and C-g interrupts a runaway command. It runs real shell commands (`M-!`) by waiting: each is
+a run with a `finally!` around its wait, and the editor stays responsive. `programs/` holds whole programs on the runner, each
 with its own `test.sh`. `cargo test --workspace` runs all of those scripts against the test-profile
 runner, so the local suite and CI both exercise the corpus.
 
