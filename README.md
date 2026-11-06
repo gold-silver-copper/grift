@@ -235,8 +235,8 @@ fn main() -> Result<(), Error> {
   run about to end can still return its value. `interrupted` runs cleanups on its way out as any
   error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
   form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
-  waiting together count as one; a stop after that stops the run again, so a later one ends a cleanup
-  that doesn't end. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  waiting together count as one; a later stop stops the run again, even in a cleanup that doesn't
+  end. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.

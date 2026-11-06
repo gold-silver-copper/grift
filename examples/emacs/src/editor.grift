@@ -429,7 +429,7 @@
 (define! minibuffer-map (context))
 
 ; The buffer and minibuffer come back however the reading ends: with RET, or with an error or
-; C-g that goes on to the host.
+; C-g that goes on to the host. A stop can cut the restore; editor-recover then finishes it.
 (define! read-from-minibuffer
   (lambda! (prompt)
     (define! outer-buffer current-buffer)
@@ -470,7 +470,8 @@
 ; while that finally! restores: start again from the window's buffer.
 (define! editor-recover
   (lambda! (text)
-    (bind editor-context (quote! (current-buffer minibuffer exit-flag)) (list window-buffer () #false))
+    (bind editor-context (quote! (current-buffer minibuffer exit-flag))
+      (list window-buffer () #false))
     (message text)
     (main-loop)))
 
