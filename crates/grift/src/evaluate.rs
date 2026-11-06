@@ -2,10 +2,10 @@
 //!
 //! The machine's state is its frame stack, its argument stack, the errors waiting for a
 //! cleanup to finish, where it is in the program and the current [`Mode`]. The collector runs
-//! only at the top of the loop, with exactly that state (plus the built-in and top-level
-//! contexts) as its roots. Between two safe points Rust code may hold values in locals freely:
-//! nothing is freed until the next safe point, and by then every local is gone. The same safe
-//! point checks for a stop.
+//! at the top of the loop and before a host's evaluation or call needs its first slot, with that
+//! state, the root contexts and the new call's checked inputs as its roots. Allocation never
+//! collects: Rust locals stay valid until the next run entry or machine safe point. The loop's
+//! safe point also checks for a stop.
 //!
 //! Three library forms have a native twin: `if!`, `sequence!` and `string-search` are the
 //! library's own operatives, flagged, and run in Rust when their operands have the shape the twin
@@ -184,6 +184,8 @@ enum What {
     },
     /// Native `sequence!`: the forms left after the one evaluated, at least one.
     Body { rest: Value },
+    /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
+    Form,
 }
 
 impl Frame {
@@ -201,7 +203,7 @@ impl Frame {
                 consequent,
                 alternative,
             } => (consequent, alternative),
-            What::Raise => (empty, empty),
+            What::Raise | What::Form => (empty, empty),
         };
         [a, b, Value::Context(self.context), Value::Pair(self.at)]
     }
@@ -373,14 +375,20 @@ impl<T> Grift<T> {
     }
 
     /// The safe point: the machine's state is all there is, so the collector may run, and
-    /// stopping here leaves nothing half done.
-    #[inline(always)]
+    /// stopping here leaves nothing half done. Let the optimizer choose inlining: forcing it
+    /// keeps this check's temporaries on every suspended run's stack in unoptimized hosts.
+    #[inline]
     fn safe_point(&mut self, mode: Mode) -> Result<(), Error> {
         if self.interrupted() {
             return Err(Error::new(K::Interrupted, &[]));
         }
         if self.heap.due() {
-            self.collect(mode)?;
+            let current = match mode {
+                Mode::Evaluate(x, context) => [x, Value::Context(context)],
+                Mode::Return(v) => [v, Value::EmptyList],
+                Mode::Host(..) => [Value::EmptyList, Value::EmptyList],
+            };
+            self.collect(current.into_iter())?;
         }
         Ok(())
     }
@@ -398,6 +406,13 @@ impl<T> Grift<T> {
                 // around a combiner value (as the library builds it), not written.
                 if !library && !is_combiner(combiner) {
                     self.machine.here = r;
+                    if self
+                        .positions
+                        .get(&r.idx)
+                        .is_some_and(|p| p.generation == r.generation && p.outer)
+                    {
+                        self.hold_form(r)?;
+                    }
                 }
                 self.frame(What::Combine { operands }, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
@@ -420,7 +435,7 @@ impl<T> Grift<T> {
                         self.machine.here = Reference::NONE;
                         Mode::Evaluate(form, context)
                     }
-                    What::Forms { .. } => Mode::Return(v),
+                    What::Forms { .. } | What::Form => Mode::Return(v),
                     What::Combine { operands } => {
                         self.machine.here = at;
                         self.combine(v, operands, context)?
@@ -468,6 +483,25 @@ impl<T> Grift<T> {
             }
             Mode::Host(..) => return Err(Error::new(K::NotACombiner, &[])),
         })
+    }
+
+    /// All routes into a named outer form share this boundary, including native control flow.
+    /// A tail form replaces the finished one; the host's own forms frame stays as it was.
+    fn hold_form(&mut self, form: Reference) -> Result<(), Error> {
+        match self.machine.frames.last_mut() {
+            Some(Frame {
+                what: What::Form,
+                at,
+                ..
+            }) => *at = form,
+            Some(Frame {
+                what: What::Forms { .. },
+                at,
+                ..
+            }) if *at == form => {}
+            _ => self.frame(What::Form, Reference::NONE, form)?,
+        }
+        Ok(())
     }
 
     /// An error stops the evaluation at `here`. Frames above `floor` are dropped down to the
@@ -527,12 +561,21 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    fn collect(&mut self, mode: Mode) -> Result<(), Error> {
-        let current = match mode {
-            Mode::Evaluate(x, context) => [x, Value::Context(context)],
-            Mode::Return(v) => [v, Value::EmptyList],
-            Mode::Host(..) => [Value::EmptyList, Value::EmptyList],
-        };
+    /// A host's next run may need slots before reaching the machine loop. Collect here first,
+    /// with its checked inputs and the suspended machine as roots; never during allocation.
+    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
+        if self.run != 0 && self.control.active() != self.run {
+            self.abandon();
+        }
+        if self.heap.due() {
+            self.collect(current)?;
+        }
+        Ok(())
+    }
+
+    // Root iterators and marking temporaries belong only to collection, never suspended runs.
+    #[inline(never)]
+    fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         let m = &self.machine;
         let raised = m
             .raised

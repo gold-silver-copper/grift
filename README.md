@@ -194,8 +194,13 @@ fn main() -> Result<(), Error> {
 - **Evaluating:** `evaluate(&mut T, &str)` at top level; `evaluate_in(&mut T, &context, source,
   &str)` in a given context, each combination keeping its line in `source`, so errors say
   `at config.grift:12`; `call(&mut T, &f, &[Value])` (Kernel's `apply`: an applicative's combiner
-  gets the values as its operands, in a new empty context); `read(&str)`, the list of forms,
-  nothing evaluated.
+  gets the values as its operands, in a new empty context); `read(&str)` or
+  `read_in(source, text)`, the list of forms, nothing evaluated. `read_in` keeps each
+  combination's source and opening line for later evaluation. If `read_in` or `evaluate_in`
+  cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the
+  supplied source name as a string innermost in the trace. `read` and `evaluate` keep an empty
+  trace for unreadable text. A named parse error's source string lives with the interpreter,
+  so the host can still describe it after later evaluations collect.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
@@ -205,6 +210,9 @@ fn main() -> Result<(), Error> {
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_string` (an owned copy), `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
+  `grift::write_string(text, out)` writes host text as one string literal, with the same quoting
+  and escapes, into any `std::fmt::Write`, without an interpreter or allocation; it returns
+  `std::fmt::Result`.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
@@ -216,7 +224,9 @@ fn main() -> Result<(), Error> {
 - `Error { kind: Symbol, values: Vec<Value>, .. }`, with `Error::trace()`, which lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
-  not inside `if!`. A call in tail position has finished, so it isn't listed. `position(&at)` (`Result<Option<_>, Error>`) is a
+  not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
+  input to `read_in` or `evaluate_in`, the trace starts with the supplied source string; the
+  values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
@@ -235,7 +245,8 @@ fn main() -> Result<(), Error> {
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
-with its own `test.sh`, and the gate runs them all.
+with its own `test.sh`. `cargo test --workspace` runs all of those scripts against the test-profile
+runner, so the local suite and CI both exercise the corpus.
 
 ## Inside
 
@@ -243,9 +254,13 @@ One crate, about 2,100 lines of Rust: values and a heap that is a growable `Vec`
 (`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
-`evaluate` in tail position is a proper tail call. The collector runs only at the top of the
-machine loop, where the machine's frames, argument stack, errors waiting for a cleanup and
-current expression are all the state there is; they are its roots, so nothing is rooted by hand.
+`evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
+loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
+argument stack, errors waiting for a cleanup, current expression and checked call inputs are its
+roots. Allocation never collects. Reporting `out-of-memory`, from any operation, requests
+collection before the next run needs room to read its input or build its call context. Reads
+and constructors do not collect: more reads may be refused until an evaluation or call provides
+that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
 `if!`, `sequence!` and `string-search` are library code with a native twin: the library's own

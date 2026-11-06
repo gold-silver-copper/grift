@@ -79,6 +79,9 @@ is `misplaced-dot`, and a missing `)` is `unclosed-list` at the `(`; `#bytes` wi
 is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
 `write-bytes`.
 `;` starts a comment to the end of the line, and so does `#!` at the very start of a text.
+For Rust hosts, `grift::write_string(text, out)` writes one quoted string literal with these same
+escapes, into a `std::fmt::Write`, without an interpreter or allocation. It returns `std::fmt::Result`;
+`Grift::write` uses it for strings too.
 
 ## Primitives (Rust)
 
@@ -100,7 +103,7 @@ which a test shows no program can tell from the Rust.
 | `(evaluate x c)` | Evaluates `x` in context `c`, as a tail call (4.8.3). |
 | `(context)`, `(context parent)` | A new empty context, with no parent or one (4.8.4). |
 | `(bind c parameters value)` | Matches the tree `parameters` to `value` and binds its symbols in context `c` itself, replacing bindings there. Returns `#inert`. The matching of `define!` (4.9.1) as an applicative. |
-| `(unbind c symbol)` | Removes the binding of `symbol` from context `c` itself, never a parent's: `#true` if there was one, `#false` if not. A lookup in `c` then finds a parent's binding of the name, if there is one, and the value, if nothing else holds it, is collected. The symbol itself stays: symbols are never freed, so a table keyed by computed symbols (`string-to-symbol`) grows the symbol table by each new name, about 50 bytes, for the life of the interpreter. |
+| `(unbind c symbol)` | Removes the binding of `symbol` from context `c` itself, never a parent's: `#true` if there was one, `#false` if not. A lookup in `c` then finds a parent's binding of the name, if there is one, and the value, if nothing else holds it, is collected. The symbol itself stays: symbols are never freed, so a table keyed by computed symbols (`string-to-symbol`) grows the symbol table by each new name for the life of the interpreter. The name is stored twice, once by id and once in the hash index. |
 | `(lookup c symbol otherwise)` | The value `symbol` has in context `c` or the nearest parent binding it, as evaluating it there gives; `otherwise` if none does, where evaluating would be `unbound-symbol`. Both are evaluated, so `(lookup counts word 0)` reads a table with a default. |
 | `(names c)` | The symbols bound in context `c` itself (not its parents), sorted by name. |
 | `(pair a b)`, `(first p)`, `(rest p)` | A new pair; its two halves (4.6.3, 5.4.1). |
@@ -228,6 +231,20 @@ around a combiner value are skipped). A combination in tail position has finishe
 one starts, so it isn't listed. Cleanups (`finally!`) run on the way out. A combination read from
 a named text, such as a file the runner runs or loads, keeps its source and line beside it, not in
 it, so the host reports `in (first x) at lib/table.grift:12`.
+Rust hosts can read such forms without evaluating them with `Grift::read_in(source, text)`, which
+returns the list of all forms, as `Grift::read(text)` does. `Grift::position` gives each combination's
+source and opening line, also after a loader evaluates it later. If `read_in` or `evaluate_in`
+cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the supplied
+source name as a string innermost in the trace. `read` and `evaluate`, which take no source name,
+keep an empty trace for unreadable text. A loader can propagate the named error unchanged; the
+runner's loaded-file error starts with that path, followed by the outer load's combination.
+The source string lives with the interpreter, so a host can describe a held named parse error
+after later evaluations collect.
+When evaluation starts one of those named outer forms, including through a native branch or
+sequence, its trace retains a boundary for the form. A tail evaluation of another named outer
+form updates that boundary to the new form, so the finished one disappears and space stays
+constant. The host's own entry boundary stays; nested evaluations with work left around them
+retain their own boundaries too.
 
 ```lisp
 (define! check (lambda! (x) (if! (integer? x) x (raise (error (quote! not-integer) x)))))

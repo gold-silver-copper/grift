@@ -1,9 +1,9 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
-use crate::Grift;
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
-use crate::local::{Error, K, Symbol, Value, push};
+use crate::local::{Error, K, Symbol, Value, boxed, push};
+use crate::{Grift, Position};
 use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
@@ -46,7 +46,12 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn peek(&self) -> Option<char> {
-        self.src.get(self.at..)?.chars().next()
+        let &byte = self.src.as_bytes().get(self.at)?;
+        if byte.is_ascii() {
+            Some(char::from(byte))
+        } else {
+            self.src.get(self.at..)?.chars().next()
+        }
     }
 
     fn next(&mut self) -> Option<char> {
@@ -62,9 +67,8 @@ impl Cursor<'_> {
         while let Some(c) = self.peek() {
             match c {
                 ';' => {
-                    while self.peek().is_some_and(|c| c != '\n') {
-                        self.next();
-                    }
+                    let rest = self.src.get(self.at..).unwrap_or_default();
+                    self.at += rest.find('\n').unwrap_or(rest.len());
                 }
                 c if c.is_whitespace() => {}
                 _ => return,
@@ -106,11 +110,40 @@ impl<T> Grift<T> {
     pub(crate) fn read_local(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
-        while let Some((form, place, after)) = self.read_form(src, at, line, source)? {
+        while let Some((form, place, after)) =
+            self.read_form(src, at, line, source).or_else(|mut e| {
+                if e.kind == K::ParseError.into()
+                    && let Some(source) = source
+                {
+                    let name = self.source_string(source)?;
+                    push(&mut e.trace, name)?;
+                }
+                Err(e)
+            })?
+        {
+            if let (Some(_), Value::Pair(r)) = (source, form)
+                && let Some(position) = self.positions.get_mut(&r.idx)
+            {
+                position.outer = true;
+            }
             self.add(&mut forms, form)?;
             (at, line) = (place.end, after);
         }
         Ok(forms.head)
+    }
+
+    // Only malformed named input needs this allocation path; keep it out of the reader loop.
+    #[cold]
+    #[inline(never)]
+    fn source_string(&mut self, source: Symbol) -> Result<Value, Error> {
+        // Source ids are interned, below the disjoint host-kept ids at KEPT and above.
+        if let Some(name) = self.find(self.kept, source)? {
+            return Ok(name);
+        }
+        let text = boxed(self.name(source))?;
+        let name = Value::String(self.heap.alloc(Object::String(text))?);
+        self.bind_symbol(self.kept, source, name)?;
+        Ok(name)
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
@@ -220,7 +253,15 @@ impl<T> Grift<T> {
     /// replaced, so the table stays within the heap's size.
     fn place(&mut self, r: Reference, source: Symbol, line: u32) -> Result<(), Error> {
         self.positions.try_reserve(1).map_err(|_| Error::oom())?;
-        self.positions.insert(r.idx, (r.generation, source, line));
+        self.positions.insert(
+            r.idx,
+            Position {
+                generation: r.generation,
+                source,
+                line,
+                outer: false,
+            },
+        );
         Ok(())
     }
 

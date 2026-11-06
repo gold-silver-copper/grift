@@ -95,6 +95,13 @@ limit being a thread that stops the run. Every value the host holds says which i
 belongs to, and every reference which object it was, so a value from another interpreter or one
 the collector reclaimed is an error, never read as another. A value the host keeps across runs is
 a binding the interpreter owns, released by the host.
+An evaluation or call can collect before it needs its first heap slot, with its checked inputs
+kept live. After out-of-memory, the host can start one to let discarded allocations be reclaimed;
+allocation itself never collects.
+`read_in` reads a named text without evaluating it, keeping each combination's source and line;
+the host or a loader written in grift chooses when and where to evaluate those forms. Parse errors
+keep their reason, line and column; named reading and evaluation retain the supplied source in
+the trace too.
 Bare-metal targets are not a goal; WebAssembly works wherever `std` does. grift does not isolate
 code from the host or from other code in the same interpreter; an embedder running untrusted code
 isolates it itself, for example in its own process.
@@ -165,6 +172,8 @@ parameters, its context parameter and its body (not the context it was made in, 
 can print alike and differ). A context prints as its own names, sorted
 (`#[context close path read-all read-line]`), never its values, which may reach the context
 again. An error, a context, prints its names; the host reports its kind, its values and its trace.
+`write_string` writes the same string literal spelling for host text, without an interpreter or
+allocation. It and the value printer share the quoting and escapes the reader understands.
 
 ## Terms
 - **Symbol:** a value that is a name; a symbol names a value in a context.

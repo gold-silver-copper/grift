@@ -325,6 +325,34 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn nested_loads_need_no_rust_stack() {
+    let dir = scratch("nested-loads");
+    for n in 0..1000 {
+        let text = if n == 999 {
+            "(define! answer 42)".to_string()
+        } else {
+            format!("(load \"{}.grift\")", n + 1)
+        };
+        std::fs::write(dir.join(format!("{n}.grift")), text).unwrap();
+    }
+    let path = dir.join("script.grift");
+    std::fs::write(&path, "(load \"0.grift\") (display answer)").unwrap();
+    let out = Command::new("bash")
+        .args(["-c", "ulimit -c 0; ulimit -s 512; exec \"$@\"", "load-test"])
+        .arg(env!("CARGO_BIN_EXE_grift"))
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"42");
+}
+
 #[test]
 fn bytes_that_are_not_text_go_in_and_out() {
     let dir = scratch("bytes");
@@ -422,9 +450,17 @@ fn a_parse_error_says_where_the_form_opened() {
         "",
     );
     assert_eq!(status, Some(1));
-    assert!(
-        err.ends_with("script.grift: parse-error unclosed-list 2 1\n"),
-        "{err}"
+    let path = dir.join("script.grift");
+    let path = path.to_str().unwrap();
+    assert_eq!(
+        err,
+        format!("parse-error unclosed-list 2 1 in \"{path}\"\n")
+    );
+    let error = run(&[], "(a\n  (b", Stdio::piped());
+    assert_eq!(error.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(error.stderr).unwrap(),
+        "parse-error unclosed-list 2 3 in \"stdin\"\n"
     );
 }
 
@@ -446,4 +482,38 @@ fn a_closed_stderr_is_an_error_not_a_quiet_end() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     assert_eq!((out.status.code(), &out.stdout[..]), (Some(1), &b""[..]));
+}
+
+#[test]
+fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
+    let dir = scratch("loaded-tail-trace");
+    let path = dir.join("tail.grift");
+    for text in [
+        "(define! f (lambda! (x) (first x)))\n(f 2)\n",
+        "(define! f (lambda! (x) (first x)))\n(f 2)\n(define! never 1)",
+        "\n(if! #true (first 1) 2)",
+        "(finally! (first 1) (first 2))",
+    ] {
+        std::fs::write(&path, text).unwrap();
+        let alone = run(&[path.to_str().unwrap()], "", Stdio::piped());
+        let (status, _, loaded) = script(&dir, "(load \"tail.grift\")", &[], "");
+        assert_eq!(alone.status.code(), Some(1));
+        assert_eq!(status, Some(1));
+        let alone = String::from_utf8(alone.stderr).unwrap();
+        let alone = alone
+            .strip_prefix(&format!("{}: ", path.display()))
+            .unwrap()
+            .trim_end();
+        let wrapper = dir.join("script.grift");
+        let loaded = loaded
+            .strip_prefix(&format!("{}: ", wrapper.display()))
+            .unwrap();
+        let loaded = loaded
+            .strip_suffix(&format!(
+                "\n  from (load \"tail.grift\") at {}:1\n",
+                wrapper.display()
+            ))
+            .unwrap();
+        assert_eq!(loaded, alone, "{text}");
+    }
 }

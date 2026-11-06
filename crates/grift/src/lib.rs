@@ -124,7 +124,12 @@ impl Error {
     /// Where: the combinations of the program that were being evaluated, innermost first, each
     /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
     /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
-    /// [`Grift::position`] gives each one's source and line.
+    /// [`Grift::position`] gives each one's source and line. If input to [`Grift::read_in`] or
+    /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
+    /// [`Value::String`]; its values remain `(reason line column)`. An outer evaluation can add
+    /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
+    /// doesn't read, its trace is empty. The named parse error's source string lives with the
+    /// interpreter, so that error can still be described after later evaluations collect.
     pub fn trace(&self) -> &[Value] {
         &self.trace
     }
@@ -164,6 +169,14 @@ pub struct Kept {
     name: u32,
 }
 
+/// Where a combination was read, and whether it is one of the source's outer forms.
+struct Position {
+    generation: u32,
+    source: local::Symbol,
+    line: u32,
+    outer: bool,
+}
+
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
 /// top-level context, a child of the built-in one, where programs define things. `T` is the
 /// host's state, which the host lends to each [`Grift::evaluate`] and [`Grift::call`] and which
@@ -171,12 +184,13 @@ pub struct Kept {
 pub struct Grift<T = ()> {
     heap: Heap,
     names: Vec<Box<str>>,
-    /// Symbol ids sorted by name, for interning.
-    sorted: Vec<u32>,
+    /// Names to symbol ids, for interning; `names` gives the spelling by id.
+    symbols: HashMap<Box<str>, u32>,
     hosts: Vec<(local::Symbol, HostFunction<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
     /// The kept values' context, a root no program reaches, and the names free for the next.
+    /// Host-kept values use ids at KEPT and above; diagnostic source strings use interned ids.
     kept: heap::Reference,
     kept_free: Vec<u32>,
     kept_next: u32,
@@ -188,9 +202,8 @@ pub struct Grift<T = ()> {
     /// The generation of the outer run in progress, 0 for none, and the last one given out.
     run: u64,
     runs: u64,
-    /// Where each combination read under a name is: its slot's index -> (the slot's generation,
-    /// the source's name, the line of its `(`).
-    positions: HashMap<u32, (u32, local::Symbol, u32), BuildHasherDefault<IdHasher>>,
+    /// Where each combination read under a name is, by its slot's index.
+    positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
     /// Off in tests: native primitives and library forms then run their grift definitions.
     #[cfg(test)]
     pub(crate) natives: bool,
@@ -204,7 +217,7 @@ impl<T> Grift<T> {
         let mut g = Grift {
             heap: Heap::default(),
             names: Vec::new(),
-            sorted: Vec::new(),
+            symbols: HashMap::new(),
             hosts: Vec::new(),
             built_in: heap::Reference::NONE,
             top: heap::Reference::NONE,
@@ -261,14 +274,19 @@ impl<T> Grift<T> {
     /// Returns the last form's value (`#inert` for no forms). Nothing is evaluated if `src`
     /// doesn't read. Host functions get `state`. [`Grift::evaluate_in`] names the source.
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
-        let forms = self.read_local(src, None);
+        let forms = self
+            .prepare(std::iter::empty())
+            .and_then(|()| self.read_local(src, None));
         let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top));
         self.exported(done)
     }
 
     /// Reads every form in `src`, the text of `source` (a file's path, say), then evaluates them
     /// in order in `context`, as `evaluate` does at top level. Each combination read keeps its
-    /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`].
+    /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`]. If `src`
+    /// doesn't read, `parse-error` keeps `(reason line column)` in its values and `source` as
+    /// a string at the start of its trace, as [`Grift::read_in`] does. That source string survives
+    /// later collections.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -288,6 +306,7 @@ impl<T> Grift<T> {
         src: &str,
     ) -> Result<Value, Error> {
         let done = self.context_of(context, Primitive::Evaluate).and_then(|c| {
+            self.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = self.intern(source)?;
             let forms = self.read_local(src, Some(source))?;
             self.evaluate_forms(Some(state), forms, c)
@@ -299,7 +318,7 @@ impl<T> Grift<T> {
     /// underlying combiner gets the arguments as its operands, in a new empty context; an
     /// operative gets them as they are. Host functions get `state`.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
-        let done = self.import(f).and_then(|f| {
+        let done = self.prepare_call(f, arguments).and_then(|f| {
             let arguments = self.imported(arguments)?;
             self.call_local(Some(state), f, &arguments)
         });
@@ -421,13 +440,13 @@ impl<T> Grift<T> {
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let top = g.top_level();
-    /// g.evaluate_in(&mut (), &top, "fux.grift", "(define! split (lambda! (pane) (first pane)))")?;
+    /// g.evaluate_in(&mut (), &top, "prelude.grift", "(define! head (lambda! (xs) (first xs)))")?;
     /// g.seal_library();
-    /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(split 9)").unwrap_err();
+    /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(head 9)").unwrap_err();
     /// let mut text = String::new();
     /// g.describe(&e, &mut text).unwrap();
-    /// // The prelude's (first pane) is skipped: the error is the config's line.
-    /// assert_eq!(text, "type-error #[primitive first] 9 in (split 9) at config.grift:2");
+    /// // The prelude's (first xs) is skipped: the error is the config's line.
+    /// assert_eq!(text, "type-error #[primitive first] 9 in (head 9) at config.grift:2");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn seal_library(&mut self) {
@@ -578,8 +597,33 @@ impl<T> Grift<T> {
 
     /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
     /// the line and column: of the `(` or `"` left open, or of what didn't read.
+    /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
+    /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
         let forms = self.read_local(src, None);
+        self.exported(forms)
+    }
+
+    /// Reads every form in `text` into a list, evaluating nothing, as [`Grift::read`] does.
+    /// Each combination keeps `source` and the line of its `(` for [`Grift::position`] and
+    /// traces when evaluated later, including entry through native control flow. A tail
+    /// evaluation of another named outer form replaces the finished form's trace boundary;
+    /// the host's entry boundary stays. No forms gives `()`.
+    /// If `text` doesn't read, `parse-error` keeps `(reason line column)` in its values and
+    /// `source` as a string at the start of its trace, as [`Grift::evaluate_in`] does. That source
+    /// string survives later collections. Allocation failure is `out-of-memory`.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let forms = g.read_in("calculation.grift", "\n(add 1 2)")?;
+    /// let (form, _) = g.as_pair(&forms)?.unwrap();
+    /// assert_eq!(g.position(&form)?, Some(("calculation.grift", 2)));
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error> {
+        let forms = self
+            .intern(source)
+            .and_then(|source| self.read_local(text, Some(source)));
         self.exported(forms)
     }
 
@@ -649,9 +693,9 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    /// The source and line of a combination read by [`Grift::evaluate_in`], such as an entry of an
-    /// error's trace; `None` for any other value. A reclaimed value is `stale-value`, another
-    /// interpreter's `foreign-value`.
+    /// The source and line of a combination read by [`Grift::read_in`] or [`Grift::evaluate_in`],
+    /// such as an entry of an error's trace; `None` for any other value. A reclaimed value is
+    /// `stale-value`, another interpreter's `foreign-value`.
     pub fn position(&self, combination: &Value) -> Result<Option<(&str, u32)>, Error> {
         let c = self.import(combination);
         self.out(c.map(|c| self.position_local(c)))
@@ -661,8 +705,8 @@ impl<T> Grift<T> {
         let local::Value::Pair(r) = combination else {
             return None;
         };
-        let &(generation, source, line) = self.positions.get(&r.idx)?;
-        (generation == r.generation).then(|| (self.name(source), line))
+        let position = self.positions.get(&r.idx)?;
+        (position.generation == r.generation).then(|| (self.name(position.source), position.line))
     }
 
     /// A handle that stops this interpreter's run in progress, from another thread.
@@ -728,40 +772,27 @@ impl<T> Grift<T> {
 
     /// Interns `name`. The ids from [`KEPT`] up are the kept values' names, so no text gets one.
     pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
-        let names = &self.names;
-        let at = self.sorted.binary_search_by(|&i| {
-            names
-                .get(i as usize)
-                .map(|n| (**n).cmp(name))
-                .unwrap_or(std::cmp::Ordering::Less)
-        });
-        match at {
-            Ok(i) => Ok(local::Symbol(
-                self.sorted.get(i).copied().unwrap_or_default(),
-            )),
-            Err(i) => {
-                let id = u32::try_from(self.names.len())
-                    .ok()
-                    .filter(|&id| id < KEPT)
-                    .ok_or_else(local::Error::oom)?;
-                push(&mut self.names, boxed(name)?)?;
-                self.sorted
-                    .try_reserve(1)
-                    .map_err(|_| local::Error::oom())?;
-                self.sorted.insert(i, id);
-                Ok(local::Symbol(id))
-            }
+        if let Some(symbol) = self.interned(name) {
+            return Ok(symbol);
         }
+        let id = u32::try_from(self.names.len())
+            .ok()
+            .filter(|&id| id < KEPT)
+            .ok_or_else(local::Error::oom)?;
+        let (spelling, key) = (boxed(name)?, boxed(name)?);
+        self.names.try_reserve(1).map_err(|_| local::Error::oom())?;
+        self.symbols
+            .try_reserve(1)
+            .map_err(|_| local::Error::oom())?;
+        // Neither table changes until both spellings and both collections have room.
+        self.names.push(spelling);
+        self.symbols.insert(key, id);
+        Ok(local::Symbol(id))
     }
 
     /// The symbol named `name`, if it was ever interned.
     pub(crate) fn interned(&self, name: &str) -> Option<local::Symbol> {
-        let at = self
-            .sorted
-            .binary_search_by(|&i| self.name(local::Symbol(i)).cmp(name));
-        at.ok()
-            .and_then(|i| self.sorted.get(i))
-            .map(|&i| local::Symbol(i))
+        self.symbols.get(name).copied().map(local::Symbol)
     }
 
     /// The name of symbol `s`.
@@ -882,6 +913,32 @@ impl<T> Grift<T> {
         })
     }
 
+    /// Validate and root a host call before its first allocation. Return before running it, so
+    /// validation and root-iterator temporaries do not stay on a suspended host's stack.
+    fn prepare_call(
+        &mut self,
+        f: &Value,
+        arguments: &[Value],
+    ) -> Result<local::Value, local::Error> {
+        let f = self.import(f)?;
+        arguments
+            .iter()
+            .try_for_each(|v| self.import(v).map(drop))?;
+        // Validation allocates nothing. Root every checked reference before the argument
+        // buffer needs memory; marking follows the reference, independent of its value kind.
+        let roots = arguments.iter().filter_map(|v| match v {
+            Value::Pair(r)
+            | Value::String(r)
+            | Value::Bytes(r)
+            | Value::Context(r)
+            | Value::Operative(r)
+            | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
+            _ => None,
+        });
+        self.prepare(std::iter::once(f).chain(roots))?;
+        Ok(f)
+    }
+
     fn imported(&self, values: &[Value]) -> Result<Vec<local::Value>, local::Error> {
         let mut out = collected(std::iter::repeat_n(local::Value::Inert, values.len()))?;
         for (to, v) in out.iter_mut().zip(values) {
@@ -931,6 +988,9 @@ impl<T> Grift<T> {
             (Ok(values), Ok(trace)) => (e.kind, values, trace),
             _ => (K::OutOfMemory.into(), Vec::new(), Vec::new()),
         };
+        if kind == K::OutOfMemory.into() {
+            self.heap.request_collection();
+        }
         Error {
             kind: self.export_symbol(kind),
             values,
@@ -945,6 +1005,31 @@ impl<T> Grift<T> {
     fn out<R>(&self, r: Result<R, local::Error>) -> Result<R, Error> {
         r.map_err(|e| self.export_error(e))
     }
+}
+
+/// Writes `text` as one quoted grift string literal, with the same escapes as [`Grift::write`]
+/// and the reader. Needs no interpreter and allocates nothing; an output failure is `fmt::Error`.
+///
+/// ```
+/// let mut out = String::new();
+/// grift::write_string("a\n\"b", &mut out)?;
+/// assert_eq!(out, "\"a\\n\\\"b\"");
+/// # Ok::<(), std::fmt::Error>(())
+/// ```
+pub fn write_string(text: &str, out: &mut dyn fmt::Write) -> fmt::Result {
+    out.write_char('"')?;
+    for c in text.chars() {
+        match c {
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\t' => out.write_str("\\t")?,
+            c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
+            c => out.write_char(c)?,
+        }
+    }
+    out.write_char('"')
 }
 
 /// The context `v` is, or a `type-error` naming `p`.

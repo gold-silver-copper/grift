@@ -1104,3 +1104,312 @@ fewer new public items, then fewer lines.
   The whole test: 222.35 G instructions at the base, 232.46 G at 8da8b50 (+4.5%), 227.88 G now
   (+2.5%); on the same input its time is the base's (box2, alternated: 3.96/3.96, 2.93/2.83,
   2.77/2.80 s). Target unchanged: within 5% of the base; desk times the head.
+
+## Earned by the port reading, 2026-11-05
+
+Evidence: `~/code/notes/projects/grift/fuxport-2026-11-04/reading/tally.md` (four readers, P1–P4)
+chose three needs: N1, N2 and N3. Its other outcomes stay outside this change. The N1 error ruling
+is `reading/design-n1.md`; test admission is `tests/counts.md`. No new language names, primitives
+or kinds. The only new public names are `Grift::read_in` and `grift::write_string`.
+
+- **G-151. Read a named text without evaluating it** (N1: 4/4 readers; eight ports, four families;
+  extends G-119). `Grift::read_in(source, text)` gives `read`'s list of every form, through the same
+  reader as `evaluate_in`; each combination keeps its source and opening line for `position` and
+  later traces. Reading does no evaluation. The runner's host now only reads a loaded file; a grift
+  `for-each` evaluates its forms in the caller's context, within the existing run. Relative paths
+  and restoration after errors remain runner policy; G-163 moves G-136's source attachment into
+  the shared reader. A regression first reproduced a Rust stack overflow on a 1,000-file chain
+  with a 512 KiB stack; it passes with evaluation in grift. No evaluator entry or optional
+  `read-form` operand was added.
+  - Initial error ruling (superseded by the owner's 2026-11-05 decision in G-163): A, reader
+    errors, `(reason line column)` and an empty trace. The design vote split 2–2; two
+    different-family ports swapped to B (source in the trace), with unchanged results (83/83
+    and 82/83), so the tie stood and the provisional ruling chose A. Source attachment stayed at
+    the edge for both `read_in` and `evaluate_in`; B was left for the owner to choose.
+    Strongest dissent for B (P1/P4): the caller already supplied provenance; forwarding the error should retain it,
+    and hosts have distorted the values while attaching it. Strongest against B (P2/P3): it makes
+    sibling APIs disagree and moves G-136's loader responsibility into the core.
+  - Against the method: P1's unpatched loader already passed the small-stack and named-file checks,
+    so the method buys convenience and lasting API surface. P2 says a bounded nested evaluator is
+    adequate for ordinary loads. P3 says preserving positions and small-stack loading already has
+    a workaround. P4 likewise finds convenience rather than a previously impossible capability.
+    The chosen mechanism removes host evaluator recursion in a second program, the runner, while
+    keeping reading and evaluation separate and sharing the existing source table.
+- **G-152. Intern by name with the standard hash map; read ASCII directly** (N2: 4/4 readers;
+  two ports, two families). A `HashMap<Box<str>, u32>` replaces the sorted symbol-id vector; the
+  id-to-name vector stays. Both spellings are allocated and both collections reserved before either
+  entry is published; failure is still `out-of-memory`, and ids at `KEPT` and above stay excluded.
+  The reader returns an ASCII byte as its character, decodes other characters as before, and skips
+  comments to their newline in one search. Grammar, positions and errors are unchanged. No custom
+  string hasher, twins, collection switch or startup image.
+  - Construction alone, measured in-process on idle desk: release, 10,000 constructions after
+    100 warmups, timing only `Grift::new`, excluding destruction: 862,384 ns to 719,015 ns, 16.6%
+    less time. Both binaries were built in the same worktree and target directory. A separate
+    desk measurement runs the whole runner process on an empty program, not just `Grift::new`:
+    2,113 to 1,926 µs, 8.8% less time (`timings/head1.md` under the evidence directory; medians
+    of three batches of 200 runs, `bin/desk-grift.sh`). Both show a gain for N2; their different
+    boundaries explain the different percentages. Interning is shorter. Cost: each name's bytes
+    are stored twice and the hash table replaces a compact integer index.
+  - Against it: P1 says the original whole-port timings cannot attribute a gain to grift. P2 says
+    the absolute startup gap is small, and the original evidence did not meet the family's bar.
+    P3 objects to duplicated name storage and timings mixed with host changes. P4 likewise says
+    startup already works and the bundled optimizations had separate evidence. This measurement
+    isolates construction; only the agreed representation and reader changes land.
+- **G-153. One string literal writer for values and host text** (N3: 4/4 readers; three ports,
+  two families; G-122's spelling unchanged). `grift::write_string(text, out)` takes a borrowed
+  `str` and a `dyn std::fmt::Write`, returns `std::fmt::Result`, and needs neither an interpreter
+  nor allocation. The string case moves out of `print.rs` to this function; `Grift::write` calls it.
+  Quoting, the five short escapes and hexadecimal control escapes have one source. Output failures
+  propagate directly. Record traversal stays with the host.
+  - Against it: P1 says a temporary interpreter string or a copied small escape table already works.
+    P2 says G-122 fixed the small table, and a large streamed-output check belongs to its host.
+    P3 says the function is unnecessary for correctness; P4 objects to adding public surface for a
+    formatting detail. The chosen function shares the actual printer without a transient heap copy;
+    a small fixed-seed property checks both writers against `read-form`, and refusing sinks fail.
+
+## Conformance fixes, 2026-11-05
+
+- **G-154. A named outer form keeps its evaluation boundary** (G-151 and G-29 unchanged).
+  Evidence: `fuxport-2026-11-04/stress/P1/findings/load-drops-top-level-form` and
+  `read-in-loader-trace-drops-form`. The source table now distinguishes the outer forms returned
+  by the reader. When grift's `evaluate` starts one, a machine frame retains it through its tail
+  calls, as the Rust entry's forms frame does. Tail evaluations reuse an immediately enclosing
+  boundary instead of adding a frame; a non-tail nested evaluation has work above that boundary
+  and gets its own. The frame roots the form for collection and normal unwinding adds it once.
+  Sealed library forms stay excluded, and recycled slots must match their recorded generation.
+  The runner stays a grift loop; the source's final calling line now survives it. No new public
+  name and no weakened trace promise. The original position test's tail call is restored; the
+  runner compares a file's own trace with its loaded trace, and a named-form tail loop checks
+  that the retained boundary costs constant space.
+- **G-155. Collect before a host's run needs its first slot** (repairs G-26's recovery guarantee;
+  extends G-12's safe points). Evidence: `fuxport-2026-11-04/stress/P1/findings/
+  read-in-oom-leaves-interpreter-stuck`, also reproduced with `read` on pure at 71cb5c5. The reader
+  exhausted the heap vector while accumulating forms that then became garbage. `evaluate` needed
+  a slot to read new input before reaching the loop; even a zero-argument `call` needed a new
+  context in `call_local` before `start`, so both failed to grow the same vector forever. Free
+  allocator bytes could not pay for its next doubling, and collection was never reached.
+  The host's evaluate/evaluate_in/call entries now collect when due before those allocations,
+  using the existing machine roots plus their checked context, combiner and arguments. Abandoned
+  machine state is cleared first. Reading itself still never collects, nor does allocation; no
+  public collection control is added. A test-only heap-slot limit reproduces the exhausted free
+  list without a global allocator; one quick property checks all three entries after both readers,
+  including live unbound call inputs and a child context. The external allocator-budget case is
+  retained outside the crate as evidence of actual allocation refusal.
+- **G-156. A failed read makes collection due** (completes G-155; same
+  `read-in-oom-leaves-interpreter-stuck` case). An extension of its quick property kept 20,000
+  live pairs and left only 32 new slots: the read failed before the ordinary live-size threshold,
+  and the next evaluate still answered out-of-memory at 8d9d53f (`small-limit-before.log`). The
+  shared reader now requests collection on out-of-memory without collecting there. G-155's next
+  run reclaims the discarded forms even below that threshold. The same property covers both
+  readers and all three entries with both sparse and mostly live heaps; its count is unchanged.
+
+## Picking panel follow-through, 2026-11-05
+
+- **G-157. A named form's boundary belongs to the common evaluation step** (amends G-154;
+  G-110 holds). Evidence: `fuxport-2026-11-04/pick/tally.md`'s two trace must-fixes, reproduced
+  before changing code. A separately read `(f 1)` entered as a constructed `if!` branch gave
+  traces of two and three entries with natives on and off. The boundary check now runs when
+  the machine starts a pair, using `Position.outer`, whatever control flow entered it. Native
+  branches and sequences therefore follow the same rule as their definitions. Reusing a
+  `What::Form` updates its place to the named form now running: tail-evaluating b's form from
+  a's formerly kept a and lost b. The host's `What::Forms` entry frame remains unchanged.
+  Existing equivalence and position properties reproduce both failures; the tail-space property
+  still guards constant space. This keeps the source table as the reader's record, with no new
+  heap classification or public name. The tally carried the tail-place update 4/4.
+- **G-158. The runner names parse errors in grift** (superseded by G-163's owner decision;
+  originally amended G-136's host-built record and G-151's forms-or-record result). `pick/tally.md` carried this runner separation 4/4. Its private
+  `read-forms-host` now only reads the file and calls `read_in`, returning forms or an error.
+  The private grift `read-forms` catches `parse-error`, binds the caught record's trace to the
+  path string alone and raises it; kind and values stay untouched, and ordinary unwinding adds
+  the outer load. Reusing the caught record needs no second record. `load-file` evaluates the
+  forms directly, with no context-versus-list dispatch. The existing runner property covers the
+  computed path, unchanged reader values, source traces, catches and relative-path restoration;
+  the loaded-tail and small-stack properties still hold. No public operation changes.
+
+## Review round 1, 2026-11-05
+
+- **G-159. Every reported out-of-memory requests the next collection** (amends G-155/G-156's
+  reader-only scheduling, preserving G-26's usable interpreter). Evidence:
+  `fuxport-2026-11-04/review/r1/P1/repro/call-stuck-after-oom`: after either a run or host pair
+  allocation exhausted a mostly live heap, all 1,000 recovery calls were refused at both live
+  sizes. The new quick regression also failed on the first evaluate, evaluate_in and call after
+  each origin. OOM was exported without making collection due, so the next entry needed a slot
+  before it could reach a collection, just as after the failed reads in G-155.
+  Scheduling now happens at the common error-export boundary, after choosing the final error
+  kind; this also covers allocation failure while exporting an error's values or trace and
+  failures in immutable host operations. The existing scheduling count uses `Cell<usize>` so
+  those operations can request collection through `&self`; ordinary allocation and collection
+  update it through exclusive `get_mut` access. Shared cross-thread interpreter access is not
+  promised; only the interrupter needs atomic communication.
+  No new flag, allocation, public control or collection inside allocation is added. The reader's
+  special wrapper is removed. Reads and constructors still never collect: more reads may be
+  refused until an evaluation or call reaches its preparation safe point. The first such run
+  now gets that chance for every reported OOM, independent of the ordinary allocation threshold.
+
+## Port regression, 2026-11-05
+
+- **G-160. Safe-point temporaries need not live across host callbacks** (G-155, G-156 and
+  G-159's entry collection and OOM recovery unchanged). A 1,000-source loading chain on a
+  128 KiB host thread passed before 8d9d53f and overflowed after it. The debugger found no
+  collection frame at the stack guard: a nested `read-form` exhausted the stack with a fixed
+  number of host frames below it. In unoptimized builds, forced inlining of `safe_point`
+  retained its temporary storage in each suspended run, including the roots snapshot added
+  when collection began serving host entries too. Permitting normal optimizer-directed inlining
+  restores that unoptimized case; it does not bound optimized hosts, where the optimizer can
+  still inline the generic collector and retain its larger root-iteration and marking storage
+  in suspended run and entry frames. G-162 completes the fix with a collector inlining barrier.
+  Collection stays at both safe points with the same roots; the host's loading policy is unchanged.
+  The initial quick regression compiles an ordinary unoptimized embedding directly with `rustc`,
+  because the workspace's optimized test profile hid that unoptimized failure. It processes 1,000 named
+  sources through fixed-depth host callbacks in an isolated process: its initial 128 KiB
+  fixture passes at c102859, aborts before this fix, and passes after it. G-161 widens the
+  fixture's margin while retaining the original 128 KiB host check. The OOM properties still
+  exercise sparse and mostly live heaps, reads, runs and host allocation. No public name,
+  allocation or collection control is added.
+
+## Review round 2, 2026-11-05
+
+- **G-161. A host call gets collection before copying its arguments** (completes G-155/G-159).
+  Evidence: `fuxport-2026-11-04/review/r2/P4/repro/call-arguments-after-oom` refused 100/100
+  nonempty identity calls at b276894 after a discarded string filled the allocator budget.
+  Argument import reserved a vector before preparation could collect, so the first allocation
+  still stood between a call and recovery. An allocation-free entry helper now validates the
+  combiner and every argument, then prepares with the combiner and each checked argument's
+  reference as roots. Only then does argument copying allocate. Marking follows the reference's
+  object regardless of the temporary root's value tag. The helper returns before running the
+  call, so its validation and root-iterator temporaries do not enlarge suspended host frames.
+  No input is skipped or made valid by collection: foreign and stale inputs are refused before
+  collection. The previous preparation in `call_local` is removed, with no extra collection.
+  - The original regression (moved to evidence by G-165) runs in an isolated runner-package
+    embedding test, where a thread-local
+    allocation budget can reproduce real reservation failure without weakening the core's
+    unsafe-code prohibition or adding a production test seam. With no spare bytes, an identity
+    call must recover for an immediate argument and for six direct, unkept arguments covering
+    every heap-reference kind, also retaining an unkept function. Invalid calls leave the garbage untouched; the
+    valid call reclaims it. Existing slot-limit and external allocator cases remain.
+  - The scheduling count now uses `Cell<usize>` rather than an atomic (G-159 amended): no
+    interpreter `Sync` guarantee requires an atomic. Scheduling and collection policy are unchanged.
+    The initial small-stack fixture was a Cargo test target (G-165 later removes that optimized
+    target to meet the CI budget), so ordinary fmt and clippy checked it; its
+    unoptimized run uses the compiler path Cargo supplies to a dependency-free build script.
+    Sixteen fixed host callbacks and a 300 KiB stack leave at least 8 KiB above a passing
+    292 KiB control on the measured toolchain, while d9dc54a still overflows at 300 KiB.
+    The original host's 1,000-load test still uses 128 KiB. There is no new public name,
+    dependency, collection control, allocation in the entry helper or weakened recovery promise.
+
+- **G-162. Collection keeps its own stack frame in every build** (completes G-160; G-155,
+  G-156 and G-159/G-161 recovery unchanged). Evidence:
+  `fuxport-2026-11-04/review/r2/P1/repro/release-host-stack`: forty nested host entries fit in
+  128 KiB on pure, but overflow at b276894 and 48e4219 in a release build with one codegen
+  unit and thin LTO. Removing forced safe-point inlining only fixed unoptimized builds.
+  The generic `collect` added in 8d9d53f could still inline into optimized run and entry frames,
+  keeping collection's storage live when no collection was running. `#[inline(never)]` now
+  keeps its root iterators and marking storage inside the collection call, which returns before
+  any host callback. The rare collection call is the only new inlining boundary; allocation,
+  safe-point checks, roots and collection scheduling stay the same.
+  The initial optimized Cargo host-test target exercised forty entries in 128 KiB and aborted
+  before the fix; G-165 later moves that optimized check out of CI. The compiler-driven test runs the same source unoptimized with its
+  existing sixteen-entry, 300 KiB bound and measured margin. Both process 1,000 sources with
+  fixed host nesting. This adds no test function or compiler invocation to CI. The external
+  reproduction retains the one-codegen-unit, thin-LTO shipping configuration as evidence.
+  No new public name, dependency, allocation, collection control or weakened stack bound.
+
+## Owner decision B, 2026-11-05
+
+- **G-163. Both named readers retain the source of unreadable text** (owner decision,
+  2026-11-05 11:00; supersedes G-151's design A error ruling, its 2–2 panel tie and the swap
+  experiment's provisional choice; supersedes G-158's runner-built source record).
+  The owner chose B because three ports attached the name separately and two broke the standard
+  values. `read_in(source, text)` and `evaluate_in` now agree: when the input text doesn't read,
+  `parse-error` retains exactly `(reason line column)` in its values and puts the supplied source
+  name, as a string, innermost in its trace. Changing both named entries answers the strongest
+  uniformity objection to B. `read` and `evaluate` keep their unnamed reader errors; grammar,
+  coordinates, ordinary evaluation traces and `read-form` are unchanged.
+  The shared whole-text reader attaches the name once, with fallible string allocation and trace
+  growth. If allocating or retaining the source or trace fails, the host gets `out-of-memory`,
+  replacing the parse error: the complete named error cannot be built, and returning a bare parse
+  error would lose the promised provenance. The existing recovery boundary handles it. Reading
+  never collects. The runner calls its read-only host directly, removing private `read-forms` and its
+  record rebuilding. G-136's loaded-file parse-error shape is unchanged, including the outer load;
+  its existing tests stay unchanged. The top-level script diagnostic test does change because
+  scripts use `evaluate_in` and therefore now retain the source string too. No new test function
+  is added: the existing reader-error property checks both named and unnamed entries across its
+  reasons, retaining all three values. No new public name, dependency or collection policy.
+
+## Round 2b, 2026-11-05
+
+- **G-164. Named parse errors retain their diagnostic source across collections** (completes
+  G-163). Evidence: `fuxport-2026-11-04/review/r2b/P2/repro/
+  named-parse-error-stale-after-collection`, reproduced for both named entries at af34256.
+  The exported error alone did not root its fresh heap string; after the next collection,
+  `describe` and `position` rejected it as stale. Interned source names already live with the
+  interpreter. Each source that fails to parse now gets one cached diagnostic string in the
+  existing private kept context, keyed by its interned id below KEPT; host-kept ids remain
+  disjoint at KEPT and above. Later errors reuse it, preserving older held errors too.
+  Cost: one heap string and binding per distinct source that has a parse error, retained for the
+  interpreter's lifetime. No field, element size or retention policy changes for ordinary errors
+  or their traces. The regression forces two collections, holds repeated errors from one source,
+  checks both named entries remain describable and positionable, and verifies ordinary garbage
+  strings still collect. G-163 states the allocation-failure result: out-of-memory, not a
+  nameless parse error. The runner omits its source prefix when the trace already names that
+  input, so top-level scripts and stdin are named once; loaded-file diagnostics stay unchanged.
+
+- **G-165. CI reuses interpreter instantiations; compiled stress fixtures stay as evidence.**
+  Round 2b's check job exceeded the 85.8 s target: 104 s at a15572b and 115 s at af34256,
+  against pure's 78 s median plus 10%. The separately optimized host and allocator fixture
+  targets instantiate whole interpreters again. A fresh local af34256 build attributes 3.74 s
+  of compilation to the host target and 3.94 s to the allocator target; their executions take
+  about 0.02 s and 0.04 s respectively. Both targets leave CI. Their exact release-stack and
+  allocation-budget reproductions remain required external evidence. Existing unit properties
+  now recover through a nonempty call after run or host OOM and root all six direct heap-reference
+  argument kinds before collection; they reuse the interpreter already compiled for the unit
+  suite. The debug small-stack property remains: its two unoptimized compiler invocations took
+  0.68 s locally, and its source is included as an unused module for fmt, type checking and
+  clippy, without generating a second optimized interpreter. The source-string allocation path
+  is cold and out of line too, avoiding optimizer duplication in the normal reader loop.
+  The initial corpus move to an external gate is withdrawn by G-166: it contradicted G-84
+  and VISION's completeness rule. The 60.94 s to 24.96 s fresh-target local readings included
+  that invalid coverage reduction and do not establish the budget for the restored gate.
+  The fixture removals above stand; the full corpus stays in CI. G-167 replaces the 85.8 s
+  target using measurements of the current pure baseline.
+
+- **G-166. The workspace gate runs every program's own test** (restores G-84; corrects G-165).
+  Evidence: `fuxport-2026-11-04/review/r2c/P1/repro/gate-skips-broken-program` exits 1 at
+  9a6b6a7: a valid but failing form in a program passes the syntax-only property and the whole
+  workspace suite while its own test.sh fails. Restore the corpus integration test from pure,
+  with three workers to honor the local resource cap; discover every program and run its full
+  script against Cargo's test-profile runner. Remove the overlapping syntax-only property.
+  CI and the local workspace suite now run the same corpus. The separate final-head release
+  checks remain useful evidence, rather than substituting for coverage in the repository.
+  G-165's removed allocator fixture uniquely checked collection before the argument vector's
+  reserve with zero allocator bytes available, including validation before collection. The
+  existing slot-limit properties check nonempty-call recovery and root every heap argument
+  kind, and embedding tests reject stale and foreign inputs, but they cannot force that vector
+  reserve to fail. The exact zero-budget reproduction remains external evidence. Its original
+  target cost 3.94 s of fresh local compilation for 0.04 s execution; restoring that separate
+  optimized interpreter target is not a cheap check. No unsafe allocator or new production
+  seam is added to the core to imitate it. Final-head commands remain in the report; G-167
+  records the hosted gate timings and the accepted budget revision.
+
+- **G-167. Revise the CI band against pure measured in the same window.** Round 2e
+  (`fuxport-2026-11-04/review/r2e/`) accepts this revision in all four reviews, superseding
+  G-165's original time target while retaining G-84's full corpus in the workspace gate.
+
+  - Original target: before Stage 4, three pure commits read **95 s** (71cb5c5, the bytes
+    merge, run **41934440818** attempt 1 on November 4), **78 s** (7ff695e) and **73 s**
+    (a0eec1c): a median of **78 s**, and a 10% budget of **85.8 s**. Two of the three
+    readings predate the bytes merge.
+  - Evidence: `fuxport-2026-11-04/review/ci-readings/` records seven readings each of
+    the same program code, with the last six alternating head and pure. Readings come from
+    the check job in `gh api repos/gold-silver-copper/grift/actions/runs/<id>/attempts/<n>/jobs`.
+    The head's code at 7cbadac, run **42125210440** attempts 1–3, read **95, 66 and 120 s**;
+    360b781, differing only in DECISIONS.md, run **42129540060** attempts 1–4, read
+    **118, 93, 67 and 100 s**. Their median is **95 s**. Pure 71cb5c5, run **41934440818**
+    attempts 1–7, read **95, 86, 92, 100, 102, 75 and 85 s**, a median of **92 s**.
+    In the strictly alternating pairs, pure read **102, 75 and 85 s** and the head
+    **93, 67 and 100 s**, medians of **85 and 93 s** respectively. The spread within
+    one commit, **66 to 120 s**, is larger than any gap between them.
+  - New target: pure's median plus 10%, **101.2 s**. The head's **95 s** median meets it,
+    at **3.3%** over pure.
+  - Cost: the budget loosens by **15.4 s (+17.9%)**, from **85.8 to 101.2 s**. Nothing
+    changes in the code, and the full corpus stays in the gate, as G-84 requires.

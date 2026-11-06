@@ -1,4 +1,4 @@
-//! The corpus: every program in `programs/` passes its own `test.sh` on this runner, four at a time.
+//! The corpus: every program in `programs/` passes its own `test.sh` on this runner, three at a time.
 
 use std::path::Path;
 use std::process::Command;
@@ -16,7 +16,7 @@ fn every_program_passes_its_own_test() {
     let queue = Mutex::new(names.into_iter());
     let failed = Mutex::new(Vec::new());
     std::thread::scope(|s| {
-        for _ in 0..4 {
+        for _ in 0..3 {
             s.spawn(|| {
                 loop {
                     let next = queue.lock().unwrap().next();

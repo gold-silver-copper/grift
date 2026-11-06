@@ -6,7 +6,7 @@
 ; program reaches a file only through the context it was given, and can't name one by its
 ; number.
 (lambda! (top script open-host create-host read-line-host read-all-host read-bytes-host
-          write-host write-bytes-host close-host run-host load-host resolve-host)
+          write-host write-bytes-host close-host run-host read-forms-host resolve-host)
   ; A new context binding `names` to `values`.
   (define! operations
     (lambda! (names values)
@@ -40,9 +40,8 @@
     (lambda! (path c)
       (let! ((outer (evaluate-in! file loading)))
         (bind loading (quote! file) path)
-        (finally! (raised (load-host path c)) (bind loading (quote! file) outer)))))
-  ; A file that didn't read gives its error as a record: raised here, so the program can catch it.
-  (define! raised (lambda! (r) (when! (context? r) (raise r))))
+        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path))
+                  (bind loading (quote! file) outer)))))
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
                      run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
