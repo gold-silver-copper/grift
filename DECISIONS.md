@@ -1424,7 +1424,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     `(finally! (mark "body") (mark "a") (mark "b"))`, stops at some allocations after the body left
     `body` alone or `body, a`, with the body's value lost; the same holds with an error leaving.
   - One failed allocation as a cleanup starts skips every cleanup in the run. With a throwaway
-    host's `arm` failing the fourth allocation after it, `(finally! (finally! (sequence! (arm 4) (first 1)) (mark "in")) (mark "out"))` answers
+    host's `arm` failing the fourth allocation after it,
+    `(finally! (finally! (sequence! (arm 4) (first 1)) (mark "in")) (mark "out"))` answers
     `out-of-memory` with no mark, three nested cleanups likewise, and `(catch! ...)` around one
     `finally!` loses the `type-error` it would have caught. `unwind` leaves at once when it can't
     make room for the waiting error. The same run after a deeper one in that interpreter, whose room
