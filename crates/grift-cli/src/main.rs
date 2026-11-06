@@ -13,9 +13,8 @@ use grift::{Error, Grift, HostFunction, Interrupter, Value, WriteError};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, reads the program \
@@ -23,9 +22,6 @@ const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, read
 
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
-
-/// Set once a write to stdout found the pipe closed: the run then ends quietly.
-static CLOSED: AtomicBool = AtomicBool::new(false);
 
 /// A file a program opened: its path, and what is left of it until it is closed.
 struct Opened {
@@ -39,12 +35,13 @@ enum Stream {
 }
 
 /// The runner's state: the files opened, standard input, error and output first, the status `exit`
-/// gave, what stops the program when it does, and when the run started.
+/// gave, what stops the program when it does, when the run started, and the script.
 struct Runner {
     files: Vec<Opened>,
     exit: Option<u8>,
     stop: Interrupter,
     started: Instant,
+    script: Option<PathBuf>,
 }
 
 type G = Grift<Runner>;
@@ -65,15 +62,27 @@ impl<W: Write> fmt::Write for Sink<W> {
     }
 }
 
+/// Writes to stderr. One that is closed loses the text, which is all that can go wrong here.
+fn say(text: fmt::Arguments) {
+    let _ = io::stderr().write_fmt(text);
+}
+
+/// Ends the run quietly because stdout closed, as `(exit 0)` does unless `exit` came first.
+fn stdout_closed(r: &mut Runner) -> Value {
+    r.exit.get_or_insert(0);
+    r.stop.stop();
+    Value::Inert
+}
+
 /// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes. A broken
-/// pipe ends the run quietly only when `w` is stdout.
+/// pipe ends the run quietly only when `w` is stdout, which is when `stdout` holds the runner.
 fn put(
     g: &mut G,
     values: &[Value],
     raw: bool,
     end: &str,
     w: &mut dyn Write,
-    stdout: bool,
+    stdout: Option<&mut Runner>,
 ) -> Result<Value, Error> {
     let mut out = Sink { w, error: None };
     let mut written = values.iter().try_for_each(|v| match g.as_str(v) {
@@ -88,25 +97,22 @@ fn put(
         out.error = Some(e);
         written = Err(WriteError::Output);
     }
-    match (written, out.error) {
-        (Ok(()), _) => Ok(Value::Inert),
-        (Err(WriteError::Value(e)), _) => Err(e),
-        (Err(_), Some(e)) if stdout && e.kind() == io::ErrorKind::BrokenPipe => {
-            CLOSED.store(true, Ordering::Relaxed);
-            Err(g.error("stdout-closed", &[]))
-        }
-        (Err(_), _) => Err(g.error("output-error", values)),
+    match (written, out.error, stdout) {
+        (Ok(()), ..) => Ok(Value::Inert),
+        (Err(WriteError::Value(e)), ..) => Err(e),
+        (Err(_), Some(e), Some(r)) if e.kind() == io::ErrorKind::BrokenPipe => Ok(stdout_closed(r)),
+        (Err(_), ..) => Err(g.error("output-error", values)),
     }
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
-fn display(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stdout().lock(), true)
+fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    put(g, args, true, "", &mut io::stdout().lock(), Some(r))
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
 fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stderr().lock(), false)
+    put(g, args, true, "", &mut io::stderr().lock(), None)
 }
 
 /// `(read-file path)`: the whole text of the file.
@@ -119,15 +125,21 @@ fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> 
 }
 
 /// `(resolve-host base path)`: `path`, relative to the directory of the file `base` if it is
-/// relative.
-fn resolve_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+/// relative. The program holds the script's path as text, which may be a lossy copy naming another
+/// file, so the script's directory comes from the real path: `encoding-error` if text can't hold it.
+fn resolve_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let (Some(base), Some(path)) = (args.first(), args.get(1)) else {
         return Err(g.error("arity-error", args));
     };
     let (Some(base), Some(path)) = (g.as_str(base)?, g.as_str(path)?) else {
         return Err(g.error("type-error", args));
     };
-    let full = Path::new(base).parent().unwrap_or(Path::new("")).join(path);
+    let script = r.script.as_deref().filter(|s| s.to_string_lossy() == base);
+    let full = script
+        .unwrap_or(Path::new(base))
+        .parent()
+        .unwrap_or(Path::new(""))
+        .join(path);
     match full.to_str().map(String::from) {
         Some(full) => g.string(&full),
         None => Err(g.error("encoding-error", args)),
@@ -317,7 +329,8 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
         return Err(g.error("type-error", std::slice::from_ref(text)));
     };
     let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-    written(g, id, path, wrote)
+    let wrote = wrote.map_err(|e| (e, path.to_owned()));
+    written(g, r, id, wrote)
 }
 
 /// `(write-bytes bytes)` on a file: all of the bytes value's bytes.
@@ -332,19 +345,24 @@ fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, 
         return Err(g.error("type-error", std::slice::from_ref(bytes)));
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
-    written(g, id, path, wrote)
+    let wrote = wrote.map_err(|e| (e, path.to_owned()));
+    written(g, r, id, wrote)
 }
 
-/// After a write to file `id`: `#inert`, or the error; a closed stdout ends the run quietly, as
-/// for `display`.
-fn written(g: &mut G, id: &Value, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
+/// After a write to file `id`: `#inert`, or the error with the file's path; a closed stdout ends
+/// the run quietly, as for `display`.
+fn written(
+    g: &mut G,
+    r: &mut Runner,
+    id: &Value,
+    wrote: Result<(), (io::Error, String)>,
+) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe && *id == Value::Integer(2) => {
-            CLOSED.store(true, Ordering::Relaxed);
-            Err(g.error("stdout-closed", &[]))
+        Err((e, _)) if e.kind() == io::ErrorKind::BrokenPipe && *id == Value::Integer(2) => {
+            Ok(stdout_closed(r))
         }
-        Err(e) => Err(failed(g, "file-error", path, &e)),
+        Err((e, path)) => Err(failed(g, "file-error", &path, &e)),
     }
 }
 
@@ -420,12 +438,8 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 }
 
 /// Prints an error to stderr as its kind followed by its values and where it happened, the
-/// innermost combination on the error's line and each one around it on a line of its own, unless
-/// stdout closed.
+/// innermost combination on the error's line and each one around it on a line of its own.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
-    if CLOSED.load(Ordering::Relaxed) {
-        return ExitCode::SUCCESS;
-    }
     let mut err = Sink {
         w: io::stderr().lock(),
         error: None,
@@ -437,15 +451,6 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let _ = g.describe(e, &mut err);
     let _ = fmt::Write::write_str(&mut err, "\n");
     ExitCode::FAILURE
-}
-
-/// After an evaluation: the status `exit` gave, or success once stdout closed.
-fn ended(r: &Runner) -> Option<ExitCode> {
-    match r.exit {
-        Some(status) => Some(ExitCode::from(status)),
-        None if CLOSED.load(Ordering::Relaxed) => Some(ExitCode::SUCCESS),
-        None => None,
-    }
 }
 
 /// Whether `e` is a parse error for a list or string left open: the input isn't finished yet.
@@ -462,12 +467,12 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
     let mut status = ExitCode::SUCCESS;
     let mut src = String::new();
     let mut pending = None;
-    eprint!("> ");
+    say(format_args!("> "));
     for line in io::stdin().lock().lines() {
         let line = match line {
             Ok(line) => line,
             Err(e) => {
-                eprintln!("grift: stdin: {e}");
+                say(format_args!("grift: stdin: {e}\n"));
                 return ExitCode::from(2);
             }
         };
@@ -475,29 +480,29 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
         src.push('\n');
         if src.trim().is_empty() {
             src.clear();
-            eprint!("> ");
+            say(format_args!("> "));
             continue;
         }
         // Read first: a `parse-error` from running the input (`read-form`'s) doesn't mean there is
         // more of it to come.
         pending = g.read(&src).err().filter(|e| unfinished(g, e));
         if pending.is_some() {
-            eprint!("  ");
+            say(format_args!("  "));
             continue;
         }
         let done = match g.evaluate_in(r, top, "stdin", &src) {
-            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), true),
+            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), Some(r)),
             Err(e) => Err(e),
         };
-        if let Some(status) = ended(r) {
-            return status;
+        if let Some(status) = r.exit {
+            return ExitCode::from(status);
         }
         status = match done {
             Ok(_) => ExitCode::SUCCESS,
             Err(e) => report(g, "stdin", &e),
         };
         src.clear();
-        eprint!("> ");
+        say(format_args!("> "));
     }
     // End of input in the middle of a form: that form is an error.
     match pending {
@@ -582,17 +587,17 @@ fn main() -> ExitCode {
         .as_ref()
         .is_some_and(|s| s.as_encoded_bytes().starts_with(b"-"))
     {
-        eprintln!("{USAGE}");
+        say(format_args!("{USAGE}\n"));
         return ExitCode::from(2);
     }
     let arguments: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let mut g: G = match Grift::new() {
         Ok(g) => g,
         Err(e) => {
-            eprintln!(
-                "grift: the library failed to load ({} values)",
+            say(format_args!(
+                "grift: the library failed to load ({} values)\n",
                 e.values.len()
-            );
+            ));
             return ExitCode::FAILURE;
         }
     };
@@ -614,6 +619,7 @@ fn main() -> ExitCode {
         exit: None,
         stop: g.interrupter(),
         started: Instant::now(),
+        script: script.as_ref().map(PathBuf::from),
     };
     let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
     if let Err(e) = set_up(&mut g, &mut r, &arguments, script_path.as_deref()) {
@@ -641,13 +647,13 @@ fn main() -> ExitCode {
     let text = match text {
         Ok(text) => text,
         Err(e) => {
-            eprintln!("grift: {name}: {e}");
+            say(format_args!("grift: {name}: {e}\n"));
             return ExitCode::from(2);
         }
     };
     let done = g.evaluate_in(&mut r, &top, &name, &text);
-    match (ended(&r), done) {
-        (Some(status), _) => status,
+    match (r.exit, done) {
+        (Some(status), _) => ExitCode::from(status),
         (None, Ok(_)) => ExitCode::SUCCESS,
         (None, Err(e)) => report(&g, &name, &e),
     }

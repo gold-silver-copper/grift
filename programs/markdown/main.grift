@@ -211,19 +211,36 @@
            (opens? (and!? (not? (white? (byte-at s (add at n))))
                           (or!? (not? (same? b underscore))
                                 (not? (word-byte? (byte-at s (subtract at 1)))))))
-           ; Emphasis of size bytes opens with the last of them; the ones before it are text.
+           ; The size bytes at opener up to end, as emphasis; the bytes before opener are text.
+           (wrap (lambda! (opener size end open close)
+                   (if! (same? end ())
+                     ()
+                     (list (string-append (byte-substring s at opener) open
+                                          (render-inline (byte-substring s (add opener size) end)) close)
+                           (add end size)))))
+           ; Emphasis of size bytes opens with the last of them.
            (try (lambda! (size open close)
-                  (let! ((opener (add at (subtract n size)))
-                         (end (closing-run s (add opener size) b size)))
-                    (if! (same? end ())
-                      ()
-                      (list (string-append (byte-substring s at opener) open
-                                           (render-inline (byte-substring s (add opener size) end)) close)
-                            (add end size)))))))
+                  (let! ((opener (add at (subtract n size))))
+                    (wrap opener size (closing-run s (add opener size) b size) open close))))
+           ; The last three bytes as emphasis of size outer around one of size inner, which
+           ; closes first: ***a** b* and ***a* b**.
+           (around (lambda! (outer inner open close)
+                     (let! ((opener (add at (subtract n 3)))
+                            (end (closing-run s (add opener 3) b inner)))
+                       (wrap opener outer
+                             (if! (same? end ()) () (closing-run s (add end inner) b outer))
+                             open close)))))
       (if! opens?
         (let! ((three (if! (less-than? 2 n) (try 3 "<em><strong>" "</strong></em>") ()))
-               (two (if! (and!? (same? three ()) (less-than? 1 n)) (try 2 "<strong>" "</strong>") ())))
+               (split? (and!? (same? three ()) (less-than? 2 n)))
+               (em (if! split? (around 1 2 "<em>" "</em>") ()))
+               (strong (if! (and!? split? (same? em ())) (around 2 1 "<strong>" "</strong>") ()))
+               (two (if! (and!? (same? three ()) (same? em ()) (same? strong ()) (less-than? 1 n))
+                      (try 2 "<strong>" "</strong>")
+                      ())))
           (conditional! ((pair? three) three)
+                        ((pair? em) em)
+                        ((pair? strong) strong)
                         ((pair? two) two)
                         (#true (try 1 "<em>" "</em>"))))
         ()))))
@@ -278,6 +295,22 @@
                   ())))))
         (#true ())))))
 
+; The text of rendered inlines, for an image's description: tags go, and an image inside leaves
+; its own description. Every < and > in text is escaped, so these are all tags.
+(define! plain-text
+  (lambda! (html)
+    (let! ((open (string-search html "<" 0)))
+      (if! (same? open ())
+        html
+        (let! ((close (string-search html ">" open))
+               (tag (byte-substring html open close))
+               (alt (string-search tag "alt=\"" 0)))
+          (string-append (byte-substring html 0 open)
+                         (if! (same? alt ())
+                           ""
+                           (byte-substring tag (add alt 5) (string-search tag "\"" (add alt 5))))
+                         (plain-text (from-byte html (add close 1)))))))))
+
 ; A link, or with image #true an image, whose [ is at `at`: (html next) or ().
 (define! link-at
   (lambda! (s at image)
@@ -295,7 +328,7 @@
                    (text (byte-substring s (add at 1) close))
                    (title-attribute (if! (same? title "") "" (string-append " title=\"" (escape-html title) "\""))))
               (list (if! image
-                      (string-append "<img src=\"" (encode-url destination) "\" alt=\"" (escape-html text) "\""
+                      (string-append "<img src=\"" (encode-url destination) "\" alt=\"" (plain-text (render-inline text)) "\""
                                      title-attribute " />")
                       (string-append "<a href=\"" (encode-url destination) "\"" title-attribute ">"
                                      (render-inline text) "</a>"))

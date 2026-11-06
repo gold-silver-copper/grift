@@ -1087,6 +1087,15 @@ const FLOATS: [f64; 12] = [
 ];
 
 #[test]
+fn a_token_with_two_signs_is_a_symbol() {
+    let mut g = grift();
+    for token in ["--5", "+-5", "-+1.5", "++1"] {
+        let forms = g.read(token).unwrap();
+        assert_eq!(show(&g, &forms), format!("({token})"));
+    }
+}
+
+#[test]
 fn floats_read_back_as_they_print() {
     let mut g = grift();
     for x in FLOATS {

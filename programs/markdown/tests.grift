@@ -23,6 +23,14 @@
  "*an **inner** strong* and **an *inner* em**\n"
  "<p><em>an <strong>inner</strong> strong</em> and <strong>an <em>inner</em> em</strong></p>\n")
 
+("strong or emphasis closing first"
+ "***foo** bar*\n\n***foo* bar**\n\n***foo** *a\n"
+ "<p><em><strong>foo</strong> bar</em></p>\n<p><strong><em>foo</em> bar</strong></p>\n<p>*<strong>foo</strong> *a</p>\n")
+
+("an image's description is plain text"
+ "![*cat* and `dog`, ![a](b)](x \"t\")\n"
+ "<p><img src=\"x\" alt=\"cat and dog, a\" title=\"t\" /></p>\n")
+
 ("emphasis that isn't"
  "snake_case_name, 2 * 3 * 4, and a lone *star\n"
  "<p>snake_case_name, 2 * 3 * 4, and a lone *star</p>\n")

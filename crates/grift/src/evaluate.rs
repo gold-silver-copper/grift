@@ -1261,7 +1261,7 @@ impl<T> Grift<T> {
         }
     }
 
-    /// Whether `x` and `y` are the same value: equal integers, symbols and strings, floats
+    /// Whether `x` and `y` are the same value: equal integers, symbols, strings and bytes, floats
     /// with the same bits, and otherwise the same object.
     fn same(&self, x: Value, y: Value) -> Result<bool, Error> {
         Ok(match (x, y) {
@@ -1326,7 +1326,11 @@ impl<T> Grift<T> {
         let mut seen: Seen<Symbol> = Seen::default();
         let mut todo = Vec::new();
         push(&mut todo, tree)?;
+        let mut walked = 0;
         while let Some(t) = todo.pop() {
+            if self.walk_stopped(&mut walked) {
+                return Err(Error::new(K::Interrupted, &[]));
+            }
             match t {
                 Value::Symbol(s) => {
                     seen.try_reserve(1).map_err(|_| Error::oom())?;
@@ -1360,8 +1364,10 @@ impl<T> Grift<T> {
         let mut work = std::mem::take(&mut self.machine.work);
         work.clear();
         let mut result = push(&mut work, (tree, value));
+        let mut walked = 0;
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = match (t, v) {
+                _ if self.walk_stopped(&mut walked) => Err(Error::new(K::Interrupted, &[])),
                 (Value::Symbol(s), _) => bindings
                     .try_reserve(1)
                     .map(|()| {

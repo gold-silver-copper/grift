@@ -65,6 +65,13 @@ impl Control {
         self.asked.load(Ordering::Acquire) && self.requested(run)
     }
 
+    /// Whether a stop of `run` is waiting, leaving it to be acted on at the machine's next check.
+    pub fn waiting(&self, run: u64) -> bool {
+        run != 0
+            && self.asked.load(Ordering::Acquire)
+            && self.mailboxes().iter().any(|m| m.waiting(run))
+    }
+
     #[cold]
     fn requested(&self, run: u64) -> bool {
         // With no run in progress, never: a mailbox a stop is still writing may hold its new count
