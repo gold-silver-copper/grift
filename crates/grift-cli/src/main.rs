@@ -391,7 +391,8 @@ fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Val
 }
 
 /// `(exit status)`: ends the run with `status`, 0 to 255. The program stops at its next step,
-/// as when the host interrupts it, so no `catch!` can keep it going; its cleanups run.
+/// as when the host interrupts it, so no `catch!` can keep it going. A `finally!` whose body it
+/// leaves runs its cleanup forms; a cleanup that calls it ends there.
 fn exit(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     match args {
         [Value::Integer(n)] => {

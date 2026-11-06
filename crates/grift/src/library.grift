@@ -90,7 +90,7 @@
                 (context caller)
                 (bind-each #inert bindings (context caller)))))
        ; finally!: the body's value, after the cleanup forms have run. They run also when an
-       ; error leaves the body, and the error then goes on unchanged.
+       ; error leaves the body, and the error then goes on, unless one of them raises its own.
        (vau! (body . cleanup) caller
          (evaluate-with-cleanup body caller (wrap (vau! () #ignore (run cleanup caller)))))
        ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then

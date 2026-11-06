@@ -110,7 +110,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `script-path` | The script's path, as given; unbound when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
 | `(environment-variable name)` | Its value, a string; `unset-variable` when it has none. |
-| `(exit status)` | Ends the run with `status`, 0 to 255. The program stops at its next step, as when the host interrupts it: no `catch!` can keep it going, and its cleanups run. |
+| `(exit status)` | Ends the run with `status`, 0 to 255. The program stops at its next step, as when the host interrupts it: no `catch!` can keep it going. A `finally!` whose body it leaves runs its cleanup forms; a cleanup that calls `exit` ends there, its later forms cut. |
 | `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it), `output` and `error-output` (what it wrote, as strings). |
 
 Call an operation a context holds by looking it up there: `((evaluate-in! write f) "text")`. The
@@ -231,12 +231,15 @@ fn main() -> Result<(), Error> {
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
   any thread stops the run in progress at its next step, inside a long walk of a tree, or as its
-  last host call returns, with the error `interrupted` (cleanups run), and says whether there was a
-  run to stop. A stop when no run is
-  in progress does nothing, and one never reaches a later run; each stop is acted on once, so a later
-  one stops a cleanup that doesn't end. grift sets no limit of its own; a timer thread holding an
-  interrupter is how the host applies one. A host function that panics, or replaces the interpreter
-  it was given, ends the run it was called from (`foreign-value`).
+  last host call returns, with the error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
+  run about to end can still return its value. `interrupted` runs cleanups on its way out as any
+  error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
+  form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
+  waiting together count as one; a later stop stops the run again, even in a cleanup that doesn't
+  end. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  host applies one. A host function that panics ends the run it was called from: the panic goes on
+  to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
+  interpreter it was given ends the run with `foreign-value`.
 - **A returned `Value` stays valid until the next `evaluate` or `call`**, which may collect it.
   `evaluate_in` does too. `keep(value)` gives a `Kept` that holds it until `release(kept)`;
   `kept(&k)` reads it. Every
