@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "A tiny Kernel-style Lisp built on fexprs, for embedding in Rust"
+repository = "https://github.com/gold-silver-copper/grift"
+readme = "README.md"
+keywords = ["lisp", "fexpr", "kernel", "embedded", "interpreter"]
+categories = ["compilers"]
 
 [lints.rust]
 unsafe_code = "forbid"
