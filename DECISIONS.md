@@ -1435,7 +1435,7 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     nothing catches, so every cleanup runs. `parked()` counts these, and a dropped handle isn't the
     end of its run: `forgotten()` gives a new one. (`abandon_runs_every_cleanup_and_nothing_catches_it`,
     `a_dropped_handle_is_found_again_and_its_run_stays_alive_until_then`)
-  - **What `abandon` does to a cleanup.** One that errors ends there; `abandoned` goes on. One that
+  - **What `abandon` does to a cleanup**, all the forms of one `finally!`. One that errors ends there, its later forms not run; `abandoned` goes on, and the next one out runs. One that
     parks fails at that call with `cannot-park`, since nothing could take the run up. One that never
     ends holds `abandon` up: it is the host's to stop. One that is stopped ends there with
     `interrupted`, the next runs, and `interrupted` comes back. One that can't be called for lack of

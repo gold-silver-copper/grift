@@ -253,15 +253,17 @@ impl<T> Grift<T> {
     /// [`Interrupter`](crate::Interrupter): it works however stops behave, and a stop that came
     /// before it is no part of it.
     ///
-    /// Each cleanup is a call like any other, on its way out of the run:
-    /// - one that **errors** ends there; `abandoned` stays the error, and the next cleanup runs;
+    /// Each `finally!` a run is inside has its cleanup, all its forms together, and that is a call
+    /// like any other on the way out of the run:
+    /// - one that **errors** ends there, its later forms not run; `abandoned` stays the error, and
+    ///   the next `finally!` out runs its cleanup;
     /// - one that **parks** fails at that call with `cannot-park`, and goes on from there as for any
     ///   error: after `abandon` the run is gone, so nothing could take it up. [`Grift::can_park`]
     ///   lets its host function do something else;
     /// - one that **never ends** holds up `abandon`, as it would any run: it is the host's to stop;
-    /// - one that **is stopped** ends there with `interrupted`, and the next cleanup runs, so several
+    /// - one that **is stopped** ends there with `interrupted`, and the next one out runs, so several
     ///   that never end take as many stops. `interrupted` is then what comes back;
-    /// - one with **no memory to be called** is passed over, the next is tried, and `out-of-memory`
+    /// - one with **no memory to be called** is passed over, the next one out is tried, and `out-of-memory`
     ///   is what comes back.
     ///
     /// Refused, the run waiting still and the handle back in [`ResumeError::parked`], as that

@@ -310,7 +310,7 @@ fn main() -> Result<(), Error> {
   it by value, so a second resume doesn't compile.
 - **`abandon(state, parked)`** is how a run that won't be resumed ends: the waiting call raises
   `abandoned`, which nothing catches, every `finally!` runs, and you get back the error the run ended
-  with. A cleanup that errors ends there, and the next runs. One that parks fails at that call with
+  with. A cleanup (all the forms of one `finally!`) that errors ends there, and the next one out runs. One that parks fails at that call with
   `cannot-park` (`can_park()` tells its host function). One that never ends holds `abandon` up until
   you stop it through an `Interrupter`; a stopped one ends there with `interrupted`, the next runs, and
   `interrupted` is what comes back. With no memory to call a cleanup it's passed over, the next is
@@ -332,6 +332,9 @@ fn main() -> Result<(), Error> {
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.
+
+`examples/emacs` runs real shell commands this way: each command is a run with a `finally!` around
+its wait, and the editor stays responsive. Its driver is `examples/emacs/drive/`.
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
