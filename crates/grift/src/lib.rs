@@ -103,9 +103,10 @@ impl Hash for Owner {
 }
 
 /// A host function. It receives the interpreter, the host's state (the one passed to
-/// [`Grift::evaluate`] or [`Grift::call`]) and the evaluated arguments. One that panics, or
-/// replaces the interpreter it was given, ends the run it was called from: the interpreter answers
-/// `foreign-value` and starts its next evaluation afresh.
+/// [`Grift::evaluate`] or [`Grift::call`]) and the evaluated arguments. One that panics ends the
+/// run it was called from: the panic goes on to the host and no cleanup runs. One that replaces
+/// the interpreter it was given ends the run too: the interpreter answers `foreign-value`. Either
+/// way the interpreter starts its next evaluation afresh.
 pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>;
 
 /// What went wrong: a symbol naming the kind of error, the values involved, and where.
@@ -800,8 +801,8 @@ impl<T> Grift<T> {
         self.names.get(s.0 as usize).map_or("", |n| n)
     }
 
-    /// Whether a stop of the run in progress came since the last one acted on: each stops it
-    /// once, so its cleanups run, and a later one stops it again.
+    /// Whether a stop of the run in progress came since the last one acted on: those waiting
+    /// count as one, and a later one stops it again.
     #[inline(always)]
     pub(crate) fn interrupted(&self) -> bool {
         self.control.stopped(self.run)
