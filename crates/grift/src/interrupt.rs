@@ -111,11 +111,12 @@ impl Control {
 }
 
 /// Stops the run of its [`Grift`](crate::Grift) that is in progress, from any thread: the run
-/// ends with the error `interrupted` at its next step, and its cleanups run. A stop asked for
-/// while no run is in progress does nothing, and one never reaches a run that starts after it
-/// returns. Each stop is acted on once: the run's cleanups run, and a later stop of the same run,
-/// say of a cleanup that doesn't end, interrupts it again. `Send`, not `Sync`: each clone is a
-/// handle of its own, used by one thread at a time, with a mailbox of a few bytes while it lives.
+/// ends with the error `interrupted` at its next step, or inside a long walk of a tree, and its
+/// cleanups run. A stop asked for while no run is in progress does nothing, and one never reaches
+/// a run that starts after it returns. Each stop is acted on once: the run's cleanups run, and a
+/// later stop of the same run, say of a cleanup that doesn't end, interrupts it again. `Send`, not
+/// `Sync`: each clone is a handle of its own, used by one thread at a time, with a mailbox of a few
+/// bytes while it lives.
 ///
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;

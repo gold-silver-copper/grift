@@ -141,8 +141,8 @@ impl Error {
 /// Why [`Grift::write`] or [`Grift::describe`] stopped.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WriteError {
-    /// A value can't be written: `stale-value`, `foreign-value`, or `out-of-memory` when the
-    /// printer's own stack can't grow.
+    /// A value can't be written: `stale-value`, `foreign-value`, `interrupted` when a stop reached
+    /// a long print, or `out-of-memory` when the printer's own stack can't grow.
     Value(Error),
     /// The output refused the text.
     Output,

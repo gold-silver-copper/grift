@@ -1321,7 +1321,11 @@ impl<T> Grift<T> {
     /// Checks a parameter tree: symbols, `#ignore`, `()` and pairs, no symbol twice, and a
     /// context parameter that is `#ignore` or a symbol not in the tree. The number of bindings
     /// a call makes.
-    fn check_parameters(&mut self, tree: Value, context_parameter: Value) -> Result<usize, Error> {
+    pub(crate) fn check_parameters(
+        &mut self,
+        tree: Value,
+        context_parameter: Value,
+    ) -> Result<usize, Error> {
         let bad = |v: Value| Error::new(K::ParameterError, &[v]);
         let mut seen: Seen<Symbol> = Seen::default();
         let mut todo = Vec::new();
@@ -1355,7 +1359,7 @@ impl<T> Grift<T> {
     }
 
     /// Matches a checked parameter tree to a value, binding its symbols in `bindings`.
-    fn match_tree(
+    pub(crate) fn match_tree(
         &mut self,
         bindings: &mut Bindings,
         tree: Value,

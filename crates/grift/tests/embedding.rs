@@ -543,7 +543,10 @@ fn a_timer_thread_sets_a_time_limit() {
 }
 
 /// Makes `shared`, a few objects that are a tree of 2^50 leaves, then runs `step` on a thread of
-/// its own while stopping it from here: whether the run ended in `interrupted` in time.
+/// its own while stopping it from here: whether the run ended in `interrupted` in time. `step` is
+/// a few steps of the machine away after `(started)`, so the wait puts the first stop inside its
+/// long walk: a stop that came sooner would end the run before it. The crate's own test
+/// `each_long_walk_finds_a_stop_by_itself` makes that order certain, one walk at a time.
 fn stopped_in_time(step: &'static str) -> bool {
     let (handle, stopper) = mpsc::channel();
     let (tell, told) = mpsc::channel();
@@ -566,6 +569,7 @@ fn stopped_in_time(step: &'static str) -> bool {
     });
     let mut stopper: Interrupter = stopper.recv().unwrap();
     told.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
     for _ in 0..300 {
         stopper.stop();
         if let Ok(end) = finished.recv_timeout(Duration::from_millis(10)) {

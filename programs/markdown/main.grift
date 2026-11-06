@@ -48,9 +48,6 @@
 
 (define! between? (lambda! (low x high) (and!? (not? (less-than? x low)) (not? (less-than? high x)))))
 (define! digit? (lambda! (b) (between? 48 b 57)))
-; Letters, digits and every byte of a non-ASCII character: what `_` may not touch inside a word.
-(define! word-byte?
-  (lambda! (b) (or!? (digit? b) (between? 65 b 90) (between? 97 b 122) (less-than? 127 b))))
 (define! punctuation?
   (lambda! (b) (or!? (between? 33 b 47) (between? 58 b 64) (between? 91 b 96) (between? 123 b 126))))
 (define! white? (lambda! (b) (or!? (same? b space) (same? b newline-byte) (same? b -1))))
@@ -167,83 +164,76 @@
         (byte-substring flat 1 (subtract size 1))
         flat))))
 
-; Where the delimiter run that closes emphasis opened at start (with size 1, 2 or 3 of byte b)
-; begins, or (). A closer is a run of at least size bytes b with no white space before it (and,
-; for _, no word after it); code spans and escapes are skipped, and a run of the other size opens
-; emphasis of its own that must close first, so *a **b** c* nests.
-(define! closing-run
-  (lambda! (s start b size)
-    (define! closes?
-      (lambda! (j r)
-        (and!? (less-than? start j) (not? (less-than? r size))
-               (not? (white? (byte-at s (subtract j 1))))
-               (or!? (not? (same? b underscore)) (not? (word-byte? (byte-at s (add j r))))))))
-    (define! look
-      (lambda! (j)
-        (let! ((c (byte-at s j)))
-          (conditional!
-            ((same? c -1) ())
-            ((same? c backslash) (look (add j 2)))
-            ((same? c backtick)
-              (let! ((n (run-of s j backtick)) (close (backtick-run s (add j n) n)))
-                (look (if! (same? close ()) (add j n) (add close n)))))
-            ((same? c b)
-              (let! ((r (run-of s j b)))
-                (conditional!
-                  ((and!? (same? size 1) (less-than? 1 r))
-                    (let! ((inner (closing-run s (add j 2) b 2)))
-                      (conditional! ((not? (same? inner ())) (look (add inner 2)))
-                                    ((closes? j r) j)
-                                    (#true (look (add j r))))))
-                  ((and!? (same? size 2) (same? r 1))
-                    (let! ((inner (closing-run s (add j 1) b 1)))
-                      (look (if! (same? inner ()) (add j 1) (add inner 1)))))
-                  ((closes? j r) j)
-                  (#true (look (add j r))))))
-            (#true (look (add j 1)))))))
-    (look start)))
-
-; Emphasis opened at `at`: (html next) or ().
-(define! emphasis-at
+; The run of * or _ at `at`, by CommonMark's rules: (at size opens? closes? whole), whole being
+; the size it was read with. Punctuation beside a run counts as space unless the other side is
+; a word, so a run between two punctuation marks can do both. Only ASCII counts as punctuation
+; or space.
+(define! delimiter-run
   (lambda! (s at)
     (let! ((b (string-byte s at))
            (n (run-of s at b))
-           (opens? (and!? (not? (white? (byte-at s (add at n))))
-                          (or!? (not? (same? b underscore))
-                                (not? (word-byte? (byte-at s (subtract at 1)))))))
-           ; The size bytes at opener up to end, as emphasis; the bytes before opener are text.
-           (wrap (lambda! (opener size end open close)
-                   (if! (same? end ())
-                     ()
-                     (list (string-append (byte-substring s at opener) open
-                                          (render-inline (byte-substring s (add opener size) end)) close)
-                           (add end size)))))
-           ; Emphasis of size bytes opens with the last of them.
-           (try (lambda! (size open close)
-                  (let! ((opener (add at (subtract n size))))
-                    (wrap opener size (closing-run s (add opener size) b size) open close))))
-           ; The last three bytes as emphasis of size outer around one of size inner, which
-           ; closes first: ***a** b* and ***a* b**.
-           (around (lambda! (outer inner open close)
-                     (let! ((opener (add at (subtract n 3)))
-                            (end (closing-run s (add opener 3) b inner)))
-                       (wrap opener outer
-                             (if! (same? end ()) () (closing-run s (add end inner) b outer))
-                             open close)))))
-      (if! opens?
-        (let! ((three (if! (less-than? 2 n) (try 3 "<em><strong>" "</strong></em>") ()))
-               (split? (and!? (same? three ()) (less-than? 2 n)))
-               (em (if! split? (around 1 2 "<em>" "</em>") ()))
-               (strong (if! (and!? split? (same? em ())) (around 2 1 "<strong>" "</strong>") ()))
-               (two (if! (and!? (same? three ()) (same? em ()) (same? strong ()) (less-than? 1 n))
-                      (try 2 "<strong>" "</strong>")
-                      ())))
-          (conditional! ((pair? three) three)
-                        ((pair? em) em)
-                        ((pair? strong) strong)
-                        ((pair? two) two)
-                        (#true (try 1 "<em>" "</em>"))))
-        ()))))
+           (before (byte-at s (subtract at 1)))
+           (after (byte-at s (add at n)))
+           (left (and!? (not? (white? after))
+                        (or!? (not? (punctuation? after)) (white? before) (punctuation? before))))
+           (right (and!? (not? (white? before))
+                         (or!? (not? (punctuation? before)) (white? after) (punctuation? after)))))
+      (if! (same? b star)
+        (list at n left right n)
+        (list at n
+              (and!? left (or!? (not? right) (punctuation? before)))
+              (and!? right (or!? (not? left) (punctuation? after)))
+              n)))))
+
+; A piece of a text's HTML: a run still waiting to open, which so far is only its own bytes.
+(define! piece-text
+  (lambda! (s piece)
+    (if! (pair? piece)
+      (byte-substring s (first piece) (add (first piece) (second piece)))
+      piece)))
+
+; The text pieces on top of out joined into one, with text after them: a run that closed nothing
+; looked through them all, and the next one need not.
+(define! joined
+  (lambda! (out text)
+    (if! (and!? (pair? out) (not? (pair? (first out))))
+      (joined (rest out) (string-append (first out) text))
+      (pair text out))))
+
+; Adds the run to out, the HTML so far, last piece first. It closes the nearest run it can pair
+; with, whatever lies between becoming text, as often as its size allows; what's left waits to
+; open, if it can. Two bytes on each side make strong, or else one makes emphasis.
+(define! close-emphasis
+  (lambda! (s out run)
+    (let! (((at n opens closes whole) run)
+           (pairs?
+             (lambda! ((opener size can-open can-close opener-whole))
+               (and!? (same? (string-byte s opener) (string-byte s at))
+                      (not? (and!? (or!? opens can-close)
+                                   (same? (remainder (add whole opener-whole) 3) 0)
+                                   (not? (same? (remainder whole 3) 0)))))))
+           (seek
+             (lambda! (below inside)
+               (conditional!
+                 ((same? below ()) ())
+                 ((and!? (pair? (first below)) (pairs? (first below))) (list below inside))
+                 (#true (seek (rest below) (pair (piece-text s (first below)) inside))))))
+           (found (if! closes (seek out ()) ())))
+      (if! (same? found ())
+        (if! opens (pair run (joined out "")) (joined out (piece-text s run)))
+        (let! ((((opener . under) inside) found)
+               ((from size can-open can-close opener-whole) opener)
+               (used (if! (and!? (less-than? 1 size) (less-than? 1 n)) 2 1))
+               (left (if! (same? size used)
+                       under
+                       (pair (list from (subtract size used) can-open can-close opener-whole) under)))
+               (done (pair (string-append (if! (same? used 2) "<strong>" "<em>")
+                                          (apply string-append inside)
+                                          (if! (same? used 2) "</strong>" "</em>"))
+                           left)))
+          (if! (same? n used)
+            done
+            (close-emphasis s done (list at (subtract n used) opens closes whole))))))))
 
 ; The offset of the bracket closing the one at `at`, or (): nested brackets count, escapes and
 ; code spans are skipped.
@@ -296,7 +286,8 @@
         (#true ())))))
 
 ; The text of rendered inlines, for an image's description: tags go, and an image inside leaves
-; its own description. Every < and > in text is escaped, so these are all tags.
+; its own description. Every < and > in text is escaped, so these are all tags; a space and a
+; quote are escaped in addresses and titles, so ` alt="` is only ever that attribute.
 (define! plain-text
   (lambda! (html)
     (let! ((open (string-search html "<" 0)))
@@ -304,12 +295,18 @@
         html
         (let! ((close (string-search html ">" open))
                (tag (byte-substring html open close))
-               (alt (string-search tag "alt=\"" 0)))
+               (alt (string-search tag " alt=\"" 0)))
           (string-append (byte-substring html 0 open)
                          (if! (same? alt ())
                            ""
-                           (byte-substring tag (add alt 5) (string-search tag "\"" (add alt 5))))
+                           (byte-substring tag (add alt 6) (string-search tag "\"" (add alt 6))))
                          (plain-text (from-byte html (add close 1)))))))))
+
+; The HTML of the text of a link or image, where it stands: emphasis inside touches its brackets.
+(define! render-bracketed
+  (lambda! (text)
+    (let! ((html (render-inline (string-append "[" text "]"))))
+      (byte-substring html 1 (subtract (string-byte-length html) 1)))))
 
 ; A link, or with image #true an image, whose [ is at `at`: (html next) or ().
 (define! link-at
@@ -328,10 +325,10 @@
                    (text (byte-substring s (add at 1) close))
                    (title-attribute (if! (same? title "") "" (string-append " title=\"" (escape-html title) "\""))))
               (list (if! image
-                      (string-append "<img src=\"" (encode-url destination) "\" alt=\"" (plain-text (render-inline text)) "\""
+                      (string-append "<img src=\"" (encode-url destination) "\" alt=\"" (plain-text (render-bracketed text)) "\""
                                      title-attribute " />")
                       (string-append "<a href=\"" (encode-url destination) "\"" title-attribute ">"
-                                     (render-inline text) "</a>"))
+                                     (render-bracketed text) "</a>"))
                     next))))))))
 
 ; An autolink <scheme:...> at `at`: (html next) or ().
@@ -394,14 +391,16 @@
                            (put at (string-append "<code>" (escape-html (code-span-text (byte-substring s (add at n) close)))
                                                   "</code>")
                                 (add close n)))))
-                     ((or!? (same? c star) (same? c underscore)) (construct (emphasis-at s at)))
+                     ((or!? (same? c star) (same? c underscore))
+                       (let! ((run (delimiter-run s at)) (next (add at (second run))))
+                         (scan next next (close-emphasis s (pair (escape-html (byte-substring s from at)) out) run))))
                      ((same? c open-bracket) (construct (link-at s at #false)))
                      ((and!? (same? c bang) (same? (byte-at s (add at 1)) open-bracket))
                        (let! ((found (link-at s (add at 1) #true)))
                          (if! (same? found ()) (scan from (add at 1) out) (put at (first found) (second found)))))
                      ((same? c less) (construct (autolink-at s at)))
                      (#true (scan from (add at 1) out)))))))))
-      (apply string-append (reverse (scan 0 0 ()))))))
+      (apply string-append (reverse (map (lambda! (piece) (piece-text s piece)) (scan 0 0 ())))))))
 
 ; ---- Block starts
 
