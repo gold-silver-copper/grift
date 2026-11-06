@@ -77,8 +77,7 @@ follows `lambda!`: both name the abstraction they make).
   in `!?` (`and!?`).
 - A constructor is named after what it makes (`pair`, `list`, `context`, `error`).
 - A conversion spells out `to` (`symbol-to-string`, `string-to-integer`).
-- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`), as
-  in fuxth.
+- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`).
 - Only bindings change, so the combiners that change anything are a short, complete list of verbs
   about bindings: `define!`, `bind` and `unbind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`

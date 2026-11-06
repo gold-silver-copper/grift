@@ -4,8 +4,8 @@
 //! cleanup to finish, where it is in the program and the current [`Mode`]. The collector runs
 //! at the top of the loop and before a host's evaluation or call needs its first slot, with that
 //! state, the root contexts and the new call's checked inputs as its roots. Allocation never
-//! collects: Rust locals stay valid until the next run entry or machine safe point. The loop's
-//! safe point also checks for a stop.
+//! collects: Rust locals stay valid until the next run entry or machine safe point. The loop
+//! checks for a stop just before its safe point.
 //!
 //! Three library forms have a native twin: `if!`, `sequence!` and `string-search` are the
 //! library's own operatives, flagged, and run in Rust when their operands have the shape the twin
@@ -347,16 +347,16 @@ impl<T> Grift<T> {
             {
                 self.machine.steps += 1;
             }
+            // Before every step and as the run ends: the last step may have been a long native or
+            // host call, and a stop that came during it stops the run here.
+            if self.interrupted() {
+                mode = self.unwind(Error::new(K::Interrupted, &[]), floor)?;
+                continue;
+            }
             if let Mode::Return(v) = mode
                 && self.machine.frames.len() <= floor
             {
-                // The last step may have been a long native or host call, with no safe point
-                // after it: a stop that came during it stops the run here.
-                if !self.interrupted() {
-                    return Ok(v);
-                }
-                mode = self.unwind(Error::new(K::Interrupted, &[]), floor)?;
-                continue;
+                return Ok(v);
             }
             let next = self.safe_point(mode).and_then(|()| match mode {
                 Mode::Host(h, base) => self.host(state.as_deref_mut(), h, base),
@@ -374,14 +374,11 @@ impl<T> Grift<T> {
         }
     }
 
-    /// The safe point: the machine's state is all there is, so the collector may run, and
-    /// stopping here leaves nothing half done. Let the optimizer choose inlining: forcing it
-    /// keeps this check's temporaries on every suspended run's stack in unoptimized hosts.
+    /// The safe point: the machine's state is all there is, so the collector may run. Let the
+    /// optimizer choose inlining: forcing it keeps this check's temporaries on every suspended
+    /// run's stack in unoptimized hosts.
     #[inline]
     fn safe_point(&mut self, mode: Mode) -> Result<(), Error> {
-        if self.interrupted() {
-            return Err(Error::new(K::Interrupted, &[]));
-        }
         if self.heap.due() {
             let current = match mode {
                 Mode::Evaluate(x, context) => [x, Value::Context(context)],
@@ -791,11 +788,10 @@ impl<T> Grift<T> {
                 while let Value::Pair(r) = rest {
                     rest = self.pair_at(r)?.1;
                 }
-                match (operands, rest) {
-                    (Value::EmptyList, _) => Mode::Return(Value::Inert),
-                    (_, Value::EmptyList) => self.next_form(operands, context, at)?,
-                    _ => return Ok(None),
+                if rest != Value::EmptyList {
+                    return Ok(None);
                 }
+                self.next_form(operands, context, at)?
             }
             Native::StringSearch => {
                 let Some([Value::String(t), Value::String(p), Value::Integer(i)]) =
@@ -834,7 +830,7 @@ impl<T> Grift<T> {
         Ok((rest == Value::EmptyList).then_some(items))
     }
 
-    /// Evaluates the first of `forms`, a non-empty proper list; the last one as a tail call.
+    /// Evaluates the first of `forms`, a proper list, the last as a tail call; none is `#inert`.
     fn next_form(
         &mut self,
         forms: Value,
