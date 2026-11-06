@@ -322,7 +322,8 @@ fn main() -> Result<(), Error> {
   cleanups, the same as a process dying.
 - **Stops and limits.** A stop reaches the run in progress. A parked run isn't: `stop()` then does
   nothing and says `false`. Each `resume` is a run of its own for stops. A stop that reaches a run
-  as it would park stops it instead, so a stop that said `true` never finds its run parked.
+  as it would park stops it instead, so no stop is lost at a park. The run's cleanups then run, and
+  one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
   Out of memory starts by collecting, so cleanups have what's free; `resume` itself needs none.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
   frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function.

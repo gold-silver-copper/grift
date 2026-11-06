@@ -146,8 +146,9 @@ fn deliver(list: &[Arc<Mailbox>], control: &Control, run: u64) -> bool {
 /// while no run is in progress does nothing, and one never reaches a run that starts after it
 /// returns. Each stop is acted on once: the run's cleanups run, and a later stop of the same run,
 /// say of a cleanup that doesn't end, interrupts it again. A parked run is not in progress, so a
-/// stop then does nothing and says so; one that reached a run as it parked stops it instead of
-/// letting it park, and each [`Grift::resume`](crate::Grift::resume) is a run of its own. `Send`, not `Sync`: each clone is a
+/// stop then does nothing and says so; one that reached a run as it parked stops it there, its
+/// cleanups then running, and they may park in turn; and each [`Grift::resume`](crate::Grift::resume)
+/// is a run of its own. `Send`, not `Sync`: each clone is a
 /// handle of its own, used by one thread at a time, with a mailbox of a few bytes while it lives.
 ///
 /// ```

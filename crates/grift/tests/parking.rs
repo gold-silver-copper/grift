@@ -880,10 +880,11 @@ mod abandon_and_the_stop_rule {
 }
 
 /// The moment a run parks, against a stop on another thread: `stop` says `true` only if the run
-/// was in progress, and then it must not simply go on later as if nothing was asked. So a run that
-/// came back parked was not the one a `true` was for.
+/// was in progress, and then it must not simply go on later as if nothing was asked. This run has
+/// no cleanup that could park after the stop acted, so a run that came back parked was not the
+/// one a `true` was for.
 #[test]
-fn a_stop_that_says_true_never_finds_its_run_parked() {
+fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 

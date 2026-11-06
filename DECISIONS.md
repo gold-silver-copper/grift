@@ -1466,10 +1466,12 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     `stop()` does nothing and says `false`. Each `resume` is a new outer run with its own generation,
     so "never a later one" (G-130) still holds. In the moment a run parks, a stop and the park see each
     other: the stop says it is stopping and then reads the run, the park unpublishes the run and
-    then looks for stops, and if it finds one the run is stopped there, not parked. So a stop that
-    says `true` never finds its run parked, tested against real races on two threads.
+    then looks for stops, and if it finds one the run is stopped there, not parked. So no stop is lost
+    at a park, tested against real races on two threads and step by step. The run's cleanups then
+    run, and one of them may park, the stop having been acted on, so `true` and `Ran::Parked` can go together.
     Out of memory at the park fails that call; `resume` needs no memory.
-    grift has no depth limit: a 200,000-deep run parks and comes back. (`a_stop_that_says_true_never_finds_its_run_parked`,
+    grift has no depth limit: a 200,000-deep run parks and comes back. (`a_stop_that_says_true_is_never_lost_as_its_run_parks`, `a_stop_under_way_as_a_run_parks_stops_it` and
+    `a_late_stop_of_the_last_run_does_not_reach_a_resumed_one` in `parked_tests`,
     `a_stop_while_parked_finds_nothing_and_reaches_no_later_run`, `a_stop_during_the_call_that_would_park_stops_the_run_instead`,
     `resuming_needs_no_memory` and `a_run_with_no_memory_to_park_fails_there_and_its_cleanups_run` in `parked_tests`)
   - **Out of memory while unwinding.** It now collects when the unwinding starts, and a cleanup that
