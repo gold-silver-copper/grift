@@ -120,14 +120,48 @@ impl Parked {
 impl Drop for Parked {
     fn drop(&mut self) {
         if let Some(control) = self.owner.0.upgrade() {
-            let mut forgotten = control.forgotten();
-            // With no room it stays counted by `Grift::parked`, as a kept value does.
-            if forgotten.try_reserve(1).is_ok() {
-                forgotten.push(self.name);
-            }
+            // Its park made the room, so this needs no memory and the run can always be found.
+            control.forgotten().push(self.name);
         }
     }
 }
+
+/// A clone would be a second way to take up one run.
+///
+/// ```compile_fail
+/// fn second(parked: &grift::Parked) -> grift::Parked {
+///     parked.clone()
+/// }
+/// ```
+#[cfg(doctest)]
+struct ParkedIsNotClone;
+
+/// `resume` and `abandon` use the handle up: by value they are these types, the only reason the
+/// next two examples don't compile.
+///
+/// ```
+/// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
+/// let _: fn(&mut Grift, &mut (), Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
+///     Grift::resume;
+/// let _: fn(&mut Grift, &mut (), Parked) -> Result<Error, ResumeError> = Grift::abandon;
+/// ```
+#[cfg(doctest)]
+struct HandlesGoInByValue;
+
+/// ```compile_fail
+/// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
+/// let _: fn(&mut Grift, &mut (), &Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
+///     Grift::resume;
+/// ```
+#[cfg(doctest)]
+struct ResumeTakesNoReference;
+
+/// ```compile_fail
+/// use grift::{Error, Grift, Parked, ResumeError};
+/// let _: fn(&mut Grift, &mut (), &Parked) -> Result<Error, ResumeError> = Grift::abandon;
+/// ```
+#[cfg(doctest)]
+struct AbandonTakesNoReference;
 
 /// Why [`Grift::resume`] or [`Grift::abandon`] didn't take the run up, or what ended it.
 #[derive(Debug)]
@@ -365,6 +399,15 @@ impl<T> Grift<T> {
     /// cleanup [`Grift::abandon`] runs.
     pub fn can_park(&self) -> bool {
         self.parking == Parking::Allowed
+    }
+
+    /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
+    /// about to park too: no more runs are parked than there are kept names.
+    pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
+        let (_, kept) = self.context_at(self.kept)?;
+        self.control
+            .room_to_forget(kept.len() + 1)
+            .map_err(|_| local::Error::oom())
     }
 
     /// How many runs are parked. Each holds what it refers to until resumed or abandoned, so a

@@ -105,17 +105,26 @@ impl Inbox {
         let mut s = self.state();
         s.stoppable = false;
         loop {
-            if let Some(b) = s.keys.pop_front() {
-                return Event::Key(b);
-            }
-            if let Some(event) = self.next_job_event(&mut s) {
+            if let Some(event) = self.waiting(&mut s) {
                 return event;
-            }
-            if s.closed {
-                return Event::Closed;
             }
             s = self.wake.wait(s).unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    /// What `next` would give, if anything has come.
+    pub fn ready(&self) -> Option<Event> {
+        let mut s = self.state();
+        s.stoppable = false;
+        self.waiting(&mut s)
+    }
+
+    fn waiting(&self, s: &mut State) -> Option<Event> {
+        if let Some(b) = s.keys.pop_front() {
+            return Some(Event::Key(b));
+        }
+        self.next_job_event(s)
+            .or_else(|| s.closed.then_some(Event::Closed))
     }
 
     fn next_job_event(&self, s: &mut State) -> Option<Event> {

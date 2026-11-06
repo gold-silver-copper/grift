@@ -414,10 +414,17 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
             );
             let _ = out.flush();
         }
-        match h.inbox.next() {
-            Event::Key(b'q') if broken.is_some() => break,
-            Event::Key(_) if broken.is_some() => {}
-            Event::Key(b) => {
+        // Work those runs queued goes on at once, after anything already typed.
+        let queued = !h.spawned.is_empty() || !h.abandoned.is_empty();
+        let event = match queued {
+            true => h.inbox.ready(),
+            false => Some(h.inbox.next()),
+        };
+        match event {
+            None => {}
+            Some(Event::Key(b'q')) if broken.is_some() => break,
+            Some(Event::Key(_)) if broken.is_some() => {}
+            Some(Event::Key(b)) => {
                 if let Some(parked) = runs.keys.pop() {
                     h.inbox.set_stoppable(true);
                     let answer = Ok(Value::Integer(i64::from(b)));
@@ -425,11 +432,11 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
                     runs.settle(g, h, ran);
                 }
             }
-            Event::Closed => {
+            Some(Event::Closed) => {
                 stop_cleanups(g);
                 break;
             }
-            Event::Job(id, event) => {
+            Some(Event::Job(id, event)) => {
                 if let Err(e) = job_event(g, h, id, &event) {
                     report(g, h, "editor-report", &e);
                 }

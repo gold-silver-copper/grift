@@ -58,6 +58,34 @@ fn start(g: &mut Grift<Log>, log: &mut Log, src: &str) -> Result<Ran, Error> {
     g.start_in(log, &top, "script.grift", src)
 }
 
+/// With no memory left at the drop a run would otherwise be lost: its park made the room.
+#[test]
+fn dropping_a_handle_asks_for_no_memory() {
+    let (mut g, mut log) = (grift(), Log::new());
+    let mut handles = Vec::new();
+    for _ in 0..5 {
+        match start(&mut g, &mut log, "(finally! (wait) (note 1))") {
+            Ok(Ran::Parked(p)) => handles.push(p),
+            other => panic!("{other:?}"),
+        }
+    }
+    let room = |g: &Grift<Log>| {
+        let queue = g.control.forgotten();
+        (queue.capacity(), queue.as_ptr())
+    };
+    let before = room(&g);
+    assert!(before.0 >= 5, "room for {}", before.0);
+    drop(handles);
+    assert_eq!(room(&g), before);
+    let mut found = 0;
+    while let Some(p) = g.forgotten() {
+        found += 1;
+        g.abandon(&mut log, p).unwrap();
+    }
+    assert_eq!(found, 5);
+    assert_eq!(log, ["1"; 5]);
+}
+
 #[track_caller]
 fn parked(ran: Result<Ran, Error>) -> Parked {
     match ran {
@@ -668,9 +696,8 @@ mod generated {
         };
         if !allowed.is_empty() && got != &meaning.0 {
             let kind = got.kind.as_deref().unwrap_or("a value");
-            // An error of its own may finish a touched run before what touched it arrived.
             assert!(
-                allowed.contains(&kind) || !touched.abandoned && meaning.0.kind.is_some() && cut,
+                allowed.contains(&kind),
                 "{kind} not in {allowed:?}\n{context}"
             );
         }
@@ -828,6 +855,9 @@ mod generated {
                 3 if !waiting.is_empty() => {
                     let i = r.below(waiting.len() as u64) as usize;
                     let Waiting { run, parked } = waiting.swap_remove(i);
+                    let queue = g.control.forgotten();
+                    assert!(queue.len() < queue.capacity(), "{context}");
+                    drop(queue);
                     drop(parked);
                     let parked = g.forgotten().expect("the handle dropped");
                     let asked = request_id(&g, parked.request()) as u64 / 100_000;

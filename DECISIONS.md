@@ -1469,8 +1469,10 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   - **A run never resumed, and its cleanups.** It stays alive, holding what it refers to, a visible
     leak like a kept value, until the host ends it. `abandon` raises `abandoned` at the wait, which
     nothing catches, so every cleanup runs. `parked()` counts these, and a dropped handle isn't the
-    end of its run: `forgotten()` gives a new one. (`abandon_runs_every_cleanup_and_nothing_catches_it`,
-    `a_dropped_handle_is_found_again_and_its_run_stays_alive_until_then`)
+    end of its run: `forgotten()` gives a new one. A park makes the room for that, so a drop needs no
+    memory and a run can't be lost to one. (`abandon_runs_every_cleanup_and_nothing_catches_it`,
+    `a_dropped_handle_is_found_again_and_its_run_stays_alive_until_then`,
+    `dropping_a_handle_asks_for_no_memory`)
   - **What `abandon` does to a cleanup**, all the forms of one `finally!`. One that errors ends there, its later forms not run; `abandoned` goes on, and the next one out runs. One that
     parks fails at that call with `cannot-park`, since nothing could take the run up. One that never
     ends holds `abandon` up: it is the host's to stop. One that is stopped ends there with

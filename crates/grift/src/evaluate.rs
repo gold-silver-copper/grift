@@ -402,6 +402,7 @@ impl<T> Grift<T> {
         let mut room = Vec::new();
         room.try_reserve_exact(1).map_err(|_| Error::oom())?;
         self.kept_free.try_reserve(1).map_err(|_| Error::oom())?;
+        self.room_to_forget()?;
         let fiber = self.heap.alloc(Object::Fiber(room))?;
         let name = self.keep_local(Value::Pair(fiber))?;
         while !self.control.parks(self.run) {

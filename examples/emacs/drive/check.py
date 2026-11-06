@@ -247,6 +247,28 @@ def waiting_command(binary, work):
     ed.close()
 
 
+def spawned_chain(binary, work):
+    """Work queued by spawned work starts with no key pressed, and a program that keeps spawning
+    leaves typing alone."""
+    ed = fresh(binary, work)
+    done = os.path.join(work, "spawned-chain")
+    if os.path.exists(done):
+        os.remove(done)
+    ed.evaluate(f'(spawn (lambda! () (spawn (lambda! () (spawn (lambda! () (write-file "{done}" "here")))))))')
+    started = ed.wait_until(lambda: os.path.exists(done), 3)
+    beat = os.path.join(work, "spawned-beat")
+    ed.evaluate(f'(define! again (lambda! () (write-file "{beat}" "here") (spawn again)))')
+    ed.evaluate("(again)")
+    ed.keys("typed")
+    typed = ed.wait_until(lambda: any(r.startswith("typed") for r in ed.rows), 3)
+    os.remove(beat)
+    spinning = ed.wait_until(lambda: os.path.exists(beat), 3)
+    report("work queued by spawned work starts by itself, and typing beats a program that keeps spawning",
+           started is not None and typed is not None and spinning is not None,
+           f"started={started} typed={typed} spinning={spinning}")
+    ed.close()
+
+
 def under_a_prompt(binary, work):
     """M-! typed inside a prompt: the prompt stays usable, and the command runs beside it."""
     ed = fresh(binary, work)
@@ -305,7 +327,7 @@ def main():
     os.makedirs(work, exist_ok=True)
     tests = (ends, cancelled, fails, quits, hangs_up, scrolled_back, two_independent,
              prompt_holds_nothing, chosen, runaway, waiting_command, under_a_prompt, run_asks,
-             editor_broken)
+             editor_broken, spawned_chain)
     for test in tests:
         if len(sys.argv) < 4 or test.__name__ in sys.argv[3:]:
             test(binary, work)

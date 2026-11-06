@@ -11,6 +11,7 @@
 //! and then looks for stops. Whichever order they come in, one sees the other: [`Control::parks`].
 
 use std::cell::Cell;
+use std::collections::TryReserveError;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -117,6 +118,13 @@ impl Control {
     /// The parked runs no handle holds. As with the mailboxes, nothing panics under the lock.
     pub fn forgotten(&self) -> MutexGuard<'_, Vec<u32>> {
         self.forgotten.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Room for `runs` in that queue, so that adding one up to there needs no memory.
+    pub fn room_to_forget(&self, runs: usize) -> Result<(), TryReserveError> {
+        let mut forgotten = self.forgotten();
+        let more = runs.saturating_sub(forgotten.len());
+        forgotten.try_reserve(more)
     }
 
     fn mailboxes(&self) -> MutexGuard<'_, Vec<Arc<Mailbox>>> {
