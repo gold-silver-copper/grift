@@ -808,15 +808,11 @@ impl<T> Grift<T> {
     }
 
     /// Starts an outer run, unless one is in progress: the next generation, published for
-    /// interrupters. Whether it started one, which [`Grift::end_run`] then ends. A run this
-    /// interpreter holds that its control no longer publishes was abandoned (a host function
-    /// replaced the interpreter, or panicked): its machine state goes, and this run is an outer one.
+    /// interrupters. Whether it started one, which [`Grift::end_run`] then ends. A run abandoned
+    /// is already gone: every entry goes through [`Grift::prepare`] first.
     pub(crate) fn begin_run(&mut self) -> Result<bool, local::Error> {
         if self.run != 0 {
-            if self.control.active() == self.run {
-                return Ok(false);
-            }
-            self.machine = evaluate::Machine::default();
+            return Ok(false);
         }
         // Generations never repeat, so a late stop can't match a later run.
         self.runs = self

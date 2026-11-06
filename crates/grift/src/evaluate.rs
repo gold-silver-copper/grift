@@ -788,11 +788,10 @@ impl<T> Grift<T> {
                 while let Value::Pair(r) = rest {
                     rest = self.pair_at(r)?.1;
                 }
-                match (operands, rest) {
-                    (Value::EmptyList, _) => Mode::Return(Value::Inert),
-                    (_, Value::EmptyList) => self.next_form(operands, context, at)?,
-                    _ => return Ok(None),
+                if rest != Value::EmptyList {
+                    return Ok(None);
                 }
+                self.next_form(operands, context, at)?
             }
             Native::StringSearch => {
                 let Some([Value::String(t), Value::String(p), Value::Integer(i)]) =
@@ -831,7 +830,7 @@ impl<T> Grift<T> {
         Ok((rest == Value::EmptyList).then_some(items))
     }
 
-    /// Evaluates the first of `forms`, a non-empty proper list; the last one as a tail call.
+    /// Evaluates the first of `forms`, a proper list, the last as a tail call; none is `#inert`.
     fn next_form(
         &mut self,
         forms: Value,
