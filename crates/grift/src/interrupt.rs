@@ -3,8 +3,12 @@
 //! it runs and 0 otherwise. A stop reads it and, if a run is in progress, leaves that number in
 //! the stopping handle's own mailbox; the machine stops only for its own number. So a stop asked
 //! for between runs does nothing, and a late one never reaches a later run. A stop is a load and
-//! three stores, never a lock or a read-modify-write; the machine reads one flag a step, and only
+//! a few stores, never a lock or a read-modify-write; the machine reads one flag a step, and only
 //! once a stop has set it takes the lock and reads the mailboxes.
+//!
+//! A run that parks goes on later, so a stop must not be lost in the moment it parks: a stop first
+//! says it is stopping and then reads the run, and a run about to park first unpublishes itself
+//! and then looks for stops. Whichever order they come in, one sees the other: [`Control::parks`].
 
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -22,6 +26,8 @@ pub(crate) struct Control {
     /// The live interrupters' mailboxes. A stop never takes the lock: registering a handle and
     /// the machine's scan do, so a scan sees every handle linked before it began.
     mailboxes: Mutex<Vec<Arc<Mailbox>>>,
+    /// The kept names of parked runs whose handles were dropped, for the host to find again.
+    forgotten: Mutex<Vec<u32>>,
 }
 
 /// One interrupter's mailbox: the run its last stop was for and how many stops it has made, which
@@ -32,6 +38,8 @@ struct Mailbox {
     requested: AtomicU64,
     count: AtomicU64,
     delivered: AtomicU64,
+    /// Set for as long as the handle's stop takes.
+    stopping: AtomicBool,
 }
 
 impl Mailbox {
@@ -58,6 +66,26 @@ impl Control {
         self.active.load(Ordering::Relaxed)
     }
 
+    /// Unpublishes `run` to park it, unless a stop has reached it: then `run` goes on being the run
+    /// in progress and the stop counts as acted on. A stop that read `run` has said it is stopping
+    /// before this unpublishes it, so the wait below sees it, and that wait is for a few stores,
+    /// as the lock is. One that reads 0 does nothing and says so. The lock comes first so that no
+    /// handle lets go of a waiting mailbox while no run is published.
+    pub fn parks(&self, run: u64) -> bool {
+        let list = self.mailboxes();
+        self.active.store(0, Ordering::SeqCst);
+        for m in list.iter() {
+            while m.stopping.load(Ordering::SeqCst) {
+                std::thread::yield_now();
+            }
+        }
+        let stopped = deliver(&list, self, run);
+        if stopped {
+            self.active.store(run, Ordering::SeqCst);
+        }
+        !stopped
+    }
+
     /// Whether a stop of `run` was asked for since the last one acted on. Read at every step: one
     /// load, unless one was.
     #[inline(always)]
@@ -72,18 +100,12 @@ impl Control {
         if run == 0 {
             return false;
         }
-        // Cleared before reading, so a stop that leaves its request after the read sets it again.
-        self.asked.store(false, Ordering::SeqCst);
-        let mut stopped = false;
-        for m in self.mailboxes().iter() {
-            if m.waiting(run) {
-                // Every request waiting is answered by this one interruption.
-                m.delivered
-                    .store(m.count.load(Ordering::Acquire), Ordering::Relaxed);
-                stopped = true;
-            }
-        }
-        stopped
+        deliver(&self.mailboxes(), self, run)
+    }
+
+    /// The parked runs no handle holds. As with the mailboxes, nothing panics under the lock.
+    pub fn forgotten(&self) -> MutexGuard<'_, Vec<u32>> {
+        self.forgotten.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     fn mailboxes(&self) -> MutexGuard<'_, Vec<Arc<Mailbox>>> {
@@ -103,11 +125,29 @@ impl Control {
     }
 }
 
+/// Acts on every stop of `run` waiting in `list`; whether there was one.
+fn deliver(list: &[Arc<Mailbox>], control: &Control, run: u64) -> bool {
+    // Cleared before reading, so a stop that leaves its request after the read sets it again.
+    control.asked.store(false, Ordering::SeqCst);
+    let mut stopped = false;
+    for m in list {
+        if m.waiting(run) {
+            // Every request waiting is answered by this one interruption.
+            m.delivered
+                .store(m.count.load(Ordering::Acquire), Ordering::Relaxed);
+            stopped = true;
+        }
+    }
+    stopped
+}
+
 /// Stops the run of its [`Grift`](crate::Grift) that is in progress, from any thread: the run
 /// ends with the error `interrupted` at its next step, and its cleanups run. A stop asked for
 /// while no run is in progress does nothing, and one never reaches a run that starts after it
 /// returns. Each stop is acted on once: the run's cleanups run, and a later stop of the same run,
-/// say of a cleanup that doesn't end, interrupts it again. `Send`, not `Sync`: each clone is a
+/// say of a cleanup that doesn't end, interrupts it again. A parked run is not in progress, so a
+/// stop then does nothing and says so; one that reached a run as it parked stops it instead of
+/// letting it park, and each [`Grift::resume`](crate::Grift::resume) is a run of its own. `Send`, not `Sync`: each clone is a
 /// handle of its own, used by one thread at a time, with a mailbox of a few bytes while it lives.
 ///
 /// ```
@@ -156,13 +196,15 @@ impl Interrupter {
     /// passed before its run began (while its source is read, say) asks again until one is, and
     /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {
-        let run = self.control.active.load(Ordering::Acquire);
+        self.mailbox.stopping.store(true, Ordering::SeqCst);
+        let run = self.control.active.load(Ordering::SeqCst);
         if run != 0 {
             self.sent += 1;
             self.mailbox.count.store(self.sent, Ordering::Release);
             self.mailbox.requested.store(run, Ordering::SeqCst);
             self.control.asked.store(true, Ordering::SeqCst);
         }
+        self.mailbox.stopping.store(false, Ordering::SeqCst);
         run != 0
     }
 

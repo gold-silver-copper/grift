@@ -4,6 +4,7 @@ mod evaluate;
 mod heap;
 mod interrupt;
 mod local;
+mod parked;
 mod print;
 mod read;
 #[cfg(test)]
@@ -19,6 +20,7 @@ use std::sync::{Arc, Weak};
 
 pub use evaluate::Primitive;
 pub use interrupt::Interrupter;
+pub use parked::{Answer, Parked, ParkingFunction, Ran, ResumeError};
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
@@ -186,7 +188,7 @@ pub struct Grift<T = ()> {
     names: Vec<Box<str>>,
     /// Names to symbol ids, for interning; `names` gives the spelling by id.
     symbols: HashMap<Box<str>, u32>,
-    hosts: Vec<(local::Symbol, HostFunction<T>)>,
+    hosts: Vec<(local::Symbol, parked::Hosted<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
     /// The kept values' context, a root no program reaches, and the names free for the next.
@@ -199,6 +201,8 @@ pub struct Grift<T = ()> {
     /// value handed out holds.
     control: Arc<Control>,
     identity: Owner,
+    /// Whether the run in progress may park, and whether it just has.
+    parking: parked::Parking,
     /// The generation of the outer run in progress, 0 for none, and the last one given out.
     run: u64,
     runs: u64,
@@ -209,6 +213,9 @@ pub struct Grift<T = ()> {
     pub(crate) natives: bool,
     #[cfg(test)]
     pub(crate) definitions: heap::Reference,
+    /// Every cleanup's call fails, as when a machine stack can't grow.
+    #[cfg(test)]
+    pub(crate) refuse_cleanup_calls: bool,
 }
 
 impl<T> Grift<T> {
@@ -227,6 +234,7 @@ impl<T> Grift<T> {
             machine: evaluate::Machine::default(),
             identity: Owner(Weak::new()),
             control: Arc::new(Control::default()),
+            parking: parked::Parking::Refused,
             run: 0,
             runs: 0,
             positions: HashMap::default(),
@@ -234,6 +242,8 @@ impl<T> Grift<T> {
             natives: true,
             #[cfg(test)]
             definitions: heap::Reference::NONE,
+            #[cfg(test)]
+            refuse_cleanup_calls: false,
         };
         g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();
@@ -328,6 +338,10 @@ impl<T> Grift<T> {
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
     /// hands it to grift code that keeps it private.
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
+        self.hosted(name, parked::Hosted::Plain(f))
+    }
+
+    fn hosted(&mut self, name: &str, f: parked::Hosted<T>) -> Result<Value, Error> {
         let made = self.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
@@ -716,19 +730,7 @@ impl<T> Grift<T> {
 
     /// Keeps `v` alive across evaluations, until [`Grift::release`].
     pub fn keep(&mut self, v: Value) -> Result<Kept, Error> {
-        let kept = self.import(&v).and_then(|v| {
-            // A released name first, so keeping on every event never runs out of names.
-            let name = match self.kept_free.last() {
-                Some(&name) => name,
-                None if self.kept_next < KEPT => KEPT | self.kept_next,
-                None => return Err(local::Error::oom()),
-            };
-            self.bind_symbol(self.kept, local::Symbol(name), v)?;
-            if self.kept_free.pop().is_none() {
-                self.kept_next += 1;
-            }
-            Ok(name)
-        });
+        let kept = self.import(&v).and_then(|v| self.keep_local(v));
         match kept {
             Ok(name) => Ok(Kept {
                 owner: self.identity.clone(),
@@ -736,6 +738,21 @@ impl<T> Grift<T> {
             }),
             Err(e) => Err(self.export_error(e)),
         }
+    }
+
+    /// Binds `v` under a new kept name.
+    pub(crate) fn keep_local(&mut self, v: local::Value) -> Result<u32, local::Error> {
+        // A released name first, so keeping on every event never runs out of names.
+        let name = match self.kept_free.last() {
+            Some(&name) => name,
+            None if self.kept_next < KEPT => KEPT | self.kept_next,
+            None => return Err(local::Error::oom()),
+        };
+        self.bind_symbol(self.kept, local::Symbol(name), v)?;
+        if self.kept_free.pop().is_none() {
+            self.kept_next += 1;
+        }
+        Ok(name)
     }
 
     /// The value `k` keeps.
@@ -816,7 +833,7 @@ impl<T> Grift<T> {
             if self.control.active() == self.run {
                 return Ok(false);
             }
-            self.machine = evaluate::Machine::default();
+            self.abandon_run();
         }
         // Generations never repeat, so a late stop can't match a later run.
         self.runs = self
@@ -835,8 +852,9 @@ impl<T> Grift<T> {
 
     /// Gives up the run in progress and the machine's state: what a host function left behind
     /// when it replaced or restored the interpreter, or panicked.
-    pub(crate) fn abandon(&mut self) {
+    pub(crate) fn abandon_run(&mut self) {
         self.machine = evaluate::Machine::default();
+        self.parking = parked::Parking::Refused;
         if self.run != 0 {
             self.end_run();
         }

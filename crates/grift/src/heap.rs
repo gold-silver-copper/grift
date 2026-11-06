@@ -1,7 +1,7 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
 //! sweep.
 
-use crate::evaluate::Native;
+use crate::evaluate::{Machine, Native};
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -43,6 +43,10 @@ pub(crate) enum Object {
     Operative(Operative),
     Applicative(Value),
     Bytes(Vec<u8>),
+    /// A parked run's machine, none once it is taken up again: a vector, not a box, so that making
+    /// room for it can report failure. Only a kept binding refers to one, under a pair's reference
+    /// (marking follows a reference whatever its kind says): no program or host value ever holds it.
+    Fiber(Vec<Machine>),
 }
 
 /// A context's bindings.
@@ -90,6 +94,7 @@ const GC_MIN: usize = 4096;
 fn weight(obj: &Object) -> usize {
     match obj {
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
+        Object::Fiber(room) => 1 + room.iter().map(Machine::weight).sum::<usize>(),
         _ => 1,
     }
 }
@@ -106,6 +111,9 @@ pub(crate) struct Heap {
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
+    /// Collect at every safe point, to test what a collection could lose.
+    #[cfg(test)]
+    pub stress: bool,
 }
 
 impl Default for Heap {
@@ -120,6 +128,8 @@ impl Default for Heap {
             operatives: 0,
             #[cfg(test)]
             slot_limit: usize::MAX,
+            #[cfg(test)]
+            stress: false,
         }
     }
 }
@@ -236,6 +246,10 @@ impl Heap {
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
     #[inline]
     pub fn due(&self) -> bool {
+        #[cfg(test)]
+        if self.stress {
+            return true;
+        }
         self.since_gc.get() >= self.live.max(GC_MIN)
     }
 
@@ -315,6 +329,11 @@ impl Heap {
                         child(Value::Context(op.context))?;
                     }
                     Object::Applicative(c) => child(*c)?,
+                    Object::Fiber(room) => {
+                        for v in room.iter().flat_map(Machine::roots) {
+                            child(v)?;
+                        }
+                    }
                 }
             }
         }
