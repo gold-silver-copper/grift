@@ -23,7 +23,7 @@ pub use interrupt::Interrupter;
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
 
-/// How many items a walk inside one step takes between looks for a stop.
+/// How many items a walk inside one step takes between looks for a stop: a power of two.
 const WALK_CHECK: usize = 4096;
 
 /// A grift value. Immediate values are plain data; the rest belong to the [`Grift`] that made
@@ -819,7 +819,7 @@ impl<T> Grift<T> {
     #[inline(always)]
     pub(crate) fn walk_stopped(&self, walked: &mut usize) -> bool {
         *walked = walked.wrapping_add(1);
-        walked.is_multiple_of(WALK_CHECK) && self.control.waiting(self.run)
+        *walked & (WALK_CHECK - 1) == 0 && self.control.waiting(self.run)
     }
 
     /// Starts an outer run, unless one is in progress: the next generation, published for
