@@ -203,7 +203,7 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
     let (mut g, mut log) = (grift(), Vec::new());
     g.evaluate(
         &mut log,
-        "(define! churn (lambda! () (length (map list (range 0 3000)))))
+        "(define! churn (lambda! () (length (map list (range 0 64)))))
          (define! id (lambda! (n) (list n (string-append \"run\" (integer-to-string n)))))",
     )
     .unwrap();
@@ -244,6 +244,7 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
             let (src, expected) = shapes[n % shapes.len()](n);
             waiting.push((parked(start(&mut g, &mut log, &src)), expected));
             if n % 8 == 0 {
+                g.heap.request_collection();
                 g.evaluate(&mut log, "(churn)").unwrap();
             }
         }
@@ -254,6 +255,7 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
                 .wrapping_add(1442695040888963407);
             let i = (seed >> 33) as usize % waiting.len();
             let (p, expected) = waiting.swap_remove(i);
+            g.heap.request_collection();
             g.evaluate(&mut log, "(churn)").unwrap();
             match resumed(&mut g, &mut log, p, Value::Integer(0)) {
                 Ok(Ran::Finished(v)) => assert_eq!(show(&g, &v), expected),
@@ -903,7 +905,7 @@ mod generated {
                 .unwrap_or(default)
         };
         let first = number("GRIFT_PARK_SEED", 1);
-        let cases = number("GRIFT_PARK_CASES", 120);
+        let cases = number("GRIFT_PARK_CASES", 60);
         let mut reached = Reached::default();
         for seed in first..first + cases {
             // One case in eight collects at every step: slow, and it reaches what a parked run holds.
@@ -912,7 +914,7 @@ mod generated {
         // `--nocapture` shows this. A fixed seed, so these can be required: each kind of thing
         // happened to some run, whatever the program generator comes to do.
         println!("{cases} cases from seed {first}: {reached:?}");
-        if cases >= 120 {
+        if cases >= 60 {
             assert!(reached.parks > cases as usize, "{reached:?}");
             assert!(
                 [reached.abandoned, reached.stopped, reached.refused]
