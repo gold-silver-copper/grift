@@ -334,7 +334,12 @@ fn main() -> Result<(), Error> {
   frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function.
   `start`, `resume` and `abandon` inside a host call are refused too (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
-  interpreter's handle comes back the same way, with `foreign-value`. Hosts that never park see no change.
+  interpreter's handle comes back the same way, with `foreign-value`.
+- **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
+  things reach every host. Out of memory while an error unwinds starts by collecting, and a cleanup
+  it can't call is passed over for the next. And `abandoned` is a limit kind, whoever raises it: a
+  program's or a host function's own error of that kind can't be caught, and an ordinary error in a
+  cleanup doesn't replace it.
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.

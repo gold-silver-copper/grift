@@ -1565,5 +1565,12 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   cleanup that waits during `abandon`, which would make every host loop on `abandon` and let a run
   outlive the call that ends it. The API added: `parking_function`, `start`, `start_in`, `resume`, `abandon`,
   `can_park`, `parked`, `forgotten`, and the types `Answer`, `Ran`, `Parked`, `ResumeError`,
-  `ParkingFunction`. Two new error kinds, `abandoned` and `cannot-park`. Hosts that never park see no
-  change in `evaluate`, `call` or `host_function`.
+  `ParkingFunction`. Two new error kinds, `abandoned` and `cannot-park`.
+
+  **What reaches hosts that never park.** `evaluate`, `call` and `host_function` keep their
+  signatures. Two things change for every host, parking or not: out-of-memory unwinding, as above,
+  and `abandoned` being a limit kind. So a name programs could use freely is now reserved: a
+  program's or a host function's own error of kind `abandoned` used to be an ordinary error, and now
+  can't be caught by `catch!` or `catch-kind!`, and an ordinary error in a cleanup doesn't replace
+  it. A limit goes by its kind (`limit` in `evaluate.rs`), as `interrupted` and `out-of-memory`
+  already did. `cannot-park` isn't a limit and stays catchable. `programs/` doesn't use the name.
