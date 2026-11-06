@@ -267,6 +267,80 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
     assert_eq!(slots[6], slots[11], "{slots:?}");
 }
 
+/// A stop on another thread that has read the run, and hasn't yet left its request, as a run parks:
+/// the park waits the few stores it takes, and the run is stopped, not parked.
+#[test]
+fn a_stop_under_way_as_a_run_parks_stops_it() {
+    use std::sync::Mutex;
+    use std::sync::mpsc;
+
+    static BEGUN: Mutex<Option<mpsc::Receiver<()>>> = Mutex::new(None);
+    fn wait_for_stop(_: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
+        let begun = BEGUN.lock().unwrap().take().unwrap();
+        begun.recv().unwrap();
+        Ok(Answer::Later(Value::Inert))
+    }
+
+    let (mut g, mut log) = (grift(), Vec::new());
+    let f = g.parking_function("wait-for-stop", wait_for_stop).unwrap();
+    g.define("wait-for-stop", f).unwrap();
+    let (go, begun) = mpsc::channel();
+    *BEGUN.lock().unwrap() = Some(begun);
+    let (published, is_published) = mpsc::channel();
+    let mut stopper = g.interrupter();
+    let stopping = std::thread::spawn(move || {
+        is_published.recv().unwrap();
+        // Until a run is in progress, a stop finds none.
+        let run = loop {
+            let run = stopper.stop_begun();
+            if run != 0 {
+                break run;
+            }
+            stopper.stop_landed(0);
+            std::thread::yield_now();
+        };
+        go.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        stopper.stop_landed(run);
+    });
+    published.send(()).unwrap();
+    let e = start(&mut g, &mut log, "(finally! (wait-for-stop) (note 1))").unwrap_err();
+    stopping.join().unwrap();
+    assert_eq!(kind(&g, &e), "interrupted");
+    assert_eq!(log, ["1"]);
+    assert_eq!(g.parked(), 0);
+}
+
+/// A stop can land just after the run it read has ended, as it says `true`. A resume is a run of
+/// its own, so that stop doesn't reach it, though nothing else has run between.
+#[test]
+fn a_late_stop_of_the_last_run_does_not_reach_a_resumed_one() {
+    use std::sync::Mutex;
+
+    static RUN: Mutex<u64> = Mutex::new(0);
+    static STOPPER: Mutex<Option<crate::Interrupter>> = Mutex::new(None);
+    fn begin_stop(_: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Value, Error> {
+        *RUN.lock().unwrap() = STOPPER.lock().unwrap().as_mut().unwrap().stop_begun();
+        Ok(Value::Inert)
+    }
+
+    let (mut g, mut log) = (grift(), Vec::new());
+    let f = g.host_function("begin-stop", begin_stop).unwrap();
+    g.define("begin-stop", f).unwrap();
+    *STOPPER.lock().unwrap() = Some(g.interrupter());
+    let p = parked(start(&mut g, &mut log, "(add 1 (wait))"));
+    let done = g.evaluate(&mut log, "(begin-stop) 1").unwrap();
+    assert_eq!(done, Value::Integer(1));
+    let run = *RUN.lock().unwrap();
+    assert_ne!(run, 0);
+    STOPPER.lock().unwrap().as_mut().unwrap().stop_landed(run);
+    let Ok(Ran::Finished(v)) = resumed(&mut g, &mut log, p, Value::Integer(1)) else {
+        panic!("the stop was of the run before");
+    };
+    assert_eq!(v, Value::Integer(2));
+    drop(STOPPER.lock().unwrap().take());
+}
+
 /// Generated programs, run two ways: each alone with its waits answered at once, which is what
 /// it means; and together in one interpreter, parked and taken up in random order, with the
 /// collector and the natives set at random, and with random stops, abandons and allocation

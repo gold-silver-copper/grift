@@ -349,11 +349,10 @@ impl<T> Grift<T> {
             Object::Fiber(room) => room.pop(),
             _ => None,
         };
-        let Some(mut machine) = machine else {
+        let Some(machine) = machine else {
             self.end_run();
             return Err(local::Error::new(K::StaleValue, &[]));
         };
-        machine.request = local::Value::Inert;
         self.bindings_mut(self.kept)?.remove(&name);
         self.kept_free.push(parked.name);
         Ok(machine)

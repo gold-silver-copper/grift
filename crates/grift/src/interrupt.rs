@@ -196,8 +196,19 @@ impl Interrupter {
     /// passed before its run began (while its source is read, say) asks again until one is, and
     /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {
+        let run = self.stop_begun();
+        self.stop_landed(run);
+        run != 0
+    }
+
+    /// A stop's first half: it says it is stopping, and reads the run, which is what it will stop.
+    pub(crate) fn stop_begun(&mut self) -> u64 {
         self.mailbox.stopping.store(true, Ordering::SeqCst);
-        let run = self.control.active.load(Ordering::SeqCst);
+        self.control.active.load(Ordering::SeqCst)
+    }
+
+    /// A stop's second half, which tests can hold apart from the first.
+    pub(crate) fn stop_landed(&mut self, run: u64) {
         if run != 0 {
             self.sent += 1;
             self.mailbox.count.store(self.sent, Ordering::Release);
@@ -205,7 +216,6 @@ impl Interrupter {
             self.control.asked.store(true, Ordering::SeqCst);
         }
         self.mailbox.stopping.store(false, Ordering::SeqCst);
-        run != 0
     }
 
     /// A stop's first store alone, as a stop preempted before it stores its run is seen: for
