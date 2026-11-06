@@ -4,10 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "The grift runner: runs grift files or stdin"
+repository = "https://github.com/gold-silver-copper/grift"
+readme = "README.md"
+keywords = ["lisp", "fexpr", "kernel", "interpreter", "cli"]
+categories = ["command-line-utilities", "compilers"]
 
 [[bin]]
 name = "grift"
 path = "src/main.rs"
 
 [dependencies]
-grift = { path = "../grift" }
+grift = { path = "../grift", version = "2.0.0" }
