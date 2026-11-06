@@ -709,6 +709,34 @@ mod generated {
         }
     }
 
+    /// A stop or a refusal can only end a run with what it is, or leave its meaning alone.
+    #[test]
+    #[should_panic(expected = "a value not in")]
+    fn a_stopped_run_meant_to_err_may_not_end_with_a_value() {
+        let world = World {
+            logs: vec![Vec::new()],
+            stops: vec![1],
+            stopped_at: vec![None],
+            ..World::default()
+        };
+        let meant = Outcome {
+            kind: Some("mine".to_string()),
+            text: "mine".to_string(),
+        };
+        let got = Outcome {
+            kind: None,
+            text: "1".to_string(),
+        };
+        check_end(
+            0,
+            &got,
+            &world,
+            &(meant, Vec::new()),
+            &Touched::default(),
+            "",
+        );
+    }
+
     /// What the cases reached, so that a run can say it tested something.
     #[derive(Debug, Default)]
     struct Reached {
