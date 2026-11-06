@@ -512,8 +512,7 @@ fn a_timer_thread_sets_a_time_limit() {
     assert_eq!(outcome(&g, r), "interrupted");
     let r = g.evaluate(&mut h, "(add 1 2)");
     assert_eq!(outcome(&g, r), "ok 3");
-    // A stop that finds the run while its last step, a long native call, is under way stops it:
-    // a stop that says it found a run is never lost.
+    // A stop that finds the run while its last step, a long native call, is under way stops it.
     let parse = evaluate(&mut g, "string-to-integer");
     let digits = g.string(&"0".repeat(16 << 20)).unwrap();
     let (go, gone) = mpsc::channel();

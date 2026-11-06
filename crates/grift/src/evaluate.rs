@@ -508,7 +508,7 @@ impl<T> Grift<T> {
     /// innermost cleanup or handler, adding where each was to the error's trace. A cleanup then
     /// runs, the error waiting until it is done; a handler is called with the error instead.
     /// With neither, the error goes to the caller. An error in a cleanup replaces the one
-    /// waiting.
+    /// waiting, unless that one is a limit and it isn't.
     fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
         locate(&mut e, self.machine.here);
         while self.machine.frames.len() > floor {
@@ -536,7 +536,8 @@ impl<T> Grift<T> {
                         }
                     }
                 }
-                // The cleanup's error replaces the one waiting, unless that one is a limit.
+                // The cleanup's error replaces the one waiting, unless that one is a limit and
+                // it isn't.
                 What::Raise => match self.machine.raised.pop() {
                     Some(waiting) if limit(waiting.kind) && !limit(e.kind) => e = waiting,
                     _ => {}

@@ -1413,3 +1413,21 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     at **3.3%** over pure.
   - Cost: the budget loosens by **15.4 s (+17.9%)**, from **85.8 to 101.2 s**. Nothing
     changes in the code, and the full corpus stays in the gate, as G-84 requires.
+
+- **G-168. The docs say what stops, cleanups and panics do today** (corrects the promises in G-35,
+  G-129 and G-130; no code changes). Each sentence was run first.
+  - `stop()` does not promise cleanups. `interrupted` runs them on its way out as any error does,
+    but a stop can land in a cleanup that has begun and cut it, even before its first form. In
+    `(finally! (mark "body") (mark "a") (mark "b"))`, stops at some allocations after the body left
+    `body` alone or `body, a`, with the body's value lost; the same holds with an error leaving.
+  - Stops waiting together count as one, as G-129 itself records; "each stop is acted on once" is gone.
+  - `true` from `stop()` says a run was in progress, not that the stop acted: 12,045 of 23,653,712
+    runs of `(add 1 2)` said `true` and returned 3.
+  - A limit holds only against an ordinary error. `interrupted` then `out-of-memory` in a cleanup
+    answers `out-of-memory`, and the reverse answers `interrupted`.
+  - An error in a `finally!` cleanup replaces the one leaving, so that error does not always go on
+    unchanged.
+  - `exit` in a cleanup cuts that cleanup's later forms. In a body, the cleanup forms run.
+  - A panicking host function gets no `foreign-value`: the panic goes on to the host, no cleanup
+    runs, and the next evaluation starts afresh. Only replacing the interpreter answers
+    `foreign-value`, so G-130's "answers `foreign-value`" holds for that case alone.
