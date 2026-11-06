@@ -298,8 +298,8 @@ fn a_cleanup_that_never_ends_during_abandon_is_the_hosts_to_stop() {
     let p = parked(run(
         &mut g,
         &mut w,
-        "(define! spin (lambda! () (spin)))
-         (finally! (finally! (wait) (spin)) (note 1))",
+        "(define! spin (lambda! (n) (if! (same? n 0) #inert (spin (subtract n 1)))))
+         (finally! (finally! (wait) (sequence! (spin 30000000) (note 2))) (note 1))",
     ));
     let mut stopper = g.interrupter();
     let watchdog = std::thread::spawn(move || {
@@ -797,15 +797,16 @@ mod abandon_and_the_stop_rule {
         })
     }
 
-    /// Today: a stop cuts the cleanup it lands in and the next one runs.
+    /// Today: a stop cuts the cleanup it lands in and the next one runs. The loop ends by itself,
+    /// so under a rule that doesn't cut it this fails by name, with the `2` in the log, and doesn't hang.
     #[test]
     fn under_todays_stop_a_stop_cuts_one_cleanup_and_the_rest_run() {
         let (mut g, mut w) = (grift(), World::default());
         let p = parked(run(
             &mut g,
             &mut w,
-            "(define! spin (lambda! () (spin)))
-             (finally! (finally! (wait) (sequence! (note 1) (spin) (note 2))) (note 3))",
+            "(define! spin (lambda! (n) (if! (same? n 0) #inert (spin (subtract n 1)))))
+             (finally! (finally! (wait) (sequence! (note 1) (spin 30000000) (note 2))) (note 3))",
         ));
         let watchdog = stop_until_heard(g.interrupter());
         let e = g.abandon(&mut w, p).unwrap();
@@ -854,11 +855,12 @@ mod abandon_and_the_stop_rule {
         assert_eq!(w.log, ["1", "2", "3"]);
     }
 
-    /// A force would end a run at once with its remaining cleanups not run. The hardest end a host
-    /// has today is the same to `abandon`: a cleanup's host function panics, the machine goes, and
-    /// the handle is spent, so nothing is left to resume, and other parked runs don't notice.
+    /// A force would end a run at once with its remaining cleanups not run. There is none today, so
+    /// this has the hardest end a host does have, which is the same to `abandon`: a cleanup's host
+    /// function panics, the machine goes, and the handle is spent, so nothing is left to resume, and
+    /// other parked runs don't notice. A real force was tried on a merge with its spike.
     #[test]
-    fn if_a_cleanup_is_ended_by_force_the_run_is_gone_and_others_stay() {
+    fn if_a_cleanup_is_ended_hard_the_run_is_gone_and_others_stay() {
         let (mut g, mut w) = (grift(), World::default());
         let other = parked(run(&mut g, &mut w, "(finally! (add 1 (wait)) (note 9))"));
         let p = parked(run(

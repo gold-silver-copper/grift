@@ -1450,7 +1450,14 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     cuts a cleanup waiting at a park, which no stop could reach. Under a force, the run is gone with
     its remaining cleanups not run, and others are untouched. Each is a test in
     `abandon_and_the_stop_rule`; the one that stops applying fails, and whoever changed `stop` decides.
-    A stop can't reach a parked run, so one sent before `abandon` is no part of it.
+    A stop can't reach a parked run, so one sent before `abandon` is no part of it. Both spikes were
+    really merged and run, with force and hold tests against their real APIs (notes:
+    `best-2026-11-06/job4/pr/stop-rules.md`). `parked.rs` needed no change for either, and the park
+    needs none now: it only asks the machine's usual check whether a stop acts. Two things the
+    merges showed for whoever settles `stop`: what a stop rule keeps per run belongs on `Machine`, or
+    a park loses it, and a force must say it is stopping as `stop` does, or a force is lost at a
+    park. A hold makes false what `abandon`'s docs say of a stopped cleanup, and needs a force
+    for one that never ends; a force makes "every cleanup runs" false when it is used.
   - **The interpreter dropped with runs parked.** Their cleanups don't run, the same as a process dying.
     `Drop` has no host state to lend them. **This is a real weakening**, which VISION's "closing is
     explicit" already allows, and only hosts that park can meet it. Handles left over are harmless:

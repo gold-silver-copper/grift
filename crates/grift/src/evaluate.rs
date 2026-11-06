@@ -209,6 +209,8 @@ impl Frame {
     }
 }
 
+/// A run's state, all of it: a run that parks moves this into the heap, and what belongs to a run
+/// but lives anywhere else stays behind when it does. An interpreter has one, empty between runs.
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     arguments: Vec<Value>,
@@ -402,16 +404,18 @@ impl<T> Grift<T> {
         self.kept_free.try_reserve(1).map_err(|_| Error::oom())?;
         let fiber = self.heap.alloc(Object::Fiber(room))?;
         let name = self.keep_local(Value::Pair(fiber))?;
-        let Object::Fiber(room) = self.heap.get_mut(fiber)? else {
-            return Err(Error::new(K::StaleValue, &[]));
-        };
-        if !self.control.parks(self.run) {
-            self.bindings_mut(self.kept)?.remove(&Symbol(name));
-            self.kept_free.push(name);
-            return Err(Error::new(K::Interrupted, &[]));
+        while !self.control.parks(self.run) {
+            if self.interrupted() {
+                self.bindings_mut(self.kept)?.remove(&Symbol(name));
+                self.kept_free.push(name);
+                return Err(Error::new(K::Interrupted, &[]));
+            }
         }
         self.machine.request = request;
-        room.push(std::mem::take(&mut self.machine));
+        let machine = std::mem::take(&mut self.machine);
+        if let Object::Fiber(room) = self.heap.get_mut(fiber)? {
+            room.push(machine);
+        }
         self.parking = Parking::Done(name);
         Ok(())
     }

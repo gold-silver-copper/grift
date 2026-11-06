@@ -66,11 +66,11 @@ impl Control {
         self.active.load(Ordering::Relaxed)
     }
 
-    /// Unpublishes `run` to park it, unless a stop has reached it: then `run` goes on being the run
-    /// in progress and the stop counts as acted on. A stop that read `run` has said it is stopping
-    /// before this unpublishes it, so the wait below sees it, and that wait is for a few stores,
-    /// as the lock is. One that reads 0 does nothing and says so. The lock comes first so that no
-    /// handle lets go of a waiting mailbox while no run is published.
+    /// Unpublishes `run` to park it, unless something was asked: then `run` goes on being the run
+    /// in progress, and what was asked is the machine's to judge, as at any check. A stop that read
+    /// `run` has said it is stopping before this unpublishes it, so the wait below sees it, and
+    /// that wait is for a few stores, as the lock is. One that reads 0 does nothing and says so. The
+    /// lock comes first so that no handle lets go of a waiting mailbox while no run is published.
     pub fn parks(&self, run: u64) -> bool {
         let list = self.mailboxes();
         self.active.store(0, Ordering::SeqCst);
@@ -79,11 +79,11 @@ impl Control {
                 std::thread::yield_now();
             }
         }
-        let stopped = deliver(&list, self, run);
-        if stopped {
+        let asked = self.asked.load(Ordering::SeqCst);
+        if asked {
             self.active.store(run, Ordering::SeqCst);
         }
-        !stopped
+        !asked
     }
 
     /// Whether a stop of `run` was asked for since the last one acted on. Read at every step: one
@@ -100,7 +100,18 @@ impl Control {
         if run == 0 {
             return false;
         }
-        deliver(&self.mailboxes(), self, run)
+        // Cleared before reading, so a stop that leaves its request after the read sets it again.
+        self.asked.store(false, Ordering::SeqCst);
+        let mut stopped = false;
+        for m in self.mailboxes().iter() {
+            if m.waiting(run) {
+                // Every request waiting is answered by this one interruption.
+                m.delivered
+                    .store(m.count.load(Ordering::Acquire), Ordering::Relaxed);
+                stopped = true;
+            }
+        }
+        stopped
     }
 
     /// The parked runs no handle holds. As with the mailboxes, nothing panics under the lock.
@@ -123,22 +134,6 @@ impl Control {
             !gone || (run != 0 && m.waiting(run))
         });
     }
-}
-
-/// Acts on every stop of `run` waiting in `list`; whether there was one.
-fn deliver(list: &[Arc<Mailbox>], control: &Control, run: u64) -> bool {
-    // Cleared before reading, so a stop that leaves its request after the read sets it again.
-    control.asked.store(false, Ordering::SeqCst);
-    let mut stopped = false;
-    for m in list {
-        if m.waiting(run) {
-            // Every request waiting is answered by this one interruption.
-            m.delivered
-                .store(m.count.load(Ordering::Acquire), Ordering::Relaxed);
-            stopped = true;
-        }
-    }
-    stopped
 }
 
 /// Stops the run of its [`Grift`](crate::Grift) that is in progress, from any thread: the run
