@@ -2,6 +2,7 @@
 name = "grift"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "A tiny Kernel-style Lisp built on fexprs, for embedding in Rust"
 repository = "https://github.com/gold-silver-copper/grift"
