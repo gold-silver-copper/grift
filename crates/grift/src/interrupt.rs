@@ -94,6 +94,13 @@ impl Control {
         self.asked.load(Ordering::Acquire) && self.requested(run)
     }
 
+    /// Whether a stop of `run` is waiting, leaving it to be acted on at the machine's next check.
+    pub fn waiting(&self, run: u64) -> bool {
+        run != 0
+            && self.asked.load(Ordering::Acquire)
+            && self.mailboxes().iter().any(|m| m.waiting(run))
+    }
+
     #[cold]
     fn requested(&self, run: u64) -> bool {
         // With no run in progress, never: a mailbox a stop is still writing may hold its new count
@@ -145,8 +152,8 @@ impl Control {
 }
 
 /// Stops the run of its [`Grift`](crate::Grift) that is in progress, from any thread: the run
-/// ends with the error `interrupted` at its next step. That error runs cleanups on its way out as
-/// any error does, but a stop can also land in a cleanup that has begun, and cut it, even before
+/// ends with the error `interrupted` at its next step, or inside a long walk of a tree. That error
+/// runs cleanups on its way out as any error does, but a stop can also land in a cleanup that has begun, and cut it, even before
 /// its first form. A stop asked for while no run is in progress does nothing, and one never
 /// reaches a run that starts after it returns. Stops waiting together count as one; a later stop
 /// of the same run, say of a cleanup that doesn't end, interrupts it again. A parked run is not in

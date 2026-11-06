@@ -105,7 +105,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `(write-bytes bytes)`, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
-| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
+| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. A script whose path isn't UTF-8 gets `encoding-error` for a relative path. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
 | `script-path` | The script's path, as given; unbound when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
@@ -118,9 +118,9 @@ operations call host functions that are bound only in a context no program can r
 program reaches a file only through a context it was given; closing is explicit, and using a file
 after it is closed is the error `closed`. The runner's error kinds: `file-error` (the path and the
 system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the path),
-`unset-variable` (the name), `process-error` (the program and the message), `output-error`,
-`stdout-closed`. A write to stdout through `standard-output` that finds it closed ends the run
-quietly, as `display` does.
+`unset-variable` (the name), `process-error` (the program and the message), `output-error`. A
+write to stdout that finds it closed, by `display` or through `standard-output`, ends the run
+quietly, as `(exit 0)` does: no `catch!` can keep it going.
 
 ```lisp
 #!/usr/bin/env grift
@@ -230,8 +230,8 @@ fn main() -> Result<(), Error> {
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
-  any thread stops the run in progress at its next step, or as its last host call returns, with the
-  error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
+  any thread stops the run in progress at its next step, inside a long walk of a tree, or as its
+  last host call returns, with the error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
   run about to end can still return its value. `interrupted` runs cleanups on its way out as any
   error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
   form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
@@ -243,11 +243,12 @@ fn main() -> Result<(), Error> {
 - **Waiting.** A host function can answer "not yet", so a script waits for an event in a call that
   looks like any other while the host's loop goes on, with no thread held. See below.
 - **A returned `Value` stays valid until the next `evaluate`, `call`, `start` or `resume`**, which may collect it.
-  `keep(value)` gives a `Kept` that holds it until `release(kept)`; `kept(&k)` reads it. Every
+  `evaluate_in` does too. `keep(value)` gives a `Kept` that holds it until `release(kept)`;
+  `kept(&k)` reads it. Every
   value carries its interpreter's identity and each heap reference its slot's generation, so a
   stale value is `stale-value` and another interpreter's is `foreign-value`, everywhere, never
-  read as some other object. A value a host function makes stays valid until it returns:
-  allocation never collects.
+  read as some other object. A value a host function makes stays valid until it returns
+  or starts a nested `evaluate`, `evaluate_in` or `call`: allocation never collects, a nested run may.
 
 ### Waiting: pausable runs
 
@@ -346,7 +347,7 @@ runner, so the local suite and CI both exercise the corpus.
 
 ## Inside
 
-One crate, about 2,100 lines of Rust: values and a heap that is a growable `Vec` of slots
+One crate, about 3,000 lines of Rust: values and a heap that is a growable `Vec` of slots
 (`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and

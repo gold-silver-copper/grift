@@ -32,7 +32,11 @@ impl<T> Grift<T> {
         // The first item is held outside the stack, so writing an atom allocates nothing and an
         // `out-of-memory` error can still be printed.
         let mut first = Some(Item::Value(v));
+        let mut walked = 0;
         while let Some(item) = first.take().or_else(|| todo.pop()) {
+            if self.walk_stopped(&mut walked) {
+                return Err(fmt::Error);
+            }
             let opens = matches!(item, Item::Value(Value::Pair(_)));
             let v = match item {
                 Item::Text(s) => {

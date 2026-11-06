@@ -484,6 +484,71 @@ fn a_closed_stderr_is_an_error_not_a_quiet_end() {
     assert_eq!((out.status.code(), &out.stdout[..]), (Some(1), &b""[..]));
 }
 
+/// The write end of a pipe whose read end is gone.
+fn closed_pipe() -> std::io::PipeWriter {
+    std::io::pipe().unwrap().1
+}
+
+#[test]
+fn a_closed_stdout_ends_the_run_whatever_catches_the_write() {
+    let dir = scratch("closed-stdout");
+    for write in ["display", "(evaluate-in! write standard-output)"] {
+        let path = dir.join("script.grift");
+        let loop_ = format!(
+            "(define! go (lambda! () (catch! ({write} \"y\\n\") e 0) (go)))
+             (catch! (go) e 0)
+             (display-error \"went on\")
+             (first 1)"
+        );
+        std::fs::write(&path, loop_).unwrap();
+        let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
+            .arg(&path)
+            .stdin(Stdio::null())
+            .stdout(closed_pipe())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = std::time::Instant::now();
+        while child.try_wait().unwrap().is_none() && start.elapsed().as_secs() < 10 {
+            std::thread::yield_now();
+        }
+        let _ = child.kill();
+        let out = child.wait_with_output().unwrap();
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(0), &b""[..]));
+    }
+}
+
+#[test]
+fn a_closed_stderr_does_not_panic_the_runner() {
+    for args in [&["--help"][..], &["no/such.grift"][..]] {
+        let status = Command::new(env!("CARGO_BIN_EXE_grift"))
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(closed_pipe())
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(2));
+    }
+}
+
+/// Text can't hold such a path, so `load` says that, where a lossy copy would name another file.
+#[cfg(unix)]
+#[test]
+fn load_from_a_script_whose_path_is_not_text_is_an_encoding_error() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = scratch("not-text").join(std::ffi::OsStr::from_bytes(b"dir\xff"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("script.grift");
+    std::fs::write(&path, "(load \"sibling.grift\")").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(&path)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("encoding-error"));
+}
+
 #[test]
 fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
     let dir = scratch("loaded-tail-trace");

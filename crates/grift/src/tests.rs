@@ -1087,6 +1087,15 @@ const FLOATS: [f64; 12] = [
 ];
 
 #[test]
+fn a_token_with_two_signs_is_a_symbol() {
+    let mut g = grift();
+    for token in ["--5", "+-5", "-+1.5", "++1"] {
+        let forms = g.read(token).unwrap();
+        assert_eq!(show(&g, &forms), format!("({token})"));
+    }
+}
+
+#[test]
 fn floats_read_back_as_they_print() {
     let mut g = grift();
     for x in FLOATS {
@@ -3180,6 +3189,43 @@ fn a_poll_with_no_run_in_progress_acts_on_nothing() {
     assert_eq!(kind(&g, &e), "foreign-value", "the run its host left");
     assert!(!g.interrupted(), "a poll with no run in progress acted");
     assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
+}
+
+/// Asks for a stop of the run in progress, then walks the tree it was given, with no step of the
+/// machine between them: each long walk must find the stop itself.
+fn walks_with_a_stop_waiting(
+    g: &mut Grift<Interrupter>,
+    stop: &mut Interrupter,
+    args: &[Value],
+) -> Result<Value, Error> {
+    assert!(stop.stop(), "a run to stop");
+    let tree = g.import(&args[0]).unwrap();
+    let interrupted = |g: &Grift<Interrupter>, e: local::Error| {
+        assert_eq!(kind(g, &g.export_error(e)), "interrupted");
+    };
+    let checked = g.check_parameters(tree, local::Value::Ignore);
+    interrupted(g, checked.unwrap_err());
+    let mut bindings = Bindings::default();
+    let matched = g.match_tree(&mut bindings, tree, tree);
+    interrupted(g, matched.unwrap_err());
+    let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
+        panic!("printing went on past a stop");
+    };
+    assert_eq!(kind(g, &e), "interrupted");
+    Ok(Value::Inert)
+}
+
+#[test]
+fn each_long_walk_finds_a_stop_by_itself() {
+    let mut g: Grift<Interrupter> = Grift::new().unwrap();
+    define(&mut g, "walk", walks_with_a_stop_waiting);
+    let mut stop = g.interrupter();
+    let r = g.evaluate(
+        &mut stop,
+        "(define! grow (lambda! (d n) (if! (same? n 0) d (grow (pair d d) (subtract n 1)))))
+         (walk (grow () 16))",
+    );
+    assert_eq!(kind(&g, &r.unwrap_err()), "interrupted");
 }
 
 #[test]

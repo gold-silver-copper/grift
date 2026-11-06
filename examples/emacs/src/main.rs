@@ -217,7 +217,7 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     }
 }
 
-/// A `fmt::Write` into a string of one line that stops at `ERROR_TEXT_MAX` bytes.
+/// A `fmt::Write` into a string of one line that stops at `ERROR_TEXT_MAX` bytes, then adds `...`.
 struct Capped(String);
 
 impl fmt::Write for Capped {

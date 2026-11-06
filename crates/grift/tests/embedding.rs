@@ -543,6 +543,56 @@ fn a_timer_thread_sets_a_time_limit() {
     assert_eq!(outcome(&g, r), "ok 3");
 }
 
+/// Makes `shared`, a few objects that are a tree of 2^50 leaves, then runs `step` on a thread of
+/// its own while stopping it from here: whether the run ended in `interrupted` in time. `step` is
+/// a few steps of the machine away after `(started)`, so the wait puts the first stop inside its
+/// long walk: a stop that came sooner would end the run before it. The crate's own test
+/// `each_long_walk_finds_a_stop_by_itself` makes that order certain, one walk at a time.
+fn stopped_in_time(step: &'static str) -> bool {
+    let (handle, stopper) = mpsc::channel();
+    let (tell, told) = mpsc::channel();
+    let (finish, finished) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut g = grift();
+        handle.send(g.interrupter()).unwrap();
+        let mut h = Host {
+            started: Some(tell),
+            ..Host::default()
+        };
+        let program = format!(
+            "(define! grow (lambda! (d n) (if! (same? n 0) d (grow (pair d d) (subtract n 1)))))
+             (define! shared (grow () 50))
+             (started)
+             {step}"
+        );
+        let r = g.evaluate(&mut h, &program);
+        let _ = finish.send(outcome(&g, r));
+    });
+    let mut stopper: Interrupter = stopper.recv().unwrap();
+    told.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    for _ in 0..300 {
+        stopper.stop();
+        if let Ok(end) = finished.recv_timeout(Duration::from_millis(10)) {
+            return end == "interrupted";
+        }
+    }
+    false
+}
+
+#[test]
+fn a_stop_ends_a_walk_of_a_parameter_tree() {
+    assert!(stopped_in_time("(bind (context) shared shared)"));
+    assert!(stopped_in_time(
+        "(evaluate (list vau! shared #ignore 1) (current-context))"
+    ));
+}
+
+#[test]
+fn a_stop_ends_printing_a_shared_tree() {
+    assert!(stopped_in_time("(value-to-string shared)"));
+}
+
 #[test]
 fn a_kept_value_lives_until_it_is_released() {
     let mut g = grift();
