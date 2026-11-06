@@ -5,6 +5,8 @@ mod heap;
 mod interrupt;
 mod local;
 mod parked;
+#[cfg(test)]
+mod parked_tests;
 mod print;
 mod read;
 #[cfg(test)]
@@ -29,8 +31,8 @@ const LIBRARY: &str = include_str!("library.grift");
 /// them, and every operation checks that: another interpreter's value is the error
 /// `foreign-value`, never read as one of this one's.
 ///
-/// A value returned to the host stays valid until the next call to [`Grift::evaluate`] or
-/// [`Grift::call`]; the collector may then reclaim it, and using it is the error `stale-value`,
+/// A value returned to the host stays valid until the next call to [`Grift::evaluate`],
+/// [`Grift::call`] or [`Grift::resume`], or the like; the collector may then reclaim it, and using it is the error `stale-value`,
 /// never another object. To keep one longer, bind it in a context or [`Grift::keep`] it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -213,9 +215,9 @@ pub struct Grift<T = ()> {
     pub(crate) natives: bool,
     #[cfg(test)]
     pub(crate) definitions: heap::Reference,
-    /// Every cleanup's call fails, as when a machine stack can't grow.
+    /// This many cleanups' calls fail, as when a machine stack can't grow.
     #[cfg(test)]
-    pub(crate) refuse_cleanup_calls: bool,
+    pub(crate) refuse_cleanup_calls: usize,
 }
 
 impl<T> Grift<T> {
@@ -243,7 +245,7 @@ impl<T> Grift<T> {
             #[cfg(test)]
             definitions: heap::Reference::NONE,
             #[cfg(test)]
-            refuse_cleanup_calls: false,
+            refuse_cleanup_calls: 0,
         };
         g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();

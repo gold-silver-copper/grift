@@ -663,7 +663,8 @@ impl<T> Grift<T> {
         at: Reference,
     ) -> Result<Mode, Error> {
         #[cfg(test)]
-        if self.refuse_cleanup_calls {
+        if self.refuse_cleanup_calls > 0 {
+            self.refuse_cleanup_calls -= 1;
             return Err(Error::oom());
         }
         let height = self.machine.frames.len();

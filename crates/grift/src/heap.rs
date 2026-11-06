@@ -114,6 +114,14 @@ pub(crate) struct Heap {
     /// Collect at every safe point, to test what a collection could lose.
     #[cfg(test)]
     pub stress: bool,
+    /// Refuse a slot after this many more, to choose where memory runs out; and how many were
+    /// refused. `refuse_once` lets the next one through.
+    #[cfg(test)]
+    pub refuse_in: Option<usize>,
+    #[cfg(test)]
+    pub refuse_once: bool,
+    #[cfg(test)]
+    pub refused: usize,
 }
 
 impl Default for Heap {
@@ -130,6 +138,12 @@ impl Default for Heap {
             slot_limit: usize::MAX,
             #[cfg(test)]
             stress: false,
+            #[cfg(test)]
+            refuse_in: None,
+            #[cfg(test)]
+            refuse_once: false,
+            #[cfg(test)]
+            refused: 0,
         }
     }
 }
@@ -162,6 +176,17 @@ impl Heap {
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
+            match self.refuse_in {
+                Some(0) => {
+                    self.refused += 1;
+                    if self.refuse_once {
+                        self.refuse_in = None;
+                    }
+                    return Err(Error::oom());
+                }
+                Some(n) => self.refuse_in = Some(n - 1),
+                None => {}
+            }
         }
         let idx = self.free;
         if let Some(slot) = self.slots.get_mut(idx as usize)
@@ -241,6 +266,18 @@ impl Heap {
             Some(s) if s.generation == r.generation => Ok(&mut s.obj),
             _ => Err(Error::new(K::StaleValue, &[])),
         }
+    }
+
+    /// What the last collection found alive, by weight.
+    #[cfg(test)]
+    pub fn live(&self) -> usize {
+        self.live
+    }
+
+    /// Puts the next collection off, as if the last had just been.
+    #[cfg(test)]
+    pub fn not_due(&self) {
+        self.since_gc.set(0);
     }
 
     /// Whether collection is due at a machine safe point or before a host's run needs slots.

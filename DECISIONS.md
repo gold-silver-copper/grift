@@ -1413,3 +1413,108 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     at **3.3%** over pure.
   - Cost: the budget loosens by **15.4 s (+17.9%)**, from **85.8 to 101.2 s**. Nothing
     changes in the code, and the full corpus stays in the gate, as G-84 requires.
+
+- **G-169. One-shot pausable runs** (reverses owner decision 10 of 2026-11-02, "no pausing
+  evaluations", and narrows G-53 and VISION's "No continuations"; serial fixed at merge). The owner,
+  2026-11-06: "I do want pausable runs, so implement them extremely properly and extremely well
+  tested." It no longer has to pass G-57's growth rule; spikes chose how, not whether. Three designs
+  were built (a registry of machines, a heap object, runs polled as Rust values), each answering the
+  same 14 questions by running them; blind judges chose the heap object 3 of 3 (notes:
+  `best-2026-11-06/decide/tally.md`), and on desk it alone stayed in the +5% band for runs that never
+  pause. G-53's reasons stand against continuations a program can hold: no program can hold this one,
+  and it adds no name to the language.
+
+  A host function registered with `parking_function` answers `Answer::Later(request)`. The whole
+  machine moves into a heap object (`Object::Fiber`), which a kept binding holds, and the interpreter's
+  machine is empty for whatever runs next; `resume` or `abandon` moves it back. Every hard question of
+  the design note, with what the code does and the test that says so (`tests/parking.rs`, or
+  `src/parked_tests.rs` where marked):
+
+  - **A run never resumed, and its cleanups.** It stays alive, holding what it refers to, a visible
+    leak like a kept value, until the host ends it. `abandon` raises `abandoned` at the wait, which
+    nothing catches, so every cleanup runs. `parked()` counts these, and a dropped handle isn't the
+    end of its run: `forgotten()` gives a new one. (`abandon_runs_every_cleanup_and_nothing_catches_it`,
+    `a_dropped_handle_is_found_again_and_its_run_stays_alive_until_then`)
+  - **What `abandon` does to a cleanup.** One that errors ends there; `abandoned` goes on. One that
+    parks fails at that call with `cannot-park`, since nothing could take the run up. One that never
+    ends holds `abandon` up: it is the host's to stop. One that is stopped ends there with
+    `interrupted`, the next runs, and `interrupted` comes back. One that can't be called for lack of
+    memory is passed over, the next is tried, and `out-of-memory` comes back. No step limit: a count
+    of steps measures nothing a host cares about, and can't bound a host call anyway.
+    (`a_cleanup_that_errs_or_waits_during_abandon_ends_there_and_the_rest_run`,
+    `a_cleanup_that_never_ends_during_abandon_is_the_hosts_to_stop`,
+    `a_cleanup_that_cannot_be_called_is_passed_over_for_the_next` in `parked_tests`)
+  - **`abandon` and the open stop rule.** `abandon` asks nothing of the interrupter: it raises at the
+    wait, directly, so it holds whichever way the owner settles `stop`. Under today's stop, a stop cuts
+    one cleanup and the rest run. Under a hold it would wait for a cleanup that ends, and `abandon` still
+    cuts a cleanup waiting at a park, which no stop could reach. Under a force, the run is gone with
+    its remaining cleanups not run, and others are untouched. Each is a test in
+    `abandon_and_the_stop_rule`; the one that stops applying fails, and whoever changed `stop` decides.
+    A stop can't reach a parked run, so one sent before `abandon` is no part of it.
+  - **The interpreter dropped with runs parked.** Their cleanups don't run, the same as a process dying.
+    `Drop` has no host state to lend them. **This is a real weakening**, which VISION's "closing is
+    explicit" already allows, and only hosts that park can meet it. Handles left over are harmless:
+    `foreign-value` on another interpreter, nothing when dropped.
+    (`a_dropped_interpreter_runs_no_cleanup_and_its_handles_stay_harmless`)
+  - **Values across a wait.** A binding another run changed is seen after the wait, and a value read
+    before may be out of date: **this is new for grift programs**, and in LANGUAGE.md. There are no
+    data races, since runs change turns only at these calls. Locals and arguments stay. The request
+    in `Later` is held by the run for as long as it waits, so it needs no `keep`; other values the
+    host saved do. A stale or foreign answer is raised at the wait, as a host function's return is.
+    (`values_across_a_wait`, `the_request_stays_good_for_as_long_as_the_run_waits`)
+  - **Stops and limits on a parked run.** A stop belongs to the run in progress (G-129). While parked,
+    `stop()` does nothing and says `false`. Each `resume` is a new outer run with its own generation,
+    so "never a later one" (G-130) still holds. In the moment a run parks, a stop and the park see each
+    other: the stop says it is stopping and then reads the run, the park unpublishes the run and
+    then looks for stops, and if it finds one the run is stopped there, not parked. So a stop that
+    says `true` never finds its run parked, tested against real races on two threads.
+    Out of memory at the park fails that call; `resume` needs no memory.
+    grift has no depth limit: a 200,000-deep run parks and comes back. (`a_stop_that_says_true_never_finds_its_run_parked`,
+    `a_stop_while_parked_finds_nothing_and_reaches_no_later_run`, `a_stop_during_the_call_that_would_park_stops_the_run_instead`,
+    `resuming_needs_no_memory` and `a_run_with_no_memory_to_park_fails_there_and_its_cleanups_run` in `parked_tests`)
+  - **Out of memory while unwinding.** It now collects when the unwinding starts, and a cleanup that
+    can't be called is passed over for the next where it used to end the unwinding. Before, with the
+    garbage still there, one failed allocation could skip every cleanup. A cleanup still needs memory
+    to do anything, so this doesn't promise it runs on a heap truly full of live data: the kind that
+    comes back says that it may not have. (`out_of_memory_collects_before_its_cleanups_run` in
+    `parked_tests`)
+  - **Native twins.** Parking inside `if!`, `sequence!` and the rest can't be told from their
+    definitions: same result, log, count of waits and trace, natives on and off.
+    (`parking_inside_a_native_twin_cannot_be_told_from_its_definition` in `parked_tests`)
+  - **Traces.** Frames keep their place and `here` is a root, so a later error shows the whole path,
+    text for text as if the call had answered at once. `abandoned` itself says where the run waited.
+    (`a_program_cannot_tell_a_wait_from_any_call`, `a_trace_after_a_resume_shows_the_whole_path_through_a_load`,
+    `an_error_after_abandon_shows_where_the_run_was_waiting`)
+  - **The collector and what a parked run holds.** One arm in `Heap::mark` walks the machine, by the
+    same `Machine::roots` the running one uses, so nothing is rooted two ways. A parked machine counts
+    for its size when deciding to collect. (`collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after`,
+    `a_parked_run_counts_for_its_size_when_the_collector_decides` in `parked_tests`)
+  - **One shot, by the types.** `resume` and `abandon` take `Parked` by value, and it is neither `Copy`
+    nor `Clone`: a `compile_fail,E0382` doctest. No handle can go stale: it is linear, and the fiber
+    is rooted until it is taken. Another interpreter's handle is `foreign-value`, and comes back whole.
+    (`another_interpreters_handle_is_refused_and_comes_back_whole`)
+  - **Several parked runs over one heap.** Each is its own fiber; others start, finish and park
+    meanwhile, in any order. (`many_runs_share_one_heap_and_finish_in_any_order`, and the generated
+    programs in `parked_tests`)
+  - **Re-entrancy from a host call.** Rust frames can't be set aside, so a wait under `evaluate` or
+    `call`, or in any run inside a host call, is `cannot-park`, naming the function. `start`, `resume`
+    and `abandon` inside a host call are refused, the handle back and the run untouched. A movable
+    machine suggests letting them nest, moving the caller's machine aside too; that wasn't built, and
+    a host function can queue the work for its loop.
+    (`parking_inside_a_host_call_is_refused_by_name`, `a_run_that_cannot_park_says_so`,
+    `nothing_starts_or_resumes_inside_a_host_call`)
+
+  One test holds the rest together: generated programs, each run alone with its waits answered at
+  once and then many together in one interpreter, under random pauses, resumes, abandons, stops and
+  allocation failures, with collection at every step in one case in eight. Runs nothing touched
+  must equal their meaning, down to the trace; a touched run keeps its meaning up to the touch, and
+  ends with the kinds allowed, and every cleanup it entered ran but those the touches may cut.
+  (`whatever_happens_to_one_run_the_rest_mean_what_they_mean` in `parked_tests`; the many-seed
+  runs are evidence, not CI.)
+
+  **Not taken:** a language-level `pause`, and pausing a run from outside on a step budget; a
+  cleanup that waits during `abandon`, which would make every host loop on `abandon` and let a run
+  outlive the call that ends it. The API added: `parking_function`, `start`, `start_in`, `resume`, `abandon`,
+  `can_park`, `parked`, `forgotten`, and the types `Answer`, `Ran`, `Parked`, `ResumeError`,
+  `ParkingFunction`. Two new error kinds, `abandoned` and `cannot-park`. Hosts that never park see no
+  change in `evaluate`, `call` or `host_function`.

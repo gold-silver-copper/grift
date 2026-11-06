@@ -236,12 +236,102 @@ fn main() -> Result<(), Error> {
   one stops a cleanup that doesn't end. grift sets no limit of its own; a timer thread holding an
   interrupter is how the host applies one. A host function that panics, or replaces the interpreter
   it was given, ends the run it was called from (`foreign-value`).
-- **A returned `Value` stays valid until the next `evaluate` or `call`**, which may collect it.
+- **Waiting.** A host function can answer "not yet", so a script waits for an event in a call that
+  looks like any other while the host's loop goes on, with no thread held. See below.
+- **A returned `Value` stays valid until the next `evaluate`, `call`, `start` or `resume`**, which may collect it.
   `keep(value)` gives a `Kept` that holds it until `release(kept)`; `kept(&k)` reads it. Every
   value carries its interpreter's identity and each heap reference its slot's generation, so a
   stale value is `stale-value` and another interpreter's is `foreign-value`, everywhere, never
   read as some other object. A value a host function makes stays valid until it returns:
   allocation never collects.
+
+### Waiting: pausable runs
+
+Register the function with `parking_function`, and have it answer `Answer::Later(request)`.
+`start` or `start_in` runs a script; if it comes to such a call, the run is set aside, and you get a
+`Ran::Parked(parked)`. Your loop goes on: other runs start, finish and park over the same heap,
+sharing bindings. When the event comes, `resume(state, parked, Ok(value))` makes that call return
+`value` (or `Err(error)` raise `error`), and the script carries on from there, with every `catch!`
+and `finally!` around the call still in place.
+
+```rust
+use grift::{Answer, Error, Grift, Parked, Ran, Value};
+
+/// A script's `(sleep ms)`. The value in `Later` says what's wanted: the run holds it, and
+/// `Parked::request` gives it to the loop. Do the work there, since a run may not get to park.
+fn sleep(_: &mut Grift<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
+    Ok(Answer::Later(args[0].clone()))
+}
+
+fn say(g: &mut Grift<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
+    said.extend(g.as_string(&args[0])?);
+    Ok(Value::Inert)
+}
+
+fn main() -> Result<(), Error> {
+    let mut g: Grift<Vec<String>> = Grift::new()?;
+    let mut said = Vec::new();
+    let f = g.parking_function("sleep", sleep)?;
+    g.define("sleep", f)?;
+    let f = g.host_function("say", say)?;
+    g.define("say", f)?;
+    g.evaluate(
+        &mut said,
+        "(define! job (lambda! (name ms)
+           (finally!
+             (sequence! (sleep ms) (say name) (sleep ms))
+             (say (string-append name \" closed\")))))",
+    )?;
+
+    // An event loop: one thread, nothing blocks. Timers stand for what a real host waits on.
+    let mut timers: Vec<(i64, Parked)> = Vec::new();
+    let mut now = 0;
+    let wake_at = |now, ran, timers: &mut Vec<(i64, Parked)>| {
+        if let Ran::Parked(p) = ran {
+            let Value::Integer(ms) = *p.request() else { return };
+            timers.push((now + ms, p));
+        }
+    };
+    let top = g.top_level();
+    for script in ["(job \"a\" 30)", "(job \"b\" 10)", "(job \"c\" 20)"] {
+        wake_at(now, g.start_in(&mut said, &top, "job", script)?, &mut timers);
+    }
+    while let Some(next) = (0..timers.len()).min_by_key(|&i| timers[i].0) {
+        let (at, parked) = timers.swap_remove(next);
+        now = at;
+        wake_at(now, g.resume(&mut said, parked, Ok(Value::Inert))?, &mut timers);
+    }
+    assert_eq!(said, ["b", "c", "b closed", "a", "c closed", "a closed"]);
+    Ok(())
+}
+```
+
+- **One shot, by the type.** `Parked` is neither `Copy` nor `Clone`, and `resume` and `abandon` take
+  it by value, so a second resume doesn't compile.
+- **`abandon(state, parked)`** is how a run that won't be resumed ends: the waiting call raises
+  `abandoned`, which nothing catches, every `finally!` runs, and you get back the error the run ended
+  with. A cleanup that errors ends there, and the next runs. One that parks fails at that call with
+  `cannot-park` (`can_park()` tells its host function). One that never ends holds `abandon` up until
+  you stop it through an `Interrupter`; a stopped one ends there with `interrupted`, the next runs, and
+  `interrupted` is what comes back. With no memory to call a cleanup it's passed over, the next is
+  tried, and `out-of-memory` comes back. `abandon` doesn't rely on stops: it raises its error at the
+  wait, directly.
+- **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
+  cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
+  `forgotten()` gives a new handle. **Dropping the interpreter** with runs parked runs none of their
+  cleanups, the same as a process dying.
+- **Stops and limits.** A stop reaches the run in progress. A parked run isn't: `stop()` then does
+  nothing and says `false`. Each `resume` is a run of its own for stops. A stop that reaches a run
+  as it would park stops it instead, so a stop that said `true` never finds its run parked.
+  Out of memory starts by collecting, so cleanups have what's free; `resume` itself needs none.
+- **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
+  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function.
+  `start`, `resume` and `abandon` inside a host call are refused too (`cannot-park`), the handle
+  coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
+  interpreter's handle comes back the same way, with `foreign-value`. Hosts that never park see no change.
+- **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
+  went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
+  where a dropped one goes.
 
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. `programs/` holds whole programs on the runner, each
