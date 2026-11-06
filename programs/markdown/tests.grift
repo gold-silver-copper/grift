@@ -23,6 +23,26 @@
  "*an **inner** strong* and **an *inner* em**\n"
  "<p><em>an <strong>inner</strong> strong</em> and <strong>an <em>inner</em> em</strong></p>\n")
 
+("strong or emphasis closing first"
+ "***foo** bar*\n\n***foo* bar**\n\n***foo** *a\n"
+ "<p><em><strong>foo</strong> bar</em></p>\n<p><strong><em>foo</em> bar</strong></p>\n<p>*<strong>foo</strong> *a</p>\n")
+
+("an image's description is plain text"
+ "![*cat* and `dog`, ![a](b)](x \"t\")\n"
+ "<p><img src=\"x\" alt=\"cat and dog, a\" title=\"t\" /></p>\n")
+
+("a link's address or title inside a description isn't its text"
+ "![[x](alt=)](y)\n\n![[x](alt= \"t\")](y)\n\n![<http://x/?alt=>](y)\n\n![![a](u?alt=)](y)\n"
+ "<p><img src=\"y\" alt=\"x\" /></p>\n<p><img src=\"y\" alt=\"x\" /></p>\n<p><img src=\"y\" alt=\"http://x/?alt=\" /></p>\n<p><img src=\"y\" alt=\"a\" /></p>\n")
+
+("emphasis that opens inside emphasis closes first"
+ "***a** b *c*\n\n*foo *bar**\n\n_foo _bar_ baz_\n\n***foo* bar** ***foo**\n"
+ "<p>*<strong>a</strong> b <em>c</em></p>\n<p><em>foo <em>bar</em></em></p>\n<p><em>foo <em>bar</em> baz</em></p>\n<p><strong><em>foo</em> bar</strong> *<strong>foo</strong></p>\n")
+
+("a run that can open and close doesn't pair to make a multiple of three"
+ "![*_**](x)\n\n[**\"*](x)\n\n*foo**bar*\n"
+ "<p><img src=\"x\" alt=\"*_**\" /></p>\n<p><a href=\"x\">**&quot;*</a></p>\n<p><em>foo**bar</em></p>\n")
+
 ("emphasis that isn't"
  "snake_case_name, 2 * 3 * 4, and a lone *star\n"
  "<p>snake_case_name, 2 * 3 * 4, and a lone *star</p>\n")
@@ -116,3 +136,19 @@
 ("tabs in the indent, CRLF line ends"
  "\tcode\xd;\ntext\xd;\n"
  "<pre><code>code\n</code></pre>\n<p>text</p>\n")
+
+("a tab, vertical tab or form feed beside a run is white space"
+ "_a_\tb\n\na\t_b_\n\nx\t*(a)*\n\n*(a)*\ty\n\n_a_\xc;b\n\n_a_\xb;b\n"
+ "<p><em>a</em>\tb</p>\n<p>a\t<em>b</em></p>\n<p>x\t<em>(a)</em></p>\n<p><em>(a)</em>\ty</p>\n<p><em>a</em>\xc;b</p>\n<p><em>a</em>\xb;b</p>\n")
+
+("attribute text inside a description can't pass for its alt"
+ "![[x](y \"a alt=\")](z)\n\n![[x](y 'a alt=')](z)\n\n![![a](<u\" alt=\"v> \"t alt=\")](z)\n\n![![](<>)](z)\n"
+ "<p><img src=\"z\" alt=\"x\" /></p>\n<p><img src=\"z\" alt=\"x\" /></p>\n<p><img src=\"z\" alt=\"a\" /></p>\n<p><img src=\"z\" alt=\"\" /></p>\n")
+
+("punctuation and white space above ASCII beside a run count as such, a letter doesn't"
+ "**Note:**—see\n\n“*(a)*”\n\n_a_“\n\n**\"引\"**。\n\n*(a)*é\n\n_a_é\n\n*\xa0;a*\n\n*(a)*😀\n"
+ "<p><strong>Note:</strong>—see</p>\n<p>“<em>(a)</em>”</p>\n<p><em>a</em>“</p>\n<p><strong>&quot;引&quot;</strong>。</p>\n<p>*(a)*é</p>\n<p>_a_é</p>\n<p>*\xa0;a*</p>\n<p><em>(a)</em>😀</p>\n")
+
+("a link in a link isn't one, whatever emphasis lies across it, and it costs no more with depth"
+ "[a [b](c) d](e)\n\n**)[[b](/u)*** ](x)\n\n[![[f](u)](v)](w)\n\n[![f](u)](w)\n\n![[a [b](c)](d)](e)\n\n[[[[[[[[[[[[[[[[[[[[[[[[[a](b)](c)](d)](e)](f)](g)](h)](i)](j)](k)](l)](m)](n)](o)](p)](q)](r)](s)](t)](u)](v)](w)](x)](y)](z)\n"
+ "<p>[a <a href=\"c\">b</a> d](e)</p>\n<p><strong>)[<a href=\"/u\">b</a></strong>* ](x)</p>\n<p>[<img src=\"v\" alt=\"f\" />](w)</p>\n<p><a href=\"w\"><img src=\"u\" alt=\"f\" /></a></p>\n<p><img src=\"e\" alt=\"[a b](d)\" /></p>\n<p>[[[[[[[[[[[[[[[[[[[[[[[[<a href=\"b\">a</a>](c)](d)](e)](f)](g)](h)](i)](j)](k)](l)](m)](n)](o)](p)](q)](r)](s)](t)](u)](v)](w)](x)](y)](z)</p>\n")

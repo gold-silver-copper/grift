@@ -23,12 +23,15 @@ pub use interrupt::Interrupter;
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
 
+/// How many items a walk inside one step takes between looks for a stop: a power of two.
+const WALK_CHECK: usize = 4096;
+
 /// A grift value. Immediate values are plain data; the rest belong to the [`Grift`] that made
 /// them, and every operation checks that: another interpreter's value is the error
 /// `foreign-value`, never read as one of this one's.
 ///
-/// A value returned to the host stays valid until the next call to [`Grift::evaluate`] or
-/// [`Grift::call`]; the collector may then reclaim it, and using it is the error `stale-value`,
+/// A value returned to the host stays valid until the next call to [`Grift::evaluate`],
+/// [`Grift::evaluate_in`] or [`Grift::call`]; the collector may then reclaim it, and using it is the error `stale-value`,
 /// never another object. To keep one longer, bind it in a context or [`Grift::keep`] it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -139,8 +142,8 @@ impl Error {
 /// Why [`Grift::write`] or [`Grift::describe`] stopped.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WriteError {
-    /// A value can't be written: `stale-value`, `foreign-value`, or `out-of-memory` when the
-    /// printer's own stack can't grow.
+    /// A value can't be written: `stale-value`, `foreign-value`, `interrupted` when a stop reached
+    /// a long print, or `out-of-memory` when the printer's own stack can't grow.
     Value(Error),
     /// The output refused the text.
     Output,
@@ -658,7 +661,10 @@ impl<T> Grift<T> {
     fn write_failed(&self, refused: bool) -> WriteError {
         match refused {
             true => WriteError::Output,
-            // The printer stops by itself only when its own stack can't grow.
+            // The printer stops by itself only for a stop, or when its own stack can't grow.
+            false if self.control.waiting(self.run) => {
+                WriteError::Value(self.export_error(local::Error::new(K::Interrupted, &[])))
+            }
             false => WriteError::Value(self.export_error(local::Error::oom())),
         }
     }
@@ -806,6 +812,15 @@ impl<T> Grift<T> {
     #[inline(always)]
     pub(crate) fn interrupted(&self) -> bool {
         self.control.stopped(self.run)
+    }
+
+    /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
+    /// can share, so a few objects can be a tree no walk finishes; the failed step then acts on the
+    /// stop. A walk shorter than [`WALK_CHECK`] items never asks, so it can't be cut.
+    #[inline(always)]
+    pub(crate) fn walk_stopped(&self, walked: &mut usize) -> bool {
+        *walked = walked.wrapping_add(1);
+        *walked & (WALK_CHECK - 1) == 0 && self.control.waiting(self.run)
     }
 
     /// Starts an outer run, unless one is in progress: the next generation, published for

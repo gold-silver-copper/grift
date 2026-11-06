@@ -606,14 +606,18 @@
         (set-modified)
         (message "Undo")))))
 
+; A minibuffer being read isn't a file's text: saving it would empty the file named.
 (define! save-buffer
   (lambda! ()
-    (when! (empty-list? (field! file))
-      (define-field! file (read-from-minibuffer "File to save in: "))
-      (define-field! name (field! file)))
-    (write-file (field! file) (buffer-text))
-    (define-field! modified #false)
-    (message (string-append "Wrote " (field! file)))))
+    (if! (same? current-buffer minibuffer)
+      (message "The minibuffer can't be saved")
+      (sequence!
+        (when! (empty-list? (field! file))
+          (define-field! file (read-from-minibuffer "File to save in: "))
+          (define-field! name (field! file)))
+        (write-file (field! file) (buffer-text))
+        (define-field! modified #false)
+        (message (string-append "Wrote " (field! file)))))))
 
 (define! save-buffers-kill-emacs
   (lambda! ()

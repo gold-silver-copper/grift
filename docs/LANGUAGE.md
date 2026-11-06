@@ -13,13 +13,13 @@ are R-1RK's.
 | Kernel | grift |
 |---|---|
 | `$vau` `$lambda` `$define!` `$quote` `$sequence` | `vau!` `lambda!` `define!` `quote!` `sequence!` |
-| `$if`, `$when`, `$cond` | `if!` (both branches), `when!` (one branch, a body), `conditional!` |
+| `$if`, `$cond` | `if!` (both branches), `conditional!`; `when!` (one branch, a body) is new |
 | `$let`, `$let*`, `$letrec*` | `let!` (binds in order in one new context) |
 | `$and?` `$or?` | `and!?` `or!?` |
 | `$set!` | `bind`, with the parameters quoted |
 | `$remote-eval` | `evaluate-in!` |
 | `$binds?` | `binds?`, for one symbol, with both operands evaluated; `lookup` |
-| `$unwind-protect`, `guard` | `finally!`, `catch!` |
+| `guard-dynamic-extent` | `finally!`, `catch!` |
 | `eval` `make-environment` `get-current-environment` | `evaluate` `context` `current-context` |
 | `cons` `car` `cdr` `null?` | `pair` `first` `rest` `empty-list?` |
 | `eq?` `equal?` `=?` | `same?` `equal?` |
@@ -129,7 +129,7 @@ which a test shows no program can tell from the Rust.
 | `(list-to-bytes list)`, `(bytes-to-list b)` | The bytes of a list of integers 0–255, and back. An element that isn't an integer, or a tail that isn't `()`, is a `type-error`, and an integer outside 0–255 a `range-error`, each with the primitive, the value and its position: `(list-to-bytes (list 1 256))` is `range-error #[primitive list-to-bytes] 256 1`. |
 | `(string-to-symbol s)` | The symbol named `s`, interned. |
 | `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
-| `(string-to-float s)` | Rust's `parse::<f64>` and the three `#` names, so it reads what `value-to-string` writes for a float: `(string-to-float "1")` is `1.0`, `(string-to-float "inf")` is `#infinity`. A not-a-number's sign and payload are lost. A string that reads as neither is a `parse-error`. |
+| `(string-to-float s)` | Rust's `parse::<f64>` and the three `#` names, so it reads what `value-to-string` writes for a float: `(string-to-float "1")` is `1.0`, `(string-to-float "inf")` is `#infinity`. `value-to-string` writes a not-a-number with no sign or payload, so those don't come back. A string that reads as neither is a `parse-error`. |
 | `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with why and where, in the whole text, as for a program (see Errors); an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
 | `(value-to-string v)` | The text the printer writes for `v`, combiners and contexts as they print (see Values): `(value-to-string (list 1.0 "a"))` is `"(1.0 \"a\")"`, and a float's text reads back as the same float. |
 
@@ -150,15 +150,15 @@ which a test shows no program can tell from the Rust.
 | `(apply a arguments)` | Calls applicative `a`'s combiner on the list `arguments`, in a new empty context (5.5.1). |
 | `(map a list ...)`, `(for-each a list)` | The list of `a` applied to each element, or with several lists to the elements at each place, the lists being of one length (a `type-error` otherwise); `a` on each element in turn, giving `#inert` (5.9.1, 6.9.1). |
 | `(any? a list)`, `(all? a list)` | Whether `a` gives `#true` for some element, for every element, from the left, stopping at the answer. `a` must give booleans. |
-| `(filter a list)` | The elements for which `a` gives `#true`, in order; `a` must give booleans. |
+| `(filter a list)` | The elements for which `a` gives `#true`, in order; `a` must give booleans (6.3.5). |
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
-| `(sort list before?)` | The elements in the order `before?` gives, a combiner of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
+| `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`; `(last ())`, with no index, gives `range-error last ()`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
-| `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.5). A binding that isn't `(parameters expression)` is an `arity-error`. |
+| `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.6). A binding that isn't `(parameters expression)` is an `arity-error`. |
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on in its place, as in `evaluate-with-cleanup`. A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. After `out-of-memory` a cleanup stops at its first allocation that fails, so it may do nothing. While an error unwinds, a machine-stack allocation that fails as a cleanup starts skips the cleanups around it too, as in `evaluate-with-cleanup`. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted` and `out-of-memory` are never caught. |
 | `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had, as `(raise e)` in a `catch!` passes it on. A `kind` that isn't a symbol is a `type-error`. |
@@ -166,9 +166,9 @@ which a test shows no program can tell from the Rust.
 | `(error kind value ...)` | A new error: a context with no parent binding `kind`, `values` (the list of the values) and an empty `trace`. It raises nothing; `raise` does. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
-| `(greater-than? a b)`, `(less-than-or-equal? a b)`, `(greater-than-or-equal? a b)` | The rest of the comparisons, as Rust's `>`, `<=`, `>=` (12.5.1). |
+| `(greater-than? a b)`, `(less-than-or-equal? a b)`, `(greater-than-or-equal? a b)` | The rest of the comparisons, as Rust's `>`, `<=`, `>=` (12.5.3). |
 | `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two integers or two floats (12.5.13). |
-| `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.7, 12.5.11). |
+| `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.12, 12.9.6). |
 | `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
 | `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. It is `lookup` with a value no program holds as `otherwise`, so a `type-error` names `lookup`. |
 | `(symbol-to-string s)` | A symbol's name. |
@@ -288,11 +288,16 @@ reports `out-of-memory`, isn't caught either.
 | `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
-| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the primitive and the operands |
+| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the primitive or library combiner's name, and the operands |
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
 | `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative count or exponent; a fill that isn't one byte | the primitive and the operands; or the library combiner's name and the value; for a list index, the name, the index and the length; for `list-to-bytes`, the primitive, the integer and its position |
 | `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the primitive, the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
 | `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1; or the primitive and the string |
+| `out-of-memory` | the allocator refused | none |
+| `stale-value` | the host used a value the collector reclaimed | none |
+| `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
+| `interrupted` | the host stopped the run in progress; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
+| any symbol | a program raised an error it made | the values given |
 
 A text that doesn't read says why, as a symbol, and where: `unclosed-list` and `unclosed-string`
 at the `(` or `"` left open (the innermost, for lists), not at the end of the text;
@@ -301,11 +306,7 @@ at the `(` or `"` left open (the innermost, for lists), not at the end of the te
 as a number and isn't one; `unknown-constant` at a `#` name that isn't one; `bad-byte` at what
 isn't an integer 0 to 255 inside `#bytes(`. `(read-form "(a\n (b" 0)`
 is `parse-error unclosed-list 2 2`.
-| `out-of-memory` | the allocator refused | none |
-| `stale-value` | the host used a value the collector reclaimed | none |
-| `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
-| `interrupted` | the host stopped the run in progress; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
-| any symbol | a program raised an error it made | the values given |
+A host function that replaces its interpreter ends the run with `foreign-value` too.
 
 The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
 describes each. Those added with the evidence of wave 4:
@@ -316,7 +317,7 @@ describes each. Those added with the evidence of wave 4:
 | `script-path` | The script's path as given; unbound for a program on stdin. |
 | `(read-file path)` | The file's whole text. |
 | `(display-error v ...)` | `display`, to stderr. |
-| `(read-bytes count)`, `(write-bytes bytes)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): a bytes value of up to `count` bytes, as soon as they have come, `#bytes()` at the end; a bytes value's bytes, as they are (anything else is a `type-error`). |
+| `(read-bytes count)`, `(write-bytes bytes)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): a bytes value of `count` bytes as soon as they have come, fewer at the end of input, `#bytes()` at the end; a bytes value's bytes, as they are (anything else is a `type-error`). |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | The system's time since 1970 UTC, which can be set back; the time since the run started, which never goes back. |
 
 ## Where grift differs from R-1RK, and why
@@ -340,7 +341,7 @@ describes each. Those added with the evidence of wave 4:
   list, and `map` lists of one length, as Kernel's does. `context` takes at most one parent.
 - **New, not in Kernel:** `bind`, `unbind`, `lookup`, `names` and `built-in-names`, `select`,
   `type-of`, `when!`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
-  `any?`, `all?`, `filter`, `fold`, `range`, `sort`, the list access by index, the bitwise
+  `any?`, `all?`, `fold`, `range`, `sort`, the list access by index, the bitwise
   operations, and the string and float primitives and helpers.
 - **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as
   written. It is looked up where the body runs, like any other name in it.

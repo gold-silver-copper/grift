@@ -284,7 +284,8 @@ impl<T> Grift<T> {
             "#ignore" => Value::Ignore,
             _ if token.starts_with('#') => Value::Float(float_name(token)?),
             _ if token
-                .trim_start_matches(['+', '-'])
+                .strip_prefix(['+', '-'])
+                .unwrap_or(token)
                 .starts_with(|c: char| c.is_ascii_digit()) =>
             {
                 match token.parse() {

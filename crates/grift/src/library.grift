@@ -36,7 +36,7 @@
                     caller))))
 
 ; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
-; $cond), let! (6.7.5, $letrec*), finally!, catch! and catch-kind!. Each is an operative that walks its operands
+; $cond), let! (6.7.6, $letrec*), finally!, catch! and catch-kind!. Each is an operative that walks its operands
 ; and evaluates only them, in the caller's context or one it made; none builds code to evaluate. A
 ; loop that evaluates something only for its effect gets its value as an ignored first operand, and
 ; a list known not to be empty is taken apart in the parameters. sequence! is defined here, so nothing
@@ -232,7 +232,7 @@
            (if! (float? b) (equal-floats? a b) #false)
            (same? a b)))))))
 
-; The comparisons above less-than? (12.5.1, Kernel's <? and the rest), of two integers or two
+; The comparisons above less-than? (12.5.3, Kernel's <? and the rest), of two integers or two
 ; floats; mixing them is a type-error, as it is for less-than?.
 (define! greater-than? (lambda! (a b) (less-than? b a)))
 (define! less-than-or-equal? (lambda! (a b) (if! (less-than? a b) #true (equal? a b))))
@@ -242,7 +242,7 @@
 (define! minimum (lambda! (a b) (if! (less-than? b a) b a)))
 (define! maximum (lambda! (a b) (if! (less-than? a b) b a)))
 
-; absolute-value and power (12.5.7, abs; 12.5.11, expt), of integers or floats, as add is: Rust's
+; absolute-value and power (12.5.12, abs; 12.9.6, expt), of integers or floats, as add is: Rust's
 ; checked abs and pow on integers, abs and powf on floats. The most negative integer has no
 ; absolute value, and an integer power with a negative exponent isn't an integer (Rust's pow takes
 ; a u32): overflow, range-error.
@@ -322,8 +322,8 @@
       (value-to-string f)
       (raise (error (quote! type-error) (quote! float-to-string) f)))))
 
-; Not in Kernel, each asked for by three or more programs: filter, fold, range, sort and the list
-; access below.
+; filter (6.3.5), and, not in Kernel, each asked for by three or more programs: fold, range, sort
+; and the list access below.
 (define! filter
   (lambda! (f xs)
     (if! (same? xs ())

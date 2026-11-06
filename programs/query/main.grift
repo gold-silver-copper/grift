@@ -556,8 +556,6 @@
 (catch! (let! ((table (run-query clauses (csv-table text))))
           (if! csv-output? (print-csv table) (print-text table)))
         e
-        ; A closed stdout (| head) ends the run quietly, as the runner does when nothing catches it.
-        (when! (same? (evaluate-in! kind e) (quote! stdout-closed)) (raise e))
         (report (if! (same? (evaluate-in! kind e) (quote! csv-error))
                   (string-append path ": " (error-text e))
                   (error-text e)))
