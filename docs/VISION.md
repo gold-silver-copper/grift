@@ -77,8 +77,7 @@ follows `lambda!`: both name the abstraction they make).
   in `!?` (`and!?`).
 - A constructor is named after what it makes (`pair`, `list`, `context`, `error`).
 - A conversion spells out `to` (`symbol-to-string`, `string-to-integer`).
-- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`), as
-  in fuxth.
+- Arithmetic and comparison are words, never operator symbols (`add`, `divide`, `less-than?`).
 - Only bindings change, so the combiners that change anything are a short, complete list of verbs
   about bindings: `define!`, `bind` and `unbind`.
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
@@ -152,8 +151,8 @@ An error has a kind (a symbol such as `type-error`), the values involved, and a 
 combinations it happened in, innermost first, each with its source and line when it was read from a
 named text, so the host says `at config.grift:12`. `(error kind value ...)` makes an error and `raise`
 raises it: `(raise (error (quote! type-error) x))`. `finally!` runs cleanup as an error passes and
-lets it go on. `catch!` catches: cleanups run first, then the handler receives the error as a
-context with no parent, binding `kind`, `values` and `trace`; `(raise e)` passes a caught error on,
+lets it go on, unless the cleanup fails or a limit cuts it (`LANGUAGE.md` has each case).
+`catch!` catches: cleanups run first, then the handler receives the error as a context with no parent, binding `kind`, `values` and `trace`; `(raise e)` passes a caught error on,
 keeping its trace. Errors about the program can be caught; limits set by the host or the machine,
 `interrupted`, `abandoned` and `out-of-memory`, never can, and always reach the host. Early exit is `catch!` with
 an error kind of your own; there is no other escape. (Unlike Common Lisp's `catch`, which is a

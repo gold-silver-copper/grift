@@ -326,8 +326,8 @@ fn a_stop_reaches_only_the_run_in_progress() {
     expect(&mut g, &mut h, "a stop before any run", "(add 1 2)", "ok 3");
     assert!(!h.stop.as_mut().unwrap().stop(), "no run to stop");
     expect(&mut g, &mut h, "a stop between runs", "(add 1 2)", "ok 3");
-    // A stop stops its run once: the cleanups run. A later stop stops it again, so a cleanup that
-    // never ends can still be ended.
+    // A stop in the body stops its run, and here the cleanups run. A later stop stops it again, so
+    // a cleanup that never ends can still be ended.
     expect(
         &mut g,
         &mut h,
@@ -368,7 +368,7 @@ fn a_stop_reaches_only_the_run_in_progress() {
     );
     expect(&mut g, &mut h, "the run after it", "(add 1 2)", "ok 3");
     // A host function that stops its run and then fails, even with a limit, fails it with that
-    // stop: the cleanups run, once.
+    // stop: here the cleanups run, once.
     for failure in ["failed", "interrupted", "out-of-memory"] {
         let src = format!(
             "(define! cleaned 0)
@@ -512,8 +512,9 @@ fn a_timer_thread_sets_a_time_limit() {
     assert_eq!(outcome(&g, r), "interrupted");
     let r = g.evaluate(&mut h, "(add 1 2)");
     assert_eq!(outcome(&g, r), "ok 3");
-    // A stop that finds the run while its last step, a long native call, is under way stops it:
-    // a stop that says it found a run is never lost.
+    // A stop that finds the run while its last step, a long native call, is under way stops it.
+    // The thread's first stop finds the run as the call begins, far from the moment after the
+    // run's last check, where a stop still says `true` and the run returns its value.
     let parse = evaluate(&mut g, "string-to-integer");
     let digits = g.string(&"0".repeat(16 << 20)).unwrap();
     let (go, gone) = mpsc::channel();

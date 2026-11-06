@@ -137,13 +137,14 @@ impl Control {
 }
 
 /// Stops the run of its [`Grift`](crate::Grift) that is in progress, from any thread: the run
-/// ends with the error `interrupted` at its next step, and its cleanups run. A stop asked for
-/// while no run is in progress does nothing, and one never reaches a run that starts after it
-/// returns. Each stop is acted on once: the run's cleanups run, and a later stop of the same run,
-/// say of a cleanup that doesn't end, interrupts it again. A parked run is not in progress, so a
-/// stop then does nothing and says so; one that reached a run as it parked stops it there, its
-/// cleanups then running, and they may park in turn; and each [`Grift::resume`](crate::Grift::resume)
-/// is a run of its own. `Send`, not `Sync`: each clone is a
+/// ends with the error `interrupted` at its next step. That error runs cleanups on its way out as
+/// any error does, but a stop can also land in a cleanup that has begun, and cut it, even before
+/// its first form. A stop asked for while no run is in progress does nothing, and one never
+/// reaches a run that starts after it returns. Stops waiting together count as one; a later stop
+/// of the same run, say of a cleanup that doesn't end, interrupts it again. A parked run is not in
+/// progress, so a stop then does nothing and says so; one that reached a run as it parked stops it
+/// there, its cleanups then running, and they may park in turn; and each
+/// [`Grift::resume`](crate::Grift::resume) is a run of its own. `Send`, not `Sync`: each clone is a
 /// handle of its own, used by one thread at a time, with a mailbox of a few bytes while it lives.
 ///
 /// ```
@@ -188,7 +189,8 @@ impl Interrupter {
         }
     }
 
-    /// Stops the run in progress, if there is one; whether there was. A watchdog whose deadline
+    /// Stops the run in progress, if there is one; whether there was. `true` doesn't say the stop
+    /// acted: a run about to end can still return its value. A watchdog whose deadline
     /// passed before its run began (while its source is read, say) asks again until one is, and
     /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {

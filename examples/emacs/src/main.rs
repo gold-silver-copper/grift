@@ -292,7 +292,10 @@ impl Runs {
                 }
                 None
             }
-            Err(e) => Some(report(g, h, &e)),
+            // With no run left reading keys, what the run left set for a while is the editor's to
+            // put back. With one, the minibuffer may be that run's.
+            Err(e) if self.keys.is_empty() => Some(report(g, h, "editor-recover", &e)),
+            Err(e) => Some(report(g, h, "editor-report", &e)),
         }
     }
 
@@ -335,18 +338,18 @@ impl Runs {
 fn abandon(g: &mut G, h: &mut Host, parked: Parked) {
     let ended = g.abandon(h, parked).unwrap_or_else(Error::from);
     if !g.is_kind(&ended, "abandoned").unwrap_or(false) {
-        report(g, h, &ended);
+        report(g, h, "editor-report", &ended);
     }
 }
 
-/// Puts an error in the echo area, through the editor's own `editor-report`; its text.
-fn report(g: &mut G, h: &mut Host, e: &Error) -> String {
+/// Puts an error in the echo area, through the editor's own function `through`; its text.
+fn report(g: &mut G, h: &mut Host, through: &str, e: &Error) -> String {
     let text = match g.is_kind(e, "quit") {
         Ok(true) => "Quit".to_string(),
         _ => describe(g, e),
     };
     // If that fails too, the next frame or command says so.
-    let _ = enter(g, h, "editor-report", &[Some(&text)]);
+    let _ = enter(g, h, through, &[Some(&text)]);
     text
 }
 
@@ -428,7 +431,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
             }
             Event::Job(id, event) => {
                 if let Err(e) = job_event(g, h, id, &event) {
-                    report(g, h, &e);
+                    report(g, h, "editor-report", &e);
                 }
                 if let JobEvent::Ended(status) = event {
                     let id = i64::try_from(id).unwrap_or(i64::MAX);

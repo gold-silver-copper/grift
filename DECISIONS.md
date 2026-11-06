@@ -1414,8 +1414,44 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   - Cost: the budget loosens by **15.4 s (+17.9%)**, from **85.8 to 101.2 s**. Nothing
     changes in the code, and the full corpus stays in the gate, as G-84 requires.
 
+- **G-168. The docs say what stops, cleanups and panics do today** (corrects the promises in G-18,
+  G-26, G-35, G-70, G-74, G-89, G-109, G-112, G-129, G-130, G-137 and G-139; no code changes). Each
+  sentence was run first.
+  - Cleanups do not always run, whatever G-18, G-26 and G-74 say (G-74 of G-17, G-35 and G-48), and
+    a stop's are not certain, whatever G-109, G-112, G-129, G-137 and G-139 say.
+  - `stop()` does not promise cleanups. `interrupted` runs them on its way out as any error does,
+    but a stop can land in a cleanup that has begun and cut it, even before its first form. In
+    `(finally! (mark "body") (mark "a") (mark "b"))`, stops at some allocations after the body left
+    `body` alone or `body, a`, with the body's value lost; the same holds with an error leaving.
+  - While an error unwinds, one failed machine-stack allocation as a cleanup starts skips every
+    cleanup still to come in that evaluation, so a cleanup does not always start, whatever G-89's
+    "as always" says. With a throwaway host's `arm` failing the fourth allocation after it,
+    `(finally! (finally! (sequence! (arm 4) (first 1)) (mark "in")) (mark "out"))` answers
+    `out-of-memory` with no mark, three nested cleanups likewise, and `(catch! ...)` around one
+    `finally!` loses the `type-error` it would have caught. With every allocation after `arm`
+    refused, G-89's case, the same program also answers `out-of-memory` with no mark. `unwind`
+    leaves at once when it can't make room for the waiting error or the cleanup's frame. The same
+    run after a deeper one in that interpreter, whose room is kept, never skipped both at any
+    allocation from 1 to 40. A nested evaluation that skips its cleanups this way returns
+    `out-of-memory` to its host function; returned as an error, that runs the outer evaluation's
+    cleanups. After a body that returned, with the frame stack exactly full, one failed allocation
+    skipped only that cleanup, and the one around it ran.
+  - Stops waiting together count as one, as G-129 itself records; "each stop is acted on once" is gone.
+  - `true` from `stop()` says a run was in progress, not that the stop acted: 12,045 of 23,653,712
+    runs of `(add 1 2)` said `true` and returned 3.
+  - A limit holds only against an ordinary error. `interrupted` then `out-of-memory` in a cleanup
+    answers `out-of-memory`, and the reverse answers `interrupted`.
+  - An error in a `finally!` cleanup replaces the one leaving, so that error does not always go on
+    unchanged.
+  - `exit` in a cleanup cuts that cleanup's later forms, against G-70's "its cleanups run". In a
+    body, the cleanup forms run.
+  - A panicking host function gets no `foreign-value`: the panic goes on to the host, no cleanup
+    runs, and the next evaluation starts afresh. Replacing the interpreter still answers
+    `foreign-value`, the case G-130's "answers `foreign-value`" keeps.
+
 - **G-169. One-shot pausable runs** (reverses owner decision 10 of 2026-11-02, "no pausing
-  evaluations", and narrows G-53 and VISION's "No continuations"; serial fixed at merge). The owner,
+  evaluations", narrows G-53 and VISION's "No continuations", and amends G-168's out-of-memory
+  finding). The owner,
   2026-11-06: "I do want pausable runs, so implement them extremely properly and extremely well
   tested." It no longer has to pass G-57's growth rule; spikes chose how, not whether. Three designs
   were built (a registry of machines, a heap object, runs polled as Rust values), each answering the
@@ -1482,8 +1518,10 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     `a_stop_while_parked_finds_nothing_and_reaches_no_later_run`, `a_stop_during_the_call_that_would_park_stops_the_run_instead`,
     `resuming_needs_no_memory` and `a_run_with_no_memory_to_park_fails_there_and_its_cleanups_run` in `parked_tests`)
   - **Out of memory while unwinding.** It now collects when the unwinding starts, and a cleanup that
-    can't be called is passed over for the next where it used to end the unwinding. Before, with the
-    garbage still there, one failed allocation could skip every cleanup. A cleanup still needs memory
+    can't be called is passed over for the next, where it used to end the unwinding. So G-168's "one
+    failed machine-stack allocation as a cleanup starts skips every cleanup still to come" no longer
+    holds. The error leaving still becomes `out-of-memory`, which no `catch!` catches, but the
+    cleanups further out are tried. A cleanup still needs memory
     to do anything, so this doesn't promise it runs on a heap truly full of live data: the kind that
     comes back says that it may not have. (`out_of_memory_collects_before_its_cleanups_run` in
     `parked_tests`)

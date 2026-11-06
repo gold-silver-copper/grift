@@ -2,6 +2,7 @@
 name = "grift-cli"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "The grift runner: runs grift files or stdin"
 repository = "https://github.com/gold-silver-copper/grift"

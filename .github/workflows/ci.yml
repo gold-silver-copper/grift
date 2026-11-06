@@ -26,3 +26,26 @@ jobs:
       - name: Editor example
         working-directory: examples/emacs
         run: cargo clippy --all-targets --locked -- -D warnings
+
+  # The library on the wasm target with the least of an operating system: a target with more, such
+  # as wasm32-wasip1, needs nothing this one doesn't.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo build -p grift --locked --target wasm32-unknown-unknown
+
+  # The rust-version Cargo.toml declares, read from there, so the declaration can't go false.
+  minimum-rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: declared
+        run: sed -n 's/^rust-version = "\(.*\)"$/version=\1/p' Cargo.toml >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.declared.outputs.version }}
+      - run: cargo build --workspace --locked
