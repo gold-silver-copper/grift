@@ -2266,7 +2266,6 @@ fn list_access_by_index() {
             "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (element-at -1 10)))",
             "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (take 11 10)))",
             "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
-            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
             "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list (quote! take) xs))",
             "(equal? (catch! (element-at xs -9223372036854775808) e (evaluate-in! values e))
                      (quote! (element-at -9223372036854775808 10)))",
@@ -2279,7 +2278,8 @@ fn list_access_by_index() {
         &mut g,
         &[
             ("(last ())", "range-error"),
-            ("(third (list 1 2))", "range-error"),
+            ("(second (list 1))", "type-error"),
+            ("(third (list 1 2))", "type-error"),
             ("(element-at xs 1.0)", "type-error"),
             ("(drop 2 xs)", "type-error"),
         ],
