@@ -1439,7 +1439,7 @@ impl<T> Grift<T> {
     }
 
     pub(crate) fn bytes_local(&mut self, b: Vec<u8>) -> Result<Value, Error> {
-        Ok(Value::Bytes(self.heap.alloc_bytes(b)?))
+        Ok(Value::Bytes(self.heap.alloc(Object::Bytes(b))?))
     }
 
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a

@@ -2070,6 +2070,18 @@ fn a_parse_error_says_why_and_where() {
 }
 
 #[test]
+fn an_object_counts_its_storage_towards_the_next_collection() {
+    let mut g = grift();
+    let text = "x".repeat(1_000_000);
+    g.heap.not_due();
+    g.string(&text).unwrap();
+    assert!(g.heap.due(), "a string");
+    g.heap.not_due();
+    g.bytes(text.as_bytes()).unwrap();
+    assert!(g.heap.due(), "bytes");
+}
+
+#[test]
 fn a_bind_that_fails_binds_nothing() {
     let mut g = grift();
     g.evaluate(&mut (), "(define! c (context))").unwrap();

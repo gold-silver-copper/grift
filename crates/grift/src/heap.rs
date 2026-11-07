@@ -82,15 +82,16 @@ struct Slot {
 const NONE: u32 = u32::MAX;
 
 /// Collections start once this many objects were allocated since the last one, or as many as
-/// survived it if that is more, so the heap stays within about twice the live data. A bytes value
-/// counts as many objects as its storage would fill slots, so large chunks dropped one after
-/// another bring the next collection nearer as their size, not their number, says.
+/// survived it if that is more, so the heap stays within about twice the live data. A string or
+/// bytes value counts as many objects as its storage would fill slots, so large chunks dropped one
+/// after another bring the next collection nearer as their size, not their number, says.
 const GC_MIN: usize = 4096;
 
 /// How many objects `obj` counts as, for when to collect.
 #[inline]
 fn weight(obj: &Object) -> usize {
     match obj {
+        Object::String(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
         Object::Fiber(room) => 1 + room.iter().map(Machine::weight).sum::<usize>(),
         _ => 1,
@@ -170,7 +171,7 @@ impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
         let since_gc = self.since_gc.get_mut();
-        *since_gc = since_gc.saturating_add(1);
+        *since_gc = since_gc.saturating_add(weight(&obj));
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -215,14 +216,6 @@ impl Heap {
             },
         )?;
         Ok(Reference { idx, generation: 0 })
-    }
-
-    /// A new bytes object, counted as the slots its storage would fill besides its own.
-    pub fn alloc_bytes(&mut self, b: Vec<u8>) -> Result<Reference, Error> {
-        let bytes = Object::Bytes(b);
-        let since_gc = self.since_gc.get_mut();
-        *since_gc = since_gc.saturating_add(weight(&bytes) - 1);
-        self.alloc(bytes)
     }
 
     /// Marks every object now in the heap as the library's. A slot loses the mark when it is
