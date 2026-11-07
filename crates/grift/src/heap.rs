@@ -182,7 +182,7 @@ impl Heap {
                     if self.refuse_once {
                         self.refuse_in = None;
                     }
-                    return Err(Error::oom());
+                    return Err(self.refused());
                 }
                 Some(n) => self.refuse_in = Some(n - 1),
                 None => {}
@@ -201,22 +201,28 @@ impl Heap {
         }
         #[cfg(test)]
         if self.slots.len() >= self.slot_limit {
-            return Err(Error::oom());
+            return Err(self.refused());
         }
         let idx = u32::try_from(self.slots.len())
             .ok()
             .filter(|&i| i != NONE)
-            .ok_or_else(Error::oom)?;
-        push(
-            &mut self.slots,
-            Slot {
-                generation: 0,
-                marked: false,
-                library: false,
-                obj,
-            },
-        )?;
+            .ok_or_else(|| self.refused())?;
+        let slot = Slot {
+            generation: 0,
+            marked: false,
+            library: false,
+            obj,
+        };
+        push(&mut self.slots, slot).map_err(|_| self.refused())?;
         Ok(Reference { idx, generation: 0 })
+    }
+
+    /// No room for an object: collection comes next, at the machine's next safe point or as a
+    /// host's next run begins.
+    #[cold]
+    fn refused(&self) -> Error {
+        self.request_collection();
+        Error::oom()
     }
 
     /// A new bytes object, counted as the slots its storage would fill besides its own.
@@ -290,7 +296,7 @@ impl Heap {
         self.since_gc.get() >= self.live.max(GC_MIN)
     }
 
-    /// Any reported OOM requests collection, including failures in an `&self` host operation.
+    /// The next safe point collects.
     pub fn request_collection(&self) {
         self.since_gc.set(usize::MAX);
     }

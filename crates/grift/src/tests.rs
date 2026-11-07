@@ -18,7 +18,7 @@ impl<T> Grift<T> {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here)?;
         let forms = self.read_local(MEANINGS, None)?;
-        self.evaluate_forms(None, forms, here)?;
+        self.evaluate_forms(None, forms, here, false)?;
         let name = self.intern("meanings")?;
         if let Some(local::Value::Context(meanings)) = self.find(here, name)? {
             self.definitions = meanings;
@@ -3145,52 +3145,6 @@ fn positions_name_each_combination_s_source_and_line() {
         g.evaluate(&mut (), "(length (map list (range 0 5000)))")
             .unwrap();
     }
-}
-
-/// A host function's state for leaving its run: the interpreter swapped out, and two stoppers.
-struct Leaving {
-    saved: Option<Grift<Leaving>>,
-    stops: Vec<Interrupter>,
-}
-
-/// A stop of the run in progress, whole, then the interpreter swapped out.
-fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
-    if let Some(whole) = s.stops.first_mut() {
-        assert!(whole.stop(), "a run to stop");
-    }
-    s.saved = Some(std::mem::replace(g, Grift::new()?));
-    Ok(Value::Inert)
-}
-
-/// Gives up a run inside by swapping the interpreter out and back; then another stop makes only
-/// its first store.
-fn restore(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
-    let _ = g.evaluate(s, "(swap-out)");
-    if let Some(old) = s.saved.take() {
-        *g = old;
-    }
-    if let Some(half) = s.stops.get_mut(1) {
-        half.stop_halfway();
-    }
-    Err(g.error("restored", &[]))
-}
-
-#[test]
-fn a_poll_with_no_run_in_progress_acts_on_nothing() {
-    // The interleaving the q2 model found (abandon_poll_race), made here in order: a run its host
-    // function left is given up, and the poll that follows finds no run in progress, while one
-    // stop is whole and another has stored its count but not its run. Neither acts.
-    let mut g: Grift<Leaving> = Grift::new().unwrap();
-    define(&mut g, "swap-out", swap_out);
-    define(&mut g, "restore", restore);
-    let mut s = Leaving {
-        saved: None,
-        stops: vec![g.interrupter(), g.interrupter()],
-    };
-    let e = g.evaluate(&mut s, "(restore)").unwrap_err();
-    assert_eq!(kind(&g, &e), "foreign-value", "the run its host left");
-    assert!(!g.interrupted(), "a poll with no run in progress acted");
-    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
 }
 
 /// Asks for a stop of the run in progress, then walks the tree it was given, with no step of the

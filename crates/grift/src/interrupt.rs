@@ -1,137 +1,67 @@
-//! Stopping a run from another thread. Each outer run (an evaluation or call that isn't inside
-//! another) gets the next number, its generation, published in the interpreter's [`Control`] while
-//! it runs and 0 otherwise. A stop reads it and, if a run is in progress, leaves that number in
-//! the stopping handle's own mailbox; the machine stops only for its own number. So a stop asked
-//! for between runs does nothing, and a late one never reaches a later run. A stop is a load and
-//! a few stores, never a lock or a read-modify-write; the machine reads one flag a step, and only
-//! once a stop has set it takes the lock and reads the mailboxes.
-//!
-//! A run that parks goes on later, so a stop must not be lost in the moment it parks: a stop first
-//! says it is stopping and then reads the run, and a run about to park first unpublishes itself
-//! and then looks for stops. Whichever order they come in, one sees the other: [`Control::parks`].
+//! Stopping a run from another thread. An interpreter and its interrupters share one word: the run
+//! in progress, 0 for none, and two bits a run is asked to stop by. Everything here is one atomic
+//! operation on that word, so nothing can come between looking at the run and asking it: a stop
+//! reaches the run in progress as it returns, or none, and never a later one. A new run overwrites
+//! the word, bits and all. The machine reads the word once a step and clears only [`STOP`], so a
+//! later stop asks again and a force, which it never clears, is found by every check to the end of
+//! its run. No other memory is published through the word, so every ordering is relaxed.
 
-use std::cell::Cell;
 use std::collections::TryReserveError;
-use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+const STOP: u64 = 1;
+const FORCE: u64 = 2;
+const ASKED: u64 = STOP | FORCE;
+
+/// Numbers runs in every interpreter, by the multiple of 4 that leaves the two bits free. Never
+/// repeated (at a run a nanosecond it wraps after a century), so a number says which run of which
+/// interpreter it is.
+static RUNS: AtomicU64 = AtomicU64::new(0);
 
 /// What an interpreter shares with its interrupters. Its allocation is also the interpreter's
 /// identity: the values it hands out point to it.
 #[derive(Default)]
 pub(crate) struct Control {
-    /// The run in progress, 0 for none.
-    active: AtomicU64,
-    /// Set by a stop after it leaves its request, so the machine reads the mailboxes only then.
-    asked: AtomicBool,
-    /// The latest run forced. While that is the run in progress, `asked` stays set.
-    forced: AtomicU64,
-    /// The live interrupters' mailboxes. A stop never takes the lock: registering a handle and
-    /// the machine's scan do, so a scan sees every handle linked before it began.
-    mailboxes: Mutex<Vec<Arc<Mailbox>>>,
+    word: AtomicU64,
     /// The kept names of parked runs whose handles were dropped, for the host to find again.
     forgotten: Mutex<Vec<u32>>,
 }
 
-/// One interrupter's mailbox: the run its last stop was for and how many stops it has made, which
-/// only that interrupter writes, and the last of those the machine acted on, which only the
-/// machine writes.
-#[derive(Default)]
-struct Mailbox {
-    requested: AtomicU64,
-    count: AtomicU64,
-    delivered: AtomicU64,
-    /// Set for as long as the handle's stop takes.
-    stopping: AtomicBool,
-}
-
-impl Mailbox {
-    /// Whether a stop of `run` is waiting here that the machine hasn't acted on.
-    fn waiting(&self, run: u64) -> bool {
-        self.requested.load(Ordering::SeqCst) == run
-            && self.count.load(Ordering::Acquire) != self.delivered.load(Ordering::Relaxed)
-    }
-}
-
 impl Control {
-    /// Publishes the run in progress. Release suffices: a stop that reads an older number stores
-    /// a generation no later run has, so it can't reach one.
-    pub fn begin(&self, run: u64) {
-        self.active.store(run, Ordering::Release);
+    pub fn begin(&self) {
+        let run = RUNS.fetch_add(ASKED + 1, Relaxed).wrapping_add(ASKED + 1);
+        self.word.store(run, Relaxed);
     }
 
     pub fn end(&self) {
-        self.active.store(0, Ordering::Release);
+        self.word.store(0, Relaxed);
     }
 
-    /// The run published as in progress, 0 for none.
-    pub fn active(&self) -> u64 {
-        self.active.load(Ordering::Relaxed)
+    /// The run in progress, 0 for none.
+    pub fn run(&self) -> u64 {
+        self.word.load(Relaxed) & !ASKED
     }
 
-    /// Unpublishes `run` to park it, unless something was asked: then `run` goes on being the run
-    /// in progress, and what was asked is the machine's to judge, as at any check. A stop that read
-    /// `run` has said it is stopping before this unpublishes it, so the wait below sees it, and
-    /// that wait is for a few stores, as the lock is. One that reads 0 does nothing and says so. The
-    /// lock comes first so that no handle lets go of a waiting mailbox while no run is published.
-    pub fn parks(&self, run: u64) -> bool {
-        let list = self.mailboxes();
-        self.active.store(0, Ordering::SeqCst);
-        for m in list.iter() {
-            while m.stopping.load(Ordering::SeqCst) {
-                std::thread::yield_now();
-            }
-        }
-        let asked = self.asked.load(Ordering::SeqCst);
-        if asked {
-            self.active.store(run, Ordering::SeqCst);
-        }
-        !asked
-    }
-
-    /// Whether a stop of `run` was asked for since the last one acted on. Read at every step: one
-    /// load, unless one was.
+    /// Whether the run in progress is asked to stop. Read at every step.
     #[inline(always)]
-    pub fn stopped(&self, run: u64) -> bool {
-        self.asked.load(Ordering::Acquire) && self.requested(run)
+    pub fn asked(&self) -> bool {
+        self.word.load(Relaxed) & ASKED != 0
     }
 
-    /// Whether a stop of `run` is waiting, leaving it to be acted on at the machine's next check.
-    pub fn waiting(&self, run: u64) -> bool {
-        run != 0
-            && self.asked.load(Ordering::Acquire)
-            && (self.forced.load(Ordering::SeqCst) == run
-                || self.mailboxes().iter().any(|m| m.waiting(run)))
-    }
-
+    /// The machine acts on the stops asked so far: they count as one.
     #[cold]
-    fn requested(&self, run: u64) -> bool {
-        // With no run in progress, never: a mailbox a stop is still writing may hold its new count
-        // beside 0. The flag stays for the next run to read.
-        if run == 0 {
-            return false;
-        }
-        // Cleared before reading, so a stop that leaves its request after the read sets it again.
-        self.asked.store(false, Ordering::SeqCst);
-        // Read after clearing, as the mailboxes are. It takes no lock and stays asked: every check
-        // of this run finds it, however many cleanups and nested runs there are.
-        if self.forced.load(Ordering::SeqCst) == run {
-            self.asked.store(true, Ordering::SeqCst);
-            return true;
-        }
-        let mut stopped = false;
-        for m in self.mailboxes().iter() {
-            if m.waiting(run) {
-                // Every request waiting is answered by this one interruption.
-                m.delivered
-                    .store(m.count.load(Ordering::Acquire), Ordering::Relaxed);
-                stopped = true;
-            }
-        }
-        stopped
+    pub fn acted(&self) {
+        self.word.fetch_and(!STOP, Relaxed);
     }
 
-    /// The parked runs no handle holds. As with the mailboxes, nothing panics under the lock.
+    /// Unpublishes the run to park it, unless it was asked to stop.
+    pub fn parks(&self) -> bool {
+        let run = self.run();
+        self.word.compare_exchange(run, 0, Relaxed, Relaxed).is_ok()
+    }
+
+    /// The parked runs no handle holds. Nothing panics under the lock.
     pub fn forgotten(&self) -> MutexGuard<'_, Vec<u32>> {
         self.forgotten.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -142,35 +72,18 @@ impl Control {
         let more = runs.saturating_sub(forgotten.len());
         forgotten.try_reserve(more)
     }
-
-    fn mailboxes(&self) -> MutexGuard<'_, Vec<Arc<Mailbox>>> {
-        // Nothing panics while holding the lock, so it is never poisoned; if it were, the list
-        // is still whole.
-        self.mailboxes.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    /// Lets go of the mailboxes no handle holds, but those with a stop still waiting for the run
-    /// in progress, which a later sweep lets go.
-    fn sweep(&self, list: &mut Vec<Arc<Mailbox>>, leaving: Option<&Arc<Mailbox>>) {
-        let run = self.active();
-        list.retain(|m| {
-            let gone = leaving.is_some_and(|l| Arc::ptr_eq(l, m)) || Arc::strong_count(m) == 1;
-            !gone || (run != 0 && m.waiting(run))
-        });
-    }
 }
 
 /// Stops the run of its [`Grift`](crate::Grift) that is in progress, from any thread: the run
 /// ends with the error `interrupted` at its next step, or inside a long walk of a tree. That error
-/// runs cleanups on its way out as any error does, but a stop can also land in a cleanup that has begun, and cut it, even before
-/// its first form. A stop asked for while no run is in progress does nothing, and one never
-/// reaches a run that starts after it returns. Stops waiting together count as one; a later stop
-/// of the same run, say of a cleanup that doesn't end, interrupts it again. A parked run is not in
-/// progress, so a stop then does nothing and says so; one that reached a run as it parked stops it
-/// there, its cleanups then running, and they may park in turn; and each
-/// [`Grift::resume`](crate::Grift::resume) is a run of its own. `Send`, not `Sync`: each clone is a
-/// handle of its own, used by one thread at a time, with a mailbox of a few bytes while it lives.
-/// [`Interrupter::force`] ends a run however its cleanups behave.
+/// runs cleanups on its way out as any error does, but a stop can also land in a cleanup that has
+/// begun, and cut it, even before its first form. A stop with no run in progress does nothing, and
+/// none reaches a run that starts after it returns. Stops waiting together count as one; a later
+/// stop of the same run, say of a cleanup that doesn't end, interrupts it again. A parked run is
+/// not in progress, so a stop then does nothing and says so; one that reached a run before it
+/// parked stops it there, its cleanups then running, and they may park in turn; and each
+/// [`Grift::resume`](crate::Grift::resume) is a run of its own. [`Interrupter::force`] ends a run
+/// however its cleanups behave.
 ///
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -190,27 +103,19 @@ impl Control {
 /// assert_eq!(g.evaluate(&mut (), "(add 1 2)")?, grift::Value::Integer(3));
 /// # Ok::<(), grift::Error>(())
 /// ```
+#[derive(Clone)]
 pub struct Interrupter {
     control: Arc<Control>,
-    mailbox: Arc<Mailbox>,
-    /// The stops this handle has made.
-    sent: u64,
-    not_shared: PhantomData<Cell<()>>,
+    /// The run this handle last reached, which is all a force may reach. A clone starts with its
+    /// source's.
+    stopped: u64,
 }
 
 impl Interrupter {
-    /// A new handle with its own mailbox.
     pub(crate) fn new(control: &Arc<Control>) -> Interrupter {
-        let mailbox = Arc::new(Mailbox::default());
-        let mut list = control.mailboxes();
-        control.sweep(&mut list, None);
-        list.push(Arc::clone(&mailbox));
-        drop(list);
         Interrupter {
             control: Arc::clone(control),
-            mailbox,
-            sent: 0,
-            not_shared: PhantomData,
+            stopped: 0,
         }
     }
 
@@ -219,66 +124,30 @@ impl Interrupter {
     /// passed before its run began (while its source is read, say) asks again until one is, and
     /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {
-        let run = self.stop_begun();
-        self.stop_landed(run);
-        run != 0
+        let was = self
+            .control
+            .word
+            .try_update(Relaxed, Relaxed, |w| (w != 0).then_some(w | STOP));
+        if let Ok(w) = was {
+            self.stopped = w & !ASKED;
+        }
+        was.is_ok()
     }
 
     /// Ends the run this handle last stopped, at its next check, however its cleanups behave:
     /// each it meets is cut before its first form, at every level of the run, and nothing a host
     /// function then evaluates runs. The run ends with `interrupted`, which [`Error::is_limit`]
     /// says is real. Whether that run is still in progress; `false` if it is over, or if this handle
-    /// never stopped one, so a late force never reaches a later run. A clone has stopped nothing:
-    /// to force at once, `h.stop(); h.force();`. `true` doesn't say it acted, as for a stop.
+    /// never stopped one, so a late force never reaches a later run: to force at once,
+    /// `h.stop(); h.force();`. `true` doesn't say it acted, as for a stop.
     ///
     /// [`Error::is_limit`]: crate::Error::is_limit
     pub fn force(&mut self) -> bool {
-        let run = self.mailbox.requested.load(Ordering::SeqCst);
-        let found = run != 0 && self.control.active.load(Ordering::SeqCst) == run;
-        if found {
-            // The largest, so a force preempted here can't hide a later one.
-            self.control.forced.fetch_max(run, Ordering::SeqCst);
-            self.control.asked.store(true, Ordering::SeqCst);
-        }
-        found
-    }
-
-    /// A stop's first half: it says it is stopping, and reads the run, which is what it will stop.
-    pub(crate) fn stop_begun(&mut self) -> u64 {
-        self.mailbox.stopping.store(true, Ordering::SeqCst);
-        self.control.active.load(Ordering::SeqCst)
-    }
-
-    /// A stop's second half, which tests can hold apart from the first.
-    pub(crate) fn stop_landed(&mut self, run: u64) {
-        if run != 0 {
-            self.sent += 1;
-            self.mailbox.count.store(self.sent, Ordering::Release);
-            self.mailbox.requested.store(run, Ordering::SeqCst);
-            self.control.asked.store(true, Ordering::SeqCst);
-        }
-        self.mailbox.stopping.store(false, Ordering::SeqCst);
-    }
-
-    /// A stop's first store alone, as a stop preempted before it stores its run is seen: for
-    /// tests of that interleaving.
-    #[cfg(test)]
-    pub(crate) fn stop_halfway(&mut self) {
-        self.sent += 1;
-        self.mailbox.count.store(self.sent, Ordering::Release);
-    }
-}
-
-impl Drop for Interrupter {
-    fn drop(&mut self) {
-        let mut list = self.control.mailboxes();
-        self.control.sweep(&mut list, Some(&self.mailbox));
-    }
-}
-
-impl Clone for Interrupter {
-    /// Another handle, with a mailbox of its own.
-    fn clone(&self) -> Interrupter {
-        Interrupter::new(&self.control)
+        self.control
+            .word
+            .try_update(Relaxed, Relaxed, |w| {
+                (w != 0 && w & !ASKED == self.stopped).then_some(w | FORCE)
+            })
+            .is_ok()
     }
 }

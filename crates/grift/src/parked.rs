@@ -9,7 +9,7 @@
 
 use crate::evaluate::Machine;
 use crate::heap::Object;
-use crate::local::{self, K, Symbol};
+use crate::local::{self, K, KEPT, Symbol};
 use crate::{Error, Grift, Owner, Primitive, Value};
 use std::sync::Weak;
 
@@ -43,16 +43,6 @@ impl<T> Clone for Hosted<T> {
 }
 
 impl<T> Copy for Hosted<T> {}
-
-/// Whether the run in progress may park.
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(crate) enum Parking {
-    #[default]
-    Refused,
-    Allowed,
-    /// It just did, under this kept name.
-    Done(u32),
-}
 
 /// How a run that may park came back to its host, when it didn't fail.
 #[must_use]
@@ -195,7 +185,7 @@ impl<T> Grift<T> {
         self.parkable(|g| {
             let f = g.prepare_call(f, arguments)?;
             let arguments = g.imported(arguments)?;
-            g.call_local(Some(state), f, &arguments)
+            g.call_local(Some(state), f, &arguments, true)
         })
     }
 
@@ -212,7 +202,7 @@ impl<T> Grift<T> {
             g.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = g.intern(source)?;
             let forms = g.read_local(src, Some(source))?;
-            g.evaluate_forms(Some(state), forms, c)
+            g.evaluate_forms(Some(state), forms, c, true)
         })
     }
 
@@ -223,28 +213,25 @@ impl<T> Grift<T> {
         if let Err(e) = self.outside_a_run() {
             return Err(self.export_error(e));
         }
-        self.parking = Parking::Allowed;
         let done = go(self);
         self.ran(done).map_err(|e| self.export_error(e))
     }
 
-    /// A run left behind by a host function that didn't return is over; one in progress refuses.
-    fn outside_a_run(&mut self) -> Result<(), local::Error> {
-        if self.run != 0 && self.control.active() != self.run {
-            self.abandon_run();
-        }
-        match self.run {
+    fn outside_a_run(&self) -> Result<(), local::Error> {
+        match self.control.run() {
             0 => Ok(()),
             _ => Err(local::Error::new(K::CannotPark, &[])),
         }
     }
 
+    /// A parked run returns its kept name, a symbol nothing else can be.
     fn ran(&mut self, done: Result<local::Value, local::Error>) -> Result<Ran, local::Error> {
-        match (std::mem::take(&mut self.parking), done) {
-            (Parking::Done(name), _) => Ok(Ran::Parked(self.parked_handle(name))),
-            (_, Ok(v)) => Ok(Ran::Finished(self.export(v))),
-            (_, Err(e)) => Err(e),
-        }
+        Ok(match done? {
+            local::Value::Symbol(Symbol(name)) if name >= KEPT => {
+                Ran::Parked(self.parked_handle(name))
+            }
+            v => Ran::Finished(self.export(v)),
+        })
     }
 
     /// A handle to the run parked under kept name `name`.
@@ -276,9 +263,9 @@ impl<T> Grift<T> {
     ) -> Result<Ran, ResumeError> {
         let answer = match &answer {
             Ok(v) => self.import(v),
-            Err(e) => self.import_error(e).and_then(Err),
+            Err(e) => Err(self.incoming_error(e)),
         };
-        self.take_up(state, parked, answer, Parking::Allowed)
+        self.take_up(state, parked, answer, true)
     }
 
     /// Ends a parked run. The waiting call raises `abandoned`, an error nothing catches, so the
@@ -323,7 +310,7 @@ impl<T> Grift<T> {
     /// ```
     pub fn abandon(&mut self, state: &mut T, parked: Parked) -> Result<Error, ResumeError> {
         let ending = local::Error::host(K::Abandoned);
-        match self.take_up(state, parked, Err(ending), Parking::Refused) {
+        match self.take_up(state, parked, Err(ending), false) {
             Err(ResumeError {
                 error,
                 parked: None,
@@ -339,12 +326,12 @@ impl<T> Grift<T> {
         state: &mut T,
         mut parked: Parked,
         answer: Result<local::Value, local::Error>,
-        parking: Parking,
+        parks: bool,
     ) -> Result<Ran, ResumeError> {
         match self.claim(&parked, &answer) {
             Ok(machine) => {
                 parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
-                self.parking = parking;
+                self.may_park = parks;
                 let done = self.wake(Some(state), machine, answer);
                 self.ran(done).map_err(|e| ResumeError {
                     error: self.export_error(e),
@@ -380,7 +367,7 @@ impl<T> Grift<T> {
         let Some(local::Value::Pair(fiber)) = self.find(self.kept, name)? else {
             return Err(local::Error::new(K::StaleValue, &[]));
         };
-        self.begin_run()?;
+        self.begin_run();
         let machine = match self.heap.get_mut(fiber)? {
             Object::Fiber(room) => room.pop(),
             _ => None,
@@ -398,7 +385,7 @@ impl<T> Grift<T> {
     /// [`Grift::evaluate`] or [`Grift::call`], not in any run inside a host call, and not in a
     /// cleanup [`Grift::abandon`] runs.
     pub fn can_park(&self) -> bool {
-        self.parking == Parking::Allowed
+        self.may_park
     }
 
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one

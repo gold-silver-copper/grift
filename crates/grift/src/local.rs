@@ -38,19 +38,12 @@ pub(crate) struct Host(pub u32);
 /// The first symbol index no text can name: the names of kept values start here.
 pub(crate) const KEPT: u32 = 1 << 31;
 
-/// Who began an unwinding. Nothing about the error's kind says so: this alone decides whether a
-/// handler may catch it, and a program can only ever make [`Origin::Program`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Origin {
-    Program,
-    Host,
-    Machine,
-}
-
 /// An error as the machine carries it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Error {
-    pub origin: Origin,
+    /// Whether the host or the machine began this, not a program: whatever its kind is called,
+    /// this alone says a handler may not catch it, and a program can't set it.
+    pub limit: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Vec<Value>,
@@ -94,7 +87,7 @@ impl Error {
     pub fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut e = Error::oom();
         if e.values.try_reserve_exact(values.len()).is_ok() {
-            e.origin = Origin::Program;
+            e.limit = false;
             e.kind = kind.into();
             e.values.extend_from_slice(values);
         }
@@ -104,7 +97,7 @@ impl Error {
     /// The machine ran out of memory.
     pub fn oom() -> Error {
         Error {
-            origin: Origin::Machine,
+            limit: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Vec::new(),
@@ -115,7 +108,7 @@ impl Error {
     /// An unwinding the host begins, of a kind that needs no values.
     pub fn host(kind: K) -> Error {
         Error {
-            origin: Origin::Host,
+            limit: true,
             ..Error::new(kind, &[])
         }
     }
