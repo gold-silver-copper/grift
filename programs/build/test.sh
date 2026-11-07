@@ -138,7 +138,7 @@ expect_line "build: build.data line 3: a second rule for x; the first is on line
 pass
 
 broken "an error in a function the build file wrote" bad-function <<'D'
-(function object-for (source) (string-append source 1))
+(function object-for (source) (join source 1))
 (rule "x" ((object-for "a.c")) ("true"))
 D
 build

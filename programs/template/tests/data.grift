@@ -8,6 +8,6 @@
 (define! ratio 0.5)
 (define! status (quote! open))
 (define! html "<a href='x'>&</a>")
-(define! shout (lambda! (s) (string-append s "!")))
+(define! shout (lambda! (s) (join s "!")))
 (define! broken (lambda! (s) (add s 1)))
 (define! even? (lambda! (n) (same? (remainder n 2) 0)))

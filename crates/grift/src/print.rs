@@ -140,7 +140,7 @@ impl<T> Grift<T> {
                             push(&mut todo, Item::Value(*a))?;
                         }
                         Ok(Object::String(s)) => write_string(s, out)?,
-                        // The literal: each byte as the integer `bytes-byte` gives for it.
+                        // The literal: each byte as the integer `byte-at` gives for it.
                         Ok(Object::Bytes(b)) => {
                             out.write_str("#bytes(")?;
                             for (i, byte) in b.iter().enumerate() {

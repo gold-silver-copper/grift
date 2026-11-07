@@ -72,7 +72,7 @@
   (lambda! (text prompt)
     (display-error prompt)
     (let! ((line (read-line-host 0))
-           (text (string-append text line)))
+           (text (join text line)))
       (conditional!
         ((same? line "") (read-forms "stdin" text) #inert)
         ((unfinished? text) (session text "  "))

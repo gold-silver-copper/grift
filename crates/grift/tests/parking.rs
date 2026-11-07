@@ -711,7 +711,7 @@ fn an_event_loop_runs_three_waiting_scripts() {
          (define! job (lambda! (name ms)
            (finally!
              (sequence! (sleep ms) (say name) (sleep ms) (bind here (quote! done) (add done 1)))
-             (say (string-append name \" closed\")))))",
+             (say (join name \" closed\")))))",
     )
     .unwrap();
 

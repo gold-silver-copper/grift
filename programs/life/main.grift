@@ -18,7 +18,7 @@
 ; Writes "life: MESSAGE" to standard error and ends the run with `status`.
 (define! fail
   (lambda! (status . message)
-    (display-error "life: " (apply string-append message) "\n")
+    (display-error "life: " (apply join message) "\n")
     (exit status)))
 
 ; The integer `text` names, or a usage error naming `what`.
@@ -72,14 +72,14 @@
   (lambda! (path text)
     (let! ((lines (string-split text "\n"))
            (check (lambda! (line number column)
-                    (when! (less-than? column (string-byte-length line))
-                      (let! ((byte (string-byte line column)))
+                    (when! (less-than? column (byte-length line))
+                      (let! ((byte (byte-at line column)))
                         (if! (or!? (same? byte alive-byte) (same? byte dead-byte))
                           (check line number (add column 1))
                           (fail 1 path ":" (integer-to-string number)
                                 ":" (integer-to-string (add column 1))
                                 ": a cell is . or #, not \""
-                                (byte-substring line column (add column 1)) "\""))))))
+                                (slice line column (add column 1)) "\""))))))
            (rows (lambda! (lines number found)
                    (if! (empty-list? lines)
                      (reverse found)
@@ -92,7 +92,7 @@
                            (rows (rest lines) (add number 1) (pair line found)))))))))
       (rows lines 1 ()))))
 
-; Inside, a row holds its cells as bytes, 1 alive and 0 dead, so `string-byte` is the cell's
+; Inside, a row holds its cells as bytes, 1 alive and 0 dead, so `byte-at` is the cell's
 ; count, with one more cell at each end: dead, or when wrapping a copy of the cell at the other
 ; end. Then every cell of the row has a left and a right neighbour, and the loop over cells has
 ; no edges to test.
@@ -103,23 +103,23 @@
 (define! with-ends
   (lambda! (interior wrapping)
     (if! wrapping
-      (let! ((width (string-byte-length interior)))
-        (string-append (byte-substring interior (subtract width 1) width)
+      (let! ((width (byte-length interior)))
+        (join (slice interior (subtract width 1) width)
                        interior
-                       (byte-substring interior 0 1)))
-      (string-append zero interior zero))))
+                       (slice interior 0 1)))
+      (join zero interior zero))))
 
 ; The grid: the pattern's rows at the top left of a grid of `size`, or of the pattern's own size,
 ; every row padded with dead cells to one width.
 (define! make-grid
   (lambda! (path rows size wrapping)
-    (let! ((pattern-width (fold (lambda! (widest row) (maximum widest (string-byte-length row))) 0 rows))
+    (let! ((pattern-width (fold (lambda! (widest row) (maximum widest (byte-length row))) 0 rows))
            (pattern-height (length rows))
            ((width height) (if! (empty-list? size) (list pattern-width pattern-height) size))
            (cells (lambda! (row)
-                    (apply string-append
-                           (map (lambda! (x) (if! (same? (string-byte row x) alive-byte) one zero))
-                                (range 0 (string-byte-length row)))))))
+                    (apply join
+                           (map (lambda! (x) (if! (same? (byte-at row x) alive-byte) one zero))
+                                (range 0 (byte-length row)))))))
       (when! (or!? (same? width 0) (same? height 0)) (fail 1 path ": the grid has no cells"))
       (when! (or!? (less-than? width pattern-width) (less-than? height pattern-height))
         (fail 1 path ": the pattern is "
@@ -132,30 +132,30 @@
 ; What a cell becomes, at the offset of the living cells among the nine around it, itself
 ; included, plus 9 if it is alive itself: it lives with 3, or with 4 if it is one of them.
 (define! rule
-  (apply string-append (map (lambda! (i) (if! (member? i (list 3 12 13)) one zero)) (range 0 19))))
-(define! becomes (lambda! (i) (byte-substring rule i (add i 1))))
+  (apply join (map (lambda! (i) (if! (member? i (list 3 12 13)) one zero)) (range 0 19))))
+(define! becomes (lambda! (i) (slice rule i (add i 1))))
 
 ; The next generation of `grid`. Each new row comes from the row and the rows above and below
 ; it; above the top and below the bottom is a row of dead cells, or when wrapping the row at the
 ; other edge.
 (define! step
   (lambda! (grid wrapping)
-    (let! ((end (subtract (string-byte-length (first grid)) 1))
+    (let! ((end (subtract (byte-length (first grid)) 1))
            (dead-row (string-repeat zero (add end 1)))
            ; The new row, cell by cell from the left; `left` and `middle` count the living cells
            ; in the columns of the three rows at x - 1 and at x.
            (next-row (lambda! (above row below)
                        (let! ((column (lambda! (x)
-                                        (add (string-byte above x)
-                                             (add (string-byte row x) (string-byte below x)))))
+                                        (add (byte-at above x)
+                                             (add (byte-at row x) (byte-at below x)))))
                               (cell (lambda! (x left middle right out)
                                       (cells (add x 1) middle right
                                              (pair (becomes (add (add left (add middle right))
-                                                                 (multiply 9 (string-byte row x))))
+                                                                 (multiply 9 (byte-at row x))))
                                                    out))))
                               (cells (lambda! (x left middle out)
                                        (if! (same? x end)
-                                         (with-ends (apply string-append (reverse out)) wrapping)
+                                         (with-ends (apply join (reverse out)) wrapping)
                                          (cell x left middle (column (add x 1)) out)))))
                          (cells 1 (column 0) (column 1) ()))))
            (rows (lambda! (above (row . more) after-last)
@@ -167,15 +167,15 @@
 
 ; The text of a row, `.` and `#`, without its end cells: the shown cells from x leftwards,
 ; collected onto `out`.
-(define! cell-text (lambda! (cell) (byte-substring ".#" cell (add cell 1))))
+(define! cell-text (lambda! (cell) (slice ".#" cell (add cell 1))))
 (define! shown
   (lambda! (row x out)
     (if! (same? x 0)
-      (apply string-append out)
-      (shown row (subtract x 1) (pair (cell-text (string-byte row x)) out)))))
+      (apply join out)
+      (shown row (subtract x 1) (pair (cell-text (byte-at row x)) out)))))
 (define! print-grid
   (lambda! (grid)
-    (for-each (lambda! (row) (display (shown row (subtract (string-byte-length row) 2) ())) (display "\n"))
+    (for-each (lambda! (row) (display (shown row (subtract (byte-length row) 2) ())) (display "\n"))
               grid)))
 
 ; Runs from generation `n` up to `last`, printing each unless only the last is wanted. `seen`
@@ -196,7 +196,7 @@
            (display "generation " n " repeats generation " earlier
                     (if! (same? earlier (subtract n 1))
                       ": a still life"
-                      (string-append ": a cycle of period " (integer-to-string (subtract n earlier))))
+                      (join ": a cycle of period " (integer-to-string (subtract n earlier))))
                     "; stopping")
            (display "\n")))
         ((same? n last) (when! final (print-grid grid)))

@@ -202,7 +202,7 @@ pub enum WriteError {
 ///
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
-/// let handler = g.evaluate(&mut (), "(lambda! (key) (string-append \"got \" key))")?;
+/// let handler = g.evaluate(&mut (), "(lambda! (key) (join \"got \" key))")?;
 /// let kept = g.keep(handler)?;
 /// g.evaluate(&mut (), "(length (map list (range 0 100000)))")?; // collects
 /// let handler = g.kept(&kept)?;
@@ -545,9 +545,9 @@ impl<T> Grift<T> {
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let chunk = g.bytes(&[104, 105, 255])?;
     /// g.define("chunk", chunk)?;
-    /// let head = g.evaluate(&mut (), "(bytes-slice chunk 0 2)")?;
+    /// let head = g.evaluate(&mut (), "(slice chunk 0 2)")?;
     /// assert_eq!(g.as_bytes(&head)?, Some(&b"hi"[..]));
-    /// let text = g.evaluate(&mut (), "(bytes-to-string (bytes-slice chunk 0 2))")?;
+    /// let text = g.evaluate(&mut (), "(bytes-to-string (slice chunk 0 2))")?;
     /// assert_eq!((g.as_bytes(&text)?, g.as_str(&text)?), (None, Some("hi")));
     /// # Ok::<(), grift::Error>(())
     /// ```

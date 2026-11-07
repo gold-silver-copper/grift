@@ -56,7 +56,7 @@ built-in-names                              ; every primitive and library name
 (element-at (list 1 2 3) 2)                 ; => 3; take, drop, second, third, last
 (read-form " (add 1 2) x" 0)                ; => ((add 1 2) 1 10): the form, its start and end
 (value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
-(string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
+(join "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
 (bytes-to-string #bytes(104 105))           ; => "hi"; bytes that aren't UTF-8 are encoding-error
 ```
 
@@ -64,9 +64,9 @@ The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup evaluat
 context bind unbind lookup names pair first rest same? select type-of add subtract multiply divide
 remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
 square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
-integer-to-float float-to-integer string-byte-length string-byte byte-substring string-search string-append
+integer-to-float float-to-integer byte-length byte-at slice search join
 code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
-value-to-string bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
+value-to-string string-to-bytes bytes-to-string
 list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
 let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? inert? ignore? boolean? integer?
 float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? apply any? all? map
@@ -74,7 +74,7 @@ for-each record error length append reverse equal? greater-than? less-than-or-eq
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-starts-with? string-ends-with? string-split string-join string-trim
-string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bytes-search
+string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase
 bindings standard-context built-in-names`.
 
 ## The runner
@@ -142,7 +142,7 @@ aborts the runner, since `std` buffers its output without asking.
   (lambda! (n)
     (let! ((line (read-line)))
       (when! (not? (same? line ""))
-        ((evaluate-in! write out) (string-append (integer-to-string n) " " line))
+        ((evaluate-in! write out) (join (integer-to-string n) " " line))
         (copy (add n 1))))))
 (copy 1)
 ((evaluate-in! close out))
@@ -312,7 +312,7 @@ fn main() -> Result<(), Error> {
         "(define! job (lambda! (name ms)
            (finally!
              (sequence! (sleep ms) (say name) (sleep ms))
-             (say (string-append name \" closed\")))))",
+             (say (join name \" closed\")))))",
     )?;
 
     // An event loop: one thread, nothing blocks. Timers stand for what a real host waits on.

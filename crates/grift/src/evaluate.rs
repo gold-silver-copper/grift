@@ -87,9 +87,10 @@ primitives! {
     Round "round" 1 1;
     Truncate "truncate" 1 1;
     AbsoluteValue "absolute-value" 1 1;
-    // A string's bytes, making text, names and floats from it, the reader and the printer.
-    StringByte "string-byte" 2 2;
-    StringAppend "string-append" 0 usize::MAX;
+    // A string's or a bytes value's bytes, joining them, making names and floats from text, the
+    // reader and the printer.
+    ByteAt "byte-at" 2 2;
+    Join "join" 0 usize::MAX;
     StringToSymbol "string-to-symbol" 1 1;
     StringToFloat "string-to-float" 1 1;
     ReadForm "read-form" 2 2;
@@ -106,17 +107,13 @@ primitives! {
     ShiftRight "shift-right" 2 2;
     IntegerToFloat "integer-to-float" 1 1;
     FloatToInteger "float-to-integer" 1 1;
-    StringByteLength "string-byte-length" 1 1;
-    ByteSubstring "byte-substring" 3 3;
+    ByteLength "byte-length" 1 1;
+    Slice "slice" 3 3;
     CodePointToString "code-point-to-string" 1 1;
-    StringSearch "string-search" 3 3;
+    Search "search" 3 3;
     IntegerToString "integer-to-string" 1 1;
     StringToInteger "string-to-integer" 1 1;
     // A bytes value's contents: the printer writes them and the reader reads them back.
-    BytesLength "bytes-length" 1 1;
-    BytesByte "bytes-byte" 2 2;
-    BytesSlice "bytes-slice" 3 3;
-    BytesAppend "bytes-append" 0 usize::MAX;
     StringToBytes "string-to-bytes" 1 1;
     BytesToString "bytes-to-string" 1 1;
     ListToBytes "list-to-bytes" 1 1;
@@ -1101,59 +1098,15 @@ impl<T> Grift<T> {
             P::Raise => {
                 return Err(self.error_of(x)?);
             }
-            P::StringByteLength => integer(self.text(x)?.len()),
-            P::StringByte => {
-                let (s, i) = (self.text(x)?, integer_of(y)?);
-                let byte = usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i));
-                let byte = byte.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
-                Value::Integer(i64::from(*byte))
-            }
-            P::ByteSubstring => {
-                let s = self.text(x)?;
-                let range = (
-                    usize::try_from(integer_of(y)?),
-                    usize::try_from(integer_of(z)?),
-                );
-                let part = match range {
-                    (Ok(a), Ok(b)) => s.get(a..b),
-                    _ => None,
-                };
-                let part = part.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
-                let part = boxed(part)?;
-                Value::String(self.heap.alloc(Object::String(part))?)
-            }
-            P::StringAppend => {
-                let given = self.machine.arguments.get(base..).unwrap_or_default();
-                let mut len = 0usize;
-                for &v in given {
-                    len = len.saturating_add(self.text(v)?.len());
-                }
-                // Exactly the length, so boxing it never reallocates.
-                let mut s = String::new();
-                s.try_reserve_exact(len).map_err(|_| Error::oom())?;
-                for &v in given {
-                    s.push_str(self.text(v)?);
-                }
-                Value::String(self.heap.alloc(Object::String(s.into_boxed_str()))?)
-            }
-            P::BytesLength
-            | P::BytesByte
-            | P::BytesSlice
-            | P::BytesAppend
+            P::ByteAt
+            | P::Join
+            | P::ByteLength
+            | P::Slice
+            | P::Search
             | P::StringToBytes
             | P::BytesToString
             | P::ListToBytes
-            | P::BytesToList => self.bytes_primitive(p, [x, y, z], base)?,
-            P::StringSearch => {
-                let (t, pattern) = (self.text(x)?, self.text(y)?);
-                let start = integer_of(z)?;
-                let after = usize::try_from(start)
-                    .ok()
-                    .and_then(|i| Some((i, t.get(i..)?)));
-                let (start, after) = after.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
-                let found = after.find(pattern).map(|at| integer(start + at));
-                found.unwrap_or(Value::EmptyList)
-            }
+            | P::BytesToList => self.sequence_primitive(p, [x, y, z], base)?,
             P::CodePointToString => {
                 let c = u32::try_from(integer_of(x)?).ok().and_then(char::from_u32);
                 let c = c.ok_or_else(|| Error::new(K::RangeError, &[x]))?;
@@ -1205,10 +1158,12 @@ impl<T> Grift<T> {
         Ok(Mode::Return(v))
     }
 
-    /// The primitives on bytes, apart from [`Grift::primitive`] so that its common cases stay
-    /// small enough for the compiler to inline it into the machine's loop.
+    /// The primitives on strings and bytes, apart from [`Grift::primitive`] so that its common cases
+    /// stay small enough for the compiler to inline it into the machine's loop. A string or a bytes
+    /// value is a sequence of bytes: the first argument's kind is the answer's, and a string is cut
+    /// only on character boundaries.
     #[inline(never)]
-    fn bytes_primitive(
+    fn sequence_primitive(
         &mut self,
         p: Primitive,
         [x, y, z]: [Value; 3],
@@ -1216,40 +1171,83 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         use Primitive as P;
         Ok(match p {
-            P::BytesLength => integer(self.bytes_of(x)?.len()),
-            P::BytesByte => {
-                let (b, i) = (self.bytes_of(x)?, integer_of(y)?);
+            P::ByteLength => integer(self.octets(x)?.len()),
+            P::ByteAt => {
+                let (b, i) = (self.octets(x)?, integer_of(y)?);
                 let byte = usize::try_from(i).ok().and_then(|i| b.get(i));
                 let byte = byte.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 Value::Integer(i64::from(*byte))
             }
-            P::BytesSlice => {
-                let b = self.bytes_of(x)?;
+            P::Slice => {
+                self.octets(x)?;
                 let range = (
                     usize::try_from(integer_of(y)?),
                     usize::try_from(integer_of(z)?),
                 );
-                let part = match range {
-                    (Ok(start), Ok(end)) => b.get(start..end),
+                let part = match (range, x) {
+                    ((Ok(a), Ok(b)), Value::String(_)) => self
+                        .text(x)?
+                        .get(a..b)
+                        .map(|t| boxed(t).map(Object::String)),
+                    ((Ok(a), Ok(b)), _) => self
+                        .bytes_of(x)?
+                        .get(a..b)
+                        .map(|b| collected(b.iter().copied()).map(Object::Bytes)),
                     _ => None,
                 };
-                let part = part.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
-                self.bytes_local(collected(part.iter().copied())?)?
+                let part = part.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))??;
+                Self::sequence_of(matches!(x, Value::Bytes(_)), self.heap.alloc(part)?)
             }
-            P::BytesAppend => {
+            P::Join => {
                 let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let bytes = matches!(given.first(), Some(Value::Bytes(_)));
                 let mut len = 0usize;
                 for &v in given {
+                    if matches!(v, Value::Bytes(_)) != bytes {
+                        return Err(type_error(v));
+                    }
                     len = len
-                        .checked_add(self.bytes_of(v)?.len())
+                        .checked_add(self.octets(v)?.len())
                         .ok_or_else(Error::oom)?;
                 }
-                let mut joined = Vec::new();
-                joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
-                for &v in given {
-                    joined.extend_from_slice(self.bytes_of(v)?);
+                // Exactly the length, so boxing a string never reallocates.
+                let made = if bytes {
+                    let mut joined = Vec::new();
+                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    for &v in given {
+                        joined.extend_from_slice(self.bytes_of(v)?);
+                    }
+                    Object::Bytes(joined)
+                } else {
+                    let mut joined = String::new();
+                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    for &v in given {
+                        joined.push_str(self.text(v)?);
+                    }
+                    Object::String(joined.into_boxed_str())
+                };
+                Self::sequence_of(bytes, self.heap.alloc(made)?)
+            }
+            P::Search => {
+                self.octets(x)?;
+                self.octets(y)?;
+                if std::mem::discriminant(&x) != std::mem::discriminant(&y) {
+                    return Err(type_error(y));
                 }
-                self.bytes_local(joined)?
+                let start = usize::try_from(integer_of(z)?).ok();
+                // A valid pattern in valid text matches only on character boundaries.
+                let found = match x {
+                    Value::String(_) => {
+                        let (t, pattern) = (self.text(x)?, self.text(y)?);
+                        start.and_then(|i| Some((i, t.get(i..)?.find(pattern))))
+                    }
+                    _ => {
+                        let (t, pattern) = (self.bytes_of(x)?, self.bytes_of(y)?);
+                        start.and_then(|i| Some((i, find(t.get(i..)?, pattern))))
+                    }
+                };
+                let (start, at) = found.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
+                at.map_or(Value::EmptyList, |at| integer(start + at))
             }
             P::StringToBytes => {
                 let b = collected(self.text(x)?.bytes())?;
@@ -1292,6 +1290,15 @@ impl<T> Grift<T> {
             }
             _ => return Err(type_error(x)),
         })
+    }
+
+    /// A bytes value or a string for object `r`.
+    fn sequence_of(bytes: bool, r: Reference) -> Value {
+        if bytes {
+            Value::Bytes(r)
+        } else {
+            Value::String(r)
+        }
     }
 
     /// The error an error context describes: one `error` made, or a handler got.
@@ -1347,6 +1354,14 @@ impl<T> Grift<T> {
                 _ => Err(Error::new(K::StaleValue, &[v])),
             },
             _ => Err(type_error(v)),
+        }
+    }
+
+    /// The bytes of string or bytes value `v`, or a type error.
+    pub(crate) fn octets(&self, v: Value) -> Result<&[u8], Error> {
+        match v {
+            Value::String(_) => self.text(v).map(str::as_bytes),
+            _ => self.bytes_of(v),
         }
     }
 
@@ -1549,6 +1564,14 @@ fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
     };
     r.map(Value::Integer)
         .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
+}
+
+/// Where `pattern` first is in `b`; an empty one is at 0.
+fn find(b: &[u8], pattern: &[u8]) -> Option<usize> {
+    match pattern.len() {
+        0 => Some(0),
+        n => b.windows(n).position(|w| w == pattern),
+    }
 }
 
 /// A length or offset as a grift integer.

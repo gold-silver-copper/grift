@@ -548,14 +548,14 @@ fn bytes_that_are_not_text_go_in_and_out() {
         (define! whole
           (lambda! (chunks)
             (let! ((chunk (read 65536)))
-              (if! (same? chunk #bytes()) (apply bytes-append (reverse chunks)) (whole (pair chunk chunks))))))
+              (if! (same? chunk #bytes()) (apply join (reverse chunks)) (whole (pair chunk chunks))))))
         (define! all (whole ()))
-        (put (bytes-slice all (subtract (bytes-length all) 100) (bytes-length all)))
+        (put (slice all (subtract (byte-length all) 100) (byte-length all)))
         (define! out (create-file copy))
         ((evaluate-in! write out) all)
         ((evaluate-in! close out))
         (define! in (open-file copy))
-        (display-error (bytes-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "
+        (display-error (byte-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "
                        (catch! (put (list 1)) e (evaluate-in! kind e)) " "
                        (catch! (put (list-to-bytes (list 256))) e (evaluate-in! kind e)))
     "#;

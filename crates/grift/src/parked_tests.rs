@@ -128,7 +128,7 @@ fn parking_inside_a_native_twin_cannot_be_told_from_its_definition() {
         "(sequence! (note 1) (wait))",
         // `first` by name: by value it would print, and a native prints unlike its definition.
         "(evaluate (list (quote! if!) (list wait) (list (quote! first) 1) 0) (current-context))",
-        "(string-search (wait) \"a\" 0)",
+        "(search (wait) \"a\" 0)",
         "(map (lambda! (x) (if! (wait) x (first x))) (list 1 2))",
         "(finally! (sequence! (wait) (first 1)) (if! (wait) (note 1) (note 2)))",
     ] {
@@ -280,7 +280,7 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
     g.evaluate(
         &mut log,
         "(define! churn (lambda! () (length (map list (range 0 64)))))
-         (define! id (lambda! (n) (list n (string-append \"run\" (integer-to-string n)))))",
+         (define! id (lambda! (n) (list n (join \"run\" (integer-to-string n)))))",
     )
     .unwrap();
     let shapes: [fn(usize) -> (String, String); 5] = [
@@ -476,10 +476,7 @@ mod generated {
                 ),
                 // A limit of the host's own: nothing catches it, in a run nothing else touched too.
                 19 => format!("(catch! (host-limit {id}) e {})", handler(id)),
-                _ => format!(
-                    "(list (string-append \"held\" \"{id}\") {} (list {id}))",
-                    sub(self)
-                ),
+                _ => format!("(list (join \"held\" \"{id}\") {} (list {id}))", sub(self)),
             }
         }
     }

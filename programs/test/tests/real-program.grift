@@ -22,7 +22,7 @@
     (let! ((self (context ())))
       (bind self (quote! text) "")
       (bind self (quote! write)
-        (lambda! (more) (bind self (quote! text) (string-append (evaluate-in! text self) more))))
+        (lambda! (more) (bind self (quote! text) (join (evaluate-in! text self) more))))
       (bind self (quote! close)
         (lambda! () (bind self (quote! write) (lambda! (more) (raise (error (quote! closed)))))))
       self)))

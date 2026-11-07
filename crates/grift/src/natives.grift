@@ -67,8 +67,8 @@
 ; Rust's parse: a sign or none, then digits, added up negative so the most negative fits.
 (define! parsed
   (lambda! (text)
-    (let! ((size (string-byte-length text))
-           (sign (if! (same? size 0) 0 (string-byte text 0)))
+    (let! ((size (byte-length text))
+           (sign (if! (same? size 0) 0 (byte-at text 0)))
            (from (if! (or!? (same? sign 43) (same? sign 45)) 1 0)))
       (if! (same? from size)
         (fail (quote! parse-error) (list text))
@@ -78,16 +78,18 @@
   (lambda! (text at size n)
     (if! (same? at size)
       n
-      (let! ((digit (subtract (string-byte text at) 48)))
+      (let! ((digit (subtract (byte-at text at) 48)))
         (if! (and!? (not? (less-than? digit 0)) (less-than? digit 10))
           (negated text (add at 1) size (subtract (multiply n 10) digit))
           (fail (quote! parse-error) (list text)))))))
 (define! signed (lambda! (sign n) (if! (same? sign 45) n (subtract 0 n))))
 
-; The strings, by string-byte. The length is the first offset with no byte: past one with none
+; Strings and bytes, by byte-at. The length is the first offset with no byte: past one with none
 ; found by doubling, then by halving between.
-(define! byte-at? (lambda! (s i) (catch-kind! (integer? (string-byte s i)) range-error #ignore #false)))
-(define! byte-count (lambda! (s) (missing s 0 (beyond s 1))))
+(define! sequence? (lambda! (x) (or!? (string? x) (bytes? x))))
+(define! sequence (lambda! (x) (if! (sequence? x) x (type-failed x))))
+(define! byte-at? (lambda! (s i) (catch-kind! (integer? (byte-at s i)) range-error #ignore #false)))
+(define! byte-count (lambda! ((s)) (missing (sequence s) 0 (beyond s 1))))
 (define! beyond (lambda! (s n) (if! (not? (byte-at? s n)) n (beyond s (multiply n 2)))))
 (define! missing
   (lambda! (s low high)
@@ -99,54 +101,58 @@
 (define! character
   (lambda! (n)
     (if! (and!? (not? (less-than? n 0)) (less-than? n 1114112) (or!? (less-than? n 55296) (less-than? 57343 n)))
-      (head (read-form (string-append "\"\\x" (hexadecimal n ()) ";\"") 0))
+      (head (read-form (join "\"\\x" (hexadecimal n ()) ";\"") 0))
       (fail (quote! range-error) (list n)))))
 (define! hexadecimal
   (lambda! (n done)
     (let! ((done (pair (element-of (quote! ("0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "a" "b" "c" "d" "e" "f")) (remainder n 16)) done))
            (n (divide n 16)))
-      (if! (same? n 0) (apply string-append done) (hexadecimal n done)))))
+      (if! (same? n 0) (apply join done) (hexadecimal n done)))))
 (define! element-of (lambda! (xs i) (if! (same? i 0) (head xs) (element-of (tail xs) (subtract i 1)))))
-; The text between two character boundaries, decoded and made again a character at a time.
-(define! part
-  (lambda! ((text start end))
+; slice: the bytes from start to end, as the kind given; a string's only between character
+; boundaries.
+(define! sliced
+  (lambda! ((s start end))
     (sequence!
-      (typed text (quote! string))
+      (sequence s)
       (typed start (quote! integer))
       (typed end (quote! integer))
       (if! (and!? (not? (less-than? start 0)) (not? (less-than? end start))
-                  (not? (less-than? (string-byte-length text) end)) (boundary? text start) (boundary? text end))
-        (apply string-append (characters text start end ()))
-        (fail (quote! range-error) (list text start end))))))
+                  (not? (less-than? (byte-length s) end)) (boundary? s start) (boundary? s end))
+        (remade s (packed (bytes-from s start end ())))
+        (fail (quote! range-error) (list s start end))))))
+(define! bytes-from
+  (lambda! (s at end done)
+    (if! (same? at end) (reverse done) (bytes-from s (add at 1) end (pair (byte-at s at) done)))))
+(define! remade (lambda! (s b) (if! (string? s) (decoded b) b)))
 (define! boundary?
-  (lambda! (text at)
-    (or!? (same? at (string-byte-length text))
-          (let! ((byte (string-byte text at))) (or!? (less-than? byte 128) (less-than? 191 byte))))))
-; string-search: bytes-search over the strings' bytes; a valid pattern only matches on character
-; boundaries.
+  (lambda! (s at)
+    (or!? (bytes? s)
+          (same? at (byte-length s))
+          (let! ((byte (byte-at s at))) (or!? (less-than? byte 128) (less-than? 191 byte))))))
+; search: the first place from start, compared a byte at a time, of a pattern of the text's kind; a
+; valid pattern in valid text matches only on character boundaries.
 (define! searched
   (lambda! ((text pattern start))
     (sequence!
-      (typed text (quote! string))
-      (typed pattern (quote! string))
+      (sequence text)
+      (sequence pattern)
+      (if! (same? (type-of pattern) (type-of text)) pattern (type-failed pattern))
       (typed start (quote! integer))
-      (if! (and!? (not? (less-than? start 0)) (not? (less-than? (string-byte-length text) start)) (boundary? text start))
-        (bytes-search (string-to-bytes text) (string-to-bytes pattern) start)
+      (if! (and!? (not? (less-than? start 0)) (not? (less-than? (byte-length text) start)) (boundary? text start))
+        (found text pattern start (subtract (byte-length text) (byte-length pattern)) (byte-length pattern) 0)
         (fail (quote! range-error) (list text pattern start))))))
-(define! characters
-  (lambda! (text at end done)
-    (if! (same? at end)
-      (reverse done)
-      (let! ((byte (string-byte text at))
-             (size (conditional! ((less-than? byte 128) 1) ((less-than? byte 224) 2) ((less-than? byte 240) 3) (#true 4)))
-             (lead (remainder byte (element-of (quote! (128 32 16 8)) (subtract size 1)))))
-        (characters text (add at size) end
-                    (pair (code-point-to-string (continued text (add at 1) (subtract size 1) lead)) done))))))
-(define! continued
-  (lambda! (text at left n)
-    (if! (same? left 0)
-      n
-      (continued text (add at 1) (subtract left 1) (add (multiply n 64) (remainder (string-byte text at) 64))))))
+; The first place from at, up to last, where pattern is, its first i bytes matched at at; past a
+; partial match, the next place is at plus one.
+(define! found
+  (lambda! (text pattern at last size i)
+    (if! (less-than? last at)
+      ()
+      (if! (same? i size)
+        at
+        (if! (same? (byte-at text (add at i)) (byte-at pattern i))
+          (found text pattern at last size (add i 1))
+          (found text pattern (add at 1) last size 0))))))
 
 ; The bitwise operations, a bit at a time: n's lowest bit and n shifted right once are Rust's & 1
 ; and >> 1; bit 63 is the sign.
@@ -186,7 +192,7 @@
 (define! byte-list
   (lambda! (b) (head (read-form (value-to-string (typed b (quote! bytes))) 6))))
 (define! literal
-  (lambda! (texts) (head (read-form (string-append "#bytes(" (apply string-append texts) ")") 0))))
+  (lambda! (texts) (head (read-form (join "#bytes(" (apply join texts) ")") 0))))
 ; The list's elements as a literal's texts, each an integer 0 to 255, or the error at the first that
 ; isn't, or at an improper tail: the value and its position.
 (define! byte-texts
@@ -199,36 +205,13 @@
        (fail (quote! range-error) (list (head xs) at)))
       (#true (byte-texts (tail xs) (add at 1) (pair " " (pair (integer-to-string (head xs)) done)))))))
 (define! packed (lambda! (xs) (literal (byte-texts xs 0 ()))))
-(define! byte-index
-  (lambda! ((b i))
-    (sequence!
-      (typed b (quote! bytes))
-      (typed i (quote! integer))
-      (if! (and!? (not? (less-than? i 0)) (less-than? i (length (byte-list b))))
-        (element-of (byte-list b) i)
-        (fail (quote! range-error) (list b i))))))
-(define! byte-part
-  (lambda! ((b start end))
-    (sequence!
-      (typed b (quote! bytes))
-      (typed start (quote! integer))
-      (typed end (quote! integer))
-      (if! (and!? (not? (less-than? start 0)) (not? (less-than? end start))
-                  (not? (less-than? (length (byte-list b)) end)))
-        (packed (take (drop (byte-list b) start) (subtract end start)))
-        (fail (quote! range-error) (list b start end))))))
-(define! joined
-  (lambda! (bs) (if! (same? bs ()) () (append (byte-list (head bs)) (joined (tail bs))))))
-(define! string-bytes
-  (lambda! (text at done)
-    (if! (same? at 0) done (string-bytes text (subtract at 1) (pair (string-byte text (subtract at 1)) done)))))
 ; UTF-8, decoded a character at a time, as Rust's str::from_utf8 checks it: a sequence that is
 ; cut short, overlong, a surrogate or past U+10FFFF fails at its first byte, Rust's valid_up_to.
 (define! decoded (lambda! (b) (characters-of b (byte-list b) 0 ())))
 (define! characters-of
   (lambda! (b xs at done)
     (if! (same? xs ())
-      (apply string-append (reverse done))
+      (apply join (reverse done))
       (let! ((byte (head xs)))
         (conditional!
           ((less-than? byte 128)
@@ -255,9 +238,9 @@
 (define! meanings
   (record
     (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
-             string-to-integer string-byte-length code-point-to-string byte-substring string-search bitwise-and
-             bitwise-or bitwise-exclusive-or shift-left shift-right bytes-length bytes-byte
-             bytes-slice bytes-append string-to-bytes bytes-to-string list-to-bytes bytes-to-list))
+             string-to-integer byte-length code-point-to-string slice search bitwise-and
+             bitwise-or bitwise-exclusive-or shift-left shift-right string-to-bytes bytes-to-string
+             list-to-bytes bytes-to-list))
     (list (several 3 picked)
           (one (quote! pair) head)
           (one (quote! pair) tail)
@@ -267,21 +250,17 @@
                (lambda! (n) (string-to-float (integer-to-string n))))
           (one (quote! float) truncated)
           (one (quote! string) parsed)
-          (one (quote! string) byte-count)
+          (several 1 byte-count)
           (one (quote! integer) character)
-          (several 3 part)
+          (several 3 sliced)
           (several 3 searched)
           (several 2 (bitwise (lambda! (x y) (multiply x y))))
           (several 2 (bitwise (lambda! (x y) (subtract (add x y) (multiply x y)))))
           (several 2 (bitwise (lambda! (x y) (remainder (add x y) 2))))
           (several 2 (shift doubled))
           (several 2 (shift halved))
-          (one (quote! bytes) (lambda! (b) (length (byte-list b))))
-          (several 2 byte-index)
-          (several 3 byte-part)
-          (vau! bs #ignore (packed (joined bs)))
           (one (quote! string)
-               (lambda! (s) (packed (string-bytes s (string-byte-length s) ()))))
+               (lambda! (s) (packed (bytes-from s 0 (byte-length s) ()))))
           (one (quote! bytes) decoded)
           (several 1 (lambda! ((xs)) (packed xs)))
           (one (quote! bytes) byte-list))))

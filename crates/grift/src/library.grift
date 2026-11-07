@@ -404,7 +404,7 @@
        (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
        (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
 
-; The string helpers, over string-byte. Offsets and widths count bytes, as
+; The string helpers, over byte-at. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
 (define! (string-starts-with? string-ends-with? string-split)
   ((lambda! ()
@@ -412,31 +412,31 @@
        (lambda! (text at pattern i size)
          (if! (same? i size)
            #true
-           (if! (same? (string-byte text (add at i)) (string-byte pattern i))
+           (if! (same? (byte-at text (add at i)) (byte-at pattern i))
              (matches? text at pattern (add i 1) size)
              #false))))
      (define! pieces
        (lambda! (text separator from at)
          (if! (same? at ())
-           (list (byte-substring text from (string-byte-length text)))
-           (let! ((next (add at (string-byte-length separator))))
-             (pair (byte-substring text from at)
-                   (pieces text separator next (string-search text separator next)))))))
+           (list (slice text from (byte-length text)))
+           (let! ((next (add at (byte-length separator))))
+             (pair (slice text from at)
+                   (pieces text separator next (search text separator next)))))))
      (list
        (lambda! (text prefix)
-         (let! ((size (string-byte-length prefix)))
-           (and!? (not? (less-than? (string-byte-length text) size))
+         (let! ((size (byte-length prefix)))
+           (and!? (not? (less-than? (byte-length text) size))
                   (matches? text 0 prefix 0 size))))
        (lambda! (text suffix)
-         (let! ((size (string-byte-length suffix))
-                (at (subtract (string-byte-length text) size)))
+         (let! ((size (byte-length suffix))
+                (at (subtract (byte-length text) size)))
            (and!? (not? (less-than? at 0)) (matches? text at suffix 0 size))))
        ; string-split: the parts between the separators, empty ones too; string-join undoes it. An
        ; empty separator is a range-error.
        (lambda! (text separator)
          (if! (same? separator "")
            (raise (error (quote! range-error) separator))
-           (pieces text separator 0 (string-search text separator 0))))))))
+           (pieces text separator 0 (search text separator 0))))))))
 
 ; string-join: the strings with the separator between them.
 (define! string-join
@@ -447,7 +447,7 @@
            ()
            (pair separator (pair (first xs) (between (rest xs) separator))))))
      (lambda! (strings separator)
-       (if! (same? strings ()) "" (apply string-append (rest (between strings separator))))))))
+       (if! (same? strings ()) "" (apply join (rest (between strings separator))))))))
 
 ; string-trim: without the ASCII whitespace at either end, as Rust's trim_ascii.
 (define! string-trim
@@ -456,15 +456,15 @@
        (lambda! (b) (or!? (same? b 32) (same? b 10) (same? b 9) (same? b 13) (same? b 12))))
      (define! start-of
        (lambda! (s at end)
-         (if! (and!? (less-than? at end) (blank? (string-byte s at))) (start-of s (add at 1) end) at)))
+         (if! (and!? (less-than? at end) (blank? (byte-at s at))) (start-of s (add at 1) end) at)))
      (define! end-of
        (lambda! (s start at)
-         (if! (and!? (less-than? start at) (blank? (string-byte s (subtract at 1))))
+         (if! (and!? (less-than? start at) (blank? (byte-at s (subtract at 1))))
            (end-of s start (subtract at 1))
            at)))
      (lambda! (s)
-       (let! ((end (string-byte-length s)) (start (start-of s 0 end)))
-         (byte-substring s start (end-of s start end)))))))
+       (let! ((end (byte-length s)) (start (start-of s 0 end)))
+         (slice s start (end-of s start end)))))))
 
 ; string-less-than?: whether a is before b in byte order, as Rust's < on str: at the first byte
 ; where they differ, or the shorter first when one starts the other.
@@ -476,10 +476,10 @@
            #false
            (if! (same? at a-end)
              #true
-             (if! (same? (string-byte a at) (string-byte b at))
+             (if! (same? (byte-at a at) (byte-at b at))
                (from a b (add at 1) a-end b-end)
-               (less-than? (string-byte a at) (string-byte b at)))))))
-     (lambda! (a b) (from a b 0 (string-byte-length a) (string-byte-length b))))))
+               (less-than? (byte-at a at) (byte-at b at)))))))
+     (lambda! (a b) (from a b 0 (byte-length a) (byte-length b))))))
 
 ; string-repeat: s count times, as Rust's str::repeat; a count below 0 is a range-error.
 (define! string-repeat
@@ -487,7 +487,7 @@
     (if! (and!? (string? s) (integer? count))
       (if! (less-than? count 0)
         (raise (error (quote! range-error) count))
-        (apply string-append (map (lambda! (#ignore) s) (range 0 count))))
+        (apply join (map (lambda! (#ignore) s) (range 0 count))))
       (raise (error (quote! type-error) (if! (string? s) count s))))))
 
 ; string-pad-left and string-pad-right: s with copies of fill, a string of one byte, before it,
@@ -495,12 +495,12 @@
 (define! (string-pad-left string-pad-right)
   ((lambda! ()
      (define! room
-       (lambda! (name s width fill)
-         (if! (same? (string-byte-length fill) 1)
-           (apply string-append (map (lambda! (#ignore) fill) (range (string-byte-length s) width)))
+       (lambda! (s width fill)
+         (if! (same? (byte-length fill) 1)
+           (apply join (map (lambda! (#ignore) fill) (range (byte-length s) width)))
            (raise (error (quote! range-error) fill)))))
-     (list (lambda! (s width fill) (string-append (room (quote! string-pad-left) s width fill) s))
-           (lambda! (s width fill) (string-append s (room (quote! string-pad-right) s width fill)))))))
+     (list (lambda! (s width fill) (join (room s width fill) s))
+           (lambda! (s width fill) (join s (room s width fill)))))))
 
 ; string-to-lowercase: with A to Z made a to z, and every other byte as it is, as Rust's
 ; to_ascii_lowercase.
@@ -509,32 +509,13 @@
      (define! parts
        (lambda! (s from at end)
          (if! (same? at end)
-           (list (byte-substring s from end))
-           (let! ((byte (string-byte s at)) (next (add at 1)))
+           (list (slice s from end))
+           (let! ((byte (byte-at s at)) (next (add at 1)))
              (if! (and!? (less-than? 64 byte) (less-than? byte 91))
-               (pair (byte-substring s from at)
+               (pair (slice s from at)
                      (pair (code-point-to-string (add byte 32)) (parts s next next end)))
                (parts s from next end))))))
-     (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
-
-; bytes-search: string-search over bytes, the offset of the first place at or after start where
-; pattern is, or (). The empty slice refuses a start out of range.
-(define! bytes-search
-  ((lambda! ()
-     ; The first place from at, up to last, where pattern is, its first i bytes matched at at.
-     (define! from
-       (lambda! (b pattern at last size i)
-         (if! (less-than? last at)
-           ()
-           (if! (same? i size)
-             at
-             (if! (same? (bytes-byte b (add at i)) (bytes-byte pattern i))
-               (from b pattern at last size (add i 1))
-               (from b pattern (add at 1) last size 0))))))
-     (lambda! (b pattern start)
-       (bytes-slice b start start)
-       (let! ((size (bytes-length pattern)))
-         (from b pattern start (subtract (bytes-length b) size) size 0))))))
+     (lambda! (s) (apply join (parts s 0 0 (byte-length s)))))))
 
 ; standard-context (6.7.7, make-kernel-standard-environment): a new child of the built-in context,
 ; which sees the language and nothing of any program. The context itself stays out of reach.

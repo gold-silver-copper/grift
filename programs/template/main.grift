@@ -19,14 +19,14 @@
     ; Errors of a template: the kind template-error with the file, the line and the message.
     (define! fail
       (lambda! (file line . message)
-        (raise (error (quote! template-error) file line (apply string-append message)))))
+        (raise (error (quote! template-error) file line (apply join message)))))
 
     ; The text of any value, for a message.
     (define! show value-to-string)
     ; The same, but a combiner, which prints as its whole source, by its type alone.
     (define! describe
       (lambda! (value)
-        (if! (or!? (operative? value) (applicative? value)) (string-append "an " (show (type-of value))) (show value))))
+        (if! (or!? (operative? value) (applicative? value)) (join "an " (show (type-of value))) (show value))))
 
     ; Text and lines.
 
@@ -35,7 +35,7 @@
       (lambda! (text from to)
         (define! count
           (lambda! (at n)
-            (if! (same? at to) n (count (add at 1) (if! (same? (string-byte text at) 10) (add n 1) n)))))
+            (if! (same? at to) n (count (add at 1) (if! (same? (byte-at text at) 10) (add n 1) n)))))
         (count from 0)))
 
     ; The offset after the last `/` in path, 0 if none: where its file name starts.
@@ -43,15 +43,15 @@
       (lambda! (path)
         (define! back
           (lambda! (at)
-            (if! (same? at 0) 0 (if! (same? (string-byte path (subtract at 1)) 47) at (back (subtract at 1))))))
-        (back (string-byte-length path))))
+            (if! (same? at 0) 0 (if! (same? (byte-at path (subtract at 1)) 47) at (back (subtract at 1))))))
+        (back (byte-length path))))
 
     ; path read from the directory of the file `from`, unless it starts with `/`.
     (define! relative-to
       (lambda! (from path)
         (if! (string-starts-with? path "/")
           path
-          (string-append (byte-substring from 0 (file-name-start from)) path))))
+          (join (slice from 0 (file-name-start from)) path))))
 
     ; text with the characters HTML gives a meaning to replaced by their entities. It is the hot path,
     ; so it tests bytes with if! and passes values to a helper rather than binding them with let!,
@@ -68,14 +68,14 @@
          (define! parts
            (lambda! (s from at end)
              (if! (same? at end)
-               (list (byte-substring s from end))
-               (replace s from at end (entity (string-byte s at))))))
+               (list (slice s from end))
+               (replace s from at end (entity (byte-at s at))))))
          (define! replace
            (lambda! (s from at end replacement)
              (if! (same? replacement ())
                (parts s from (add at 1) end)
-               (pair (byte-substring s from at) (pair replacement (parts s (add at 1) (add at 1) end))))))
-         (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
+               (pair (slice s from at) (pair replacement (parts s (add at 1) (add at 1) end))))))
+         (lambda! (s) (apply join (parts s 0 0 (byte-length s)))))))
 
     ; The words of s between runs of spaces.
     (define! words
@@ -88,43 +88,43 @@
       (lambda! (text from to)
         (if! (same? from to)
           #true
-          (and!? (member? (string-byte text from) (quote! (32 9))) (blank? text (add from 1) to)))))
+          (and!? (member? (byte-at text from) (quote! (32 9))) (blank? text (add from 1) to)))))
 
     ; The offset of the newline before `at`, or -1.
     (define! line-start
       (lambda! (text at)
-        (if! (same? at 0) -1 (if! (same? (string-byte text (subtract at 1)) 10) (subtract at 1) (line-start text (subtract at 1))))))
+        (if! (same? at 0) -1 (if! (same? (byte-at text (subtract at 1)) 10) (subtract at 1) (line-start text (subtract at 1))))))
 
     (define! tokenize
       (lambda! (text file)
-        (define! size (string-byte-length text))
+        (define! size (byte-length text))
         ; A tag that isn't a value, alone on its line, takes the whole line: the text before it ends at
         ; the start of the line, and the text after it starts after the newline. `cuts` gives the two
         ; cuts.
         (define! cuts
           (lambda! (content open close)
             (let! ((before (line-start text open))
-                   (after (let! ((n (string-search text "\n" close))) (if! (same? n ()) size n))))
+                   (after (let! ((n (search text "\n" close))) (if! (same? n ()) size n))))
               (if! (and!? (not? (same? content ""))
-                          (member? (string-byte content 0) (quote! (35 47 62 33)))
+                          (member? (byte-at content 0) (quote! (35 47 62 33)))
                           (blank? text (add before 1) open)
                           (blank? text close after))
                 (list (add before 1) (minimum size (add after 1)))
                 (list open close)))))
         (define! scan
           (lambda! (at line done)
-            (let! ((open (string-search text "{{" at)))
+            (let! ((open (search text "{{" at)))
               (if! (same? open ())
-                (reverse (pair (list (quote! text) (byte-substring text at size)) done))
+                (reverse (pair (list (quote! text) (slice text at size)) done))
                 (let! ((tag-line (add line (count-lines text at open)))
-                       (close (string-search text "}}" (add open 2))))
+                       (close (search text "}}" (add open 2))))
                   (when! (same? close ()) (fail file tag-line "a {{ that is never closed with }}"))
-                  (let! ((content (string-trim (byte-substring text (add open 2) close)))
+                  (let! ((content (string-trim (slice text (add open 2) close)))
                          ((text-end next) (cuts content open (add close 2))))
                     (scan next
                           (add tag-line (count-lines text open next))
                           (pair (list (quote! tag) content tag-line)
-                                (pair (list (quote! text) (byte-substring text at (minimum text-end open)))
+                                (pair (list (quote! text) (slice text at (minimum text-end open)))
                                       done)))))))))
         (scan 0 1 ())))
 
@@ -168,11 +168,11 @@
           ((same? content "#else") (list (quote! else) ""))
           ((same? content "/if") (list (quote! end-if) ""))
           ((same? content "/for") (list (quote! end-for) ""))
-          ((string-starts-with? content "#if ") (list (quote! if) (byte-substring content 4 (string-byte-length content))))
-          ((string-starts-with? content "#for ") (list (quote! for) (byte-substring content 5 (string-byte-length content))))
-          ((string-starts-with? content ">") (list (quote! include) (string-trim (byte-substring content 1 (string-byte-length content)))))
+          ((string-starts-with? content "#if ") (list (quote! if) (slice content 4 (byte-length content))))
+          ((string-starts-with? content "#for ") (list (quote! for) (slice content 5 (byte-length content))))
+          ((string-starts-with? content ">") (list (quote! include) (string-trim (slice content 1 (byte-length content)))))
           ((string-starts-with? content "!") (list (quote! comment) ""))
-          ((member? (string-byte (string-append content " ") 0) (quote! (35 47))) (list (quote! unknown) content))
+          ((member? (byte-at (join content " ") 0) (quote! (35 47))) (list (quote! unknown) content))
           (#true (list (quote! insert) content)))))
 
     ; The nodes up to the end of the tokens or a tag that ends a block: (nodes stop rest), where stop
@@ -254,7 +254,7 @@
           (lambda! (value path more)
             (if! (same? more ())
               value
-              (let! ((next (first more)) (path (string-append path "." (symbol-to-string next))))
+              (let! ((next (first more)) (path (join path "." (symbol-to-string next))))
                 (when! (not? (context? value))
                   (fail file line "can't take " path ": " (show value) " isn't a record"))
                 (when! (not? (member? next (names value)))
@@ -286,7 +286,7 @@
 
     ; " in" and the innermost combination of a trace, if it has one.
     (define! where
-      (lambda! (trace) (if! (same? trace ()) "" (string-append " in " (show (first trace))))))
+      (lambda! (trace) (if! (same? trace ()) "" (join " in " (show (first trace))))))
 
     (define! value-text
       (lambda! (value file line)
@@ -385,7 +385,7 @@
       (if! (not? (same? (length arguments) 2))
         (sequence! (display-error "usage: main.grift TEMPLATE DATA\n") (exit 2))
         (let! (((template-path data-path) arguments))
-          (catch! (display (apply string-append
+          (catch! (display (apply join
                                   (reverse (render (load-template template-path () ())
                                                    (load-data data-path top)
                                                    (list template-path)

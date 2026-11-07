@@ -5,7 +5,7 @@
 
 ; out/main.o for main.c
 (function object-for (source)
-  (string-append "out/" (without-suffix source ".c") ".o"))
+  (join "out/" (without-suffix source ".c") ".o"))
 
 (variable objects (map object-for sources))
 
@@ -17,6 +17,6 @@
   ("mkdir" "-p" "out")
   (compiler flags "-c" "-o" target input))
 (rule "banner.txt" ("banner.in")
-  ((shell (string-append "sed 's/NAME/grift/' " input " > " target))))
+  ((shell (join "sed 's/NAME/grift/' " input " > " target))))
 (rule "clean" ()
   ("rm" "-rf" "out" "greeter" "banner.txt"))

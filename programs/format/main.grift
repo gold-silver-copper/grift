@@ -52,12 +52,12 @@
            (flat (if! (or!? (any? comment? children)
                             (any? (lambda! (item) (not? (string? (flat-text item)))) elements))
                    ()
-                   (string-append "(" (string-join (map flat-text elements) " ") ")"))))
+                   (join "(" (string-join (map flat-text elements) " ") ")"))))
       (list (quote! list) flat children))))
 
 (define! atom-item
   (lambda! (text)
-    (if! (integer? (string-search text "\n" 0))
+    (if! (integer? (search text "\n" 0))
       (list (quote! lines) () text)
       (list (quote! atom) text ()))))
 
@@ -66,27 +66,27 @@
 (define! atom-end
   (lambda! (text i)
     (catch-kind! (let! (((#ignore #ignore end) (read-form text i))) end) parse-error e
-      (if! (same? (string-byte text i) 46) (add i 1) (raise e)))))
+      (if! (same? (byte-at text i) 46) (add i 1) (raise e)))))
 ; The offset of the newline that ends the line at offset i, or the end of the text.
 (define! line-end
   (lambda! (text i)
-    (let! ((at (string-search text "\n" i))) (if! (empty-list? at) (string-byte-length text) at))))
+    (let! ((at (search text "\n" i))) (if! (empty-list? at) (byte-length text) at))))
 
 ; Whether the byte b at offset i starts a comment: `;` or `#!`.
 (define! comment-start?
   (lambda! (text i b end)
     (or!? (same? b 59)
-          (and!? (same? b 35) (less-than? (add i 1) end) (same? (string-byte text (add i 1)) 33)))))
+          (and!? (same? b 35) (less-than? (add i 1) end) (same? (byte-at text (add i 1)) 33)))))
 
 ; The items from offset i up to the `)` that closes them, or the end of the text, and the offset
 ; of that `)` or end: (items offset). The text is known to read, so nothing here checks it.
 (define! read-items
   (lambda! (text i)
-    (let! ((end (string-byte-length text))
+    (let! ((end (byte-length text))
            (loop (lambda! (i newlines items)
                    (if! (same? i end)
                      (list (reverse items) i)
-                     (let! ((b (string-byte text i)))
+                     (let! ((b (byte-at text i)))
                        (conditional!
                          ((same? b 10) (loop (add i 1) (add newlines 1) items))
                          ((space-byte? b) (loop (add i 1) newlines items))
@@ -101,7 +101,7 @@
                                  (loop j
                                        0
                                        (pair (list (quote! comment)
-                                                   (string-trim (byte-substring text i j))
+                                                   (string-trim (slice text i j))
                                                    (same? newlines 0))
                                              before))))
                               ((same? b 40)
@@ -111,7 +111,7 @@
                                (let! ((j (atom-end text i)))
                                  (loop j
                                        0
-                                       (pair (atom-item (byte-substring text i j))
+                                       (pair (atom-item (slice text i j))
                                              before)))))))))))))
       (loop i 0 ()))))
 
@@ -121,11 +121,11 @@
 (define! emit-at
   (lambda! (out s column)
     (bind out (quote! (pieces column)) (list (pair s (evaluate-in! pieces out)) column))))
-(define! emit (lambda! (out s) (emit-at out s (add (column-of out) (string-byte-length s)))))
-(define! new-line (lambda! (out indent) (emit-at out (string-append "\n" (spaces indent)) indent)))
+(define! emit (lambda! (out s) (emit-at out s (add (column-of out) (byte-length s)))))
+(define! new-line (lambda! (out indent) (emit-at out (join "\n" (spaces indent)) indent)))
 ; A string with newlines in it ends at the column after its last one.
 (define! emit-lines
-  (lambda! (out s) (emit-at out s (string-byte-length (last (string-split s "\n"))))))
+  (lambda! (out s) (emit-at out s (byte-length (last (string-split s "\n"))))))
 (define! column-of (lambda! (out) (evaluate-in! column out)))
 (define! output-text (lambda! (out) (string-join (reverse (evaluate-in! pieces out)) "")))
 
@@ -143,9 +143,9 @@
         ((and!? (not? (same? name ""))
                 (not? (same? name "."))
                 ; Not a string, a # constant, or a number (nor a symbol starting with + or -).
-                (not? (member? (string-byte name 0)
+                (not? (member? (byte-at name 0)
                                (quote! (34 35 43 45 48 49 50 51 52 53 54 55 56 57)))))
-         (list 1 (add start (add 2 (string-byte-length name)))))
+         (list 1 (add start (add 2 (byte-length name)))))
         (#true (list 0 (add start 1)))))))
 
 ; Lays out one item at the current column, with `closers` characters to follow it on its line.
@@ -156,7 +156,7 @@
         ((same? kind (quote! atom)) (emit out a))
         ((same? kind (quote! lines)) (emit-lines out children))
         ((and!? (string? a)
-                (less-than-or-equal? (add (column-of out) (add (string-byte-length a) closers))
+                (less-than-or-equal? (add (column-of out) (add (byte-length a) closers))
                                      width))
          (emit out a))
         (#true (layout-broken out children closers))))))
@@ -266,7 +266,7 @@
 ; string left open is named where it opens.
 (define! does-not-read
   (lambda! (path (reason line column))
-    (string-append path
+    (join path
                    ":"
                    (integer-to-string line)
                    ":"
@@ -289,10 +289,10 @@
       (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
         (conditional!
           ((member? kind (quote! (file-error encoding-error)))
-           (complain (string-append path ": " (last values)))
+           (complain (join path ": " (last values)))
            #false)
           ((member? kind (quote! (formatter-changed-forms formatter-lost-comments)))
-           (complain (string-append path
+           (complain (join path
                                     ": formatter bug, "
                                     (symbol-to-string kind)
                                     "; left as it is"))

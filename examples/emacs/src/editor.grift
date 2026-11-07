@@ -39,23 +39,23 @@
 
 ; A string of n spaces.
 (define! spaces
-  (lambda! (n) (if! (less-than? n 1) "" (string-append " " (spaces (subtract n 1))))))
+  (lambda! (n) (if! (less-than? n 1) "" (join " " (spaces (subtract n 1))))))
 
 ; A string's characters as a list of code points, decoding its UTF-8, and the other way.
 (define! string-to-code-points
   (lambda! (s)
-    (define! end (string-byte-length s))
+    (define! end (byte-length s))
     ; The low 6 bits of `count` bytes from offset `at`, added to `value`.
     (define! continued
       (lambda! (value at count)
         (if! (same? count 0)
           value
-          (continued (add (multiply value 64) (remainder (string-byte s at) 64)) (add at 1) (subtract count 1)))))
+          (continued (add (multiply value 64) (remainder (byte-at s at) 64)) (add at 1) (subtract count 1)))))
     (define! from
       (lambda! (at)
         (if! (same? at end)
           ()
-          (let! ((b (string-byte s at)))
+          (let! ((b (byte-at s at)))
             (conditional!
               ((less-than? b 128) (pair b (from (add at 1))))
               ((less-than? b 224) (pair (continued (remainder b 32) (add at 1) 1) (from (add at 2))))
@@ -63,9 +63,9 @@
               (#true (pair (continued (remainder b 8) (add at 1) 3) (from (add at 4)))))))))
     (from 0)))
 (define! code-points-to-string
-  (lambda! (code-points) (apply string-append (map code-point-to-string code-points))))
+  (lambda! (code-points) (apply join (map code-point-to-string code-points))))
 
-; How many characters a string has: string-byte-length counts bytes.
+; How many characters a string has: byte-length counts bytes.
 (define! code-point-count (lambda! (s) (length (string-to-code-points s))))
 
 ; (split-code-points code-points c): the runs of code points between each c, as lists.
@@ -84,7 +84,7 @@
 (define! text-to-lines (lambda! (text) (string-split text "\n")))
 
 ; A terminal control sequence: ESC [ and s.
-(define! control-sequence (lambda! (s) (string-append "\x1b;[" s)))
+(define! control-sequence (lambda! (s) (join "\x1b;[" s)))
 
 ; --- Buffers ------------------------------------------------------------------------------------
 ; A buffer is a context holding its fields. Point splits the current line into `before`
@@ -207,7 +207,7 @@
 (define! move-cursor
   (lambda! (row column)
     (terminal-write
-      (control-sequence (string-append (integer-to-string row) ";" (integer-to-string column) "H")))))
+      (control-sequence (join (integer-to-string row) ";" (integer-to-string column) "H")))))
 
 (define! show-row
   (lambda! (row s) (move-cursor row 1) (terminal-write (control-sequence "2K") s)))
@@ -221,14 +221,14 @@
 (define! mode-line
   (lambda! (b columns)
     (define! s
-      (string-append
+      (join
         (if! (evaluate-in! modified b) "-**- " "---- ")
         (evaluate-in! name b)
         (evaluate-in! mode b)
-        (if! (empty-list? jobs) "" (string-append " [" (integer-to-string (length jobs)) " running]"))
+        (if! (empty-list? jobs) "" (join " [" (integer-to-string (length jobs)) " running]"))
         "   L" (integer-to-string (add (evaluate-in! row b) 1))
         "   C" (integer-to-string (length (evaluate-in! before b)))))
-    (string-append s (spaces (subtract columns (code-point-count s))))))
+    (join s (spaces (subtract columns (code-point-count s))))))
 
 (define! redisplay
   (lambda! ()
@@ -258,7 +258,7 @@
                                    (subtract columns 1))
                           1)))
       (sequence!
-        (show-row rows (string-append (evaluate-in! prompt minibuffer) (buffer-line minibuffer)))
+        (show-row rows (join (evaluate-in! prompt minibuffer) (buffer-line minibuffer)))
         (move-cursor rows
                      (add (display-column
                             (append (string-to-code-points (evaluate-in! prompt minibuffer))
@@ -277,8 +277,8 @@
       ((same? b 13) (quote! RET))
       ((same? b 9) (quote! TAB))
       ((same? b 0) (quote! C-SPC))
-      ((less-than? b 27) (string-to-symbol (string-append "C-" (code-point-to-string (add b 96)))))
-      (#true (string-to-symbol (string-append "C-" (code-point-to-string (add b 64))))))))
+      ((less-than? b 27) (string-to-symbol (join "C-" (code-point-to-string (add b 96)))))
+      (#true (string-to-symbol (join "C-" (code-point-to-string (add b 64))))))))
 
 ; The code point of a UTF-8 character whose first byte is b, reading the bytes after it.
 (define! decode-character
@@ -315,7 +315,7 @@
         (define! s (code-points-to-string (reverse (pair b code-points))))
         (define! found (find-association s escape-sequences))
         (if! (empty-list? found)
-          (string-to-symbol (string-append "ESC-[" s))
+          (string-to-symbol (join "ESC-[" s))
           (first (rest found))))
       (read-escape-sequence (pair b code-points)))))
 
@@ -327,7 +327,7 @@
         (define! second (key))
         (if! (or!? (same? second 91) (same? second 79))
           (read-escape-sequence ())
-          (string-to-symbol (string-append "M-" (key-name (decode-byte second))))))
+          (string-to-symbol (join "M-" (key-name (decode-byte second))))))
       (decode-byte b))))
 
 (define! key-name
@@ -410,7 +410,7 @@
     (define! binding (lookup-key keymap event))
     (conditional!
       ((context? binding)
-       (message (string-append (keys-description (reverse keys)) "-"))
+       (message (join (keys-description (reverse keys)) "-"))
        (define! next (read-event))
        (message "")
        (when! (same? next (quote! C-g)) (raise (error (quote! quit))))
@@ -418,7 +418,7 @@
       ((same? binding #false)
        (if! (and!? (integer? event) (empty-list? (rest keys)))
          (run-command (quote! self-insert-command))
-         (message (string-append (keys-description (reverse keys)) " is undefined"))))
+         (message (join (keys-description (reverse keys)) " is undefined"))))
       (#true (run-command binding)))))
 
 (define! command-step
@@ -630,7 +630,7 @@
           (define-field! name (field! file)))
         (write-file (field! file) (buffer-text))
         (define-field! modified #false)
-        (message (string-append "Wrote " (field! file)))))))
+        (message (join "Wrote " (field! file)))))))
 
 (define! save-buffers-kill-emacs
   (lambda! ()
@@ -651,7 +651,7 @@
     (when! (or!? (not? (empty-list? minibuffer)) (empty-list? chosen))
       (raise (error (quote! quit))))
     (quit-job (first chosen))
-    (message (string-append "Cancelled " (evaluate-in! name (evaluate-in! out (first chosen)))))))
+    (message (join "Cancelled " (evaluate-in! name (evaluate-in! out (first chosen)))))))
 
 (define! recenter
   (lambda! () (terminal-write (control-sequence "2J")) (bind window-buffer (quote! top) -1000)))
@@ -709,7 +709,7 @@
 ; A buffer for a command's output, one C-x b away.
 (define! output-buffer
   (lambda! (command)
-    (define! out (buffer (string-append "*" command "*") () (list "")))
+    (define! out (buffer (join "*" command "*") () (list "")))
     (bind editor-context (quote! output-buffers) (pair out output-buffers))
     (bind editor-context (quote! previous-buffer) out)
     out))
@@ -741,7 +741,7 @@
           (define! reversed (reverse (evaluate-in! below b)))
           (bind b (quote! below)
             (reverse-onto (rest reversed)
-              (pair (string-append (first reversed) head) more))))))))
+              (pair (join (first reversed) head) more))))))))
 
 (define! set-mode (lambda! (b text) (bind b (quote! mode) text)))
 
@@ -839,7 +839,7 @@
   (lambda! ()
     (define! name (read-from-minibuffer "Describe function: "))
     (show-help
-      (string-append name " is "
+      (join name " is "
                      (value-to-string (evaluate (string-to-symbol name) editor-context))))))
 
 ; The bindings of `keymap` under `prefix` (a list of key symbols), as lines.
@@ -853,7 +853,7 @@
                (binding-lines binding keys)
                (sequence!
                  (define! name (keys-description keys))
-                 (list (string-append name (spaces (maximum 1 (subtract 16 (code-point-count name))))
+                 (list (join name (spaces (maximum 1 (subtract 16 (code-point-count name))))
                                       (value-to-string binding))))))
            (names keymap)))))
 
@@ -876,8 +876,8 @@
           (sequence!
             (define! name (keys-description (reverse keys)))
             (if! (same? binding #false)
-              (message (string-append name " is undefined"))
-              (show-help (string-append name " runs " (value-to-string binding) "\n\n"
+              (message (join name " is undefined"))
+              (show-help (join name " runs " (value-to-string binding) "\n\n"
                                         (value-to-string binding) " is "
                                         (value-to-string (evaluate binding editor-context)))))))))
     (describe global-map (list (read-event)))))
