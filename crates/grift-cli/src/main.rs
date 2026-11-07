@@ -1,11 +1,13 @@
 //! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments. With no
 //! script it reads the program from stdin; when stdin is a terminal `runner.grift` evaluates each
-//! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status:
+//! complete input and prints the result. A script path or argument that isn't UTF-8 is refused with
+//! `encoding-error` before anything runs. Data goes to stdout, diagnostics to stderr. Exit status:
 //! 0, 1 on a grift error (a script that can't be read, or failed output, is one), or what the
 //! program gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program
 //! calls `exit`, input ends inside a form, or standard input or error fails or is closed, which is
 //! the session's own error and ends it with 1. A write to a pipe no one reads, on any file, ends
-//! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
+//! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 141, the status a
+//! shell gives a program that SIGPIPE ended.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
 //! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`,
@@ -17,7 +19,6 @@ use grift::{Error, Grift, HostFunction, Value, WriteError};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
-use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -38,12 +39,11 @@ enum Stream {
     Writing(Box<dyn Write>),
 }
 
-/// The runner's state: the files opened, standard input, error and output first, when the run
-/// started, and the script.
+/// The runner's state: the files opened, standard input, error and output first, and when the run
+/// started.
 struct Runner {
     files: Vec<Opened>,
     started: Instant,
-    script: Option<PathBuf>,
 }
 
 type G = Grift<Runner>;
@@ -102,28 +102,6 @@ fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 /// `(display-error v ...)`: as `display`, to stderr.
 fn display_error(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     put(g, r, STANDARD_ERROR, args)
-}
-
-/// `(resolve-host base path)`: `path`, relative to the directory of the file `base` if it is
-/// relative. The program holds the script's path as text, which may be a lossy copy naming another
-/// file, so the script's directory comes from the real path: `encoding-error` if text can't hold it.
-fn resolve_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let (Some(base), Some(path)) = (args.first(), args.get(1)) else {
-        return Err(g.error("arity-error", args));
-    };
-    let (Some(base), Some(path)) = (g.as_str(base)?, g.as_str(path)?) else {
-        return Err(g.error("type-error", args));
-    };
-    let script = r.script.as_deref().filter(|s| s.to_string_lossy() == base);
-    let full = script
-        .unwrap_or(Path::new(base))
-        .parent()
-        .unwrap_or(Path::new(""))
-        .join(path);
-    match full.to_str().map(String::from) {
-        Some(full) => g.string(&full),
-        None => Err(g.error("encoding-error", args)),
-    }
 }
 
 /// `(wall-clock-nanoseconds)`: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock,
@@ -373,15 +351,13 @@ fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     Ok(Value::Inert)
 }
 
-/// `(forget-host)`: closes the file opened last and frees its number. For a file a program never
-/// held, so that reading again and again keeps nothing: a file a program closed keeps its entry,
-/// so its number is `closed` for ever and never comes to mean another file.
-fn forget_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
+/// `(read-file path)`: the file's whole text.
+fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let path = one_string(g, args)?;
+    match std::fs::read_to_string(&path) {
+        Ok(text) => g.string(&text),
+        Err(e) => Err(failed(g, "file-error", &path, &e)),
     }
-    r.files.pop();
-    Ok(Value::Inert)
 }
 
 /// `(environment-variable name)`: its value; `unset-variable` when it has none.
@@ -409,13 +385,14 @@ fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 }
 
 /// The status a run ended with by the runner's own limits, which a program can't begin: what `exit`
-/// gave, or 0 for a pipe no one reads, so `grift script | head` is quiet.
+/// gave, or 141 for a pipe no one reads, as a shell says of a program SIGPIPE ended: `grift script |
+/// head` is quiet, and a run that ended this way never reports success.
 fn exit_status(g: &G, e: &Error) -> Option<u8> {
     if !e.is_limit() {
         return None;
     }
     match (g.symbol_name(&e.kind).ok()?, e.values.as_slice()) {
-        ("broken-pipe", _) => Some(0),
+        ("broken-pipe", _) => Some(141),
         ("exit", [Value::Integer(n)]) => u8::try_from(*n).ok(),
         _ => None,
     }
@@ -484,9 +461,10 @@ fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error
 
 /// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
 /// those it should have.
-const HOSTS: [(&str, HostFunction<Runner>); 19] = [
+const HOSTS: [(&str, HostFunction<Runner>); 18] = [
     ("display", display),
     ("display-error", display_error),
+    ("read-file", read_file),
     ("environment-variable", environment_variable),
     ("wall-clock-nanoseconds", wall_clock_nanoseconds),
     ("elapsed-nanoseconds", elapsed_nanoseconds),
@@ -498,12 +476,10 @@ const HOSTS: [(&str, HostFunction<Runner>); 19] = [
     ("read-bytes-host", read_bytes_host),
     ("write-host", write_host),
     ("close-host", close_host),
-    ("forget-host", forget_host),
     ("run-host", run_host),
     ("report-host", report_host),
     ("read-forms", read_forms),
     ("position", position),
-    ("resolve-host", resolve_host),
 ];
 
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
@@ -560,9 +536,6 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Resu
 }
 
 fn main() -> ExitCode {
-    let mut args = std::env::args_os().skip(1);
-    let script = args.next();
-    let arguments: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let mut g: G = match Grift::new() {
         Ok(g) => g,
         Err(e) => {
@@ -572,6 +545,23 @@ fn main() -> ExitCode {
             ));
             return ExitCode::FAILURE;
         }
+    };
+    let mut words = Vec::new();
+    for word in std::env::args_os().skip(1) {
+        match word.into_string() {
+            Ok(word) => words.push(word),
+            Err(word) => {
+                let e = match g.bytes(word.as_encoded_bytes()) {
+                    Ok(bytes) => g.error("encoding-error", &[bytes]),
+                    Err(e) => e,
+                };
+                return report(&g, "grift", &e);
+            }
+        }
+    }
+    let (script, arguments) = match words.split_first() {
+        Some((script, arguments)) => (Some(script.as_str()), arguments),
+        None => (None, &[][..]),
     };
     let mut r = Runner {
         files: vec![
@@ -589,35 +579,28 @@ fn main() -> ExitCode {
             },
         ],
         started: Instant::now(),
-        script: script.as_ref().map(PathBuf::from),
     };
-    let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
-    let set = set_up(
-        &mut g,
-        &mut r,
-        &arguments,
-        script_path.as_deref().unwrap_or_default(),
-    );
+    let set = set_up(&mut g, &mut r, arguments, script.unwrap_or_default());
     let session = match set {
         Ok(session) => session,
         Err(e) => return report(&g, "grift", &e),
     };
-    let name = script_path.unwrap_or_else(|| String::from("stdin"));
+    let name = script.unwrap_or("stdin");
     let done = if script.is_none() && io::stdin().is_terminal() {
         g.call(&mut r, &session, &[])
     } else {
-        let text = match &script {
+        let text = match script {
             Some(path) => std::fs::read_to_string(path),
             None => io::read_to_string(io::stdin()),
         };
         match text {
             Ok(text) => {
                 let top = g.top_level();
-                g.evaluate_in(&mut r, &top, &name, &text)
+                g.evaluate_in(&mut r, &top, name, &text)
             }
             Err(e) => {
                 let missing = e.kind() == io::ErrorKind::NotFound;
-                let e = failed(&mut g, "file-error", &name, &e);
+                let e = failed(&mut g, "file-error", name, &e);
                 let status = report(&g, "grift", &e);
                 if missing {
                     say(format_args!("{USAGE}\n"));
@@ -630,7 +613,7 @@ fn main() -> ExitCode {
         Ok(_) => ExitCode::SUCCESS,
         Err(e) => match exit_status(&g, &e) {
             Some(status) => ExitCode::from(status),
-            None => report(&g, &name, &e),
+            None => report(&g, name, &e),
         },
     }
 }

@@ -127,7 +127,8 @@ expect "count-words.grift, unchanged, under stand-ins for what it takes from the
 echo "== the runner's own edges"
 "$grift" main.grift tests/lists.grift 2>"$err" | head -1 >/dev/null
 piped=${PIPESTATUS[0]}
-expect "a closed pipe ends it quietly" bash -c "[ $piped = 0 ] && ! grep -q . '$err'"
+# 141 if a write found the pipe closed, 0 if the run had written everything before head left.
+expect "a closed pipe ends it quietly" bash -c "[ $piped = 0 -o $piped = 141 ] && ! grep -q . '$err'"
 expect "report on stdout, nothing on stderr" bash -c "'$grift' main.grift tests/numbers.grift 2>&1 >/dev/null | wc -c | grep -qx 0"
 
 [ "$bad" = 0 ] && echo "all checks passed" || echo "SOME CHECKS FAILED"
