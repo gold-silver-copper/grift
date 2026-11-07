@@ -128,8 +128,8 @@
   (lambda! (text at)
     (or!? (same? at (string-byte-length text))
           (let! ((byte (string-byte text at))) (or!? (less-than? byte 128) (less-than? 191 byte))))))
-; string-search: the first offset from start where the pattern's bytes are; a valid pattern only
-; matches on character boundaries.
+; string-search: bytes-search over the strings' bytes; a valid pattern only matches on character
+; boundaries.
 (define! searched
   (lambda! (primitive (text pattern start))
     (sequence!
@@ -137,27 +137,8 @@
       (typed primitive pattern (quote! string))
       (typed primitive start (quote! integer))
       (if! (and!? (not? (less-than? start 0)) (not? (less-than? (string-byte-length text) start)) (boundary? text start))
-        (search text pattern start)
+        (bytes-search (string-to-bytes text) (string-to-bytes pattern) start)
         (fail (quote! range-error) (list primitive text start))))))
-(define! search
-  (lambda! (text pattern start)
-    (let! ((size (string-byte-length pattern))
-           (last (subtract (string-byte-length text) size))
-           (from
-             (lambda! (at)
-               (if! (less-than? last at)
-                 ()
-                 (if! (same? (string-byte text at) (string-byte pattern 0))
-                   (if! (matches? text at pattern 1 size) at (from (add at 1)))
-                   (from (add at 1)))))))
-      (if! (same? size 0) start (from start)))))
-(define! matches?
-  (lambda! (text at pattern i size)
-    (if! (same? i size)
-      #true
-      (if! (same? (string-byte text (add at i)) (string-byte pattern i))
-        (matches? text at pattern (add i 1) size)
-        #false))))
 (define! characters
   (lambda! (text at end done)
     (if! (same? at end)
