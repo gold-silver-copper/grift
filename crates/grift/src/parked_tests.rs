@@ -198,21 +198,51 @@ fn out_of_memory_collects_before_its_cleanups_run() {
 /// that cleanup, and doesn't end the run's unwinding there.
 #[test]
 fn a_cleanup_whose_first_step_is_refused_is_passed_over_for_the_next() {
-    let mut passed_over = false;
-    for refuse_in in 0..16 {
-        let (mut g, mut log) = (grift(), Vec::new());
-        let p = parked(start(
-            &mut g,
-            &mut log,
-            "(finally! (finally! (sequence! (wait) (first 0)) (note 1)) (note 2))",
-        ));
-        g.heap.refuse_in = Some(refuse_in);
-        g.heap.refuse_once = true;
-        let e = g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err().error;
-        passed_over |= kind(&g, &e) == "out-of-memory" && log == ["2"];
-        assert_eq!(g.parked(), 0);
+    // The run errs on, or is given up: it is the same cleanups either way.
+    for given_up in [false, true] {
+        let mut passed_over = false;
+        for refuse_in in 0..16 {
+            let (mut g, mut log) = (grift(), Vec::new());
+            let p = parked(start(
+                &mut g,
+                &mut log,
+                "(finally! (finally! (sequence! (wait) (first 0)) (note 1)) (note 2))",
+            ));
+            let answer = match given_up {
+                true => Err(g.error("given-up", &[]).as_limit()),
+                false => Ok(Value::Inert),
+            };
+            g.heap.refuse_in = Some(refuse_in);
+            g.heap.refuse_once = true;
+            let e = g.resume(&mut log, p, answer).unwrap_err().error;
+            passed_over |= kind(&g, &e) == "out-of-memory" && log == ["2"];
+            assert_eq!(g.parked(), 0);
+        }
+        assert!(passed_over, "given up: {given_up}");
     }
-    assert!(passed_over);
+}
+
+/// A resumed run has let go of what it asked for: a big request isn't held for the rest of the run.
+#[test]
+fn a_resumed_run_holds_its_request_no_longer() {
+    let (mut g, mut log) = (grift(), Vec::new());
+    let ask = g
+        .parking_function("ask", |_, _, args| Ok(Answer::Later(args[0].clone())))
+        .unwrap();
+    g.define("ask", ask).unwrap();
+    let held = g
+        .host_function("held", |g, log: &mut Log, _| {
+            log.push(format!("{:?}", g.machine.request));
+            Ok(Value::Inert)
+        })
+        .unwrap();
+    g.define("held", held).unwrap();
+    let p = parked(start(&mut g, &mut log, "(ask (list 1)) (held)"));
+    assert!(matches!(
+        g.resume(&mut log, p, Ok(Value::Inert)),
+        Ok(Ran::Finished(_))
+    ));
+    assert_eq!(log, ["Inert"]);
 }
 
 /// Every collection walks a parked run, so it brings the next one no nearer than its size says.
@@ -265,7 +295,7 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
             let src = format!("(map (lambda! (x) (if! (same? x 1) (wait) (id x))) (list {n} 1))");
             (src, format!("(({n} \"run{n}\") 0)"))
         },
-        // An error waiting for a cleanup: its values and trace are in `raised` alone.
+        // An error waiting for a cleanup: its values and trace are in `waiting` alone.
         |n| {
             let src = format!(
                 "(catch! (finally! (raise (error (quote! mine) (id {n}))) (wait))
@@ -273,7 +303,7 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
             );
             (src, format!("(({n} \"run{n}\"))"))
         },
-        // A cleanup's frame, its value waiting in a Deliver frame.
+        // A cleanup's frame, its value in `waiting`.
         |n| {
             let src = format!("(finally! (id {n}) (wait))");
             (src, format!("({n} \"run{n}\")"))
@@ -666,7 +696,7 @@ mod generated {
         // Nothing else touched it: a name makes nothing real, and only the host's own limit is one.
         let log = std::mem::take(&mut w.logs[run]);
         let by_host = log.iter().any(|l| l.starts_with('$'));
-        assert!(!out.limit || by_host, "{out:?}\n{src}");
+        assert_eq!(out.limit, by_host, "{out:?}\n{src}");
         (out, log)
     }
 
@@ -821,6 +851,9 @@ mod generated {
         stopped: usize,
         forced: usize,
         refused: usize,
+        /// Programs that raise a limit's name themselves, and that call the host's own limit.
+        forgeries: usize,
+        host_limits: usize,
     }
 
     fn one_case(seed: u64, stress: bool, reached: &mut Reached) {
@@ -838,6 +871,9 @@ mod generated {
                 p.expression(depth)
             })
             .collect();
+        let with = |text: &str| programs.iter().filter(|p| p.contains(text)).count();
+        reached.forgeries += with("(quote! forged)");
+        reached.host_limits += with("(host-limit ");
         let context = format!("seed {seed} stress {stress}\n{programs:#?}");
         let meanings: Vec<(Outcome, Log)> = programs
             .iter()
@@ -1064,7 +1100,9 @@ mod generated {
                     reached.abandoned,
                     reached.stopped,
                     reached.forced,
-                    reached.refused
+                    reached.refused,
+                    reached.forgeries,
+                    reached.host_limits
                 ]
                 .iter()
                 .all(|&n| n > 5),

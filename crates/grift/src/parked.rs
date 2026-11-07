@@ -169,9 +169,9 @@ impl<T> Grift<T> {
         self.hosted(name, Hosted::Parking(f))
     }
 
-    /// [`Grift::call`], in a run that may park. Inside a host call nothing can start like this
-    /// (`cannot-park`), since that call's Rust frames can't be set aside: a host function queues
-    /// the work for its host's loop.
+    /// [`Grift::call`], in a run that may park. Inside a host call it is a nested run, as `call` is,
+    /// and a wait in it is `cannot-park`, since that call's Rust frames can't be set aside: a host
+    /// function queues work that waits for its host's loop.
     pub fn start(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Ran, Error> {
         self.parkable(|g| {
             let f = g.prepare_call(f, arguments)?;
@@ -201,18 +201,8 @@ impl<T> Grift<T> {
         &mut self,
         go: impl FnOnce(&mut Self) -> Result<local::Value, local::Error>,
     ) -> Result<Ran, Error> {
-        if let Err(e) = self.outside_a_run() {
-            return Err(self.export_error(e));
-        }
         let done = go(self);
         self.ran(done).map_err(|e| self.export_error(e))
-    }
-
-    fn outside_a_run(&self) -> Result<(), local::Error> {
-        match self.control.run() {
-            0 => Ok(()),
-            _ => Err(local::Error::new(K::CannotPark, &[])),
-        }
     }
 
     /// A parked run returns its kept name, a symbol nothing else can be.
@@ -244,8 +234,9 @@ impl<T> Grift<T> {
 
     /// Takes up a parked run: the waiting call answers `answer` as a host function's return does,
     /// so a stale value or an error is raised there, and the run goes on until it ends or parks
-    /// again. Each resume is a run of its own for stops. It needs no memory to begin. Refused, the
-    /// run waiting still and the handle back in [`ResumeError::parked`], as that type says.
+    /// again. Each resume is a run of its own for stops. It makes no heap object to begin; refused
+    /// the little it does need, the run waits still and the handle is back in
+    /// [`ResumeError::parked`], as that type says.
     ///
     /// To give a run up, answer with a limit ([`Error::as_limit`]): nothing catches it, every
     /// `finally!` runs on the way out, and it is what the run ends with. A cleanup that waits is
@@ -309,7 +300,9 @@ impl<T> Grift<T> {
         if !self.owns(&parked.owner) {
             return Err(local::Error::new(K::ForeignValue, &[]));
         }
-        self.outside_a_run()?;
+        if self.control.run() != 0 {
+            return Err(local::Error::new(K::CannotPark, &[]));
+        }
         let (value, error, trace) = match answer {
             Ok(v) => (std::slice::from_ref(v), &[][..], &[][..]),
             Err(e) => (&[][..], e.values.as_slice(), e.trace.as_slice()),

@@ -76,10 +76,13 @@ fn nest(g: &mut G, world: &mut World, args: &[Value]) -> Result<Value, Error> {
     done
 }
 
-/// Tries every way to take up or start a run from inside a host call.
+/// Starts a nested run, and tries every way to take up a run or wait from inside a host call.
 fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Value, Error> {
     let top = g.top_level();
-    let e = g.start_in(world, &top, "inner", "1").unwrap_err();
+    let Ok(Ran::Finished(Value::Integer(1))) = g.start_in(world, &top, "inner", "1") else {
+        panic!("a nested run that doesn't wait just runs");
+    };
+    let e = g.start_in(world, &top, "inner", "(wait)").unwrap_err();
     world.refused.push(kind(g, &e));
     let parked = world.held.take().unwrap();
     let refused = g.resume(world, parked, Ok(Value::Inert)).unwrap_err();
@@ -643,7 +646,7 @@ fn a_run_that_cannot_park_says_so() {
 }
 
 #[test]
-fn nothing_starts_or_resumes_inside_a_host_call() {
+fn inside_a_host_call_a_start_is_a_nested_run_and_nothing_resumes() {
     let (mut g, mut w) = (grift(), World::default());
     w.held = Some(parked(run(&mut g, &mut w, "(add 1 (wait))")));
     let done = run(&mut g, &mut w, "(meddle) (wait) 7");

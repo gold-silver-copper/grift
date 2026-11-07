@@ -144,10 +144,12 @@ impl Interrupter {
     /// Ends the run this handle last reached by a stop or a force, or, if it has reached none, the
     /// run in progress: at its next check, however its cleanups behave. Each cleanup it meets is cut
     /// before its first form, at every level of the run, nothing a host function then evaluates
-    /// runs, and the run ends with `interrupted`, whatever else fails on the way. Whether that run
-    /// is in progress; so a handle that reached a run that is over forces nothing, ever, until a
-    /// stop ties it to another, and a late force never reaches a later run. A handle that has
-    /// reached nothing has the hazard a stop has: asked after its run ended, it reaches the next.
+    /// runs past the one primitive it may call directly, and the run ends with `interrupted`,
+    /// whatever else fails on the way. Whether that run is in progress; so a handle that reached a
+    /// run that is over forces nothing, ever, until a stop ties it to another, and a late force never
+    /// reaches a later run. That includes a run that parked and was resumed, each resume being a run
+    /// of its own: to force that one, stop it first, then force. A handle that has reached nothing
+    /// has the hazard a stop has: asked after its run ended, it reaches the next.
     /// `true` doesn't say it acted, as for a stop. [`Error::is_limit`] says the ending is real.
     ///
     /// [`Error::is_limit`]: crate::Error::is_limit

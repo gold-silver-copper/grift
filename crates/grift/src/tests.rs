@@ -2190,6 +2190,8 @@ fn catch_kind_catches_one_kind_and_lets_the_rest_go_on_as_they_were() {
                      (add 1 (length (trace-of (quote! (deep 1))))))",
             "(equal? (first (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
                      (first (trace-of (quote! (deep 1)))))",
+            "(equal? (last (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
+                     (quote! (catch-kind! (deep 1) parse-error e 0)))",
             "(same? (catch-kind! (catch-kind! (deep 1) parse-error e 1) type-error e 2) 2)",
         ],
     );

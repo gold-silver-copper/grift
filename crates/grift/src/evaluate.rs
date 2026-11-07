@@ -392,6 +392,7 @@ impl<T> Grift<T> {
         answer: Result<Value, Error>,
     ) -> Result<Value, Error> {
         self.machine = machine;
+        self.machine.request = Value::Inert;
         // The frame `enter` pushed first, holding where the machine was, stays under the run.
         let floor = 1;
         let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e, floor));
