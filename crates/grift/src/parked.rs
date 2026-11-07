@@ -265,7 +265,11 @@ impl<T> Grift<T> {
             Ok(v) => self.import(v),
             Err(e) => Err(self.incoming_error(e)),
         };
-        self.take_up(state, parked, answer, true)
+        let done = self.take_up(state, parked, answer, true)?;
+        self.ran(done).map_err(|e| ResumeError {
+            error: self.export_error(e),
+            parked: None,
+        })
     }
 
     /// Ends a parked run. The waiting call raises `abandoned`, an error nothing catches, so the
@@ -309,34 +313,25 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn abandon(&mut self, state: &mut T, parked: Parked) -> Result<Error, ResumeError> {
-        let ending = local::Error::host(K::Abandoned);
-        match self.take_up(state, parked, Err(ending), false) {
-            Err(ResumeError {
-                error,
-                parked: None,
-            }) => Ok(error),
-            Err(refused) => Err(refused),
-            // Nothing can end this way: nothing catches `abandoned`, and nothing here may park.
-            Ok(_) => Ok(self.export_error(local::Error::host(K::Abandoned))),
-        }
+        let ending = || local::Error::host(K::Abandoned);
+        let done = self.take_up(state, parked, Err(ending()), false)?;
+        // A value can't end it: nothing catches `abandoned`, and nothing here may park.
+        Ok(self.export_error(done.err().unwrap_or_else(ending)))
     }
 
+    /// Takes the run up, or gives the handle back with why not; how the run came back.
     fn take_up(
         &mut self,
         state: &mut T,
         mut parked: Parked,
         answer: Result<local::Value, local::Error>,
         parks: bool,
-    ) -> Result<Ran, ResumeError> {
+    ) -> Result<Result<local::Value, local::Error>, ResumeError> {
         match self.claim(&parked, &answer) {
             Ok(machine) => {
                 parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
                 self.may_park = parks;
-                let done = self.wake(Some(state), machine, answer);
-                self.ran(done).map_err(|e| ResumeError {
-                    error: self.export_error(e),
-                    parked: None,
-                })
+                Ok(self.wake(Some(state), machine, answer))
             }
             Err(e) => Err(ResumeError {
                 error: self.export_error(e),

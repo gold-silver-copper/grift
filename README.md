@@ -345,8 +345,8 @@ fn main() -> Result<(), Error> {
   coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`.
 - **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
-  things reach every host. Memory refused makes a collection due, and a cleanup it can't call even
-  after a collection is passed over for the next. And a kind's name means nothing: a program's own
+  things reach every host. Memory refused makes a collection due, before a cleanup's first step, and a
+  cleanup with no room on the machine's stacks to be called is passed over for the next. And a kind's name means nothing: a program's own
   `interrupted` or `out-of-memory` is caught like any error, and only `is_limit()` says one is real.
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going

@@ -597,7 +597,8 @@ impl<T> Grift<T> {
     /// with it instead. What can't be called fails there like any call, with that error, and the
     /// next frame goes on from it. With neither left, the error goes to the caller.
     fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
-        // The garbage is what the cleanups will run on, and the host's next run.
+        // The garbage is what the cleanups will run on, and the host's next run: the next safe
+        // point collects, with the frames dropped here let go of.
         if e.limit && e.kind == K::OutOfMemory.into() {
             self.heap.request_collection();
         }
@@ -659,8 +660,6 @@ impl<T> Grift<T> {
         });
     }
 
-    /// Calls `cleanup`, after a collection if there is no memory for it: the frames just dropped
-    /// may have let go of what it needs.
     fn call_cleanup(
         &mut self,
         cleanup: Value,
@@ -672,10 +671,7 @@ impl<T> Grift<T> {
             self.refuse_cleanup_calls -= 1;
             return Err(Error::oom());
         }
-        self.call_thunk(cleanup, context, at).or_else(|_| {
-            let _ = self.collect(std::iter::empty());
-            self.call_thunk(cleanup, context, at)
-        })
+        self.call_thunk(cleanup, context, at)
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
