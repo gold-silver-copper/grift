@@ -270,6 +270,16 @@ impl Machine {
     pub fn frames_high(&self) -> usize {
         self.frames.capacity()
     }
+
+    /// Only this much room above the frames, as if no more could be had.
+    pub fn leave_room(&mut self, room: usize) {
+        self.frames.shrink_to(self.frames.len() + room);
+    }
+
+    /// Loses what cleanups saved.
+    pub fn lose_waiting(&mut self) {
+        self.waiting.clear();
+    }
 }
 
 impl Default for Machine {

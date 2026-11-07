@@ -11,7 +11,7 @@ fn kind<T>(g: &Grift<T>, e: &Error) -> String {
 /// A host whose program can stop its own run and force it, with a run that waits.
 fn host() -> (Grift<Interrupter>, Interrupter) {
     let mut g: Grift<Interrupter> = Grift::new().unwrap();
-    let functions: [(&str, crate::HostFunction<Interrupter>); 5] = [
+    let functions: [(&str, crate::HostFunction<Interrupter>); 6] = [
         ("stop", |_, s, _| {
             s.stop();
             Ok(Value::Inert)
@@ -27,6 +27,12 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
             g.heap.request_collection();
             g.evaluate(s, "#inert")?;
             Err(e)
+        }),
+        // Whatever its nested run ended with, it goes on.
+        ("swallow", |g, s, args| {
+            let src = g.as_string(&args[0])?.unwrap();
+            let _ = g.evaluate(s, &src);
+            Ok(Value::Inert)
         }),
         ("reports", |g, _, args| {
             let name = g.as_string(&args[0])?.unwrap();
@@ -418,5 +424,97 @@ fn a_force_names_the_ending_whatever_memory_refuses_next() {
         .evaluate(&mut s, "(finally! (sequence! (refuse) (force)) (note 1))")
         .unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!(log(&mut g, &mut s), "()");
+}
+
+/// A host function can swallow a nested run's force, and the run is forced all the same.
+#[test]
+fn a_host_function_that_swallows_a_force_ends_with_it_all_the_same() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, LOG).unwrap();
+    let e = g
+        .evaluate(
+            &mut s,
+            r#"(finally! (sequence! (swallow "(force)") (note 1)) (note 2))"#,
+        )
+        .unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!(log(&mut g, &mut s), "()");
+}
+
+/// A cleanup's start needs no room it didn't make at its install, however full the stack is then.
+#[test]
+fn a_cleanups_install_makes_the_room_its_start_needs() {
+    let (mut g, mut s) = host();
+    let tight = g
+        .host_function("tight", |g, _, args| {
+            let [Value::Integer(room)] = args else {
+                panic!("{args:?}");
+            };
+            g.machine.leave_room(*room as usize);
+            Ok(Value::Inert)
+        })
+        .unwrap();
+    g.define("tight", tight).unwrap();
+    // The primitive itself, on names: nothing between `tight` and the install grows the stack.
+    let names = "(define! here (current-context)) (define! then (lambda! () 0))";
+    g.evaluate(&mut s, names).unwrap();
+    for room in 0..12 {
+        let src = format!("(sequence! (tight {room}) (evaluate-with-cleanup 1 here then))");
+        g.evaluate(&mut s, &src).unwrap();
+    }
+}
+
+/// Memory refused to a machine stack, not by the heap: what the dropped frames held is worth
+/// collecting all the same. The cleanup empties what `Finish` reads, which fails as a refusal does.
+#[test]
+fn memory_refused_outside_the_heap_asks_for_a_collection() {
+    let (mut g, mut s) = host();
+    let empty = g
+        .host_function("empty-waiting", |g, _, _| {
+            g.machine.lose_waiting();
+            g.heap.not_due();
+            Ok(Value::Inert)
+        })
+        .unwrap();
+    g.define("empty-waiting", empty).unwrap();
+    let e = g
+        .evaluate(&mut s, "(finally! 1 (empty-waiting))")
+        .unwrap_err();
+    assert_eq!(
+        (kind(&g, &e).as_str(), e.is_limit()),
+        ("out-of-memory", true)
+    );
+    assert!(g.heap.due());
+}
+
+/// A host keeps a limit and hands it in later, from a host function or as an answer to a wait: it
+/// still passes every handler, and an ordinary error kept the same way keeps its kind and values.
+#[test]
+fn what_a_host_keeps_comes_back_what_it_was() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, LOG).unwrap();
+    let limit = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
+    let p = parked(
+        &mut g,
+        &mut s,
+        "(catch! (wait) #ignore (note (quote! caught)))",
+    );
+    let e = g.resume(&mut s, p, Err(limit.clone())).unwrap_err().error;
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    let ordinary = g
+        .evaluate(&mut s, "(raise (error (quote! ordinary) 123))")
+        .unwrap_err();
+    let p = parked(
+        &mut g,
+        &mut s,
+        "(catch! (wait) e (list (evaluate-in! kind e) (evaluate-in! values e)))",
+    );
+    let Ran::Finished(v) = g.resume(&mut s, p, Err(ordinary)).unwrap() else {
+        panic!("it finishes");
+    };
+    let mut text = String::new();
+    g.write(&v, &mut text).unwrap();
+    assert_eq!(text, "(ordinary (123))");
     assert_eq!(log(&mut g, &mut s), "()");
 }
