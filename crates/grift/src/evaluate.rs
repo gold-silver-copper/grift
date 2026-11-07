@@ -331,6 +331,7 @@ impl<T> Grift<T> {
             Value::Applicative(r) => self.unwrapped(r)?,
             _ => return Err(type_error(f)),
         };
+        self.settled();
         let operands = self.list_local(arguments)?;
         let context = self
             .heap

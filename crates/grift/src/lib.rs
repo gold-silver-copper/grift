@@ -577,7 +577,10 @@ impl<T> Grift<T> {
         let made = self
             .import(&a)
             .and_then(|a| Ok((a, self.import(&b)?)))
-            .and_then(|(a, b)| self.pair_local(a, b));
+            .and_then(|(a, b)| {
+                self.settled();
+                self.pair_local(a, b)
+            });
         self.exported(made)
     }
 
@@ -809,12 +812,22 @@ impl<T> Grift<T> {
     /// then ends. What a host function left behind when it panicked or replaced the interpreter is
     /// over: its machine goes here.
     pub(crate) fn begin_run(&mut self) -> bool {
-        let outer = self.control.run() == 0;
+        let outer = self.settled();
         if outer {
-            self.machine.clear();
             self.control.begin();
         }
         outer
+    }
+
+    /// Whether no run is in progress; if none is, what a host function left on the machine when
+    /// it panicked or replaced the interpreter is over, so nothing the host makes now takes its
+    /// mark. A machine is empty between runs.
+    pub(crate) fn settled(&mut self) -> bool {
+        let none = self.control.run() == 0;
+        if none {
+            self.machine.clear();
+        }
+        none
     }
 
     pub(crate) fn end_run(&mut self) {
