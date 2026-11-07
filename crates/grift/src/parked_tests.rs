@@ -318,7 +318,7 @@ fn a_stop_before_a_run_parks_stops_it() {
     assert_eq!(g.parked(), 0);
 }
 
-/// A real out-of-memory reaching a handler through `resume` passes it.
+/// A real out-of-memory in a resumed run passes its handler, which then would have had room.
 #[test]
 fn real_out_of_memory_passes_handlers() {
     let (mut g, mut log) = (grift(), Vec::new());
@@ -327,9 +327,8 @@ fn real_out_of_memory_passes_handlers() {
         &mut log,
         "(catch! (sequence! (wait) (pair 1 2)) #ignore (note 0))",
     ));
-    g.heap.slot_limit = g.heap.len();
-    while g.pair(Value::Inert, Value::Inert).is_ok() {}
-    g.heap.not_due();
+    g.heap.refuse_in = Some(0);
+    g.heap.refuse_once = true;
     let e = g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err().error;
     assert_eq!(kind(&g, &e), "out-of-memory");
     assert!(e.is_limit());
