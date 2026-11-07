@@ -259,3 +259,71 @@ fn a_parked_runs_cleanups_under_abandon_end_at_a_force() {
     assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
 }
+
+/// The nearest cleanup of a run that ran out of memory gets what the frames dropped let go of.
+#[test]
+fn memory_the_frames_held_is_there_for_the_nearest_cleanup() {
+    let (mut g, mut s) = host();
+    g.evaluate(
+        &mut s,
+        &format!("{LOG} (define! down (lambda! (n) (pair n (down (add n 1)))))"),
+    )
+    .unwrap();
+    g.heap.slot_limit = g.heap.len() + 2000;
+    let e = g
+        .evaluate(&mut s, "(finally! (finally! (down 0) (note 1)) (note 2))")
+        .unwrap_err();
+    assert_eq!(
+        (kind(&g, &e).as_str(), e.is_limit()),
+        ("out-of-memory", true)
+    );
+    g.heap.slot_limit = usize::MAX;
+    assert_eq!(log(&mut g, &mut s), "(2 1)");
+}
+
+/// A name decides nothing: only memory really refused asks for a collection.
+#[test]
+fn an_error_named_out_of_memory_collects_nothing() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, "(raise (error (quote! out-of-memory)))")
+        .unwrap_err();
+    assert!(!g.heap.due());
+    g.evaluate(&mut s, "(reports \"out-of-memory\")")
+        .unwrap_err();
+    assert!(!g.heap.due());
+    g.heap.slot_limit = g.heap.len();
+    while g.pair(Value::Inert, Value::Inert).is_ok() {}
+    assert!(g.heap.due(), "memory refused");
+}
+
+#[test]
+fn a_stale_limit_given_to_resume_stays_a_limit() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, LOG).unwrap();
+    let e = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
+    let p = parked(&mut g, &mut s, "(catch! (wait) e (note (quote! caught)))");
+    g.heap.request_collection();
+    g.evaluate(&mut s, "#inert").unwrap();
+    let ended = g.resume(&mut s, p, Err(e)).unwrap_err().error;
+    assert!(ended.is_limit());
+    assert_eq!(log(&mut g, &mut s), "()");
+}
+
+#[test]
+fn a_force_before_a_run_parks_ends_it() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, LOG).unwrap();
+    let wait = g
+        .parking_function("force-and-wait", |_, s, _| {
+            s.stop();
+            assert!(s.force());
+            Ok(Answer::Later(Value::Inert))
+        })
+        .unwrap();
+    g.define("force-and-wait", wait).unwrap();
+    let top = g.top_level();
+    let ran = g.start_in(&mut s, &top, "t", "(finally! (force-and-wait) (note 1))");
+    assert_eq!(kind(&g, &ran.unwrap_err()), "interrupted");
+    assert_eq!(g.parked(), 0);
+    assert_eq!(log(&mut g, &mut s), "()");
+}

@@ -63,7 +63,7 @@ core {
     Evaluate "evaluate" 2 2;
     // Unwinding: machine frames.
     EvaluateWithCleanup "evaluate-with-cleanup" 3 3;
-    CallWithHandler "call-with-handler" 2 2;
+    EvaluateWithHandler "evaluate-with-handler" 3 3;
     Raise "raise" 1 1;
     // Making, changing and listing bindings.
     Context "context" 0 1;
@@ -1119,34 +1119,26 @@ impl<T> Grift<T> {
             P::IntegerToFloat => Value::Float(integer_of(p, x)? as f64),
             // Rust's `as`: saturating, and not-a-number becomes 0.
             P::FloatToInteger => Value::Integer(float_of(p, x)? as i64),
-            P::EvaluateWithCleanup if !is_combiner(z) => return Err(type_error(p, z)),
-            P::EvaluateWithCleanup => match y {
-                Value::Context(c) => {
-                    let m = &mut self.machine;
-                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
-                    let cleanup = What::Cleanup { cleanup: z, base };
-                    self.frame(cleanup, c, self.machine.here)?;
-                    self.machine.waiting.push(Ok(Value::Inert));
-                    return Ok(Mode::Evaluate(x, c));
-                }
-                _ => return Err(type_error(p, y)),
-            },
-            P::CallWithHandler => {
-                if let Some(&v) = [x, y].iter().find(|&&v| !is_combiner(v)) {
-                    return Err(type_error(p, v));
-                }
+            P::EvaluateWithCleanup | P::EvaluateWithHandler if !is_combiner(z) => {
+                return Err(type_error(p, z));
+            }
+            P::EvaluateWithCleanup | P::EvaluateWithHandler => {
+                let Value::Context(c) = y else {
+                    return Err(type_error(p, y));
+                };
                 let at = self.machine.here;
-                self.frame(What::Handler { handler: y, base }, context, at)?;
-                return self.call_thunk(x, context, at);
+                if p == P::EvaluateWithHandler {
+                    self.frame(What::Handler { handler: z, base }, c, at)?;
+                } else {
+                    let waiting = &mut self.machine.waiting;
+                    waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
+                    self.machine.waiting.push(Ok(Value::Inert));
+                }
+                return Ok(Mode::Evaluate(x, c));
             }
             P::Raise => {
-                let e = self.error_of(x)?;
-                // A new error happens here; a caught one keeps where it happened, and the raise
-                // itself isn't one of its locations.
-                if !e.trace.is_empty() {
-                    self.machine.here = Reference::NONE;
-                }
-                return Err(e);
+                return Err(self.error_of(x)?);
             }
             P::StringByteLength => integer(self.text(p, x)?.len()),
             P::StringByte => {
@@ -1351,8 +1343,7 @@ impl<T> Grift<T> {
         let Value::Context(r) = e else {
             return Err(bad());
         };
-        let (_, fields) = self.context_at(r)?;
-        let field = |k: K| fields.get(&k.into()).copied().ok_or_else(bad);
+        let field = |k: K| self.find(r, k.into())?.ok_or_else(bad);
         let Value::Symbol(kind) = field(K::Kind)? else {
             return Err(bad());
         };
