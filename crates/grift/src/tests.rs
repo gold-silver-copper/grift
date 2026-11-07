@@ -2070,6 +2070,21 @@ fn a_parse_error_says_why_and_where() {
 }
 
 #[test]
+fn a_bind_that_fails_binds_nothing() {
+    let mut g = grift();
+    g.evaluate(&mut (), "(define! c (context))").unwrap();
+    fails(
+        &mut g,
+        &[
+            ("(bind c (quote! (a b)) (list 1))", "arity-error"),
+            ("(bind c (quote! (a 1)) (list 1 2))", "parameter-error"),
+            ("(bind c (quote! (a a)) (list 1 2))", "parameter-error"),
+        ],
+    );
+    holds(&mut g, &["(same? (names c) ())"]);
+}
+
+#[test]
 fn a_comment_starts_with_either_mark_wherever_a_token_can() {
     let mut g = grift();
     for src in ["(1 ; x\n 2)", "(1 #!x\n 2)", "#!x\n(1 2)", " #!x\n(1 2)"] {

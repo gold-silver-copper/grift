@@ -872,13 +872,11 @@ impl<T> Grift<T> {
                 },
             },
         };
-        // The bindings are made first, with room for all of them, then the context.
+        // The bindings are made first, then the context.
         let mut bindings = Bindings::default();
-        bindings
-            .try_reserve(op.size as usize)
-            .map_err(|_| Error::oom())?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Value::Symbol(s) = op.context_parameter {
+            bindings.try_reserve(1).map_err(|_| Error::oom())?;
             bindings.insert(s, Value::Context(context));
         }
         let local = self
@@ -1024,13 +1022,12 @@ impl<T> Grift<T> {
         let [x, y, z] = a;
         let v = match p {
             P::Vau => {
-                let size = self.check_parameters(x, y)?;
+                self.check_parameters(x, y)?;
                 let op = Operative {
                     parameters: x,
                     context_parameter: y,
                     body: z,
                     context,
-                    size: u32::try_from(size).map_err(|_| Error::oom())?,
                     native: None,
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)
@@ -1445,47 +1442,25 @@ impl<T> Grift<T> {
         Ok(Value::Bytes(self.heap.alloc_bytes(b)?))
     }
 
-    /// Checks a parameter tree: symbols, `#ignore`, `()` and pairs, no symbol twice, and a
-    /// context parameter that is `#ignore` or a symbol not in the tree. The number of bindings
-    /// a call makes.
+    /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
+    /// symbol not in the tree.
     pub(crate) fn check_parameters(
         &mut self,
         tree: Value,
         context_parameter: Value,
-    ) -> Result<usize, Error> {
-        let bad = |v: Value| Error::new(K::ParameterError, &[v]);
-        let mut seen: Seen<Symbol> = Seen::default();
-        let mut todo = Vec::new();
-        push(&mut todo, tree)?;
-        let mut walked = 0;
-        while let Some(t) = todo.pop() {
-            if self.walk_stopped(&mut walked) {
-                return Err(Error::host(K::Interrupted));
-            }
-            match t {
-                Value::Symbol(s) => {
-                    seen.try_reserve(1).map_err(|_| Error::oom())?;
-                    if !seen.insert(s) {
-                        return Err(bad(tree));
-                    }
-                }
-                Value::Ignore | Value::EmptyList => {}
-                Value::Pair(r) => {
-                    let (a, b) = self.pair_at(r)?;
-                    push(&mut todo, b)?;
-                    push(&mut todo, a)?;
-                }
-                _ => return Err(bad(tree)),
-            }
-        }
+    ) -> Result<(), Error> {
+        let mut bound = Bindings::default();
+        self.match_tree(&mut bound, tree, tree)?;
         match context_parameter {
-            Value::Symbol(s) if !seen.contains(&s) => Ok(seen.len() + 1),
-            Value::Ignore => Ok(seen.len()),
-            _ => Err(bad(context_parameter)),
+            Value::Symbol(s) if !bound.contains_key(&s) => Ok(()),
+            Value::Ignore => Ok(()),
+            _ => Err(Error::new(K::ParameterError, &[context_parameter])),
         }
     }
 
-    /// Matches a checked parameter tree to a value, binding its symbols in `bindings`.
+    /// Matches a parameter tree to a value, binding its symbols in `bindings`, which it expects to
+    /// have none of them: a symbol bound twice is a `parameter-error`, as is a leaf of the tree
+    /// other than a symbol, `#ignore` and `()`.
     pub(crate) fn match_tree(
         &mut self,
         bindings: &mut Bindings,
@@ -1499,37 +1474,43 @@ impl<T> Grift<T> {
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = match (t, v) {
                 _ if self.walk_stopped(&mut walked) => Err(Error::host(K::Interrupted)),
-                (Value::Symbol(s), _) => bindings
-                    .try_reserve(1)
-                    .map(|()| {
-                        bindings.insert(s, v);
-                    })
-                    .map_err(|_| Error::oom()),
+                (Value::Symbol(s), _) => match bindings.try_reserve(1) {
+                    Ok(()) if bindings.insert(s, v).is_none() => Ok(()),
+                    Ok(()) => Err(Error::new(K::ParameterError, &[tree])),
+                    Err(_) => Err(Error::oom()),
+                },
                 (Value::Ignore, _) | (Value::EmptyList, Value::EmptyList) => Ok(()),
                 (Value::Pair(t), Value::Pair(v)) => self.pair_at(t).and_then(|(ta, tb)| {
                     let (va, vb) = self.pair_at(v)?;
                     push(&mut work, (tb, vb))?;
                     push(&mut work, (ta, va))
                 }),
-                _ => Err(Error::new(K::ArityError, &[tree, value])),
+                (Value::Pair(_) | Value::EmptyList, _) => {
+                    Err(Error::new(K::ArityError, &[tree, value]))
+                }
+                _ => Err(Error::new(K::ParameterError, &[tree])),
             };
         }
         self.machine.work = work;
         result
     }
 
-    /// Matches parameter tree `tree` to `value`, binding its symbols in context `c` itself.
+    /// Matches parameter tree `tree` to `value`, binding its symbols in context `c` itself, all of
+    /// them or, if it fails, none.
     pub(crate) fn bind_tree(
         &mut self,
         c: Reference,
         tree: Value,
         value: Value,
     ) -> Result<(), Error> {
-        self.check_parameters(tree, Value::Ignore)?;
-        let mut bindings = std::mem::take(self.bindings_mut(c)?);
-        let matched = self.match_tree(&mut bindings, tree, value);
-        *self.bindings_mut(c)? = bindings;
-        matched
+        let mut matched = Bindings::default();
+        self.match_tree(&mut matched, tree, value)?;
+        let bindings = self.bindings_mut(c)?;
+        bindings
+            .try_reserve(matched.len())
+            .map_err(|_| Error::oom())?;
+        bindings.extend(matched);
+        Ok(())
     }
 
     /// Binds `s` in `context` itself, replacing an existing binding there.
