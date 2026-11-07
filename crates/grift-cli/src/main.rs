@@ -107,26 +107,12 @@ fn put(
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(
-        g,
-        args,
-        true,
-        "",
-        "standard-output",
-        &mut io::stdout().lock(),
-    )
+    put(g, args, true, "", "standard-output", &mut io::stdout())
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
 fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(
-        g,
-        args,
-        true,
-        "",
-        "standard-error",
-        &mut io::stderr().lock(),
-    )
+    put(g, args, true, "", "standard-error", &mut io::stderr())
 }
 
 /// `(read-file path)`: the whole text of the file.
@@ -527,14 +513,7 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
             continue;
         }
         let done = match g.evaluate_in(r, top, "stdin", &src) {
-            Ok(v) => put(
-                g,
-                &[v],
-                false,
-                "\n",
-                "standard-output",
-                &mut io::stdout().lock(),
-            ),
+            Ok(v) => put(g, &[v], false, "\n", "standard-output", &mut io::stdout()),
             Err(e) => Err(e),
         };
         if let Err(e) = done {
