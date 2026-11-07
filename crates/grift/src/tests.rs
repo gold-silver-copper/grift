@@ -2070,6 +2070,18 @@ fn a_parse_error_says_why_and_where() {
 }
 
 #[test]
+fn a_comment_starts_with_either_mark_wherever_a_token_can() {
+    let mut g = grift();
+    for src in ["(1 ; x\n 2)", "(1 #!x\n 2)", "#!x\n(1 2)", " #!x\n(1 2)"] {
+        let forms = g.read(src).unwrap();
+        assert_eq!(show(&g, &forms), "((1 2))", "{src}");
+    }
+    // Inside a token or a string, it is no comment.
+    let forms = g.read("a#!b \"#!c\"").unwrap();
+    assert_eq!(show(&g, &forms), "(a#!b \"#!c\")");
+}
+
+#[test]
 fn named_parse_errors_stay_describable_after_collection() {
     let mut broken = Vec::new();
     for entry in ["read_in", "evaluate_in"] {

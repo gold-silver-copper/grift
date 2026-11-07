@@ -86,7 +86,7 @@ rlwrap cargo run --release                        # interactive: prints each res
 ```
 
 `grift SCRIPT ARGUMENT...` runs the script; `#!/usr/bin/env grift` makes it a command, since the
-reader takes a first line starting with `#!` as a comment. With no script it reads the program from stdin,
+reader takes `#!` as starting a comment, as `;` does. With no script it reads the program from stdin,
 and when stdin is a terminal it evaluates each complete input and prints its result. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
 file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error or

@@ -65,9 +65,9 @@ impl Cursor<'_> {
 
     fn skip_space(&mut self) {
         while let Some(c) = self.peek() {
+            let rest = self.src.get(self.at..).unwrap_or_default();
             match c {
-                ';' => {
-                    let rest = self.src.get(self.at..).unwrap_or_default();
+                _ if c == ';' || rest.starts_with("#!") => {
                     self.at += rest.find('\n').unwrap_or(rest.len());
                 }
                 c if c.is_whitespace() => {}
@@ -160,10 +160,6 @@ impl<T> Grift<T> {
             at: from,
             line,
         };
-        // A first line starting with `#!` reads as a comment, so a script can run itself.
-        if from == 0 && src.starts_with("#!") {
-            cur.at = src.find('\n').unwrap_or(src.len());
-        }
         cur.skip_space();
         let start = cur.at;
         let mut open: Vec<List> = Vec::new();
