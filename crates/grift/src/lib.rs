@@ -1,5 +1,7 @@
 #![doc = include_str!("../README.md")]
 
+#[cfg(test)]
+mod ending_tests;
 mod evaluate;
 mod heap;
 mod interrupt;
@@ -126,6 +128,8 @@ pub struct Error {
     pub values: Vec<Value>,
     /// Where, read with [`Error::trace`].
     trace: Vec<Value>,
+    /// Who began it, read with [`Error::is_limit`].
+    origin: local::Origin,
 }
 
 impl Error {
@@ -140,6 +144,21 @@ impl Error {
     /// interpreter, so that error can still be described after later evaluations collect.
     pub fn trace(&self) -> &[Value] {
         &self.trace
+    }
+
+    /// Whether the host (a stop, a force, an abandon) or the machine (out of memory) began this,
+    /// so that no handler could catch it. Never so for what a program raises or a host function
+    /// makes with [`Grift::error`], whatever its kind is called, and an error passing through a
+    /// nested run or a host function stays what it was. Its kind then says which limit it is.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let forged = g.evaluate(&mut (), "(raise (error (quote! interrupted)))").unwrap_err();
+    /// assert!(g.is_kind(&forged, "interrupted")? && !forged.is_limit());
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn is_limit(&self) -> bool {
+        self.origin != local::Origin::Program
     }
 }
 
@@ -491,6 +510,7 @@ impl<T> Grift<T> {
                 kind: self.export_symbol(kind),
                 values: collected(values.iter().cloned())?,
                 trace: Vec::new(),
+                origin: local::Origin::Program,
             })
         });
         made.unwrap_or_else(|e| self.export_error(e))
@@ -679,7 +699,7 @@ impl<T> Grift<T> {
             true => WriteError::Output,
             // The printer stops by itself only for a stop, or when its own stack can't grow.
             false if self.control.waiting(self.run) => {
-                WriteError::Value(self.export_error(local::Error::new(K::Interrupted, &[])))
+                WriteError::Value(self.export_error(local::Error::host(K::Interrupted)))
             }
             false => WriteError::Value(self.export_error(local::Error::oom())),
         }
@@ -938,6 +958,7 @@ impl<T> Grift<T> {
         }));
         let kind = self.import_symbol(&e.kind)?;
         Ok(local::Error {
+            origin: e.origin,
             kind,
             values,
             trace,
@@ -1016,18 +1037,19 @@ impl<T> Grift<T> {
 
     pub(crate) fn export_error(&self, e: local::Error) -> Error {
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
-        let (kind, values, trace) = match (exported(&e.values), exported(&e.trace)) {
-            (Ok(values), Ok(trace)) => (e.kind, values, trace),
-            _ => (K::OutOfMemory.into(), Vec::new(), Vec::new()),
+        let e = match (exported(&e.values), exported(&e.trace)) {
+            (Ok(values), Ok(trace)) => Error {
+                kind: self.export_symbol(e.kind),
+                values,
+                trace,
+                origin: e.origin,
+            },
+            _ => self.export_error(local::Error::oom()),
         };
-        if kind == K::OutOfMemory.into() {
+        if e.origin == local::Origin::Machine {
             self.heap.request_collection();
         }
-        Error {
-            kind: self.export_symbol(kind),
-            values,
-            trace,
-        }
+        e
     }
 
     fn exported(&self, r: Result<local::Value, local::Error>) -> Result<Value, Error> {

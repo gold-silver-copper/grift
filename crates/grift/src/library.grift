@@ -94,7 +94,7 @@
        (vau! (body . cleanup) caller
          (evaluate-with-cleanup body caller (wrap (vau! () #ignore (run cleanup caller)))))
        ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then
-       ; the handler forms. interrupted, abandoned and out-of-memory are never caught.
+       ; the handler forms. What the host or the machine began is never caught, whatever its kind.
        (vau! (body parameter . handler) caller
          (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
                             (wrap (vau! (e) #ignore (handle e parameter handler caller)))))

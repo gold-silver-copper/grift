@@ -1,7 +1,9 @@
-; A limit can't be caught, so this ends the run: reported, status 1.
+; A limit can't be caught, so this ends the run: reported, status 1. test.sh runs it with little
+; memory; a program can't begin a limit by raising, whatever it calls the error.
 (test! "before"
   (expect-true! #true))
-(test! "raises the host's limit"
-  (raise (error (quote! interrupted))))
+(test! "runs out of memory"
+  (define! deeper (lambda! (n) (add 1 (deeper n))))
+  (deeper 0))
 (test! "never runs"
   (expect-true! #true))

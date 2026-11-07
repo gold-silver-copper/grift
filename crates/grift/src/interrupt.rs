@@ -24,6 +24,8 @@ pub(crate) struct Control {
     active: AtomicU64,
     /// Set by a stop after it leaves its request, so the machine reads the mailboxes only then.
     asked: AtomicBool,
+    /// The latest run forced. While that is the run in progress, `asked` stays set.
+    forced: AtomicU64,
     /// The live interrupters' mailboxes. A stop never takes the lock: registering a handle and
     /// the machine's scan do, so a scan sees every handle linked before it began.
     mailboxes: Mutex<Vec<Arc<Mailbox>>>,
@@ -98,7 +100,8 @@ impl Control {
     pub fn waiting(&self, run: u64) -> bool {
         run != 0
             && self.asked.load(Ordering::Acquire)
-            && self.mailboxes().iter().any(|m| m.waiting(run))
+            && (self.forced.load(Ordering::SeqCst) == run
+                || self.mailboxes().iter().any(|m| m.waiting(run)))
     }
 
     #[cold]
@@ -110,6 +113,12 @@ impl Control {
         }
         // Cleared before reading, so a stop that leaves its request after the read sets it again.
         self.asked.store(false, Ordering::SeqCst);
+        // Read after clearing, as the mailboxes are. It takes no lock and stays asked: every check
+        // of this run finds it, however many cleanups and nested runs there are.
+        if self.forced.load(Ordering::SeqCst) == run {
+            self.asked.store(true, Ordering::SeqCst);
+            return true;
+        }
         let mut stopped = false;
         for m in self.mailboxes().iter() {
             if m.waiting(run) {
@@ -161,6 +170,7 @@ impl Control {
 /// there, its cleanups then running, and they may park in turn; and each
 /// [`Grift::resume`](crate::Grift::resume) is a run of its own. `Send`, not `Sync`: each clone is a
 /// handle of its own, used by one thread at a time, with a mailbox of a few bytes while it lives.
+/// [`Interrupter::force`] ends a run however its cleanups behave.
 ///
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -212,6 +222,25 @@ impl Interrupter {
         let run = self.stop_begun();
         self.stop_landed(run);
         run != 0
+    }
+
+    /// Ends the run this handle last stopped, at its next check, however its cleanups behave:
+    /// each it meets is cut before its first form, at every level of the run, and nothing a host
+    /// function then evaluates runs. The run ends with `interrupted`, which [`Error::is_limit`]
+    /// says is real. Whether that run is still in progress; `false` if it is over, or if this handle
+    /// never stopped one, so a late force never reaches a later run. A clone has stopped nothing:
+    /// to force at once, `h.stop(); h.force();`. `true` doesn't say it acted, as for a stop.
+    ///
+    /// [`Error::is_limit`]: crate::Error::is_limit
+    pub fn force(&mut self) -> bool {
+        let run = self.mailbox.requested.load(Ordering::SeqCst);
+        let found = run != 0 && self.control.active.load(Ordering::SeqCst) == run;
+        if found {
+            // The largest, so a force preempted here can't hide a later one.
+            self.control.forced.fetch_max(run, Ordering::SeqCst);
+            self.control.asked.store(true, Ordering::SeqCst);
+        }
+        found
     }
 
     /// A stop's first half: it says it is stopping, and reads the run, which is what it will stop.

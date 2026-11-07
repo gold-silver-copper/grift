@@ -841,7 +841,7 @@ fn stop(_: &mut Grift<Interrupter>, s: &mut Interrupter, _: &[Value]) -> Result<
     Ok(Value::Inert)
 }
 
-/// A host function that fails as the program's mistake, or reports that memory ran out.
+/// A host function that fails as the program's mistake, or says that memory ran out.
 fn fail<T>(g: &mut Grift<T>, _: &mut T, args: &[Value]) -> Result<Value, Error> {
     match args {
         [] => Err(g.error("out-of-memory", &[])),
@@ -860,9 +860,11 @@ fn catch_catches_errors_about_the_program_and_never_the_limits() {
         .evaluate(&mut s, "(catch! (fail 7) e (evaluate-in! kind e))")
         .unwrap();
     assert_eq!(show(&g, &caught), "bad-input");
-    // The allocator's limit and the host's go through every catch! to the host.
-    let e = g.evaluate(&mut s, "(catch! (fail) #ignore 0)").unwrap_err();
-    assert_eq!(kind(&g, &e), "out-of-memory");
+    // So is one a host function makes, whatever its kind is called: only the machine can run out.
+    let caught = g
+        .evaluate(&mut s, "(catch! (fail) e (evaluate-in! kind e))")
+        .unwrap();
+    assert_eq!(show(&g, &caught), "out-of-memory");
     // A cleanup that fails while a limit passes doesn't turn it into an error catch! catches.
     let e = g
         .evaluate(&mut s, "(catch! (finally! (stop) (first 1)) #ignore 0)")

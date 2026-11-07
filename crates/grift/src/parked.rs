@@ -322,7 +322,7 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn abandon(&mut self, state: &mut T, parked: Parked) -> Result<Error, ResumeError> {
-        let ending = local::Error::new(K::Abandoned, &[]);
+        let ending = local::Error::host(K::Abandoned);
         match self.take_up(state, parked, Err(ending), Parking::Refused) {
             Err(ResumeError {
                 error,
@@ -330,7 +330,7 @@ impl<T> Grift<T> {
             }) => Ok(error),
             Err(refused) => Err(refused),
             // Nothing can end this way: nothing catches `abandoned`, and nothing here may park.
-            Ok(_) => Ok(self.export_error(local::Error::new(K::Abandoned, &[]))),
+            Ok(_) => Ok(self.export_error(local::Error::host(K::Abandoned))),
         }
     }
 
