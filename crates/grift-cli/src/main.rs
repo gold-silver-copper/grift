@@ -1,16 +1,17 @@
 //! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments. With no
 //! script it reads the program from stdin; when stdin is a terminal `runner.grift` evaluates each
-//! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0,
-//! 1 on a grift error (a script that can't be read, or failed output, is one), or what the program
-//! gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program calls
-//! `exit`, input ends inside a form, or standard input or error fails or is closed, which is the
-//! session's own error and ends it with 1. A write to a pipe no one reads, on any file, ends the run as
-//! `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
+//! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status:
+//! 0, 1 on a grift error (a script that can't be read, or failed output, is one), or what the
+//! program gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program
+//! calls `exit`, input ends inside a form, or standard input or error fails or is closed, which is
+//! the session's own error and ends it with 1. A write to a pipe no one reads, on any file, ends
+//! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
 //! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`,
-//! `open-file`, `create-file`, `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
-//! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
+//! `open-file`, `create-file`, `run-process` and `load` (made by `runner.grift`),
+//! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
+//! `elapsed-nanoseconds` and `exit`.
 
 use grift::{Error, Grift, HostFunction, Value, WriteError};
 use std::fmt;

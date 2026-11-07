@@ -21,8 +21,9 @@ fn main() {
     let mut g = Grift::new().unwrap();
     let host = g.host_function("source", source).unwrap();
     g.define("source", host).unwrap();
-    // A budget per host callback that catches gross growth on any 64-bit target. Measured at 16:
-    // about 292 KiB on x86-64 and 319 KiB on aarch64.
+    // A budget per host callback that catches gross growth on any 64-bit target, not a small
+    // regression. At 16 it is 384 KiB: x86-64 overflows at 280 KiB and passes at 288, aarch64 needs
+    // about 319 KiB, which is why the fixed 300 KiB went, and 0.6 KiB more a callback now passes.
     let mut depth = 16;
     std::thread::Builder::new()
         .stack_size(depth * 24 * 1024)
