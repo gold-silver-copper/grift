@@ -163,6 +163,7 @@ which a test shows no program can tell from the Rust.
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted`, `abandoned` and `out-of-memory` are never caught. |
 | `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had, as `(raise e)` in a `catch!` passes it on. A `kind` that isn't a symbol is a `type-error`. |
 | `(bindings c)` | Context `c`'s own bindings as data: a list of `(name value)`, sorted by name as `names` gives them, so a record's fields are a list: `(bindings (error (quote! e) 1))` is `((kind e) (trace ()) (values (1)))`. |
+| `(record names values)` | A new context with no parent, `values` bound to `names` as `bind` matches them: `(record (quote! (x y)) (list 1 2))`. |
 | `(error kind value ...)` | A new error: a context with no parent binding `kind`, `values` (the list of the values) and an empty `trace`. It raises nothing; `raise` does. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
@@ -377,7 +378,7 @@ had died. The README's embedding section gives the host's side.
 - **`apply` has one form,** `(apply a arguments)`, with a new empty context; `for-each` takes one
   list, and `map` lists of one length, as Kernel's does. `context` takes at most one parent.
 - **New, not in Kernel:** `bind`, `unbind`, `lookup`, `names` and `built-in-names`, `select`,
-  `type-of`, `when!`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
+  `type-of`, `when!`, `record`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
   `any?`, `all?`, `fold`, `range`, `sort`, the list access by index, the bitwise
   operations, and the string and float primitives and helpers.
 - **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as

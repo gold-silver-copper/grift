@@ -36,14 +36,15 @@
                     caller))))
 
 ; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
-; $cond), let! (6.7.6, $letrec*), finally!, catch! and catch-kind!. Each is an operative that walks its operands
+; $cond), let! (6.7.6, $letrec*), finally!, catch! and catch-kind!; and record, which shares a
+; helper with them. Each form is an operative that walks its operands
 ; and evaluates only them, in the caller's context or one it made; none builds code to evaluate. A
 ; loop that evaluates something only for its effect gets its value as an ignored first operand, and
 ; a list known not to be empty is taken apart in the parameters. sequence! is defined here, so nothing
 ; running now can use it: `list` evaluates the helpers' definitions in order, and the outer define!
 ; ignores their values.
-(define! (#ignore #ignore #ignore #ignore #ignore #ignore
-          sequence! when! conditional! let! finally! catch! catch-kind!)
+(define! (#ignore #ignore #ignore #ignore #ignore #ignore #ignore
+          sequence! when! conditional! let! finally! catch! catch-kind! record)
   ((lambda! ()
      (list
        ; The forms of a body in turn, the last as a tail call; called only with a form left.
@@ -68,6 +69,8 @@
             more
             local)))
        (define! done (lambda! (#ignore #ignore local) local))
+       ; The context c, with the values bound to the names there.
+       (define! filled (lambda! (c names values) (done (bind c names values) #ignore c)))
        ; A caught error's handler forms, with the parameter bound in a new child of the caller's
        ; context.
        (define! handle
@@ -108,7 +111,10 @@
                      (if! (same? (evaluate-in! kind e) wanted)
                        (handle e parameter handler caller)
                        (raise e)))))
-           (raise (error (quote! type-error) (quote! catch-kind!) wanted))))))))
+           (raise (error (quote! type-error) (quote! catch-kind!) wanted))))
+       ; record (not in Kernel): a new context with no parent, the values bound to the names. It
+       ; branches on nothing, so the natives' definitions can stand on it.
+       (lambda! (names values) (filled (context) names values))))))
 
 ; current-context (6.7.2, get-current-environment).
 (define! current-context (wrap (vau! () caller caller)))
@@ -186,10 +192,7 @@
 ; error (not in Kernel): a new error, a context with no parent binding kind, values and an empty
 ; trace. raise raises it, and gives it where it happened.
 (define! error
-  (lambda! (kind . values)
-    (let! ((e (context)))
-      (bind e (quote! (kind values trace)) (list kind values ()))
-      e)))
+  (lambda! (kind . values) (record (quote! (kind values trace)) (list kind values ()))))
 
 ; length (6.3.1), of a proper list, counting in a loop.
 (define! length

@@ -3371,3 +3371,15 @@ fn out_of_memory_from_a_run_or_host_allocation_allows_the_next_run() {
     }
     assert!(refused.is_empty(), "{}", refused.join("\n"));
 }
+
+#[test]
+fn record_is_a_new_context_of_its_names_alone() {
+    holds(
+        &mut grift(),
+        &[
+            "(same? (evaluate-in! y (record (quote! (x y)) (list 1 2))) 2)",
+            "(equal? (names (record (quote! (x y)) (list 1 2))) (quote! (x y)))",
+            "(not? (binds? (record () ()) (quote! list)))",
+        ],
+    );
+}

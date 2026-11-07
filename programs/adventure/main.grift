@@ -78,11 +78,6 @@
 (define! in-table? (lambda! (t key) (and!? (symbol? key) (binds? t key))))
 (define! look-up (lambda! (t key) (evaluate key t)))
 (define! enter (lambda! (t key value) (bind t key value)))
-(define! record
-  (lambda! (fields values)
-    (let! ((c (context)))
-      (bind c fields values)
-      c)))
 (define! field! (vau! (name r) caller (evaluate name (evaluate r caller))))
 
 ; ---------------------------------------------------------------------------------------------

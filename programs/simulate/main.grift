@@ -14,13 +14,6 @@
 ; ---------------------------------------------------------------------------------------------
 ; General helpers the library doesn't have.
 
-; record: a new context binding `names` to `values`, a record or table.
-(define! record
-  (lambda! (names values)
-    (let! ((c (context)))
-      (bind c names values)
-      c)))
-
 ; float-to-fixed: x's text with `places` decimals, rounded half away from zero, as
 ; format!("{:.2}") but for the halves.
 (define! float-to-fixed

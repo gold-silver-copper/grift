@@ -70,7 +70,7 @@ value-to-string bytes-length bytes-byte bytes-slice bytes-append string-to-bytes
 list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
 let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? boolean? integer?
 float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? apply any? all? map
-for-each error length append reverse equal? greater-than? less-than-or-equal?
+for-each record error length append reverse equal? greater-than? less-than-or-equal?
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-search string-starts-with? string-ends-with? string-split string-join string-trim
