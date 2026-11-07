@@ -584,13 +584,6 @@ fn set_up(
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let script = args.next();
-    if script
-        .as_ref()
-        .is_some_and(|s| s.as_encoded_bytes().starts_with(b"-"))
-    {
-        say(format_args!("{USAGE}\n"));
-        return ExitCode::from(2);
-    }
     let arguments: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let mut g: G = match Grift::new() {
         Ok(g) => g,
@@ -648,7 +641,7 @@ fn main() -> ExitCode {
     let text = match text {
         Ok(text) => text,
         Err(e) => {
-            say(format_args!("grift: {name}: {e}\n"));
+            say(format_args!("grift: {name}: {e}\n{USAGE}\n"));
             return ExitCode::from(2);
         }
     };

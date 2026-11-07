@@ -60,13 +60,30 @@ fn statuses() {
     );
     assert_eq!(spoof.status.code(), Some(1));
 
-    assert_eq!(run(&["--help"], "", Stdio::piped()).status.code(), Some(2));
     assert_eq!(
         run(&["no/such/file.grift"], "", Stdio::piped())
             .status
             .code(),
         Some(2)
     );
+}
+
+#[test]
+fn the_first_argument_is_the_script_whatever_its_spelling() {
+    let dir = scratch("flag-spelling");
+    std::fs::write(dir.join("-x.grift"), "(display 42)").unwrap();
+    let ran = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg("-x.grift")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!((ran.status.code(), &ran.stdout[..]), (Some(0), &b"42"[..]));
+    // One that can't be read says why, then how to run grift.
+    let help = run(&["--help"], "", Stdio::piped());
+    let said = String::from_utf8(help.stderr).unwrap();
+    assert!(said.starts_with("grift: --help: "), "{said}");
+    assert!(said.contains("\nusage: grift"), "{said}");
+    assert_eq!(help.status.code(), Some(2));
 }
 
 #[cfg(target_os = "linux")]
