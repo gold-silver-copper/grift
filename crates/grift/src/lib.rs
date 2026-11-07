@@ -700,22 +700,13 @@ impl<T> Grift<T> {
         let v = self
             .import(v)
             .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        let mut out = Watched {
-            out,
-            refused: false,
-        };
-        self.print(v, &mut out)
-            .map_err(|_| self.write_failed(out.refused))
+        self.print(v, out).map_err(|why| self.write_failed(why))
     }
 
-    fn write_failed(&self, refused: bool) -> WriteError {
-        match refused {
-            true => WriteError::Output,
-            // The printer stops by itself only for a stop, or when its own stack can't grow.
-            false if self.control.asked() => {
-                WriteError::Value(self.export_error(local::Error::host(K::Interrupted)))
-            }
-            false => WriteError::Value(self.export_error(local::Error::oom())),
+    fn write_failed(&self, why: print::Unprinted) -> WriteError {
+        match why {
+            print::Unprinted::Output => WriteError::Output,
+            print::Unprinted::Value(e) => WriteError::Value(self.export_error(e)),
         }
     }
 
@@ -726,15 +717,15 @@ impl<T> Grift<T> {
         let e = self
             .import_error(error)
             .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        let mut out = Watched {
-            out,
-            refused: false,
-        };
-        self.write_error(&e, &mut out)
-            .map_err(|_| self.write_failed(out.refused))
+        self.write_error(&e, out)
+            .map_err(|why| self.write_failed(why))
     }
 
-    fn write_error(&self, e: &local::Error, out: &mut dyn fmt::Write) -> fmt::Result {
+    fn write_error(
+        &self,
+        e: &local::Error,
+        out: &mut dyn fmt::Write,
+    ) -> Result<(), print::Unprinted> {
         self.print(local::Value::Symbol(e.kind), out)?;
         for &v in &e.values {
             out.write_char(' ')?;
@@ -1098,16 +1089,4 @@ fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local
         .map_err(|_| local::Error::oom())?;
     v.extend(items);
     Ok(v)
-}
-
-/// A sink that notes whether it refused text, to tell that from the printer's own failure.
-struct Watched<'a> {
-    out: &'a mut dyn fmt::Write,
-    refused: bool,
-}
-
-impl fmt::Write for Watched<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.out.write_str(s).inspect_err(|_| self.refused = true)
-    }
 }

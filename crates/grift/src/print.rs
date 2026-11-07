@@ -3,7 +3,7 @@
 
 use crate::Grift;
 use crate::heap::Object;
-use crate::local::{Error, Growing, Value};
+use crate::local::{Error, Growing, K, Value};
 use std::fmt::{self, Write};
 
 enum Item {
@@ -13,21 +13,44 @@ enum Item {
     Text(&'static str),
 }
 
+/// Why printing stopped.
+pub(crate) enum Unprinted {
+    /// The output refused the text.
+    Output,
+    /// A stop, or no memory for the printer's own stack.
+    Value(Error),
+}
+
+impl From<fmt::Error> for Unprinted {
+    fn from(_: fmt::Error) -> Unprinted {
+        Unprinted::Output
+    }
+}
+
+impl From<Error> for Unprinted {
+    fn from(e: Error) -> Unprinted {
+        Unprinted::Value(e)
+    }
+}
+
 impl<T> Grift<T> {
     /// A new string of the text [`Grift::write`] writes for `v`.
     pub(crate) fn printed(&mut self, v: Value) -> Result<Value, Error> {
         let mut s = Growing::default();
-        self.print(v, &mut s).map_err(|_| Error::oom())?;
+        self.print(v, &mut s).map_err(|why| match why {
+            Unprinted::Output => Error::oom(),
+            Unprinted::Value(e) => e,
+        })?;
         self.string_local(&s.0)
     }
 
     /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in.
-    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> fmt::Result {
+    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Unprinted> {
         let mut todo = Vec::new();
         let push = |todo: &mut Vec<Item>, it| {
-            todo.try_reserve(1).map_err(|_| fmt::Error)?;
+            todo.try_reserve(1).map_err(|_| Error::oom())?;
             todo.push(it);
-            Ok(())
+            Ok::<(), Error>(())
         };
         // The first item is held outside the stack, so writing an atom allocates nothing and an
         // `out-of-memory` error can still be printed.
@@ -35,7 +58,7 @@ impl<T> Grift<T> {
         let mut walked = 0;
         while let Some(item) = first.take().or_else(|| todo.pop()) {
             if self.walk_stopped(&mut walked) {
-                return Err(fmt::Error);
+                return Err(Error::host(K::Interrupted).into());
             }
             let opens = matches!(item, Item::Value(Value::Pair(_)));
             let v = match item {
@@ -80,7 +103,7 @@ impl<T> Grift<T> {
                     write!(out, "#[host {name}]")?;
                 }
                 Value::Context(r) => {
-                    let names = self.names_of(r).map_err(|_| fmt::Error)?;
+                    let names = self.names_of(r)?;
                     out.write_str("#[context")?;
                     for name in names {
                         out.write_char(' ')?;
@@ -129,7 +152,7 @@ impl<T> Grift<T> {
                             push(&mut todo, Item::Text("]"))?;
                             push(&mut todo, Item::Value(*c))?;
                         }
-                        _ => return Err(fmt::Error),
+                        _ => return Err(Error::new(K::StaleValue, &[v]).into()),
                     }
                 }
             }
