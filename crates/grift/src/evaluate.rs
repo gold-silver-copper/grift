@@ -342,14 +342,15 @@ impl<T> Grift<T> {
             self.parking = Parking::Refused;
         }
         let m = &mut self.machine;
-        let (base, arguments, raised, here) =
-            (m.frames.len(), m.arguments.len(), m.raised.len(), m.here);
+        let (base, arguments, raised) = (m.frames.len(), m.arguments.len(), m.raised.len());
         let held = What::Deliver(Value::EmptyList);
-        let result = self.frame(held, Reference::NONE, here).and_then(|()| {
-            frames
-                .iter()
-                .try_for_each(|&(what, context)| self.frame(what, context, Reference::NONE))
-        });
+        let result = self
+            .frame(held, Reference::NONE, self.machine.here)
+            .and_then(|()| {
+                frames
+                    .iter()
+                    .try_for_each(|&(what, context)| self.frame(what, context, Reference::NONE))
+            });
         let result = result.and_then(|()| self.run(state, mode, base + 1));
         // With that frame gone the machine has parked, or a host function gave it up or replaced
         // the interpreter: nothing is left to restore, and what follows finds nothing to do.

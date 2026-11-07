@@ -10,7 +10,7 @@ fn kind<T>(g: &Grift<T>, e: &Error) -> String {
 /// A host whose program can stop its own run and force it, with a run that waits.
 fn host() -> (Grift<Interrupter>, Interrupter) {
     let mut g: Grift<Interrupter> = Grift::new().unwrap();
-    let functions: [(&str, crate::HostFunction<Interrupter>); 4] = [
+    let functions: [(&str, crate::HostFunction<Interrupter>); 5] = [
         ("stop", |_, s, _| {
             s.stop();
             Ok(Value::Inert)
@@ -19,6 +19,13 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         ("nested", |g, s, args| {
             let src = g.as_string(&args[0])?.unwrap();
             g.evaluate(s, &src)
+        }),
+        // Returns a nested stop's error after a collection has made its trace stale.
+        ("late", |g, s, _| {
+            let e = g.evaluate(s, "(stop) (add 1 2)").unwrap_err();
+            g.heap.request_collection();
+            g.evaluate(s, "#inert")?;
+            Err(e)
         }),
         ("reports", |g, _, args| {
             let name = g.as_string(&args[0])?.unwrap();
@@ -139,6 +146,13 @@ fn a_nested_runs_stop_stays_the_hosts_through_a_host_function() {
         .evaluate(&mut s, r#"(catch! (nested "(stop) (add 1 2)") #ignore 0)"#)
         .unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+}
+
+#[test]
+fn a_nested_runs_stop_stays_the_hosts_even_if_it_can_no_longer_come_in() {
+    let (mut g, mut s) = host();
+    let e = g.evaluate(&mut s, "(catch! (late) #ignore 0)").unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("stale-value", true));
 }
 
 #[test]

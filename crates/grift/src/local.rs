@@ -116,8 +116,7 @@ impl Error {
     pub fn host(kind: K) -> Error {
         Error {
             origin: Origin::Host,
-            kind: kind.into(),
-            ..Error::oom()
+            ..Error::new(kind, &[])
         }
     }
 }
