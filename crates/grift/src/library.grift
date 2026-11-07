@@ -547,6 +547,11 @@
        (let! ((size (bytes-length pattern)))
          (from b pattern start (subtract (bytes-length b) size) size 0))))))
 
+; standard-context (6.7.7, make-kernel-standard-environment): a new child of the built-in context,
+; which sees the language and nothing of any program. The context itself stays out of reach.
+(define! standard-context
+  ((lambda! (built-in) (lambda! () (context built-in))) (current-context)))
+
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
 ; list them. The built-in context itself stays out of reach, so no program can change what the
 ; library uses. Bound first, so that the list names itself.

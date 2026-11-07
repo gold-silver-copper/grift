@@ -3415,3 +3415,23 @@ fn string_split_searches_at_string_searchs_speed() {
     let (long, _) = cost(&mut g, "(string-split long \",\")");
     assert_eq!(short, long);
 }
+
+#[test]
+fn standard_context_is_a_new_child_of_the_built_in_context() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! list 0) (define! mine 1) (define! c (standard-context))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            "(equal? (evaluate (quote! (list 1 2)) c) (quote! (1 2)))",
+            "(not? (binds? c (quote! mine)))",
+            "(same? (names c) ())",
+            "(same? (bind c (quote! map) 5) #inert)",
+            "(applicative? (evaluate (quote! map) (standard-context)))",
+        ],
+    );
+}

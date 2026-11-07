@@ -75,7 +75,7 @@ greater-than-or-equal? minimum maximum absolute-value power find-association mem
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-search string-starts-with? string-ends-with? string-split string-join string-trim
 string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bytes-search
-bindings built-in-names`.
+bindings standard-context built-in-names`.
 
 ## The runner
 

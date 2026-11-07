@@ -30,10 +30,10 @@
 ; memory left), so a test it reaches ends the run, reported, with status 1. A test that never ends is not noticed:
 ; grift has no timer, so run the whole thing under `timeout`.
 
-; A test file sees what any script sees and nothing of this program: `language` holds a copy of
-; each name, because a program can't make a new child of the built-in context.
-(define! given-names (append built-in-names (names (current-context))))
-(define! language (context))
+; A test file sees what any script sees and nothing of this program: `language` is a new child of
+; the built-in context with a copy of what the runner gave this program.
+(define! given-names (names (current-context)))
+(define! language (standard-context))
 (for-each (lambda! (name) (bind language name (evaluate name (current-context)))) given-names)
 
 ; The state of the run. Only these change, each by a bind on `top`.

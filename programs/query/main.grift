@@ -24,10 +24,9 @@
 ; It prints aligned text (floats to four places), or CSV with --csv. Exit status: 0, 1 for an
 ; error in the query or the file's text, 2 for a usage error or a file that can't be read.
 
-; The context expressions see: the library's names, copied before this program defines any, so
-; a typo in a query can't find one of the program's own definitions.
-(define! library-context (context))
-(bind library-context built-in-names (map (lambda! (name) (evaluate name (current-context))) built-in-names))
+; The context expressions see: the language's, so a typo in a query can't find one of the
+; program's own definitions.
+(define! library-context (standard-context))
 (bind library-context (quote! column)
   (vau! (name) caller (evaluate (string-to-symbol (evaluate name caller)) caller)))
 
