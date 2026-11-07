@@ -109,13 +109,22 @@ fn standard_input_is_data_for_a_script() {
     let all = "(display ((evaluate-in! read-all standard-input)))";
     let (_, out, _) = script(&dir, all, &[], "x\ny\n");
     assert_eq!(out, "x\ny\n");
-    // A program read from stdin can't read it again.
+    // A program read from stdin has read it to its end, so more reads find nothing.
     let out = run(
         &[],
-        "((evaluate-in! read-line standard-input))",
+        "(display (list ((evaluate-in! read-all standard-input)) ((evaluate-in! read-line standard-input))))",
         Stdio::piped(),
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("closed \"standard-input\""));
+    assert_eq!(
+        (out.status.code(), &out.stdout[..]),
+        (Some(0), &b"(\"\" \"\")"[..])
+    );
+}
+
+#[test]
+fn script_path_is_always_bound() {
+    let out = run(&[], "(display (list script-path))", Stdio::piped());
+    assert_eq!(out.stdout, b"(\"\")");
 }
 
 #[test]
@@ -204,7 +213,7 @@ fn standard_error_is_written_to_as_a_file_is() {
         (status, out.as_str(), err.as_str()),
         (Some(2), "data", "no rule\n")
     );
-    // Also for a program read from stdin, whose standard input alone is closed.
+    // Also for a program read from stdin.
     let out = run(&[], say, Stdio::piped());
     assert_eq!(out.stderr, b"no rule\n");
     let (status, _, err) = script(&dir, "((evaluate-in! write standard-error) 1)", &[], "");

@@ -316,7 +316,7 @@ describes each. Those added with the evidence of wave 4:
 | Operation | Meaning |
 |---|---|
 | `(load path)` | The file's forms, all read first, evaluated in turn in the caller's context, as Kernel's `load`; a relative path is relative to the file being loaded when `load` is called (at first the script). Its combinations keep their lines, so the runner reports an error `at path:line`. |
-| `script-path` | The script's path as given; unbound for a program on stdin. |
+| `script-path` | The script's path as given; `""` for a program on stdin. |
 | `(read-file path)` | The file's whole text. |
 | `(display-error v ...)` | `display`, to stderr. |
 | `(read-bytes count)`, `(write-bytes bytes)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): a bytes value of `count` bytes as soon as they have come, fewer at the end of input, `#bytes()` at the end; a bytes value's bytes, as they are (anything else is a `type-error`). |

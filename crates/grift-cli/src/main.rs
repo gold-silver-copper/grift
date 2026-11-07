@@ -542,13 +542,8 @@ fn read_forms_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, E
     g.read_in(&path, &text)
 }
 
-/// Binds the runner's operations in the top-level context, and `script-path` if there is a script.
-fn set_up(
-    g: &mut G,
-    r: &mut Runner,
-    arguments: &[String],
-    script: Option<&str>,
-) -> Result<(), Error> {
+/// Binds the runner's operations in the top-level context.
+fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Result<(), Error> {
     for (name, f) in PUBLIC {
         let f = g.host_function(name, f)?;
         g.define(name, f)?;
@@ -559,16 +554,13 @@ fn set_up(
         list = g.pair(a, list)?;
     }
     g.define("command-line-arguments", list)?;
-    if let Some(script) = script {
-        let path = g.string(script)?;
-        g.define("script-path", path)?;
-    }
+    let script = g.string(script)?;
+    g.define("script-path", script.clone())?;
     // The setup is made in a private context, so the operations it makes look names up there,
     // never where the program could redefine them. It counts as library code from then on, so
     // an error's trace has only the program's combinations.
     let private = g.private_context()?;
     let setup = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
-    let script = g.string(script.unwrap_or_default())?;
     let mut hosts = vec![g.top_level(), script];
     for (name, f) in PRIVATE {
         hosts.push(g.host_function(name, f)?);
@@ -613,23 +605,18 @@ fn main() -> ExitCode {
         script: script.as_ref().map(PathBuf::from),
     };
     let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
-    if let Err(e) = set_up(&mut g, &mut r, &arguments, script_path.as_deref()) {
+    if let Err(e) = set_up(
+        &mut g,
+        &mut r,
+        &arguments,
+        script_path.as_deref().unwrap_or_default(),
+    ) {
         return report(&g, "grift", &e);
     }
     let top = g.top_level();
     let (name, text) = match script {
         None if io::stdin().is_terminal() => return interactive(&mut g, &mut r, &top),
-        None => {
-            // The program is standard input, so it can't read it as data too.
-            if let Some(input) = r.files.first_mut() {
-                input.file = None;
-            }
-            let mut s = String::new();
-            (
-                String::from("stdin"),
-                io::stdin().read_to_string(&mut s).map(|_| s),
-            )
-        }
+        None => (String::from("stdin"), io::read_to_string(io::stdin())),
         Some(path) => (
             path.to_string_lossy().into_owned(),
             std::fs::read_to_string(&path),
