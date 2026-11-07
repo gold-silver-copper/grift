@@ -30,7 +30,7 @@ use std::sync::Arc;
 macro_rules! primitives {
     (core { $($p:ident $name:literal $lo:literal $hi:expr;)* }
      native { $($q:ident $qname:literal $qlo:literal $qhi:expr;)* }) => {
-        /// The Rust primitives. All but `vau!` are bound wrapped, as applicatives.
+        /// The Rust primitives, each bound wrapped, as an applicative, until the library says otherwise.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Primitive { $($p,)* $($q),* }
 

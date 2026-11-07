@@ -286,13 +286,8 @@ impl<T> Grift<T> {
         }
         for &p in Primitive::ALL {
             let s = self.intern(p.name())?;
-            let v = match p {
-                Primitive::Vau => local::Value::Primitive(p),
-                _ => local::Value::Applicative(
-                    self.heap
-                        .alloc(Object::Applicative(local::Value::Primitive(p)))?,
-                ),
-            };
+            let wrapped = Object::Applicative(local::Value::Primitive(p));
+            let v = local::Value::Applicative(self.heap.alloc(wrapped)?);
             self.bind_symbol(self.built_in, s, v)?;
         }
         let forms = self.read_local(LIBRARY, None)?;

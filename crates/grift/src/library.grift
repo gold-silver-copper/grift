@@ -4,8 +4,12 @@
 ; where Kernel specifies the combiner a form here follows. By convention an operative's context
 ; parameter is `caller`.
 
-; define! (4.9.1, $define!; primitive in Kernel). A one-shot operative receives the name
-; unevaluated and binds it in its caller's context, the built-in one.
+; vau! (4.10.3, $vau). Every primitive starts wrapped; this one takes its operands as written. A
+; one-shot operative receives the name unevaluated and binds it in its caller's context, the
+; built-in one.
+(((unwrap vau!) (name) caller (bind caller name (unwrap vau!))) vau!)
+
+; define! (4.9.1, $define!; primitive in Kernel), bound the same way.
 ((vau! (name) caller
    (bind caller name
      (vau! (parameters expression) caller

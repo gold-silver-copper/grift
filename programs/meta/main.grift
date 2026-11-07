@@ -203,7 +203,7 @@
 ; loads its own.
 (define! root (context))
 (bind root (quote! (vau! evaluate call-with-handler evaluate-with-cleanup value-to-string))
-      (list meta-vau! meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
+      (list (wrap meta-vau!) meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
             (native print)))
 (for-each (lambda! (name) (bind root name (native (evaluate name (current-context)))))
           (quote! (wrap unwrap context bind unbind lookup names pair first rest same? select type-of
