@@ -11,7 +11,7 @@ import glob, re, subprocess, sys
 RUNNER = "display display-error read-file environment-variable exit command-line-arguments \
 script-path standard-input standard-output standard-error open-file create-file run-process load \
 wall-clock-nanoseconds elapsed-nanoseconds".split()
-FIELDS = "read-line read-all read-bytes write write-bytes close path status output error-output \
+FIELDS = "read-line read-all read-bytes write close path status output error-output \
 kind values trace".split()
 TOKEN = re.compile(r'\s+|;[^\n]*|"(?:\\.|[^"\\])*"?|[()]|[^\s();"]+', re.S)
 

@@ -6,7 +6,7 @@
 ; program reaches a file only through the context it was given, and can't name one by its
 ; number.
 (lambda! (top script open-host create-host read-line-host read-all-host read-bytes-host
-          write-host write-bytes-host close-host run-host read-forms-host resolve-host)
+          write-host close-host run-host read-forms-host resolve-host)
   ; A new context binding `names` to `values`.
   (define! operations
     (lambda! (names values)
@@ -20,15 +20,14 @@
             (lambda! (count) (read-bytes-host file count)))))
   (define! writing
     (lambda! (file)
-      (list (lambda! (text) (write-host file text))
-            (lambda! (bytes) (write-bytes-host file bytes)))))
+      (list (lambda! (data) (write-host file data)))))
   (define! reader
     (lambda! (path file)
       (operations (quote! (path read-line read-all read-bytes close))
                   (append (list path) (reading file) (list (lambda! () (close-host file)))))))
   (define! writer
     (lambda! (path file)
-      (operations (quote! (path write write-bytes close))
+      (operations (quote! (path write close))
                   (append (list path) (writing file) (list (lambda! () (close-host file)))))))
   ; The file whose forms are being loaded, at first the script; a relative path given `load` is
   ; relative to it.
@@ -45,8 +44,8 @@
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
                      run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
-          (operations (quote! (write write-bytes)) (writing 2))
-          (operations (quote! (write write-bytes)) (writing 1))
+          (operations (quote! (write)) (writing 2))
+          (operations (quote! (write)) (writing 1))
           (lambda! (path) (reader path (open-host path)))
           (lambda! (path) (writer path (create-host path)))
           ; The record of a finished process: its status, output and error output.

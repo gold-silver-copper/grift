@@ -77,7 +77,7 @@ with space and comments between them, and `)`. A bytes value prints so, every by
 bytes never look like a string. Anything else inside is a `parse-error` (`bad-byte`) at it, a `.`
 is `misplaced-dot`, and a missing `)` is `unclosed-list` at the `(`; `#bytes` with no `(` after it
 is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
-`write-bytes`.
+a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` at the very start of a text.
 For Rust hosts, `grift::write_string(text, out)` writes one quoted string literal with these same
 escapes, into a `std::fmt::Write`, without an interpreter or allocation. It returns `std::fmt::Result`;
@@ -319,7 +319,7 @@ describes each. Those added with the evidence of wave 4:
 | `script-path` | The script's path as given; `""` for a program on stdin. |
 | `(read-file path)` | The file's whole text. |
 | `(display-error v ...)` | `display`, to stderr. |
-| `(read-bytes count)`, `(write-bytes bytes)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): a bytes value of `count` bytes as soon as they have come, fewer at the end of input, `#bytes()` at the end; a bytes value's bytes, as they are (anything else is a `type-error`). |
+| `(read-bytes count)`, `(write data)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): a bytes value of `count` bytes as soon as they have come, fewer at the end of input, `#bytes()` at the end; a string's or a bytes value's bytes, as they are (anything else is a `type-error`). |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | The system's time since 1970 UTC, which can be set back; the time since the run started, which never goes back. |
 
 ## Calls that wait

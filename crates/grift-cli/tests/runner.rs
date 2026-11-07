@@ -156,7 +156,7 @@ fn files_are_contexts_of_operations() {
     let (status, out, err) = script(&dir, program, &[path], "");
     assert_eq!(status, Some(0), "{err}");
     let want = format!(
-        "#[context close path write write-bytes] {path}\n\
+        "#[context close path write] {path}\n\
          #[context close path read-all read-bytes read-line]\n\
          (\"one\\n\" \"two\\n\" \"\")\n(closed (\"{path}\"))\nclosed\nfile-error\n#false"
     );
@@ -393,7 +393,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
     let program = r#"
         (define! (copy) command-line-arguments)
         (define! read (evaluate-in! read-bytes standard-input))
-        (define! put (evaluate-in! write-bytes standard-output))
+        (define! put (evaluate-in! write standard-output))
         (define! whole
           (lambda! (chunks)
             (let! ((chunk (read 65536)))
@@ -401,7 +401,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
         (define! all (whole ()))
         (put (bytes-slice all (subtract (bytes-length all) 100) (bytes-length all)))
         (define! out (create-file copy))
-        ((evaluate-in! write-bytes out) all)
+        ((evaluate-in! write out) all)
         ((evaluate-in! close out))
         (define! in (open-file copy))
         (display-error (bytes-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "

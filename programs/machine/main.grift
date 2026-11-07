@@ -135,7 +135,7 @@
   (lambda! (x) (if! (same? x 0) (machine-fault "division by zero") x)))
 
 ; The output instruction writes its byte to standard output as it is.
-(define! write-output (evaluate-in! write-bytes standard-output))
+(define! write-output (evaluate-in! write standard-output))
 (define! write-output-byte (lambda! (byte) (write-output (list-to-bytes (list byte)))))
 
 (instruction! halt () (#ignore #ignore #ignore #ignore) (raise (error (quote! halted))))

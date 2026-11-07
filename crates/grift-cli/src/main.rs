@@ -317,32 +317,20 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
     g.bytes(&bytes)
 }
 
-/// `(write text)` on a file: all of the string's bytes.
+/// `(write data)` on a file: all of the bytes of a string or a bytes value.
 fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, text] = args else {
+    let [id, data] = args else {
         return Err(g.error("arity-error", args));
     };
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
-    let Some(text) = g.as_str(text)? else {
-        return Err(g.error("type-error", std::slice::from_ref(text)));
+    let bytes = match g.as_str(data)? {
+        Some(text) => Some(text.as_bytes()),
+        None => g.as_bytes(data)?,
     };
-    let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-    let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, r, id, wrote)
-}
-
-/// `(write-bytes bytes)` on a file: all of the bytes value's bytes.
-fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, bytes] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    let (path, Stream::Writing(out)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
-    };
-    let Some(bytes) = g.as_bytes(bytes)? else {
-        return Err(g.error("type-error", std::slice::from_ref(bytes)));
+    let Some(bytes) = bytes else {
+        return Err(g.error("type-error", std::slice::from_ref(data)));
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
     let wrote = wrote.map_err(|e| (e, path.to_owned()));
@@ -521,14 +509,13 @@ const PUBLIC: [(&str, HostFunction<Runner>); 7] = [
 ];
 
 /// The host functions only `runner.grift`'s closures get.
-const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
+const PRIVATE: [(&str, HostFunction<Runner>); 10] = [
     ("open-host", open_host),
     ("create-host", create_host),
     ("read-line-host", read_line_host),
     ("read-all-host", read_all_host),
     ("read-bytes-host", read_bytes_host),
     ("write-host", write_host),
-    ("write-bytes-host", write_bytes_host),
     ("close-host", close_host),
     ("run-host", run_host),
     ("read-forms-host", read_forms_host),
