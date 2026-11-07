@@ -610,11 +610,20 @@ fn the_host_calls_combiners_with_values() {
     let first = g.evaluate(&mut (), "first").unwrap();
     let e = g.call(&mut (), &first, &[Value::Integer(1)]).unwrap_err();
     assert_eq!(kind(&g, &e), "type-error");
-    let quote = g.evaluate(&mut (), "quote!").unwrap();
-    assert_eq!(
-        g.call(&mut (), &quote, &[Value::Integer(1)]),
-        Ok(Value::Integer(1))
-    );
+}
+
+#[test]
+fn call_takes_what_apply_takes() {
+    let mut g = grift();
+    for f in ["quote!", "(unwrap list)", "1"] {
+        let by_apply = g
+            .evaluate(&mut (), &format!("(apply {f} (list 1))"))
+            .unwrap_err();
+        let f = g.evaluate(&mut (), f).unwrap();
+        let by_call = g.call(&mut (), &f, &[Value::Integer(1)]).unwrap_err();
+        assert_eq!(kind(&g, &by_call), kind(&g, &by_apply));
+        assert_eq!(by_call.values, by_apply.values);
+    }
 }
 
 #[test]

@@ -315,7 +315,7 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let f = match f {
             Value::Applicative(r) => self.unwrapped(r)?,
-            _ => f,
+            _ => return Err(type_error(Primitive::Unwrap, f)),
         };
         let operands = self.list_local(arguments)?;
         let context = self

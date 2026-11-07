@@ -224,7 +224,7 @@ fn start_calls_a_function_as_call_does() {
     let done = resume(&mut g, &mut w, p, Value::Integer(2));
     assert_eq!(finished(&g, done), "3");
     let e = failed(g.start(&mut w, &Value::Integer(1), &[]));
-    assert_eq!(kind(&g, &e), "not-a-combiner");
+    assert_eq!(kind(&g, &e), "type-error");
 }
 
 #[test]

@@ -344,9 +344,9 @@ impl<T> Grift<T> {
         self.exported(done)
     }
 
-    /// Calls combiner `f` with `arguments` as Kernel's `apply` does: an applicative's
-    /// underlying combiner gets the arguments as its operands, in a new empty context; an
-    /// operative gets them as they are. Host functions get `state`.
+    /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
+    /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
+    /// Host functions get `state`.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.prepare_call(f, arguments).and_then(|f| {
             let arguments = self.imported(arguments)?;
