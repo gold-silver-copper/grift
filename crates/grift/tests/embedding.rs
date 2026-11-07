@@ -489,6 +489,25 @@ fn a_run_its_host_function_left_is_over() {
     }));
     assert!(caught.is_err());
     quiet(&mut g, &mut s);
+    // A panic inside library code leaves no mark on what the host builds after the next run.
+    let mut g = leaving();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.evaluate(&mut s, "(map panics (list 1))")
+    }));
+    assert!(caught.is_err());
+    quiet(&mut g, &mut s);
+    let top = g.top_level();
+    let name = g.symbol("first").unwrap();
+    let first = g.lookup(&top, &name).unwrap().unwrap();
+    let one = g.pair(Value::Integer(1), Value::EmptyList).unwrap();
+    let form = g.pair(first, one).unwrap();
+    g.define("form", form).unwrap();
+    let e = g
+        .evaluate(&mut s, "(evaluate form (current-context))")
+        .unwrap_err();
+    let mut place = String::new();
+    g.write(&e.trace[0], &mut place).unwrap();
+    assert_eq!(place, "(#[applicative #[primitive first]] 1)");
     // Replaced: the run ends with foreign-value, and the rest of the program doesn't run.
     let mut g = leaving();
     let r = g.evaluate(&mut s, "(swap-out) (quote! rest)");

@@ -388,6 +388,41 @@ fn a_combination_is_the_program_s_when_the_program_made_it() {
         first_place(&mut g, "(map first (list 1 2))"),
         "(map first (list 1 2))"
     );
+    // Built by the program after an argument that ran library code: still the program's.
+    assert_eq!(
+        first_place(
+            &mut g,
+            "(evaluate (list first (element-at (list 1) 0)) (current-context))"
+        ),
+        "(#[applicative #[primitive first]] 1)"
+    );
+    // Built by a host function after it ran library code, in a nested run or as library text:
+    // the host's, so the program's.
+    fn first_one(g: &mut Grift) -> Result<Value, Error> {
+        let top = g.top_level();
+        let name = g.symbol("first")?;
+        let first = g.lookup(&top, &name)?.unwrap();
+        let one = g.pair(Value::Integer(1), Value::EmptyList)?;
+        g.pair(first, one)
+    }
+    fn after_a_run(g: &mut Grift, s: &mut (), _: &[Value]) -> Result<Value, Error> {
+        g.evaluate(s, "(element-at (list 1) 0)")?;
+        first_one(g)
+    }
+    fn after_library_text(g: &mut Grift, s: &mut (), _: &[Value]) -> Result<Value, Error> {
+        let top = g.top_level();
+        g.evaluate_library_in(s, &top, "prelude.grift", "(element-at (list 1) 0)")?;
+        first_one(g)
+    }
+    define(&mut g, "after-a-run", after_a_run);
+    define(&mut g, "after-library-text", after_library_text);
+    for made in ["after-a-run", "after-library-text"] {
+        assert_eq!(
+            first_place(&mut g, &format!("(evaluate ({made}) (current-context))")),
+            "(#[applicative #[primitive first]] 1)",
+            "{made}"
+        );
+    }
     // Code the program made stays the program's after a host's own library code has run.
     g.evaluate(&mut (), "(define! kept (list (quote! first) 1))")
         .unwrap();
@@ -3310,6 +3345,11 @@ fn boundary_cases() -> Vec<String> {
         "(if! (first 1) 2 3)".into(),
         "(if! #true (first 1) 3)".into(),
         "(search \"ab\" (first 1) 0)".into(),
+        // A partial match that overlaps the real one, and a pattern of the other kind.
+        "(search \"aab\" \"ab\" 0)".into(),
+        "(search #bytes(1 1 2) #bytes(1 2) 0)".into(),
+        "(search \"ab\" #bytes(98) 0)".into(),
+        "(search #bytes(97 98) \"b\" 0)".into(),
         "(lookup (malformed 0) (quote! x) 42)".into(),
         "(catch! (lookup (malformed 0) (quote! x) 42) e (evaluate-in! kind e))".into(),
     ]);
