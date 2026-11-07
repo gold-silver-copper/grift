@@ -213,8 +213,8 @@ the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this v
 loop of one `if!` and a call, 0.32 µs a turn: another `if!` 0.05 µs, `sequence!` of two forms
 0.07 µs, `let!` of one binding 1.95 µs, `and!?` of two 1.19 µs, making a `lambda!` 1.0 µs, and
 `conditional!` of three clauses, the last one true, 2.1 µs more than the same choice in nested
-`if!`s. A library combiner such as `second` costs a call, about 0.9 µs, where `(first (rest x))`
-costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read better where speed
+`if!`s. A library combiner such as `second` costs a few calls, as it checks the list's length to
+say what is wrong, where `(first (rest x))` costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read better where speed
 doesn't matter.
 
 ## Errors
