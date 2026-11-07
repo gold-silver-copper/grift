@@ -254,9 +254,6 @@ pub struct Grift<T = ()> {
     pub(crate) natives: bool,
     #[cfg(test)]
     pub(crate) definitions: heap::Reference,
-    /// This many cleanups' calls fail, as when a machine stack can't grow.
-    #[cfg(test)]
-    pub(crate) refuse_cleanup_calls: usize,
 }
 
 impl<T> Grift<T> {
@@ -281,8 +278,6 @@ impl<T> Grift<T> {
             natives: true,
             #[cfg(test)]
             definitions: heap::Reference::NONE,
-            #[cfg(test)]
-            refuse_cleanup_calls: 0,
         };
         g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();
@@ -942,6 +937,7 @@ impl<T> Grift<T> {
         let kind = self.import_symbol(&e.kind)?;
         Ok(local::Error {
             limit: e.limit,
+            refused: false,
             kind,
             values,
             trace,

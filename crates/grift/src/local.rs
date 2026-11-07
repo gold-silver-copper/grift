@@ -44,6 +44,9 @@ pub(crate) struct Error {
     /// Whether the host or the machine began this, not a program: whatever its kind is called,
     /// this alone says a handler may not catch it, and a program can't set it.
     pub limit: bool,
+    /// Whether memory really was refused to make this: then what the frames it unwinds held is
+    /// worth collecting. A fact about how it began, which no name and no host can claim.
+    pub refused: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Vec<Value>,
@@ -88,6 +91,7 @@ impl Error {
         let mut e = Error::oom();
         if e.values.try_reserve_exact(values.len()).is_ok() {
             e.limit = false;
+            e.refused = false;
             e.kind = kind.into();
             e.values.extend_from_slice(values);
         }
@@ -98,6 +102,7 @@ impl Error {
     pub fn oom() -> Error {
         Error {
             limit: true,
+            refused: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Vec::new(),

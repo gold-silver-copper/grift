@@ -535,8 +535,7 @@ impl<T> Grift<T> {
                     }
                     What::Cleanup { cleanup, .. } => {
                         self.machine.here = at;
-                        self.save_ending(Ok(v));
-                        self.call_cleanup(cleanup, context, at)?
+                        self.start_cleanup(Ok(v), cleanup, context, at)
                     }
                     What::Handler { .. } => {
                         self.machine.here = at;
@@ -599,7 +598,7 @@ impl<T> Grift<T> {
     fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
         // The garbage is what the cleanups will run on, and the host's next run: the next safe
         // point collects, with the frames dropped here let go of.
-        if e.limit && e.kind == K::OutOfMemory.into() {
+        if e.refused {
             self.heap.request_collection();
         }
         locate(&mut e, self.machine.here);
@@ -607,18 +606,23 @@ impl<T> Grift<T> {
             let Some(Frame { what, context, at }) = self.machine.frames.pop() else {
                 break;
             };
-            let called = match what {
+            match what {
                 What::Cleanup { cleanup, base } => {
                     locate(&mut e, at);
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    self.save_ending(Err(e));
-                    self.call_cleanup(cleanup, context, at)
+                    return Ok(self.start_cleanup(Err(e), cleanup, context, at));
                 }
                 What::Handler { handler, base } if !e.limit => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    self.handle(&e, handler, context)
+                    match self.handle(&e, handler, context) {
+                        Ok(mode) => return Ok(mode),
+                        Err(failed) => {
+                            e = failed;
+                            locate(&mut e, at);
+                        }
+                    }
                 }
                 What::Finish => {
                     // The one rule: the newest reason wins, unless a program's would replace a
@@ -629,49 +633,40 @@ impl<T> Grift<T> {
                     {
                         e = waiting;
                     }
-                    continue;
                 }
-                _ => {
-                    locate(&mut e, at);
-                    continue;
-                }
-            };
-            match called {
-                Ok(mode) => return Ok(mode),
-                Err(failed) => {
-                    e = failed;
-                    locate(&mut e, at);
-                }
+                _ => locate(&mut e, at),
             }
         }
         Err(e)
     }
 
-    /// A popped `Cleanup` frame becomes a `Finish` frame, and its room in `waiting` this ending.
-    /// Neither needs memory.
-    fn save_ending(&mut self, ending: Result<Value, Error>) {
+    /// A popped `Cleanup` frame becomes a `Finish` frame and a call of the cleanup, and its room in
+    /// `waiting` this ending. Its install made all that room, so a cleanup's start can't fail: the
+    /// next check comes first, and a refusal after it is the cleanup's first step failing.
+    fn start_cleanup(
+        &mut self,
+        ending: Result<Value, Error>,
+        cleanup: Value,
+        context: Reference,
+        at: Reference,
+    ) -> Mode {
         let m = &mut self.machine;
         m.waiting.pop();
         m.waiting.push(ending);
+        #[cfg(test)]
+        assert!(
+            m.frames.len() + 2 <= m.frames.capacity(),
+            "its install made the room"
+        );
         m.frames.push(Frame {
             what: What::Finish,
             context: Reference::NONE,
             at: Reference::NONE,
         });
-    }
-
-    fn call_cleanup(
-        &mut self,
-        cleanup: Value,
-        context: Reference,
-        at: Reference,
-    ) -> Result<Mode, Error> {
-        #[cfg(test)]
-        if self.refuse_cleanup_calls > 0 {
-            self.refuse_cleanup_calls -= 1;
-            return Err(Error::oom());
-        }
-        self.call_thunk(cleanup, context, at)
+        let operands = Value::EmptyList;
+        let what = What::Combine { operands };
+        m.frames.push(Frame { what, context, at });
+        Mode::Return(cleanup)
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
@@ -1129,8 +1124,9 @@ impl<T> Grift<T> {
                 if p == P::EvaluateWithHandler {
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
-                    let waiting = &mut self.machine.waiting;
-                    waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    let m = &mut self.machine;
+                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    m.frames.try_reserve(2).map_err(|_| Error::oom())?;
                     self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
                     self.machine.waiting.push(Ok(Value::Inert));
                 }
@@ -1329,13 +1325,6 @@ impl<T> Grift<T> {
         })
     }
 
-    /// Calls combiner `f` with no arguments in `context`.
-    fn call_thunk(&mut self, f: Value, context: Reference, at: Reference) -> Result<Mode, Error> {
-        let operands = Value::EmptyList;
-        self.frame(What::Combine { operands }, context, at)?;
-        Ok(Mode::Return(f))
-    }
-
     /// The error an error context describes: one `error` made, or a handler got.
     fn error_of(&self, e: Value) -> Result<Error, Error> {
         let bad = || type_error(Primitive::Raise, e);
@@ -1356,6 +1345,7 @@ impl<T> Grift<T> {
         }));
         Ok(Error {
             limit: false,
+            refused: false,
             kind,
             values,
             trace,

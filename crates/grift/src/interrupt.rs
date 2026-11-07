@@ -120,16 +120,16 @@ impl Control {
 #[derive(Clone)]
 pub struct Interrupter {
     control: Arc<Control>,
-    /// The run this handle last reached, which is all a force may reach. A clone starts with its
-    /// source's.
-    stopped: u64,
+    /// The run this handle last reached, 0 for none, which is all its force may reach. A clone
+    /// starts with its source's.
+    reached: u64,
 }
 
 impl Interrupter {
     pub(crate) fn new(control: &Arc<Control>) -> Interrupter {
         Interrupter {
             control: Arc::clone(control),
-            stopped: 0,
+            reached: 0,
         }
     }
 
@@ -138,22 +138,27 @@ impl Interrupter {
     /// passed before its run began (while its source is read, say) asks again until one is, and
     /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {
-        let run = self.control.ask(STOP, |_| true);
-        if let Some(run) = run {
-            self.stopped = run;
-        }
-        run.is_some()
+        self.ask(STOP, |_| true)
     }
 
-    /// Ends the run this handle last stopped, at its next check, however its cleanups behave:
-    /// each it meets is cut before its first form, at every level of the run, and nothing a host
-    /// function then evaluates runs. The run ends with `interrupted`, which [`Error::is_limit`]
-    /// says is real. Whether that run is still in progress; `false` if it is over, or if this handle
-    /// never stopped one, so a late force never reaches a later run: to force at once,
-    /// `h.stop(); h.force();`. `true` doesn't say it acted, as for a stop.
+    /// Ends the run this handle last reached by a stop or a force, or, if it has reached none, the
+    /// run in progress: at its next check, however its cleanups behave. Each cleanup it meets is cut
+    /// before its first form, at every level of the run, nothing a host function then evaluates
+    /// runs, and the run ends with `interrupted`, whatever else fails on the way. Whether that run
+    /// is in progress; so a handle that reached a run that is over forces nothing, ever, until a
+    /// stop ties it to another, and a late force never reaches a later run. A handle that has
+    /// reached nothing has the hazard a stop has: asked after its run ended, it reaches the next.
+    /// `true` doesn't say it acted, as for a stop. [`Error::is_limit`] says the ending is real.
     ///
     /// [`Error::is_limit`]: crate::Error::is_limit
     pub fn force(&mut self) -> bool {
-        self.control.ask(FORCE, |run| run == self.stopped).is_some()
+        let reached = self.reached;
+        self.ask(FORCE, |run| reached == 0 || run == reached)
+    }
+
+    fn ask(&mut self, bit: u64, wanted: impl Fn(u64) -> bool) -> bool {
+        let run = self.control.ask(bit, wanted);
+        self.reached = run.unwrap_or(self.reached);
+        run.is_some()
     }
 }

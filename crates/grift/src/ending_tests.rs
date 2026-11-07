@@ -305,6 +305,15 @@ fn an_error_named_out_of_memory_collects_nothing() {
     g.evaluate(&mut s, "(reports \"out-of-memory\")")
         .unwrap_err();
     assert!(!g.heap.due());
+    // A limit that says so is still only named so: no memory was refused.
+    let quit = g
+        .host_function("quit", |g, _, _| {
+            Err(g.error("out-of-memory", &[]).as_limit())
+        })
+        .unwrap();
+    g.define("quit", quit).unwrap();
+    g.evaluate(&mut s, "(quit)").unwrap_err();
+    assert!(!g.heap.due());
     g.heap.slot_limit = g.heap.len();
     while g.pair(Value::Inert, Value::Inert).is_ok() {}
     assert!(g.heap.due(), "memory refused");
@@ -339,5 +348,74 @@ fn a_force_before_a_run_parks_ends_it() {
     let ran = g.start_in(&mut s, &top, "t", "(finally! (force-and-wait) (note 1))");
     assert_eq!(kind(&g, &ran.unwrap_err()), "interrupted");
     assert_eq!(g.parked(), 0);
+    assert_eq!(log(&mut g, &mut s), "()");
+}
+
+/// A force needs no earlier stop: from a handle tied to no run it ends the run in progress.
+#[test]
+fn a_force_from_a_handle_that_stopped_nothing_ends_the_run_in_progress() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, LOG).unwrap();
+    let e = g
+        .evaluate(&mut s, "(finally! (force) (note 1))")
+        .unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!(log(&mut g, &mut s), "()");
+    // That force tied the handle to that run: it reaches no later one.
+    let v = g.evaluate(&mut s, "(list (force) (add 1 2))").unwrap();
+    assert_eq!(
+        g.list_items(&v).unwrap(),
+        [Value::Boolean(false), Value::Integer(3)]
+    );
+}
+
+/// A clone starts tied to what its source was tied to: a clone of a fresh handle is fresh.
+#[test]
+fn a_clone_is_tied_to_what_its_source_was() {
+    let (mut g, mut s) = host();
+    let functions: [(&str, crate::HostFunction<Interrupter>); 2] = [
+        ("force-clone", |_, s, _| {
+            Ok(Value::Boolean(s.clone().force()))
+        }),
+        ("force-fresh-clone", |g, _, _| {
+            Ok(Value::Boolean(g.interrupter().clone().force()))
+        }),
+    ];
+    for (name, f) in functions {
+        let f = g.host_function(name, f).unwrap();
+        g.define(name, f).unwrap();
+    }
+    let e = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
+    assert_eq!(kind(&g, &e), "interrupted");
+    let v = g
+        .evaluate(&mut s, "(list (force-clone) (add 1 2))")
+        .unwrap();
+    assert_eq!(
+        g.list_items(&v).unwrap(),
+        [Value::Boolean(false), Value::Integer(3)]
+    );
+    let e = g
+        .evaluate(&mut s, "(force-fresh-clone) (add 1 2)")
+        .unwrap_err();
+    assert_eq!(kind(&g, &e), "interrupted");
+}
+
+/// Force, then memory refused where the cleanup would start: the force names the ending.
+#[test]
+fn a_force_names_the_ending_whatever_memory_refuses_next() {
+    let (mut g, mut s) = host();
+    g.evaluate(&mut s, LOG).unwrap();
+    let refuse = g
+        .host_function("refuse", |g, _, _| {
+            g.heap.refuse_in = Some(0);
+            g.heap.refuse_once = true;
+            Ok(Value::Inert)
+        })
+        .unwrap();
+    g.define("refuse", refuse).unwrap();
+    let e = g
+        .evaluate(&mut s, "(finally! (sequence! (refuse) (force)) (note 1))")
+        .unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
 }

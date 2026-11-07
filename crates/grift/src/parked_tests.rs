@@ -178,26 +178,25 @@ fn out_of_memory_collects_before_its_cleanups_run() {
     assert_eq!(log, ["1", "2"]);
 }
 
-/// A cleanup that can't even be called: the error goes on to the next, as it would from that
-/// cleanup's own first step, and doesn't end the run's unwinding there.
+/// A cleanup whose first step has no memory: the error goes on to the next, as from any step of
+/// that cleanup, and doesn't end the run's unwinding there.
 #[test]
-fn a_cleanup_that_cannot_be_called_is_passed_over_for_the_next() {
-    for through in ["abandon", "error"] {
+fn a_cleanup_whose_first_step_is_refused_is_passed_over_for_the_next() {
+    let mut passed_over = false;
+    for refuse_in in 0..16 {
         let (mut g, mut log) = (grift(), Vec::new());
         let p = parked(start(
             &mut g,
             &mut log,
             "(finally! (finally! (sequence! (wait) (first 0)) (note 1)) (note 2))",
         ));
-        g.refuse_cleanup_calls = 1;
-        let e = match through {
-            "abandon" => g.abandon(&mut log, p).unwrap(),
-            _ => g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err().error,
-        };
-        assert_eq!(kind(&g, &e), "out-of-memory", "{through}");
-        assert_eq!(log, ["2"], "{through}");
+        g.heap.refuse_in = Some(refuse_in);
+        g.heap.refuse_once = true;
+        let e = g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err().error;
+        passed_over |= kind(&g, &e) == "out-of-memory" && log == ["2"];
         assert_eq!(g.parked(), 0);
     }
+    assert!(passed_over);
 }
 
 /// Every collection walks a parked run, so it brings the next one no nearer than its size says.
