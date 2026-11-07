@@ -9,32 +9,113 @@ use crate::heap::{Bindings, Object};
 use crate::{Error, Grift, Interrupter, Primitive, Value, local};
 use std::time::{Duration, Instant};
 
-/// The grift definitions of the native primitives, run in their place when natives are off.
+/// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
 
+/// The primitives grift can't express, so with no definition in `natives.grift`.
+const CORE: &[&str] = &[
+    "vau!",
+    "wrap",
+    "unwrap",
+    "evaluate",
+    "evaluate-with-cleanup",
+    "call-with-handler",
+    "raise",
+    "context",
+    "bind",
+    "unbind",
+    "names",
+    "pair",
+    "same?",
+    "type-of",
+    "add",
+    "subtract",
+    "multiply",
+    "divide",
+    "remainder",
+    "less-than?",
+    "power",
+    "square-root",
+    "sine",
+    "cosine",
+    "tangent",
+    "exponential",
+    "natural-logarithm",
+    "floor",
+    "ceiling",
+    "round",
+    "truncate",
+    "absolute-value",
+    "string-byte",
+    "string-append",
+    "string-to-symbol",
+    "string-to-float",
+    "read-form",
+    "value-to-string",
+];
+
 impl<T> Grift<T> {
-    /// Evaluates the definitions of the native primitives, while the library loads.
-    pub(crate) fn load_definitions(&mut self) -> Result<(), local::Error> {
+    /// From now on the natives are their grift definitions: each bound in the built-in context,
+    /// where the library looks it up, and no library form runs a native twin. As the library's
+    /// own code, what this loads is skipped by traces.
+    pub(crate) fn run_definitions(&mut self) {
         let here = Object::Context(Some(self.built_in), Bindings::default());
-        let here = self.heap.alloc(here)?;
-        let forms = self.read_local(MEANINGS, None)?;
-        self.evaluate_forms(None, forms, here)?;
-        let name = self.intern("meanings")?;
-        if let Some(local::Value::Context(meanings)) = self.find(here, name)? {
-            self.definitions = meanings;
+        let here = self.heap.alloc(here).unwrap();
+        let forms = self.read_local(MEANINGS, None).unwrap();
+        self.evaluate_forms(None, forms, here).unwrap();
+        let name = self.intern("meanings").unwrap();
+        let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {
+            panic!("natives.grift defines meanings");
+        };
+        for name in self.names_of(meanings).unwrap() {
+            let meaning = self.find(meanings, name).unwrap().unwrap();
+            let wrapped = self.heap.alloc(Object::Applicative(meaning)).unwrap();
+            self.bind_symbol(self.built_in, name, local::Value::Applicative(wrapped))
+                .unwrap();
         }
-        Ok(())
+        for name in ["if!", "sequence!", "string-search"] {
+            let form = self.built_in_operative(name);
+            if let Object::Operative(op) = self.heap.get_mut(form).unwrap() {
+                op.native = None;
+            }
+        }
+        self.heap.seal_library();
     }
 
-    /// With the natives off, the grift definition of native primitive `p`.
-    pub(crate) fn definition(&self, p: Primitive) -> Result<Option<local::Value>, local::Error> {
-        if self.natives {
-            return Ok(None);
-        }
-        let Some(name) = self.interned(p.name()) else {
-            return Ok(None);
+    /// The operative under the combiner the built-in context binds to `name`.
+    fn built_in_operative(&mut self, name: &str) -> crate::heap::Reference {
+        let name = self.intern(name).unwrap();
+        let found = self.find(self.built_in, name).unwrap().unwrap();
+        let inner = match found {
+            local::Value::Applicative(r) => self.unwrapped(r).unwrap(),
+            v => v,
         };
-        Ok(self.context_at(self.definitions)?.1.get(&name).copied())
+        match inner {
+            local::Value::Operative(r) => r,
+            v => panic!("{v:?} is no operative"),
+        }
+    }
+
+    /// The combiner under applicative `v`.
+    fn underlying(&self, v: &Value) -> Value {
+        let local::Value::Applicative(r) = self.import(v).unwrap() else {
+            panic!("no applicative");
+        };
+        self.export(self.unwrapped(r).unwrap())
+    }
+
+    /// Whether `v` is the definition this interpreter runs for primitive `p`.
+    fn is_definition_of(&self, v: &Value, p: Primitive) -> bool {
+        let Some(found) = self
+            .interned(p.name())
+            .and_then(|name| self.find(self.built_in, name).unwrap())
+        else {
+            return false;
+        };
+        let local::Value::Applicative(r) = found else {
+            return false;
+        };
+        self.unwrapped(r).unwrap() == self.import(v).unwrap()
     }
 }
 
@@ -712,7 +793,7 @@ fn library_forms_build_no_code() {
     // most six times the steps. They used to build new code each time: let! made two
     // operatives, and conditional! took 29 times the steps. Both as grift: the natives off.
     let mut g = grift();
-    g.natives = false;
+    g.run_definitions();
     g.evaluate(&mut (), "(define! n 3) (define! e (current-context))")
         .unwrap();
     for (form, by_hand) in [
@@ -2640,9 +2721,36 @@ struct Comparison<'a> {
     left: &'a Grift<Vec<String>>,
     right: &'a Grift<Vec<String>>,
     matched: Vec<(Value, Value)>,
+    /// How each native prints, as itself or as its definition.
+    natives: &'a [String],
+}
+
+/// How each native primitive of the two interpreters prints.
+fn native_texts(left: &mut Grift<Vec<String>>, right: &mut Grift<Vec<String>>) -> Vec<String> {
+    let mut texts = Vec::new();
+    for p in Primitive::ALL.iter().filter(|p| !CORE.contains(&p.name())) {
+        for g in [&mut *left, &mut *right] {
+            let bound = g.evaluate(&mut Vec::new(), p.name()).unwrap();
+            texts.push(show(g, &g.underlying(&bound)));
+        }
+    }
+    texts
+}
+
+/// `text`, with every native in it printed alike.
+fn plain(text: &str, natives: &[String]) -> String {
+    natives.iter().fold(text.to_string(), |text, native| {
+        text.replace(native, "#[native]")
+    })
 }
 
 impl Comparison<'_> {
+    /// Whether two texts differ by more than how a native prints: the one thing a native and its
+    /// definition may differ in.
+    fn differs(&self, a: &str, b: &str) -> bool {
+        a != b && plain(a, self.natives) != plain(b, self.natives)
+    }
+
     fn values(&mut self, a: &Value, b: &Value) -> Result<(), String> {
         let (l, r) = (self.left, self.right);
         let mut todo = vec![(a.clone(), b.clone())];
@@ -2657,7 +2765,12 @@ impl Comparison<'_> {
                 {
                     return differ();
                 }
-                (Value::String(_), Value::String(_)) if l.as_str(&a) != r.as_str(&b) => {
+                (Value::String(_), Value::String(_))
+                    if self.differs(
+                        l.as_str(&a).unwrap().unwrap(),
+                        r.as_str(&b).unwrap().unwrap(),
+                    ) =>
+                {
                     return differ();
                 }
                 (Value::Bytes(_), Value::Bytes(_)) if l.as_bytes(&a) != r.as_bytes(&b) => {
@@ -2700,10 +2813,14 @@ impl Comparison<'_> {
                                 r.lookup(&b, t).unwrap().unwrap(),
                             ));
                         }
-                    } else if show(l, &a) != show(r, &b) {
+                    } else if let Value::Applicative(_) = a {
+                        todo.push((l.underlying(&a), r.underlying(&b)));
+                    } else if self.differs(&show(l, &a), &show(r, &b)) {
                         return differ();
                     }
                 }
+                // What a native is, its definition is: the comparison's one allowed difference.
+                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, *p) => {}
                 _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
                     return differ();
                 }
@@ -2789,6 +2906,9 @@ fn malformed(
 fn twins() -> [Grift<Vec<String>>; 2] {
     [true, false].map(|natives| {
         let mut g: Grift<Vec<String>> = Grift::new().unwrap();
+        if !natives {
+            g.run_definitions();
+        }
         for (name, f) in [
             ("note", note as crate::HostFunction<Vec<String>>),
             ("malformed", malformed),
@@ -2804,7 +2924,6 @@ fn twins() -> [Grift<Vec<String>>; 2] {
              (define! double (lambda! (x) (list x x)))",
         )
         .unwrap();
-        g.natives = natives;
         g
     })
 }
@@ -2812,10 +2931,15 @@ fn twins() -> [Grift<Vec<String>>; 2] {
 #[test]
 fn natives_are_their_definitions() {
     let [mut native, mut defined] = twins();
-    // Every native primitive has its definition, and no core one has.
+    let natives = native_texts(&mut native, &mut defined);
+    // Every primitive grift can express has its definition, and no other has.
     for &p in Primitive::ALL {
-        let has = defined.definition(p).unwrap().is_some();
-        assert_eq!(has, Primitive::NATIVE.contains(&p), "{}", p.name());
+        let (a, b) = (
+            native.evaluate(&mut Vec::new(), p.name()).unwrap(),
+            defined.evaluate(&mut Vec::new(), p.name()).unwrap(),
+        );
+        let same_as_native = show(&native, &a) == show(&defined, &b);
+        assert_eq!(same_as_native, CORE.contains(&p.name()), "{}", p.name());
     }
     // A separately read outer form can enter through a native branch or sequence body too.
     // Compare the complete errors and positions, not just the form's returned value.
@@ -2838,6 +2962,7 @@ fn natives_are_their_definitions() {
             left: &native,
             right: &defined,
             matched: Vec::new(),
+            natives: &natives,
         };
         if let Err(why) = compare.outcomes(&a, &b) {
             panic!("{src}: {why}");
@@ -2873,6 +2998,7 @@ fn natives_are_their_definitions() {
             left: &native,
             right: &defined,
             matched: Vec::new(),
+            natives: &natives,
         };
         if let Err(why) = compare.outcomes(&a, &b) {
             panic!("case {case}: {src}\n  {why}");
@@ -2882,7 +3008,11 @@ fn natives_are_their_definitions() {
         if let Err(why) = compare.values(&a_top, &b_top) {
             panic!("case {case}: {src}\n  afterwards, the top level: {why}");
         }
-        assert_eq!(a_log, b_log, "case {case}: {src}: what ran");
+        let (a_log, b_log) = (a_log.join("\n"), b_log.join("\n"));
+        assert!(
+            !compare.differs(&a_log, &b_log),
+            "case {case}: {src}: what ran"
+        );
     }
     // Floats from Rust, with any bits, not-a-number's payloads included, through Rust calls.
     for bits in [
@@ -2917,6 +3047,7 @@ fn natives_are_their_definitions() {
                 left: &native,
                 right: &defined,
                 matched: Vec::new(),
+                natives: &natives,
             };
             if let Err(why) = compare.outcomes(&fa, &fb) {
                 panic!("({name} {bits:#x}) from Rust: {why}");
@@ -3027,7 +3158,7 @@ fn boundary_cases() -> Vec<String> {
 
 #[test]
 fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
-    for mut g in twins() {
+    for (mut g, natives) in twins().into_iter().zip([true, false]) {
         g.evaluate(
             &mut Vec::new(),
             "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (shift-right n 1) (bytes-length #bytes(1 2)) (loop (subtract n 1))))))
@@ -3044,8 +3175,7 @@ fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
         }
         assert_eq!(
             high[0], high[1],
-            "frames grew with the loop (natives {})",
-            g.natives
+            "frames grew with the loop (natives {natives})",
         );
     }
 }

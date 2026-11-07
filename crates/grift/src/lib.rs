@@ -226,11 +226,6 @@ pub struct Grift<T = ()> {
     runs: u64,
     /// Where each combination read under a name is, by its slot's index.
     positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
-    /// Off in tests: native primitives and library forms then run their grift definitions.
-    #[cfg(test)]
-    pub(crate) natives: bool,
-    #[cfg(test)]
-    pub(crate) definitions: heap::Reference,
     /// This many cleanups' calls fail, as when a machine stack can't grow.
     #[cfg(test)]
     pub(crate) refuse_cleanup_calls: usize,
@@ -256,10 +251,6 @@ impl<T> Grift<T> {
             runs: 0,
             positions: HashMap::default(),
             #[cfg(test)]
-            natives: true,
-            #[cfg(test)]
-            definitions: heap::Reference::NONE,
-            #[cfg(test)]
             refuse_cleanup_calls: 0,
         };
         g.identity = Owner(Arc::downgrade(&g.control));
@@ -284,8 +275,6 @@ impl<T> Grift<T> {
         let forms = self.read_local(LIBRARY, None)?;
         self.evaluate_forms(None, forms, self.built_in)?;
         self.install_natives()?;
-        #[cfg(test)]
-        self.load_definitions()?;
         // Everything in the heap now is the library's; errors skip its code.
         self.heap.seal_library();
         Ok(())

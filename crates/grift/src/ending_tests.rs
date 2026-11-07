@@ -81,7 +81,10 @@ fn a_program_or_a_host_function_can_only_make_what_is_caught() {
             assert_eq!(v, Value::Symbol(g.symbol(name).unwrap()), "{raised}");
             // Not caught, it reaches the host as what it is: data with that name.
             let e = g.evaluate(&mut s, &raised).unwrap_err();
-            assert!(g.symbol_name(&e.kind).unwrap() == name && !e.is_limit(), "{raised}");
+            assert!(
+                g.symbol_name(&e.kind).unwrap() == name && !e.is_limit(),
+                "{raised}"
+            );
         }
     }
 }

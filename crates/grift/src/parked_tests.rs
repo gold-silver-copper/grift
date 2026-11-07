@@ -110,7 +110,8 @@ fn parking_inside_a_native_twin_cannot_be_told_from_its_definition() {
         "(if! 1 (wait) 0)",
         "(sequence! (wait) (wait) (first (wait)))",
         "(sequence! (note 1) (wait))",
-        "(evaluate (list (quote! if!) (list wait) (list first 1) 0) (current-context))",
+        // `first` by name: by value it would print, and a native prints unlike its definition.
+        "(evaluate (list (quote! if!) (list wait) (list (quote! first) 1) 0) (current-context))",
         "(string-search (wait) \"a\" 0)",
         "(map (lambda! (x) (if! (wait) x (first x))) (list 1 2))",
         "(finally! (sequence! (wait) (first 1)) (if! (wait) (note 1) (note 2)))",
@@ -118,7 +119,9 @@ fn parking_inside_a_native_twin_cannot_be_told_from_its_definition() {
         let mut seen = Vec::new();
         for natives in [true, false] {
             let mut g = grift();
-            g.natives = natives;
+            if !natives {
+                g.run_definitions();
+            }
             let mut log = Vec::new();
             let mut ran = start(&mut g, &mut log, src);
             let mut waits = 0;
@@ -770,7 +773,9 @@ mod generated {
             .collect();
 
         let mut g = interpreter();
-        g.natives = !r.one_in(4);
+        if r.one_in(4) {
+            g.run_definitions();
+        }
         let mut w = World {
             logs: vec![Vec::new(); runs],
             current: usize::MAX,

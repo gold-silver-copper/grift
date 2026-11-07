@@ -25,37 +25,31 @@ use crate::{Grift, collected};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
-/// fewest and most operands it takes. The core ones are what grift can't express; each native
-/// one exists for speed only, and its meaning is its grift definition in `natives.grift`.
+/// fewest and most operands it takes. Those `natives.grift` defines exist for speed only, and that
+/// definition is their meaning; the others are what grift can't express.
 macro_rules! primitives {
-    (core { $($p:ident $name:literal $lo:literal $hi:expr;)* }
-     native { $($q:ident $qname:literal $qlo:literal $qhi:expr;)* }) => {
+    ($($p:ident $name:literal $lo:literal $hi:expr;)*) => {
         /// The Rust primitives, each bound wrapped, as an applicative, until the library says otherwise.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Primitive { $($p,)* $($q),* }
+        pub enum Primitive { $($p),* }
 
         impl Primitive {
-            pub(crate) const ALL: &[Primitive] = &[$(Primitive::$p,)* $(Primitive::$q),*];
-
-            /// The natives, each with a grift definition.
-            #[cfg(test)]
-            pub(crate) const NATIVE: &[Primitive] = &[$(Primitive::$q),*];
+            pub(crate) const ALL: &[Primitive] = &[$(Primitive::$p),*];
 
             /// The name the primitive is bound to in the built-in context.
             pub fn name(self) -> &'static str {
-                match self { $(Primitive::$p => $name,)* $(Primitive::$q => $qname),* }
+                match self { $(Primitive::$p => $name),* }
             }
 
             /// The fewest and most operands.
             fn arity(self) -> (usize, usize) {
-                match self { $(Primitive::$p => ($lo, $hi),)* $(Primitive::$q => ($qlo, $qhi)),* }
+                match self { $(Primitive::$p => ($lo, $hi)),* }
             }
         }
     };
 }
 
 primitives! {
-core {
     // Abstraction, wrapping and evaluation: the machine itself.
     Vau "vau!" 3 3;
     Wrap "wrap" 1 1;
@@ -100,8 +94,7 @@ core {
     StringToFloat "string-to-float" 1 1;
     ReadForm "read-form" 2 2;
     ValueToString "value-to-string" 1 1;
-}
-native {
+    // What natives.grift defines.
     First "first" 1 1;
     Rest "rest" 1 1;
     Select "select" 3 3;
@@ -127,7 +120,6 @@ native {
     BytesToString "bytes-to-string" 1 1;
     ListToBytes "list-to-bytes" 1 1;
     BytesToList "bytes-to-list" 1 1;
-}
 }
 
 /// The library forms with a native twin.
@@ -695,12 +687,12 @@ impl<T> Grift<T> {
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         let kept = self.kept.iter().flatten().copied();
-        let roots = self.machine.roots().chain(current).chain(kept).chain([
-            Value::Context(self.built_in),
-            Value::Context(self.top),
-            #[cfg(test)]
-            Value::Context(self.definitions),
-        ]);
+        let roots = self
+            .machine
+            .roots()
+            .chain(current)
+            .chain(kept)
+            .chain([Value::Context(self.built_in), Value::Context(self.top)]);
         self.heap.collect(roots)
     }
 
@@ -816,12 +808,6 @@ impl<T> Grift<T> {
     /// Applies a combiner to the arguments on the argument stack from `base`, popping them.
     fn apply(&mut self, combiner: Value, context: Reference, base: usize) -> Result<Mode, Error> {
         match combiner {
-            #[cfg(test)]
-            Value::Primitive(p) if !self.natives && self.definition(p)?.is_some() => {
-                let list = self.arguments_list(base)?;
-                let definition = self.definition(p)?.unwrap_or(combiner);
-                self.combine(definition, list, context)
-            }
             Value::Primitive(p) => {
                 let mode = self.primitive(p, context, base);
                 self.machine.arguments.truncate(base);
@@ -856,8 +842,8 @@ impl<T> Grift<T> {
         let stale = || Error::new(K::StaleValue, &[Value::Operative(r)]);
         let op = match self.heap.get(r)? {
             Object::Operative(op) => match op.native {
-                Some(native) if self.natives_on() => Err(native),
-                _ => Ok(*op),
+                Some(native) => Err(native),
+                None => Ok(*op),
             },
             _ => return Err(stale()),
         };
@@ -967,16 +953,6 @@ impl<T> Grift<T> {
             self.frame(What::Body { rest }, context, at)?;
         }
         Ok(Mode::Evaluate(form, context))
-    }
-
-    /// Whether native twins and native primitives run; tests turn them off, to run their grift
-    /// definitions instead and compare.
-    #[inline(always)]
-    fn natives_on(&self) -> bool {
-        #[cfg(test)]
-        return self.natives;
-        #[cfg(not(test))]
-        true
     }
 
     /// Flags the library's operatives that have a native twin.
