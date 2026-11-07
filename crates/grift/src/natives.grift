@@ -4,7 +4,7 @@
 ; naming it by its value, which it never calls. Every combiner here is made as this file loads:
 ; with the natives off, making one would run lambda!, whose if! and first would come back here.
 
-; Branching under select, which if! stands on: a boolean names one of two bindings by its printed
+; Branching under select, which if!'s meaning stands on: a boolean names one of two bindings by its printed
 ; text, so nothing up to `select`'s meaning branches by select.
 (define! record (lambda! (names values) (filled (context) names values)))
 (define! filled (lambda! (c names values) (second-of (bind c names values) c)))
@@ -38,6 +38,14 @@
 (define! picked
   (lambda! (primitive (b consequent alternative))
     (choose (typed primitive b (quote! boolean)) consequent alternative)))
+; if!: select picks the expression and evaluate runs it as a tail call. sequence!: each in turn, the
+; last one's value; #inert for none.
+(define! branched
+  (lambda! (primitive (test consequent alternative) caller)
+    (evaluate (select (evaluate test caller) consequent alternative) caller)))
+(define! forms
+  (lambda! (#ignore (form . more) c)
+    (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
 ; lookup: the symbol evaluated there, or otherwise where that is unbound.
 (define! looked-up
   (lambda! (primitive (c s otherwise))
@@ -260,11 +268,13 @@
 
 (define! meanings
   (record
-    (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
+    (quote! (if! sequence! select first rest lookup integer-to-string integer-to-float float-to-integer
              string-to-integer string-byte-length code-point-to-string byte-substring string-search bitwise-and
              bitwise-or bitwise-exclusive-or shift-left shift-right bytes-length bytes-byte
              bytes-slice bytes-append string-to-bytes bytes-to-string list-to-bytes bytes-to-list))
-    (list (several (unwrap select) 3 picked)
+    (list (vau! arguments caller (branched if! (arity if! arguments 3) caller))
+          (vau! body caller (if! (same? body ()) #inert (forms #inert body caller)))
+          (several (unwrap select) 3 picked)
           (one (unwrap first) (quote! pair) (lambda! (#ignore x) (head x)))
           (one (unwrap rest) (quote! pair) (lambda! (#ignore x) (tail x)))
           (several (unwrap lookup) 3 looked-up)

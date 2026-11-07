@@ -1,7 +1,7 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
 //! sweep.
 
-use crate::evaluate::{Machine, Native};
+use crate::evaluate::Machine;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -21,8 +21,7 @@ impl Hash for Reference {
 }
 
 /// A compound operative: its parameter tree, its context parameter, its body, the context it
-/// was made in, how many bindings a call makes, and the native twin that runs it, for the few
-/// library forms that have one.
+/// was made in, and how many bindings a call makes.
 #[derive(Clone, Copy)]
 pub(crate) struct Operative {
     pub parameters: Value,
@@ -30,7 +29,6 @@ pub(crate) struct Operative {
     pub body: Value,
     pub context: Reference,
     pub size: u32,
-    pub native: Option<Native>,
 }
 
 pub(crate) enum Object {

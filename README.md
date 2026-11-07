@@ -365,8 +365,8 @@ and constructors do not collect: more reads may be refused until an evaluation o
 that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
-`if!` and `sequence!` are library code with a native twin: the library's own
-operative, run in Rust when its operands have the shape the twin handles.
+`if!` and `sequence!` are native primitives that take their operands unevaluated, each defined in
+grift.
 
 `jshutt.pdf` is Shutt's thesis, *Fexprs as the basis of Lisp function application*.
 

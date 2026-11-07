@@ -11,9 +11,6 @@
 //! whatever its kind is called: handlers pass what the host or the machine began, and when a new
 //! error meets one waiting, the rule in [`Grift::unwind`] decides. A stop is such an error. A force
 //! is a stop that stays asked, so every cleanup it meets is cut before its first form.
-//!
-//! Two library forms have a native twin: `if!` and `sequence!` are the library's own operatives, flagged, and run in Rust when their operands have the shape the twin
-//! handles; any other shape runs the operative's body, so what a program sees never differs.
 
 use crate::heap::{Bindings, Object, Operative, Reference, Seen};
 use crate::interrupt::Control;
@@ -29,7 +26,8 @@ use std::sync::Arc;
 macro_rules! primitives {
     (core { $($p:ident $name:literal $lo:literal $hi:expr;)* }
      native { $($q:ident $qname:literal $qlo:literal $qhi:expr;)* }) => {
-        /// The Rust primitives. All but `vau!` are bound wrapped, as applicatives.
+        /// The Rust primitives. All but `vau!`, `if!` and `sequence!`, which take their operands
+        /// unevaluated, are bound wrapped, as applicatives.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Primitive { $($p,)* $($q),* }
 
@@ -101,6 +99,8 @@ core {
     ValueToString "value-to-string" 1 1;
 }
 native {
+    If "if!" 3 3;
+    Sequence "sequence!" 0 usize::MAX;
     First "first" 1 1;
     Rest "rest" 1 1;
     Select "select" 3 3;
@@ -128,13 +128,6 @@ native {
     ListToBytes "list-to-bytes" 1 1;
     BytesToList "bytes-to-list" 1 1;
 }
-}
-
-/// The library forms with a native twin.
-#[derive(Clone, Copy, PartialEq)]
-pub(crate) enum Native {
-    If,
-    Sequence,
 }
 
 /// What the machine does next.
@@ -181,12 +174,12 @@ enum What {
     Deliver(Value),
     /// The cleanup above ran after an error, the last one waiting: raise it again.
     Raise,
-    /// Native `if!`: the value is the test; evaluate one of these as a tail call.
+    /// `if!`: the value is the test; evaluate one of these as a tail call.
     Branch {
         consequent: Value,
         alternative: Value,
     },
-    /// Native `sequence!`: the forms left after the one evaluated, at least one.
+    /// `sequence!`: the forms left after the one evaluated, at least one.
     Body { rest: Value },
     /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
     Form,
@@ -772,20 +765,58 @@ impl<T> Grift<T> {
                 self.next_argument(inner, context, operands, base)
             }
             Value::Operative(r) => self.call_compound(r, operands, context),
-            Value::Primitive(_) | Value::Host(_) => {
-                let base = self.machine.arguments.len();
-                let mut rest = operands;
-                while let Value::Pair(r) = rest {
-                    let (x, next) = self.pair_at(r)?;
-                    push(&mut self.machine.arguments, x)?;
-                    rest = next;
-                }
-                if rest != Value::EmptyList {
-                    return Err(Error::new(K::TypeError, &[f, operands]));
-                }
-                self.apply(f, context, base)
+            Value::Primitive(p @ (Primitive::If | Primitive::Sequence)) if self.natives_on() => {
+                self.form(p, operands, context)
             }
+            Value::Primitive(_) | Value::Host(_) => self.spread(f, operands, context),
             _ => Err(Error::new(K::NotACombiner, &[f])),
+        }
+    }
+
+    /// Applies a primitive or a host function to its operands as they are.
+    fn spread(&mut self, f: Value, operands: Value, context: Reference) -> Result<Mode, Error> {
+        let base = self.machine.arguments.len();
+        let mut rest = operands;
+        while let Value::Pair(r) = rest {
+            let (x, next) = self.pair_at(r)?;
+            push(&mut self.machine.arguments, x)?;
+            rest = next;
+        }
+        if rest != Value::EmptyList {
+            return Err(Error::new(K::TypeError, &[f, operands]));
+        }
+        self.apply(f, context, base)
+    }
+
+    /// `if!` and `sequence!`, on their operands as a list; a list of any other shape goes where
+    /// every primitive's does, for its error. Apart from [`Grift::primitive`], so that its common
+    /// cases stay small enough to inline.
+    #[inline(never)]
+    fn form(&mut self, p: Primitive, operands: Value, context: Reference) -> Result<Mode, Error> {
+        let mut rest = operands;
+        let mut items = [Value::EmptyList; 3];
+        let mut count = 0;
+        while let Value::Pair(r) = rest {
+            let (x, next) = self.pair_at(r)?;
+            if let Some(item) = items.get_mut(count) {
+                *item = x;
+            }
+            count += 1;
+            rest = next;
+        }
+        let at = self.machine.here;
+        match (p, count, rest) {
+            (Primitive::If, 3, Value::EmptyList) => {
+                let [test, consequent, alternative] = items;
+                let branch = What::Branch {
+                    consequent,
+                    alternative,
+                };
+                self.frame(branch, context, at)?;
+                Ok(Mode::Evaluate(test, context))
+            }
+            (Primitive::Sequence, _, Value::EmptyList) => self.next_form(operands, context, at),
+            _ => self.spread(Value::Primitive(p), operands, context),
         }
     }
 
@@ -855,21 +886,8 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         let stale = || Error::new(K::StaleValue, &[Value::Operative(r)]);
         let op = match self.heap.get(r)? {
-            Object::Operative(op) => match op.native {
-                Some(native) if self.natives_on() => Err(native),
-                _ => Ok(*op),
-            },
+            Object::Operative(op) => *op,
             _ => return Err(stale()),
-        };
-        let op = match op {
-            Ok(op) => op,
-            Err(native) => match self.native(native, operands, context)? {
-                Some(mode) => return Ok(mode),
-                None => match self.heap.get(r)? {
-                    Object::Operative(op) => *op,
-                    _ => return Err(stale()),
-                },
-            },
         };
         // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
@@ -884,55 +902,6 @@ impl<T> Grift<T> {
             .heap
             .alloc(Object::Context(Some(op.context), bindings))?;
         Ok(Mode::Evaluate(op.body, local))
-    }
-
-    /// Runs a native twin on `operands`, as the library's operative would with them; `None` for
-    /// a shape it doesn't handle, which the operative's body then runs, errors and all.
-    fn native(
-        &mut self,
-        native: Native,
-        operands: Value,
-        context: Reference,
-    ) -> Result<Option<Mode>, Error> {
-        let at = self.machine.here;
-        let mode = match native {
-            Native::If => {
-                let Some([test, consequent, alternative]) = self.three(operands)? else {
-                    return Ok(None);
-                };
-                let branch = What::Branch {
-                    consequent,
-                    alternative,
-                };
-                self.frame(branch, context, at)?;
-                Mode::Evaluate(test, context)
-            }
-            Native::Sequence => {
-                let mut rest = operands;
-                while let Value::Pair(r) = rest {
-                    rest = self.pair_at(r)?.1;
-                }
-                if rest != Value::EmptyList {
-                    return Ok(None);
-                }
-                self.next_form(operands, context, at)?
-            }
-        };
-        Ok(Some(mode))
-    }
-
-    /// The elements of a list of exactly three; `None` for anything else.
-    #[inline(always)]
-    fn three(&self, list: Value) -> Result<Option<[Value; 3]>, Error> {
-        let mut items = [Value::EmptyList; 3];
-        let mut rest = list;
-        for item in &mut items {
-            let Value::Pair(r) = rest else {
-                return Ok(None);
-            };
-            (*item, rest) = self.pair_at(r)?;
-        }
-        Ok((rest == Value::EmptyList).then_some(items))
     }
 
     /// Evaluates the first of `forms`, a proper list, the last as a tail call; none is `#inert`.
@@ -952,39 +921,14 @@ impl<T> Grift<T> {
         Ok(Mode::Evaluate(form, context))
     }
 
-    /// Whether native twins and native primitives run; tests turn them off, to run their grift
-    /// definitions instead and compare.
+    /// Whether native primitives run; tests turn them off, to run their grift definitions instead
+    /// and compare.
     #[inline(always)]
     fn natives_on(&self) -> bool {
         #[cfg(test)]
         return self.natives;
         #[cfg(not(test))]
         true
-    }
-
-    /// Flags the library's operatives that have a native twin.
-    pub(crate) fn install_natives(&mut self) -> Result<(), Error> {
-        let twins = [
-            ("if!", Native::If),
-            ("sequence!", Native::Sequence),
-        ];
-        for (name, native) in twins {
-            let found = self
-                .intern(name)
-                .and_then(|s| self.find(self.built_in, s))?;
-            let found = match found {
-                Some(Value::Applicative(r)) => self.unwrapped(r)?,
-                Some(v) => v,
-                None => Value::Inert,
-            };
-            let Value::Operative(r) = found else {
-                return Err(Error::new(K::TypeError, &[found]));
-            };
-            if let Object::Operative(op) = self.heap.get_mut(r)? {
-                op.native = Some(native);
-            }
-        }
-        Ok(())
     }
 
     fn primitive(&mut self, p: Primitive, context: Reference, base: usize) -> Result<Mode, Error> {
@@ -1010,9 +954,12 @@ impl<T> Grift<T> {
                     body: z,
                     context,
                     size: u32::try_from(size).map_err(|_| Error::oom())?,
-                    native: None,
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)
+            }
+            P::If | P::Sequence => {
+                let operands = self.arguments_list(base)?;
+                return self.form(p, operands, context);
             }
             P::Wrap if !is_combiner(x) => return Err(type_error(p, x)),
             P::Wrap => Value::Applicative(self.heap.alloc(Object::Applicative(x))?),

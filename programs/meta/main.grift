@@ -199,12 +199,29 @@
 (define! meta-display (lambda! values (apply display (map printed values))))
 (define! meta-display-error (lambda! values (apply display-error (map printed values))))
 
+; if! and sequence!: the operands evaluated by the interpreter, the last as a tail call.
+(define! meta-if!
+  (vau! ((test consequent alternative) c form) #ignore
+    (meta-evaluate
+      (call-with-handler (lambda! () (select (meta-evaluate test c) consequent alternative))
+                         (passing-through form c))
+      c)))
+(define! meta-sequence!
+  (vau! (body c #ignore) #ignore (run-forms body c)))
+(define! run-forms
+  (lambda! (body c)
+    (if! (same? body ())
+      #inert
+      (if! (same? (rest body) ())
+        (meta-evaluate (first body) c)
+        (sequence! (meta-evaluate (first body) c) (run-forms (rest body) c))))))
+
 ; The interpreter's built-in context: its primitives, then the library, loaded into it as grift
 ; loads its own.
 (define! root (context))
-(bind root (quote! (vau! evaluate call-with-handler evaluate-with-cleanup value-to-string))
-      (list meta-vau! meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
-            (native print)))
+(bind root (quote! (vau! if! sequence! evaluate call-with-handler evaluate-with-cleanup value-to-string))
+      (list meta-vau! meta-if! meta-sequence! meta-evaluate-applicative meta-call-with-handler
+            meta-evaluate-with-cleanup (native print)))
 (for-each (lambda! (name) (bind root name (native (evaluate name (current-context)))))
           (quote! (wrap unwrap context bind unbind lookup names pair first rest same? select type-of
                    raise add subtract multiply divide remainder less-than?

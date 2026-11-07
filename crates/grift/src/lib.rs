@@ -233,7 +233,7 @@ pub struct Grift<T = ()> {
     runs: u64,
     /// Where each combination read under a name is, by its slot's index.
     positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
-    /// Off in tests: native primitives and library forms then run their grift definitions.
+    /// Off in tests: native primitives then run their grift definitions.
     #[cfg(test)]
     pub(crate) natives: bool,
     #[cfg(test)]
@@ -287,7 +287,7 @@ impl<T> Grift<T> {
         for &p in Primitive::ALL {
             let s = self.intern(p.name())?;
             let v = match p {
-                Primitive::Vau => local::Value::Primitive(p),
+                Primitive::Vau | Primitive::If | Primitive::Sequence => local::Value::Primitive(p),
                 _ => local::Value::Applicative(
                     self.heap
                         .alloc(Object::Applicative(local::Value::Primitive(p)))?,
@@ -297,7 +297,6 @@ impl<T> Grift<T> {
         }
         let forms = self.read_local(LIBRARY, None)?;
         self.evaluate_forms(None, forms, self.built_in)?;
-        self.install_natives()?;
         #[cfg(test)]
         self.load_definitions()?;
         // Everything in the heap now is the library's; errors skip its code.
