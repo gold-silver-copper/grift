@@ -72,6 +72,12 @@
   (lambda! (text i)
     (let! ((at (string-search text "\n" i))) (if! (empty-list? at) (string-byte-length text) at))))
 
+; Whether the byte b at offset i starts a comment: `;` or `#!`.
+(define! comment-start?
+  (lambda! (text i b end)
+    (or!? (same? b 59)
+          (and!? (same? b 35) (less-than? (add i 1) end) (same? (string-byte text (add i 1)) 33)))))
+
 ; The items from offset i up to the `)` that closes them, or the end of the text, and the offset
 ; of that `)` or end: (items offset). The text is known to read, so nothing here checks it.
 (define! read-items
@@ -90,7 +96,7 @@
                                            (pair blank-item items)
                                            items)))
                             (conditional!
-                              ((same? b 59)
+                              ((comment-start? text i b end)
                                (let! ((j (line-end text i)))
                                  (loop j
                                        0
@@ -214,9 +220,6 @@
               items)
     (when! (pair? items) (new-line out 0))))
 
-; Reading. A text may start with a `#!` line, which read-form skips and this keeps as it is: the
-; offset where the forms start.
-(define! forms-start (lambda! (text) (if! (string-starts-with? text "#!") (line-end text 0) 0)))
 ; Every form of text after offset i, as read-form reads them, printed: a parse-error if one
 ; doesn't read.
 (define! printed-forms
@@ -241,19 +244,14 @@
 ; raised before anything else is done.
 (define! format-text
   (lambda! (path text)
-    (let! ((start (forms-start text))
-           (forms (printed-forms text start))
-           ((items #ignore) (read-items text start))
+    (let! ((forms (printed-forms text 0))
+           ((items #ignore) (read-items text 0))
            (out (output)))
       (layout-top out items)
-      (let! ((formatted (string-append (byte-substring text 0 start)
-                                       (if! (same? start 0) "" "\n")
-                                       (output-text out)))
-             (again-start (forms-start formatted)))
-        (when! (not? (equal? (printed-forms formatted again-start) forms))
+      (let! ((formatted (output-text out)))
+        (when! (not? (equal? (printed-forms formatted 0) forms))
           (raise (error (quote! formatter-changed-forms) path)))
-        (when! (not? (equal? (comments (first (read-items formatted again-start)))
-                             (comments items)))
+        (when! (not? (equal? (comments (first (read-items formatted 0))) (comments items)))
           (raise (error (quote! formatter-lost-comments) path)))
         formatted))))
 
