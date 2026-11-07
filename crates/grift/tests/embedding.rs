@@ -16,6 +16,12 @@ use grift::{Error, Grift, Interrupter, Value, WriteError};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// A handle can be shared between threads, not only sent.
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    shared::<Interrupter>()
+};
+
 /// What the host functions below work on: what `give` returns, a stopper, and whom `started`
 /// tells.
 #[derive(Default)]
@@ -179,7 +185,6 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
         ("keep", g.keep(bad.clone()).map(drop)),
         ("as_pair", g.as_pair(bad).map(drop)),
         ("as_str", g.as_str(bad).map(drop)),
-        ("as_string", g.as_string(bad).map(drop)),
         ("as_bytes", g.as_bytes(bad).map(drop)),
         ("list_items", g.list_items(bad).map(drop)),
     ];
@@ -215,6 +220,25 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
     let got = outcome(g, r).replace("ok ", "");
     check("a host function's error".into(), got);
     broken
+}
+
+#[test]
+fn a_value_for_a_call_is_made_after_the_evaluate_that_finds_the_function() {
+    let mut g = grift();
+    let mut h = Host::default();
+    evaluate(&mut g, "(define! echo (lambda! (text) text))");
+    // Bytes count their storage, so these put a collection due.
+    let due = |g: &mut G| drop(g.bytes(&vec![0; 16 << 20]).unwrap());
+    due(&mut g);
+    let early = g.string("early").unwrap();
+    let f = g.evaluate(&mut h, "echo").unwrap();
+    let call = g.call(&mut h, &f, &[early]);
+    assert_eq!(outcome(&g, call), "stale-value");
+    due(&mut g);
+    let f = g.evaluate(&mut h, "echo").unwrap();
+    let late = g.string("late").unwrap();
+    let echoed = g.call(&mut h, &f, &[late]).unwrap();
+    assert_eq!(g.as_str(&echoed).unwrap(), Some("late"));
 }
 
 #[test]
@@ -268,8 +292,8 @@ fn another_interpreters_value_is_foreign_value_everywhere() {
     ));
     // An error of theirs: its kind is their symbol.
     let e = theirs.error("only-theirs", &[]);
-    if ours.is_kind(&e, "only-theirs").is_ok() {
-        broken.push("is_kind of their error".into());
+    if ours.symbol_name(&e.kind).is_ok() {
+        broken.push("the kind of their error".into());
     }
     let Value::Symbol(s) = &symbol else { panic!() };
     if ours.symbol_name(s).is_ok() {
@@ -469,7 +493,7 @@ fn a_run_its_host_function_left_is_over() {
     let mut g = leaving();
     let r = g.evaluate(&mut s, "(swap-out) (quote! rest)");
     assert_eq!(kind(&g, &r), "foreign-value");
-    assert!(r.unwrap_err().trace().is_empty());
+    assert!(r.unwrap_err().trace.is_empty());
     quiet(&mut g, &mut s);
     // The one swapped out, put back: its run is over, and it runs the next.
     let mut parked = s.saved.take().unwrap();
@@ -479,7 +503,7 @@ fn a_run_its_host_function_left_is_over() {
     let mut g = leaving();
     let r = g.evaluate(&mut s, "(restore)");
     assert_eq!(kind(&g, &r), "foreign-value");
-    assert!(r.unwrap_err().trace().is_empty());
+    assert!(r.unwrap_err().trace.is_empty());
     quiet(&mut g, &mut s);
 }
 
@@ -582,7 +606,7 @@ fn stopped_in_time(step: &'static str) -> bool {
 
 #[test]
 fn a_stop_ends_a_walk_of_a_parameter_tree() {
-    assert!(stopped_in_time("(bind (context) shared shared)"));
+    assert!(stopped_in_time("(bind (context ()) shared shared)"));
     assert!(stopped_in_time(
         "(evaluate (list vau! shared #ignore 1) (current-context))"
     ));
@@ -690,4 +714,13 @@ fn bytes_copy_the_input_and_borrow_the_payload() {
     assert_eq!(g.as_bytes(&Value::Integer(0)).unwrap(), None);
     let text = g.string("abc").unwrap();
     assert_eq!(g.as_bytes(&text).unwrap(), None);
+}
+
+#[path = "../../../examples/stops.rs"]
+mod stops;
+
+/// The example the README points to does what it says.
+#[test]
+fn the_stops_example_runs() {
+    stops::main().unwrap();
 }

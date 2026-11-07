@@ -1,0 +1,2 @@
+(define! loaded (wait 1))
+(note loaded)

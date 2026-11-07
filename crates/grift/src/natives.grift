@@ -1,13 +1,11 @@
 ; What the native primitives mean: each one's grift definition, which the tests run in place of
 ; the Rust to show no program tells them apart (tests.rs, natives_are_their_definitions). Each is
 ; an operative given the arguments, checking them in the primitive's order and raising its errors,
-; naming it by its value, which it never calls. Every combiner here is made as this file loads:
-; with the natives off, making one would run lambda!, whose if! and first would come back here.
+; naming it by its value, which it never calls. Every combiner here is made as this file loads, so
+; none is made through a definition that is running.
 
 ; Branching under select, which if! stands on: a boolean names one of two bindings by its printed
 ; text, so nothing up to `select`'s meaning branches by select.
-(define! record (lambda! (names values) (filled (context) names values)))
-(define! filled (lambda! (c names values) (second-of (bind c names values) c)))
 (define! second-of (lambda! (#ignore x) x))
 (define! truths (list (string-to-symbol "#true") (string-to-symbol "#false")))
 (define! choose
@@ -43,7 +41,7 @@
   (lambda! (primitive (c s otherwise))
     (if! (context? c)
       (if! (symbol? s)
-        (call-with-handler (wrap (vau! () #ignore (evaluate s c))) (wrap (vau! (e) #ignore (absent e s otherwise))))
+        (evaluate-with-handler s c (wrap (vau! (e) #ignore (absent e s otherwise))))
         (type-failed primitive s))
       (type-failed primitive c))))
 ; otherwise where the symbol itself is unbound; any other error goes on as it was.
@@ -128,6 +126,17 @@
   (lambda! (text at)
     (or!? (same? at (string-byte-length text))
           (let! ((byte (string-byte text at))) (or!? (less-than? byte 128) (less-than? 191 byte))))))
+; string-search: bytes-search over the strings' bytes; a valid pattern only matches on character
+; boundaries.
+(define! searched
+  (lambda! (primitive (text pattern start))
+    (sequence!
+      (typed primitive text (quote! string))
+      (typed primitive pattern (quote! string))
+      (typed primitive start (quote! integer))
+      (if! (and!? (not? (less-than? start 0)) (not? (less-than? (string-byte-length text) start)) (boundary? text start))
+        (bytes-search (string-to-bytes text) (string-to-bytes pattern) start)
+        (fail (quote! range-error) (list primitive text start))))))
 (define! characters
   (lambda! (text at end done)
     (if! (same? at end)
@@ -250,7 +259,7 @@
 (define! meanings
   (record
     (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
-             string-to-integer string-byte-length code-point-to-string byte-substring bitwise-and
+             string-to-integer string-byte-length code-point-to-string byte-substring string-search bitwise-and
              bitwise-or bitwise-exclusive-or shift-left shift-right bytes-length bytes-byte
              bytes-slice bytes-append string-to-bytes bytes-to-string list-to-bytes bytes-to-list))
     (list (several (unwrap select) 3 picked)
@@ -265,6 +274,7 @@
           (one (unwrap string-byte-length) (quote! string) byte-count)
           (one (unwrap code-point-to-string) (quote! integer) character)
           (several (unwrap byte-substring) 3 part)
+          (several (unwrap string-search) 3 searched)
           (several (unwrap bitwise-and) 2 (bitwise (lambda! (x y) (multiply x y))))
           (several (unwrap bitwise-or) 2 (bitwise (lambda! (x y) (subtract (add x y) (multiply x y)))))
           (several (unwrap bitwise-exclusive-or) 2 (bitwise (lambda! (x y) (remainder (add x y) 2))))

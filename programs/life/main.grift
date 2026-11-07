@@ -31,7 +31,7 @@
 ; The options, a record: wrapping, final, size (() or (width height)), path and generations.
 (define! read-arguments
   (lambda! (arguments)
-    (let! ((options (context))
+    (let! ((options (context ()))
            (loop (lambda! (arguments positional)
                    (conditional!
                      ((empty-list? arguments) (reverse positional))
@@ -208,4 +208,4 @@
 (define! path (evaluate-in! path options))
 (run (make-grid path (read-pattern path (pattern-text path))
                 (evaluate-in! size options) (evaluate-in! wrapping options))
-     0 (evaluate-in! generations options) options (context))
+     0 (evaluate-in! generations options) options (context ()))
