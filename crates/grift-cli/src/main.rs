@@ -74,45 +74,50 @@ fn stdout_closed(r: &mut Runner) -> Value {
     Value::Inert
 }
 
-/// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes. A broken
-/// pipe ends the run quietly only when `w` is stdout, which is when `stdout` holds the runner.
+/// The numbers of the standard streams that are written to, in `Runner::files`.
+const STANDARD_ERROR: i64 = 1;
+const STANDARD_OUTPUT: i64 = 2;
+
+/// Writes the values to file `id`, strings without quotes when `raw`, then `end`, and flushes.
 fn put(
     g: &mut G,
+    r: &mut Runner,
+    id: i64,
     values: &[Value],
     raw: bool,
     end: &str,
-    w: &mut dyn Write,
-    stdout: Option<&mut Runner>,
 ) -> Result<Value, Error> {
+    let id = Value::Integer(id);
+    let (path, Stream::Writing(w)) = file(g, r, &id)? else {
+        return Err(g.error("type-error", values));
+    };
     let mut out = Sink { w, error: None };
-    let mut written = values.iter().try_for_each(|v| match g.as_str(v) {
-        Ok(Some(s)) if raw => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
-        _ => g.write(v, &mut out),
-    });
-    written =
-        written.and_then(|()| fmt::Write::write_str(&mut out, end).map_err(|_| WriteError::Output));
-    if written.is_ok()
-        && let Err(e) = out.w.flush()
-    {
-        out.error = Some(e);
-        written = Err(WriteError::Output);
-    }
-    match (written, out.error, stdout) {
-        (Ok(()), ..) => Ok(Value::Inert),
-        (Err(WriteError::Value(e)), ..) => Err(e),
-        (Err(_), Some(e), Some(r)) if e.kind() == io::ErrorKind::BrokenPipe => Ok(stdout_closed(r)),
-        (Err(_), ..) => Err(g.error("output-error", values)),
-    }
+    let printed = values
+        .iter()
+        .try_for_each(|v| match g.as_str(v) {
+            Ok(Some(s)) if raw => {
+                fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output)
+            }
+            _ => g.write(v, &mut out),
+        })
+        .and_then(|()| fmt::Write::write_str(&mut out, end).map_err(|_| WriteError::Output));
+    let wrote = match (printed, out.error) {
+        (Err(WriteError::Value(e)), _) => return Err(e),
+        (_, Some(e)) => Err(e),
+        (_, None) => out.w.flush(),
+    };
+    let wrote = wrote.map_err(|e| (e, path.to_owned()));
+    written(g, r, &id, wrote)
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stdout().lock(), Some(r))
+    put(g, r, STANDARD_OUTPUT, args, true, "")
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
-fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stderr().lock(), None)
+fn display_error(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    put(g, r, STANDARD_ERROR, args, true, "")
 }
 
 /// `(read-file path)`: the whole text of the file.
@@ -477,7 +482,7 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
             continue;
         }
         let done = match g.evaluate_in(r, top, "stdin", &src) {
-            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), Some(r)),
+            Ok(v) => put(g, r, STANDARD_OUTPUT, &[v], false, "\n"),
             Err(e) => Err(e),
         };
         if let Some(status) = r.exit {

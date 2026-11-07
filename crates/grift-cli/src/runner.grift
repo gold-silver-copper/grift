@@ -25,12 +25,9 @@
                 (list path
                       (lambda! (data) (write-host file data))
                       (lambda! () (close-host file))))))
-(define! standard-input (operations (quote! (read-line read-all read-bytes))
-                                    (list (lambda! () (read-line-host 0))
-                                          (lambda! () (read-all-host 0))
-                                          (lambda! (count) (read-bytes-host 0 count)))))
-(define! standard-error (operations (quote! (write)) (list (lambda! (data) (write-host 1 data)))))
-(define! standard-output (operations (quote! (write)) (list (lambda! (data) (write-host 2 data)))))
+(define! standard-input (reader "standard-input" 0))
+(define! standard-error (writer "standard-error" 1))
+(define! standard-output (writer "standard-output" 2))
 (define! open-file (lambda! (path) (reader path (open-host path))))
 (define! create-file (lambda! (path) (writer path (create-host path))))
 ; The record of a finished process: its status, output and error output.

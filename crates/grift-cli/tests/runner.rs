@@ -89,13 +89,36 @@ fn the_first_argument_is_the_script_whatever_its_spelling() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_is_an_error() {
-    let full = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/full")
-        .unwrap();
-    let out = run(&[], "(display \"data\")", Stdio::from(full));
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("output-error"));
+    // One failure, one kind, whichever word wrote.
+    for program in [
+        "(display \"data\")",
+        "((evaluate-in! write standard-output) \"data\")",
+    ] {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let out = run(&[], program, Stdio::from(full));
+        assert_eq!(out.status.code(), Some(1));
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("file-error \"standard-output\""), "{said}");
+    }
+}
+
+#[test]
+fn a_standard_stream_is_a_file_like_any_other() {
+    let dir = scratch("standard-streams");
+    let program = r#"
+        (display (equal? (names standard-input) (names (open-file "/dev/null")))
+                 (equal? (names standard-output) (names (create-file "/dev/null")))
+                 (evaluate-in! path standard-error))
+        ((evaluate-in! close standard-output))
+        (display-error (catch! (display "lost") e (list (evaluate-in! kind e) (evaluate-in! values e))))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(out, "#true#truestandard-error");
+    assert_eq!(err, "(closed (\"standard-output\"))");
 }
 
 #[test]
