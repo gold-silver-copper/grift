@@ -148,21 +148,21 @@ struct Frame {
     at: Reference,
 }
 
+// Every step pushes or pops a frame: a bigger one costs every program.
+const _: () = assert!(size_of::<Frame>() == 56);
+
 #[derive(Clone, Copy)]
 enum What {
     /// Evaluate the remaining forms of one `evaluate` call; with none left, pass the value on.
     Forms { rest: Value },
-    /// The value is the combiner of a combination with these operands, which the library made
-    /// if `library`.
-    Combine { operands: Value, library: bool },
+    /// The value is the combiner of a combination with these operands, which `maker` made.
+    Combine { operands: Value, maker: Maker },
     /// The value is an argument of `combiner`; arguments so far are on the argument stack from
-    /// `base`; the combination is the library's if `library`. A `u32` base keeps every frame
-    /// within 56 bytes.
+    /// `base`'s height, and `base` says whether the library made the combination.
     Arguments {
         combiner: Value,
         rest: Value,
-        base: u32,
-        library: bool,
+        base: Base,
     },
     /// When the evaluation above ends, by a value or an error, call the combiner `cleanup` with
     /// no arguments; `base` is the argument stack's height to go back to.
@@ -181,6 +181,47 @@ enum What {
     Body { rest: Value },
     /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
     Form,
+}
+
+/// Who made a combination, as a whole word: a frame holding a one-byte flag is read back whole,
+/// which waits for the narrow write to land.
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u64)]
+enum Maker {
+    Program,
+    Library,
+}
+
+impl Maker {
+    fn of(library: bool) -> Maker {
+        if library {
+            Maker::Library
+        } else {
+            Maker::Program
+        }
+    }
+}
+
+/// An argument stack's height and whether the library made the combination, in one word. Written
+/// whole, the frame reads back without waiting on two narrow writes, and stays 56 bytes.
+#[derive(Clone, Copy)]
+struct Base(usize);
+
+impl Base {
+    /// The top bit: a `Vec`'s length never reaches it.
+    const LIBRARY: usize = 1 << (usize::BITS - 1);
+
+    fn new(height: usize, library: bool) -> Base {
+        Base(height | if library { Base::LIBRARY } else { 0 })
+    }
+
+    fn height(self) -> usize {
+        self.0 & !Base::LIBRARY
+    }
+
+    fn library(self) -> bool {
+        self.0 & Base::LIBRARY != 0
+    }
 }
 
 impl Frame {
@@ -338,7 +379,7 @@ impl<T> Grift<T> {
             .alloc(Object::Context(None, Bindings::default()))?;
         let call = What::Combine {
             operands,
-            library: false,
+            maker: Maker::Program,
         };
         self.enter(state, &[(call, context)], Mode::Return(f), parks)
     }
@@ -509,7 +550,10 @@ impl<T> Grift<T> {
                         self.hold_form(r)?;
                     }
                 }
-                let combine = What::Combine { operands, library };
+                let combine = What::Combine {
+                    operands,
+                    maker: Maker::of(library),
+                };
                 self.frame(combine, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
             }
@@ -532,21 +576,19 @@ impl<T> Grift<T> {
                         Mode::Evaluate(form, context)
                     }
                     What::Forms { .. } | What::Form => Mode::Return(v),
-                    What::Combine { operands, library } => {
+                    What::Combine { operands, maker } => {
                         self.machine.here = at;
-                        self.machine.library = library;
+                        self.machine.library = maker == Maker::Library;
                         self.combine(v, operands, context)?
                     }
                     What::Arguments {
                         combiner,
                         rest,
                         base,
-                        library,
                     } => {
                         self.machine.here = at;
-                        self.machine.library = library;
                         push(&mut self.machine.arguments, v)?;
-                        self.next_argument(combiner, context, rest, base as usize)?
+                        self.next_argument(combiner, context, rest, base)?
                     }
                     What::Cleanup { cleanup, .. } => {
                         self.machine.here = at;
@@ -683,7 +725,7 @@ impl<T> Grift<T> {
         });
         let call = What::Combine {
             operands: Value::EmptyList,
-            library: false,
+            maker: Maker::Program,
         };
         self.frame(call, context, at)?;
         Ok(Mode::Return(cleanup))
@@ -786,7 +828,7 @@ impl<T> Grift<T> {
                 while let (Value::Applicative(r), Value::EmptyList) = (inner, operands) {
                     inner = self.unwrapped(r)?;
                 }
-                let base = self.machine.arguments.len();
+                let base = Base::new(self.machine.arguments.len(), self.machine.library);
                 self.next_argument(inner, context, operands, base)
             }
             Value::Operative(r) => self.call_compound(r, operands, context),
@@ -816,7 +858,7 @@ impl<T> Grift<T> {
         combiner: Value,
         context: Reference,
         rest: Value,
-        base: usize,
+        base: Base,
     ) -> Result<Mode, Error> {
         match rest {
             Value::Pair(r) => {
@@ -824,13 +866,15 @@ impl<T> Grift<T> {
                 let arguments = What::Arguments {
                     combiner,
                     rest,
-                    base: u32::try_from(base).map_err(|_| Error::oom())?,
-                    library: self.machine.library,
+                    base,
                 };
                 self.frame(arguments, context, self.machine.here)?;
                 Ok(Mode::Evaluate(x, context))
             }
-            Value::EmptyList => self.apply(combiner, context, base),
+            Value::EmptyList => {
+                self.machine.library = base.library();
+                self.apply(combiner, context, base.height())
+            }
             _ => Err(type_error(rest)),
         }
     }
