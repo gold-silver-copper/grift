@@ -889,9 +889,7 @@ impl<T> Grift<T> {
     pub(crate) fn abandon_run(&mut self) {
         self.machine = evaluate::Machine::default();
         self.parking = parked::Parking::Refused;
-        if self.run != 0 {
-            self.end_run();
-        }
+        self.end_run();
     }
 
     /// The context `v` is, or a `type-error` naming `p`.

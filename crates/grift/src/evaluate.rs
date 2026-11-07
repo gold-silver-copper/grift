@@ -659,18 +659,11 @@ impl<T> Grift<T> {
             self.refuse_cleanup_calls -= 1;
             return Err(Error::oom());
         }
-        let height = self.machine.frames.len();
-        let called = self
-            .machine
-            .raised
-            .try_reserve(1)
-            .map_err(|_| Error::oom())
-            .and_then(|()| self.frame(What::Raise, Reference::NONE, Reference::NONE))
-            .and_then(|()| self.call_thunk(cleanup, context, at));
-        if called.is_err() {
-            self.machine.frames.truncate(height);
-        }
-        called
+        let m = &mut self.machine;
+        let room = m.raised.try_reserve(1).and(m.frames.try_reserve(2));
+        room.map_err(|_| Error::oom())?;
+        self.frame(What::Raise, Reference::NONE, Reference::NONE)?;
+        self.call_thunk(cleanup, context, at)
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
@@ -737,7 +730,7 @@ impl<T> Grift<T> {
         let same = hosting
             .0
             .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && self.run == run && c.active() == run);
+            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && c.active() == run);
         if !same {
             self.abandon_run();
             return Err(Error::new(K::ForeignValue, &[]));
