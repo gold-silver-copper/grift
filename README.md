@@ -93,8 +93,8 @@ ended by `exit` ends with status 0, or 1 if its input ends inside a form. Data g
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
 file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
 failed write (`file-error`) or a script it can't read, or the status the program gave `exit`. At a
-terminal, errors are shown and the session goes on, ending 0 unless the program calls `exit` or
-input ends inside a form. It has no line editor: `rlwrap grift` gives
+terminal, errors are shown and the session goes on. A pipe closing ends it with 0; otherwise it ends 0
+unless the program calls `exit` or input ends inside a form. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:
@@ -123,11 +123,12 @@ operations call host functions that are bound only in a context no program can r
 program reaches a file only through a context it was given; closing is explicit, and using a file
 after it is closed is the error `closed`. The runner's error kinds: `file-error` (the path and the
 system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the path),
-`unset-variable` (the name), `process-error` (the program and the message), `broken-pipe`. A write
-to a pipe no one reads, on any file, is `broken-pipe`, an error like the others; if nothing catches
-it, the run ends quietly with status 0, so `grift script | head` is quiet. Memory refused while
-reading is the limit `out-of-memory`, except that `run-process` aborts the runner, since `std`
-buffers its output without asking.
+`unset-variable` (the name), `process-error` (the program and the message). `display` and
+`display-error` fail as a write on their file does. A write to a pipe no one reads, on any file,
+ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can keep it going, each
+`finally!` runs its cleanup forms, and the run ends quietly with status 0, so `grift script | head`
+is quiet. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
+aborts the runner, since `std` buffers its output without asking.
 
 ```lisp
 #!/usr/bin/env grift
@@ -235,7 +236,7 @@ fn main() -> Result<(), Error> {
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
-- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
+- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable; `stop()` from
   any thread stops the run in progress at its next step, inside a long walk of a tree, or as its
   last host call returns, with the error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
   run about to end can still return its value. `interrupted` runs cleanups on its way out as any
@@ -246,14 +247,17 @@ fn main() -> Result<(), Error> {
   level, and the run ends with `interrupted`, whatever else fails on the way. A handle forces the run
   it last reached, by a stop or a force, and that one only, so a late force never reaches a later
   run; a handle that has reached none (a clone starts as its source is) forces the run in progress.
-  `examples/stops.rs` shows all of this: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  `examples/stops.rs` shows stop, force, `is_limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.
 - **Limits.** `e.is_limit()` says the host or the machine began an error, not a program: handlers
   pass it, a program's error in a cleanup doesn't replace it, and it stays one through nested runs.
   A host function makes its own with `g.error(kind, values).as_limit()`, and reads `e.kind` and
-  `e.values` when the run has ended: the runner's `exit` carries its status this way.
+  `e.values` when the run has ended: the runner's `exit` carries its status this way. It says the host
+  began the ending, not that your stop did: a newer limit in a cleanup replaces it, so a host that gives
+  scripts a function making limits trusts its own record of what it asked for. A host function that
+  swallows a nested run's stop and returns lets the outer run go on; it can't hide a force.
 - **Waiting.** A host function can answer "not yet", so a script waits for an event in a call that
   looks like any other while the host's loop goes on, with no thread held. See below.
 - **A returned `Value` stays valid until the next `evaluate`, `call`, `start` or `resume`**, which may collect it.
@@ -267,7 +271,7 @@ fn main() -> Result<(), Error> {
 ### Waiting: pausable runs
 
 Register the function with `parking_function`, and have it answer `Answer::Later(request)`.
-`start` or `start_in` runs a script; if it comes to such a call, the run is set aside, and you get a
+`start` calls a combiner and `start_in` runs source text, each in a run that can wait; if it comes to such a call, the run is set aside, and you get a
 `Ran::Parked(parked)`. Your loop goes on: other runs start, finish and park over the same heap,
 sharing bindings. When the event comes, `resume(state, parked, Ok(value))` makes that call return
 `value` (or `Err(error)` raise `error`), and the script carries on from there, with every `catch!`
@@ -278,12 +282,18 @@ use grift::{Answer, Error, Grift, Parked, Ran, Value};
 
 /// A script's `(sleep ms)`. The value in `Later` says what's wanted: the run holds it, and
 /// `Parked::request` gives it to the loop. Do the work there, since a run may not get to park.
-fn sleep(_: &mut Grift<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
-    Ok(Answer::Later(args[0].clone()))
+fn sleep(g: &mut Grift<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
+    match args {
+        [ms] => Ok(Answer::Later(ms.clone())),
+        _ => Err(g.error("arity-error", args)),
+    }
 }
 
 fn say(g: &mut Grift<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
-    said.extend(g.as_str(&args[0])?.map(str::to_owned));
+    let [name] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    said.extend(g.as_str(name)?.map(str::to_owned));
     Ok(Value::Inert)
 }
 
@@ -331,25 +341,38 @@ fn main() -> Result<(), Error> {
   Nothing catches a limit, every `finally!` runs, and the run ends with it, or with another limit
   that replaced it. A cleanup that errors ends there, and the next one out runs. A cleanup that
   waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
-  goes on, or with a limit and it ends there. One that never ends is yours to stop or force.
+  goes on, or with a limit and it ends there. One that never ends is yours to stop or force; each
+  `resume` being a run of its own, a handle that reached the run before it waited needs a `stop()`
+  first, or its `force()` does nothing and says `false`. A cleanup that installs a new cleanup that
+  waits comes back each time, and neither reaches it while it waits: have your parking function call
+  `force()` before it answers `Later`, which ends the run there.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
   cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
-  `forgotten()` gives a new handle. **Dropping the interpreter** with runs parked runs none of their
+  `forgotten()` gives a new handle, not saying which run it is: put what identifies a job in its
+  request. **Dropping the interpreter** with runs parked runs none of their
   cleanups, the same as a process dying.
 - **Stops and limits.** A stop reaches the run in progress. A parked run isn't: `stop()` then does
-  nothing and says `false`. Each `resume` is a run of its own for stops. A stop that reaches a run
+  nothing and says `false`. Each `resume` is a run of its own for stops. One thread runs one run at a
+  time, so your loop goes on only while runs are parked, and a handle belongs to the interpreter, not
+  to a job. A watchdog over several jobs takes a lock around each `stop` or `force`, the loop clearing
+  "this job is running" under that lock as the run returns, or a late stop reaches the next job. It
+  stops again in each `resume` before a force can reach it, and the loop keeps the deadlines of parked
+  jobs, answering them with a limit. A stop that reaches a run
   as it would park stops it instead, so no stop is lost at a park. The run's cleanups then run, and
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
-  Cleanups after out of memory have what a collection frees; `resume` itself needs none.
+  Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;
+  refused the little it does need, the run waits still and the handle comes back.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
   frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function,
   and `can_park()` lets a host function do something else instead.
-  `start` and `resume` inside a host call are refused too (`cannot-park`), the handle
-  coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
-  interpreter's handle comes back the same way, with `foreign-value`.
+  `start` inside a host call is such a run. `resume` there is refused (`cannot-park`), the handle
+  coming back in `ResumeError::parked` with the run untouched: queue it for your loop. Another
+  interpreter's handle comes back the same way, with `foreign-value`, an error of the interpreter you
+  called.
 - **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
-  things reach every host. Memory refused makes a collection due, before a cleanup's first step, and a
-  cleanup whose first step is refused all the same is passed over for the next. And a kind's name
+  things reach every host. Memory refused makes one collection due, before the nearest cleanup's first
+  step, and a cleanup refused memory all the same is passed over for the next, which that new refusal
+  collects for. And a kind's name
   means nothing: a program's own `interrupted` or `out-of-memory` is caught like any error, and only
   `is_limit()` says one is real.
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run

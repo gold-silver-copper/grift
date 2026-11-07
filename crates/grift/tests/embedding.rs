@@ -16,6 +16,12 @@ use grift::{Error, Grift, Interrupter, Value, WriteError};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// A handle can be shared between threads, not only sent.
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    shared::<Interrupter>()
+};
+
 /// What the host functions below work on: what `give` returns, a stopper, and whom `started`
 /// tells.
 #[derive(Default)]

@@ -159,7 +159,7 @@ which a test shows no program can tell from the Rust.
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.6). A binding that isn't `(parameters expression)` is an `arity-error`. |
-| `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on by the one rule (see Errors). A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. A force cuts every cleanup. Memory refused collects before the next cleanup's first step, so it has what is free; a cleanup stops at its first allocation that still fails, so it may do nothing. |
+| `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on by the one rule (see Errors). A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. A force cuts every cleanup. Memory refused collects once, before the nearest cleanup's first step; a cleanup stops at its first allocation that still fails, so it may do nothing, and that refusal collects again for the next. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. A limit (see Errors) is never caught. |
 | `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had. A `kind` that isn't a symbol is a `type-error`. |
 | `(bindings c)` | Context `c`'s own bindings as data: a list of `(name value)`, sorted by name as `names` gives them, so a record's fields are a list: `(bindings (error (quote! e) 1))` is `((kind e) (trace ()) (values (1)))`. |
@@ -321,15 +321,15 @@ is no new form or name, and nothing marks it.
 ```lisp
 (finally!
   (sequence!
-    (send pane "make\n")
-    (wait-for pane "done")   ; the host sets this run aside; its loop and other runs go on
-    (send pane "exit\n"))
-  (close-log log))
+    (say "started")
+    (sleep 100)   ; the host sets this run aside; its loop and other runs go on
+    (say "done"))
+  (say "closed"))
 ```
 
 The program reads top to bottom. Every `catch!` and `finally!` around the call is still there when it
 returns, the trace of a later error shows the whole path, and the call can be inside `map`,
-`for-each`, `let!`, `load`, or a cleanup. It returns a value, or raises an error, once.
+`for-each`, `let!`, a `load` written in grift, or a cleanup. It returns a value, or raises an error, once.
 
 What a program may see change across such a call: **other runs went on meanwhile.** They share the
 bindings, so `(bind here (quote! n) ...)` by another run is seen after the wait, and a value read

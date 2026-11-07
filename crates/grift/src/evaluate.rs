@@ -258,11 +258,6 @@ impl Machine {
     pub fn leave_room(&mut self, room: usize) {
         self.frames.shrink_to(self.frames.len() + room);
     }
-
-    /// Loses what cleanups saved.
-    pub fn lose_waiting(&mut self) {
-        self.waiting.clear();
-    }
 }
 
 impl Default for Machine {
@@ -380,6 +375,7 @@ impl<T> Grift<T> {
         answer: Result<Value, Error>,
     ) -> Result<Value, Error> {
         self.machine = machine;
+        self.machine.request = Value::Inert;
         // The frame `enter` pushed first, holding where the machine was, stays under the run.
         let floor = 1;
         let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e, floor));
@@ -405,7 +401,7 @@ impl<T> Grift<T> {
         let name = self.keep_local(Value::Pair(fiber))?;
         if !self.control.parks() {
             self.clear_kept(name);
-            return Err(Error::host(K::Interrupted));
+            return Err(Error::interrupted());
         }
         self.machine.request = request;
         let machine = std::mem::take(&mut self.machine);
@@ -445,7 +441,7 @@ impl<T> Grift<T> {
             mode = match next {
                 _ if self.control.asked() => {
                     self.control.acted();
-                    self.unwind(Error::host(K::Interrupted), floor)?
+                    self.unwind(Error::interrupted(), floor)?
                 }
                 Ok(mode) => mode,
                 Err(e) => self.unwind(e, floor)?,
@@ -548,14 +544,14 @@ impl<T> Grift<T> {
                         self.machine.here = at;
                         self.next_form(rest, context, at)?
                     }
-                    What::Finish => match self.machine.waiting.pop() {
-                        Some(Ok(v)) => Mode::Return(v),
-                        Some(Err(e)) => {
+                    // A cleanup's install gave its `Finish` this entry, so the fallback never acts.
+                    What::Finish => match self.machine.waiting.pop().unwrap_or(Ok(v)) {
+                        Ok(v) => Mode::Return(v),
+                        Err(e) => {
                             // It already says where it happened, or that it can't: not here.
                             self.machine.here = Reference::NONE;
                             return Err(e);
                         }
-                        None => return Err(Error::oom()),
                     },
                 }
             }
@@ -587,10 +583,12 @@ impl<T> Grift<T> {
     /// runs, the error waiting until it is done; a handler, unless the error is a limit, is called
     /// with it instead. What can't be called fails there like any call, with that error, and the
     /// next frame goes on from it. With neither left, the error goes to the caller.
-    fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
+    pub(crate) fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
         // The garbage is what the cleanups will run on, and the host's next run: the next safe
-        // point collects, with the frames dropped here let go of.
-        if e.refused {
+        // point collects, with the frames dropped here let go of. Once: what is left to free comes
+        // a level at a time, and a collection walks all the levels left. A cleanup refused memory
+        // is a new refusal, and asks again.
+        if std::mem::take(&mut e.refused) {
             self.heap.request_collection();
         }
         locate(&mut e, self.machine.here);
@@ -1375,7 +1373,7 @@ impl<T> Grift<T> {
         let mut walked = 0;
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = match (t, v) {
-                _ if self.walk_stopped(&mut walked) => Err(Error::host(K::Interrupted)),
+                _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
                 (Value::Symbol(s), _) => match bindings.try_reserve(1) {
                     Ok(()) if bindings.insert(s, v).is_none() => Ok(()),
                     Ok(()) => Err(Error::new(K::ParameterError, &[tree])),

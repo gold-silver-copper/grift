@@ -1624,9 +1624,17 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     unedited.
   - **Replaces in G-70 and G-82:** `exit` setting the runner's interrupt: `exit` is a limit of kind
     `exit`, its status in its values, read once at the boundary; a program's own `exit` error is
-    ordinary. An unreadable script is `file-error`, status 1, and 2 is usage only. A broken pipe is the
-    error `broken-pipe` on any file, which uncaught ends the run quietly with 0, so nothing knows which
-    file is stdout.
+    ordinary. An unreadable script is `file-error`, status 1, and 2 is usage only. A real failed write
+    with a broken pipe, on any file, is a limit of kind `broken-pipe`, as `exit` is: cleanups run,
+    handlers pass it, and uncaught it ends the run quietly with 0, read like `exit` through the bit and
+    the kind together, so nothing knows which file is stdout and no program can forge it (the owner's
+    ruling; a first version made it catchable and went by the name alone, which a program could
+    forge). The cost: master let a program catch a broken pipe on a file other than stdout, as
+    `file-error`, and now it can't. `display` fails as a write on its file does, so `output-error` goes.
+  - **Replaces in G-169:** `start` inside a host call being refused. It is a nested run, as `call` is,
+    and a wait in it is `cannot-park`; only `resume` there is refused. `outer && parks` already said
+    so. `nothing_starts_or_resumes_inside_a_host_call` is now
+    `inside_a_host_call_a_start_is_a_nested_run_and_nothing_resumes`.
   - **Replaces in G-48 and G-115:** `call-with-handler`. `(evaluate-with-handler x c h)` has
     `evaluate-with-cleanup`'s shape, and `catch!` allocates one closure less. A judge asked for the
     library wrapper back; another for no helper: none, since nothing needs it and `programs/meta` now
@@ -1646,18 +1654,20 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
       the collection freed. One retry was measured on another build and did not fix it.
     - *Only memory really refused asks for a collection,* by a `refused` mark `Error::oom` sets and
       nothing else can, not by the kind. A host's limit named `out-of-memory` collects nothing: it names
-      a reason, and the host can say that without any memory having been refused.
+      a reason, and the host can say that without any memory having been refused. It asks once, as it
+      begins to unwind or leaves for the host: one for each cleanup it passed took time in the square
+      of the depth, and a cleanup refused all the same is a new refusal, which asks again.
     - *Run numbers wrap after 2^62 runs,* 146 years at one a nanosecond. Not handled: a refusal path for
       it would be code for a case that can't happen. One judge asked for it.
   - **Not done:** `run-process` still aborts on memory refused: `Command::output` buffers infallibly,
     and replacing it means hand-written pipes and threads. Stale limits don't keep their kind, so a
     stale `exit` is status 1.
   - **What this is by the count the owner asked for** (hand recount on both censuses' manifests, against
-    `ce508a4`, master plus #206 plus force, the same features): Opus count ending decisions 43 to 23,
-    reason replacements 14 to 8; Codex count 48 to 31 and 9 to 9. The rule set before the work says a
+    `ce508a4`, master plus #206 plus force, the same features): Opus count ending decisions 43 to 25,
+    reason replacements 14 to 8; Codex count 48 to 32 and 9 to 9. The rule set before the work says a
     real removal halves both, so this is **only renames by that rule, nearly there on one census and not on the other**.
     What did go: the mailbox protocol, force's own path, the left-the-run checks, the `Parking`
-    enum, `abandon`. Non-test Rust 3348 to 3219 lines; public items 90 to 91; exception sentences 6 to 5.
+    enum, `abandon`. Non-test Rust 3348 to 3215 lines; public items 90 to 91; exception sentences 6 to 5.
 
 - **G-171. The continuations spike: "no continuations" stands, on this evidence and not because it was
   recorded** (the owner: "use all our agentic skills to spike continuations"; tests G-35's and G-53's "no

@@ -17,6 +17,7 @@ struct World {
     held: Option<Parked>,
     saved: Vec<Value>,
     refused: Vec<String>,
+    watchdog: Option<std::thread::JoinHandle<()>>,
 }
 
 type G = Grift<World>;
@@ -75,10 +76,13 @@ fn nest(g: &mut G, world: &mut World, args: &[Value]) -> Result<Value, Error> {
     done
 }
 
-/// Tries every way to take up or start a run from inside a host call.
+/// Starts a nested run, and tries every way to take up a run or wait from inside a host call.
 fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Value, Error> {
     let top = g.top_level();
-    let e = g.start_in(world, &top, "inner", "1").unwrap_err();
+    let Ok(Ran::Finished(Value::Integer(1))) = g.start_in(world, &top, "inner", "1") else {
+        panic!("a nested run that doesn't wait just runs");
+    };
+    let e = g.start_in(world, &top, "inner", "(wait)").unwrap_err();
     world.refused.push(kind(g, &e));
     let parked = world.held.take().unwrap();
     let refused = g.resume(world, parked, Ok(Value::Inert)).unwrap_err();
@@ -642,7 +646,7 @@ fn a_run_that_cannot_park_says_so() {
 }
 
 #[test]
-fn nothing_starts_or_resumes_inside_a_host_call() {
+fn inside_a_host_call_a_start_is_a_nested_run_and_nothing_resumes() {
     let (mut g, mut w) = (grift(), World::default());
     w.held = Some(parked(run(&mut g, &mut w, "(add 1 (wait))")));
     let done = run(&mut g, &mut w, "(meddle) (wait) 7");
@@ -833,19 +837,26 @@ mod abandon_and_the_stop_rule {
         })
     }
 
-    /// A stop cuts the cleanup it lands in and the next one runs.
+    /// A stop cuts the cleanup it lands in and the next one runs. The cleanup starts the watchdog
+    /// itself once it has noted 1, since a stop may land even before a cleanup's first form.
     #[test]
     fn a_stop_cuts_one_cleanup_and_the_rest_run() {
         let (mut g, mut w) = (grift(), World::default());
+        let watch = g
+            .host_function("watch", |g, w, _| {
+                w.watchdog = Some(stop_until_heard(g.interrupter()));
+                Ok(Value::Inert)
+            })
+            .unwrap();
+        g.define("watch", watch).unwrap();
         let p = parked(run(
             &mut g,
             &mut w,
             "(define! spin (lambda! (n) (if! (same? n 0) #inert (spin (subtract n 1)))))
-             (finally! (finally! (wait) (sequence! (note 1) (spin 30000000) (note 2))) (note 3))",
+             (finally! (finally! (wait) (sequence! (note 1) (watch) (spin 30000000) (note 2))) (note 3))",
         ));
-        let watchdog = stop_until_heard(g.interrupter());
         let e = abandon(&mut g, &mut w, p).unwrap();
-        watchdog.join().unwrap();
+        w.watchdog.take().unwrap().join().unwrap();
         assert_eq!(kind(&g, &e), "interrupted");
         assert_eq!(w.log, ["1", "3"]);
         assert_eq!(g.parked(), 0);

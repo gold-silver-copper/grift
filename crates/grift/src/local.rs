@@ -125,11 +125,11 @@ impl Error {
         }
     }
 
-    /// An unwinding the host begins, of a kind that needs no values.
-    pub fn host(kind: K) -> Error {
+    /// The run was stopped.
+    pub fn interrupted() -> Error {
         Error {
             limit: true,
-            ..Error::new(kind, &[])
+            ..Error::new(K::Interrupted, &[])
         }
     }
 }

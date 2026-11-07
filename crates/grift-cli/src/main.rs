@@ -3,8 +3,8 @@
 //! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0,
 //! 1 on a grift error (a script that can't be read, or failed output, is one), or what the program
 //! gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program calls
-//! `exit` or input ends inside a form. A write to a pipe no one reads is the error `broken-pipe`,
-//! on any file, and if nothing catches it the run ends quietly, with 0.
+//! `exit` or input ends inside a form. A write to a pipe no one reads, on any file, ends the run as
+//! `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
 //! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
@@ -46,7 +46,7 @@ struct Runner {
 
 type G = Grift<Runner>;
 
-/// A `fmt::Write` straight into an `io::Write`, keeping the I/O error, so printing a value
+/// A `fmt::Write` straight into an `io::Write`, keeping what failed first, so printing a value
 /// needs no buffer that could grow without bound.
 struct Sink<W: Write> {
     w: W,
@@ -56,7 +56,7 @@ struct Sink<W: Write> {
 impl<W: Write> fmt::Write for Sink<W> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.w.write_all(s.as_bytes()).map_err(|e| {
-            self.error = Some(e);
+            self.error.get_or_insert(e);
             fmt::Error
         })
     }
@@ -183,7 +183,7 @@ fn no_memory(g: &mut G) -> Error {
 }
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
-/// aren't UTF-8, `broken-pipe`, else `kind` with the system's message.
+/// aren't UTF-8, else `kind` with the system's message.
 fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::OutOfMemory {
         return no_memory(g);
@@ -192,13 +192,23 @@ fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
         Ok(v) => v,
         Err(e) => return e,
     };
-    match e.kind() {
-        io::ErrorKind::InvalidData => return g.error("encoding-error", &[what]),
-        io::ErrorKind::BrokenPipe => return g.error("broken-pipe", &[what]),
-        _ => {}
+    if e.kind() == io::ErrorKind::InvalidData {
+        return g.error("encoding-error", &[what]);
     }
     match g.string(&e.to_string()) {
         Ok(message) => g.error(kind, &[what, message]),
+        Err(e) => e,
+    }
+}
+
+/// A failed write to the file `path`: a pipe no one reads is the limit that ends the run quietly, as
+/// [`exit_status`] says, and only a real write makes it.
+fn write_failed(g: &mut G, path: &str, e: &io::Error) -> Error {
+    if e.kind() != io::ErrorKind::BrokenPipe {
+        return failed(g, "file-error", path, e);
+    }
+    match g.string(path) {
+        Ok(path) => g.error("broken-pipe", &[path]).as_limit(),
         Err(e) => e,
     }
 }
@@ -343,7 +353,7 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
 fn written(g: &mut G, wrote: Result<(), (io::Error, String)>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
-        Err((e, path)) => Err(failed(g, "file-error", &path, &e)),
+        Err((e, path)) => Err(write_failed(g, &path, &e)),
     }
 }
 
@@ -385,14 +395,15 @@ fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     }
 }
 
-/// The status `exit` gave, if that is how a run ended.
+/// The status a run ended with by the runner's own limits, which a program can't begin: what `exit`
+/// gave, or 0 for a pipe no one reads, so `grift script | head` is quiet.
 fn exit_status(g: &G, e: &Error) -> Option<u8> {
-    match e.values.as_slice() {
-        [Value::Integer(n)]
-            if e.is_limit() && g.symbol_name(&e.kind).is_ok_and(|k| k == "exit") =>
-        {
-            u8::try_from(*n).ok()
-        }
+    if !e.is_limit() {
+        return None;
+    }
+    match (g.symbol_name(&e.kind).ok()?, e.values.as_slice()) {
+        ("broken-pipe", _) => Some(0),
+        ("exit", [Value::Integer(n)]) => u8::try_from(*n).ok(),
         _ => None,
     }
 }
@@ -432,9 +443,6 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 /// Prints an error to stderr as its source, then its kind followed by its values and where it happened, the
 /// innermost combination on the error's line and each one around it on a line of its own.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
-    if g.symbol_name(&e.kind).is_ok_and(|k| k == "broken-pipe") {
-        return ExitCode::SUCCESS;
-    }
     let mut err = Sink {
         w: io::stderr().lock(),
         error: None,
@@ -446,7 +454,8 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
 }
 
 /// `(report-host thunk)`: calls `thunk` as a run of its own. An error that ends it is reported as
-/// any run's is, even one no `catch!` could stop, and the session goes on; `exit` ends it.
+/// any run's is, even one no `catch!` could stop, and the session goes on; `exit` or a pipe no one
+/// reads ends it.
 fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [thunk] = args else {
         return Err(g.error("arity-error", args));

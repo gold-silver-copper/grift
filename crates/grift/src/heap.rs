@@ -121,6 +121,9 @@ pub(crate) struct Heap {
     pub refuse_once: bool,
     #[cfg(test)]
     pub refused: usize,
+    /// Collections so far.
+    #[cfg(test)]
+    pub collections: usize,
 }
 
 impl Default for Heap {
@@ -143,6 +146,8 @@ impl Default for Heap {
             refuse_once: false,
             #[cfg(test)]
             refused: 0,
+            #[cfg(test)]
+            collections: 0,
         }
     }
 }
@@ -295,6 +300,10 @@ impl Heap {
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
     /// nothing is freed and the error is `out-of-memory`.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>) -> Result<(), Error> {
+        #[cfg(test)]
+        {
+            self.collections += 1;
+        }
         let mut marks = std::mem::take(&mut self.marks);
         marks.clear();
         let marked = self.mark(roots, &mut marks);
