@@ -156,11 +156,12 @@ enum What {
     /// if `library`.
     Combine { operands: Value, library: bool },
     /// The value is an argument of `combiner`; arguments so far are on the argument stack from
-    /// `base`; the combination is the library's if `library`.
+    /// `base`; the combination is the library's if `library`. A `u32` base keeps every frame
+    /// within 56 bytes.
     Arguments {
         combiner: Value,
         rest: Value,
-        base: usize,
+        base: u32,
         library: bool,
     },
     /// When the evaluation above ends, by a value or an error, call the combiner `cleanup` with
@@ -544,7 +545,7 @@ impl<T> Grift<T> {
                         self.machine.here = at;
                         self.machine.library = library;
                         push(&mut self.machine.arguments, v)?;
-                        self.next_argument(combiner, context, rest, base)?
+                        self.next_argument(combiner, context, rest, base as usize)?
                     }
                     What::Cleanup { cleanup, .. } => {
                         self.machine.here = at;
@@ -822,7 +823,7 @@ impl<T> Grift<T> {
                 let arguments = What::Arguments {
                     combiner,
                     rest,
-                    base,
+                    base: u32::try_from(base).map_err(|_| Error::oom())?,
                     library: self.machine.library,
                 };
                 self.frame(arguments, context, self.machine.here)?;
@@ -1001,8 +1002,7 @@ impl<T> Grift<T> {
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let (lo, hi) = p.arity();
         if given.len() < lo || given.len() > hi {
-            let operands = collected(given.iter().copied())?;
-            return Err(Error::new(K::ArityError, &[self.list_local(&operands)?]));
+            return Err(self.arity_error(base));
         }
         let mut a = [Value::EmptyList; 3];
         a.iter_mut().zip(given).for_each(|(d, s)| *d = *s);
@@ -1179,6 +1179,19 @@ impl<T> Grift<T> {
             }
         };
         Ok(Mode::Return(v))
+    }
+
+    /// The arguments from `base` don't fit the primitive: an `arity-error` carrying them as one
+    /// list. Cold and apart, so that the check costs the machine's loop nothing more.
+    #[cold]
+    #[inline(never)]
+    fn arity_error(&mut self, base: usize) -> Error {
+        let given = self.machine.arguments.get(base..).unwrap_or_default();
+        let made = collected(given.iter().copied()).and_then(|operands| self.list_local(&operands));
+        match made {
+            Ok(operands) => Error::new(K::ArityError, &[operands]),
+            Err(e) => e,
+        }
     }
 
     /// The primitives on strings and bytes, apart from [`Grift::primitive`] so that its common cases
