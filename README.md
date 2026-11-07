@@ -87,10 +87,12 @@ rlwrap cargo run --release                        # interactive: prints each res
 
 `grift SCRIPT ARGUMENT...` runs the script; `#!/usr/bin/env grift` makes it a command, since the
 reader takes `#!` as starting a comment, as `;` does. With no script it reads the program from stdin,
-and when stdin is a terminal it evaluates each complete input and prints its result. Data goes
+and when stdin is a terminal it evaluates each complete input and prints its result: a session that
+goes on past an error, where a program's `read-line` takes the next line typed, and a session that isn't
+ended by `exit` ends with status 0, or 1 if its input ends inside a form. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
 file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error or
-a failed write (`output-error`), 2 on a usage error or unreadable input, or the status the program
+a failed write (`file-error`), 2 on a usage error or unreadable input, or the status the program
 gave `exit`; a closed pipe on stdout ends it quietly. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
@@ -100,14 +102,16 @@ For scripting, the program gets a small fixed set of operations, and the core do
 |---|---|
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
-| `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin can't read it again (`closed`). |
-| `standard-output`, `standard-error` | Contexts of operations: `(write string)`, and `(write-bytes bytes)`, a bytes value (anything else is a `type-error`), as a file's, to stdout or stderr. |
+| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. |
+| `standard-output`, `standard-error` | Contexts of operations, as `create-file`'s: `(write data)`, a string or a bytes value, to stdout or stderr, and `path` and `close`. After `close`, `display` or `display-error` is the error `closed` too; the descriptor stays open, and the runner's own report of an error still prints. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
-| `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `(write-bytes bytes)`, `close`, and `path`. |
+| `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write data)`, a string's or a bytes value's bytes as they are, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
+| `(read-forms source text)` | The list of the text's forms, nothing evaluated; each combination keeps `source` and its line, so an error's trace says `at source:12`. A text that doesn't read is the `parse-error` naming `source`. |
+| `(position form)` | A combination's source and line, `("lib.grift" 12)`, if it was read with one; `()` for anything else. |
 | `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. A script whose path isn't UTF-8 gets `encoding-error` for a relative path. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
-| `script-path` | The script's path, as given; unbound when the program is stdin. |
+| `script-path` | The script's path, as given; `""` when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
 | `(environment-variable name)` | Its value, a string; `unset-variable` when it has none. |
 | `(exit status)` | Ends the run with `status`, 0 to 255. The program stops at its next step, as when the host interrupts it: no `catch!` can keep it going. A `finally!` whose body it leaves runs its cleanup forms; a cleanup that calls `exit` ends there, its later forms cut. |
@@ -118,7 +122,7 @@ operations call host functions that are bound only in a context no program can r
 program reaches a file only through a context it was given; closing is explicit, and using a file
 after it is closed is the error `closed`. The runner's error kinds: `file-error` (the path and the
 system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the path),
-`unset-variable` (the name), `process-error` (the program and the message), `output-error`. A
+`unset-variable` (the name), `process-error` (the program and the message). A
 write to stdout that finds it closed, by `display` or through `standard-output`, ends the run
 quietly, as `(exit 0)` does: no `catch!` can keep it going.
 

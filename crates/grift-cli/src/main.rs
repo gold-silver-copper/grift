@@ -1,11 +1,11 @@
 //! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments. With no
-//! script it reads the program from stdin; when stdin is a terminal it evaluates each complete
-//! input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
+//! script it reads the program from stdin; when stdin is a terminal `runner.grift` evaluates each
+//! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
 //! failed output, 2 on a usage error or unreadable input, or what the program gave `exit`. A
 //! closed stdout (a broken pipe) ends the run quietly.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
-//! `read-file`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
+//! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
 //! `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
 //! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
 
@@ -74,45 +74,39 @@ fn stdout_closed(r: &mut Runner) -> Value {
     Value::Inert
 }
 
-/// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes. A broken
-/// pipe ends the run quietly only when `w` is stdout, which is when `stdout` holds the runner.
-fn put(
-    g: &mut G,
-    values: &[Value],
-    raw: bool,
-    end: &str,
-    w: &mut dyn Write,
-    stdout: Option<&mut Runner>,
-) -> Result<Value, Error> {
+/// The numbers of the standard streams that are written to, in `Runner::files`.
+const STANDARD_ERROR: i64 = 1;
+const STANDARD_OUTPUT: i64 = 2;
+
+/// Writes the values to file `id`, strings without quotes and everything else as written, and
+/// flushes.
+fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
+    let id = Value::Integer(id);
+    let (path, Stream::Writing(w)) = file(g, r, &id)? else {
+        return Err(g.error("type-error", values));
+    };
     let mut out = Sink { w, error: None };
-    let mut written = values.iter().try_for_each(|v| match g.as_str(v) {
-        Ok(Some(s)) if raw => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
+    let printed = values.iter().try_for_each(|v| match g.as_str(v) {
+        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
         _ => g.write(v, &mut out),
     });
-    written =
-        written.and_then(|()| fmt::Write::write_str(&mut out, end).map_err(|_| WriteError::Output));
-    if written.is_ok()
-        && let Err(e) = out.w.flush()
-    {
-        out.error = Some(e);
-        written = Err(WriteError::Output);
-    }
-    match (written, out.error, stdout) {
-        (Ok(()), ..) => Ok(Value::Inert),
-        (Err(WriteError::Value(e)), ..) => Err(e),
-        (Err(_), Some(e), Some(r)) if e.kind() == io::ErrorKind::BrokenPipe => Ok(stdout_closed(r)),
-        (Err(_), ..) => Err(g.error("output-error", values)),
-    }
+    let wrote = match (printed, out.error) {
+        (Err(WriteError::Value(e)), _) => return Err(e),
+        (_, Some(e)) => Err(e),
+        (_, None) => out.w.flush(),
+    };
+    let wrote = wrote.map_err(|e| (e, path.to_owned()));
+    written(g, r, &id, wrote)
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stdout().lock(), Some(r))
+    put(g, r, STANDARD_OUTPUT, args)
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
-fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stderr().lock(), None)
+fn display_error(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    put(g, r, STANDARD_ERROR, args)
 }
 
 /// `(resolve-host base path)`: `path`, relative to the directory of the file `base` if it is
@@ -322,32 +316,20 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
     g.bytes(&bytes)
 }
 
-/// `(write text)` on a file: all of the string's bytes.
+/// `(write data)` on a file: all of the bytes of a string or a bytes value.
 fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, text] = args else {
+    let [id, data] = args else {
         return Err(g.error("arity-error", args));
     };
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
-    let Some(text) = g.as_str(text)? else {
-        return Err(g.error("type-error", std::slice::from_ref(text)));
+    let bytes = match g.as_str(data)? {
+        Some(text) => Some(text.as_bytes()),
+        None => g.as_bytes(data)?,
     };
-    let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
-    let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, r, id, wrote)
-}
-
-/// `(write-bytes bytes)` on a file: all of the bytes value's bytes.
-fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, bytes] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    let (path, Stream::Writing(out)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
-    };
-    let Some(bytes) = g.as_bytes(bytes)? else {
-        return Err(g.error("type-error", std::slice::from_ref(bytes)));
+    let Some(bytes) = bytes else {
+        return Err(g.error("type-error", std::slice::from_ref(data)));
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
     let wrote = wrote.map_err(|e| (e, path.to_owned()));
@@ -443,166 +425,114 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     g.pair(status, list)
 }
 
-/// Prints an error to stderr as its kind followed by its values and where it happened, the
+/// Prints an error to stderr as its source, then its kind followed by its values and where it happened, the
 /// innermost combination on the error's line and each one around it on a line of its own.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
         w: io::stderr().lock(),
         error: None,
     };
-    let named = matches!(e.trace.first(), Some(Value::Symbol(s))
-        if g.symbol_name(s).is_ok_and(|name| name == source));
-    if !named {
-        let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
-    }
+    let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     let _ = g.describe(e, &mut err);
     let _ = fmt::Write::write_str(&mut err, "\n");
     ExitCode::FAILURE
 }
 
-/// Whether `e` is a parse error for a list or string left open: the input isn't finished yet.
-fn unfinished(g: &mut G, e: &Error) -> bool {
-    let reason = match e.values.first() {
-        Some(Value::Symbol(s)) => g.symbol_name(s).unwrap_or_default(),
-        _ => "",
+/// `(report-host thunk)`: calls `thunk` as a run of its own. An error that ends it is reported as
+/// any run's is, even one no `catch!` could stop, and the session goes on; `exit` ends it.
+fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [thunk] = args else {
+        return Err(g.error("arity-error", args));
     };
-    g.symbol_name(&e.kind)
-        .is_ok_and(|kind| kind == "parse-error")
-        && ["unclosed-list", "unclosed-string"].contains(&reason)
-}
-
-fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
-    let mut status = ExitCode::SUCCESS;
-    let mut src = String::new();
-    let mut pending = None;
-    say(format_args!("> "));
-    for line in io::stdin().lock().lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(e) => {
-                say(format_args!("grift: stdin: {e}\n"));
-                return ExitCode::from(2);
-            }
-        };
-        src.push_str(&line);
-        src.push('\n');
-        if src.trim().is_empty() {
-            src.clear();
-            say(format_args!("> "));
-            continue;
+    match g.call(r, thunk, &[]) {
+        Err(e) if r.exit.is_none() => {
+            report(g, "stdin", &e);
+            Ok(Value::Inert)
         }
-        // Read first: a `parse-error` from running the input (`read-form`'s) doesn't mean there is
-        // more of it to come.
-        pending = g.read(&src).err().filter(|e| unfinished(g, e));
-        if pending.is_some() {
-            say(format_args!("  "));
-            continue;
-        }
-        let done = match g.evaluate_in(r, top, "stdin", &src) {
-            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), Some(r)),
-            Err(e) => Err(e),
-        };
-        if let Some(status) = r.exit {
-            return ExitCode::from(status);
-        }
-        status = match done {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => report(g, "stdin", &e),
-        };
-        src.clear();
-        say(format_args!("> "));
-    }
-    // End of input in the middle of a form: that form is an error.
-    match pending {
-        Some(e) => report(g, "stdin", &e),
-        None => status,
+        done => done,
     }
 }
 
-/// The host functions the program gets by name.
-const PUBLIC: [(&str, HostFunction<Runner>); 6] = [
+/// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
+/// those it should have.
+const HOSTS: [(&str, HostFunction<Runner>); 18] = [
     ("display", display),
     ("display-error", display_error),
     ("environment-variable", environment_variable),
     ("wall-clock-nanoseconds", wall_clock_nanoseconds),
     ("elapsed-nanoseconds", elapsed_nanoseconds),
     ("exit", exit),
-];
-
-/// The host functions only `runner.grift`'s closures get.
-const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
     ("open-host", open_host),
     ("create-host", create_host),
     ("read-line-host", read_line_host),
     ("read-all-host", read_all_host),
     ("read-bytes-host", read_bytes_host),
     ("write-host", write_host),
-    ("write-bytes-host", write_bytes_host),
     ("close-host", close_host),
     ("run-host", run_host),
-    ("read-forms-host", read_forms_host),
+    ("report-host", report_host),
+    ("read-forms", read_forms),
+    ("position", position),
     ("resolve-host", resolve_host),
 ];
 
-/// `(read-forms-host path text)`: the forms of `text`, read from `path`, each combination with its
-/// source and line.
-fn read_forms_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [path, text] = args else {
+/// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
+fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [source, text] = args else {
         return Err(g.error("arity-error", args));
     };
-    let (Some(path), Some(text)) = (g.as_str(path)?, g.as_str(text)?) else {
+    let (Some(source), Some(text)) = (owned_string(g, source)?, owned_string(g, text)?) else {
         return Err(g.error("type-error", args));
     };
-    let (path, text) = (path.to_owned(), text.to_owned());
-    g.read_in(&path, &text)
+    g.read_in(&source, &text)
 }
 
-/// Binds the runner's operations in the top-level context, and `script-path` if there is a script.
-fn set_up(
-    g: &mut G,
-    r: &mut Runner,
-    arguments: &[String],
-    script: Option<&str>,
-) -> Result<(), Error> {
-    for (name, f) in PUBLIC {
+/// `(position form)`: the source and line of a combination `read-forms` or an evaluated text read,
+/// as a list; `()` for any other value.
+fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [form] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let Some((source, line)) = g.position(form)? else {
+        return Ok(Value::EmptyList);
+    };
+    let source = source.to_owned();
+    let source = g.string(&source)?;
+    g.list(&[source, Value::Integer(i64::from(line))])
+}
+
+/// Evaluates `runner.grift` in a private context holding what it needs, so the operations it
+/// makes look names up there, never where the program could redefine them. It counts as library
+/// code from then on, so an error's trace has only the program's combinations. Gives what runs a
+/// session at a terminal.
+fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Result<Value, Error> {
+    let private = g.private_context()?;
+    let bind = |g: &mut G, name: &str, value: Value| {
+        let name = Value::Symbol(g.symbol(name)?);
+        g.bind(&private, &name, value)
+    };
+    for (name, f) in HOSTS {
         let f = g.host_function(name, f)?;
-        g.define(name, f)?;
+        bind(g, name, f)?;
     }
     let mut list = Value::EmptyList;
     for a in arguments.iter().rev() {
         let a = g.string(a)?;
         list = g.pair(a, list)?;
     }
-    g.define("command-line-arguments", list)?;
-    if let Some(script) = script {
-        let path = g.string(script)?;
-        g.define("script-path", path)?;
-    }
-    // The setup is made in a private context, so the operations it makes look names up there,
-    // never where the program could redefine them. It counts as library code from then on, so
-    // an error's trace has only the program's combinations.
-    let private = g.private_context()?;
-    let setup = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
-    let script = g.string(script.unwrap_or_default())?;
-    let mut hosts = vec![g.top_level(), script];
-    for (name, f) in PRIVATE {
-        hosts.push(g.host_function(name, f)?);
-    }
-    g.call(r, &setup, &hosts)?;
+    bind(g, "command-line-arguments", list)?;
+    let script = g.string(script)?;
+    bind(g, "script-path", script)?;
+    let top = g.top_level();
+    bind(g, "top", top)?;
+    let session = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
     g.seal_library();
-    Ok(())
+    Ok(session)
 }
 
 fn main() -> ExitCode {
     let mut args = std::env::args_os().skip(1);
     let script = args.next();
-    if script
-        .as_ref()
-        .is_some_and(|s| s.as_encoded_bytes().starts_with(b"-"))
-    {
-        say(format_args!("{USAGE}\n"));
-        return ExitCode::from(2);
-    }
     let arguments: Vec<String> = args.map(|a| a.to_string_lossy().into_owned()).collect();
     let mut g: G = match Grift::new() {
         Ok(g) => g,
@@ -635,36 +565,35 @@ fn main() -> ExitCode {
         script: script.as_ref().map(PathBuf::from),
     };
     let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
-    if let Err(e) = set_up(&mut g, &mut r, &arguments, script_path.as_deref()) {
-        return report(&g, "grift", &e);
-    }
-    let top = g.top_level();
-    let (name, text) = match script {
-        None if io::stdin().is_terminal() => return interactive(&mut g, &mut r, &top),
-        None => {
-            // The program is standard input, so it can't read it as data too.
-            if let Some(input) = r.files.first_mut() {
-                input.file = None;
+    let set = set_up(
+        &mut g,
+        &mut r,
+        &arguments,
+        script_path.as_deref().unwrap_or_default(),
+    );
+    let session = match set {
+        Ok(session) => session,
+        Err(e) => return report(&g, "grift", &e),
+    };
+    let name = script_path.unwrap_or_else(|| String::from("stdin"));
+    let done = if script.is_none() && io::stdin().is_terminal() {
+        g.call(&mut r, &session, &[])
+    } else {
+        let text = match &script {
+            Some(path) => std::fs::read_to_string(path),
+            None => io::read_to_string(io::stdin()),
+        };
+        match text {
+            Ok(text) => {
+                let top = g.top_level();
+                g.evaluate_in(&mut r, &top, &name, &text)
             }
-            let mut s = String::new();
-            (
-                String::from("stdin"),
-                io::stdin().read_to_string(&mut s).map(|_| s),
-            )
-        }
-        Some(path) => (
-            path.to_string_lossy().into_owned(),
-            std::fs::read_to_string(&path),
-        ),
-    };
-    let text = match text {
-        Ok(text) => text,
-        Err(e) => {
-            say(format_args!("grift: {name}: {e}\n"));
-            return ExitCode::from(2);
+            Err(e) => {
+                say(format_args!("grift: {name}: {e}\n{USAGE}\n"));
+                return ExitCode::from(2);
+            }
         }
     };
-    let done = g.evaluate_in(&mut r, &top, &name, &text);
     match (r.exit, done) {
         (Some(status), _) => ExitCode::from(status),
         (None, Ok(_)) => ExitCode::SUCCESS,

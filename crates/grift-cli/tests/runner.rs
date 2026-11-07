@@ -60,7 +60,6 @@ fn statuses() {
     );
     assert_eq!(spoof.status.code(), Some(1));
 
-    assert_eq!(run(&["--help"], "", Stdio::piped()).status.code(), Some(2));
     assert_eq!(
         run(&["no/such/file.grift"], "", Stdio::piped())
             .status
@@ -69,16 +68,57 @@ fn statuses() {
     );
 }
 
+#[test]
+fn the_first_argument_is_the_script_whatever_its_spelling() {
+    let dir = scratch("flag-spelling");
+    std::fs::write(dir.join("-x.grift"), "(display 42)").unwrap();
+    let ran = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg("-x.grift")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!((ran.status.code(), &ran.stdout[..]), (Some(0), &b"42"[..]));
+    // One that can't be read says why, then how to run grift.
+    let help = run(&["--help"], "", Stdio::piped());
+    let said = String::from_utf8(help.stderr).unwrap();
+    assert!(said.starts_with("grift: --help: "), "{said}");
+    assert!(said.contains("\nusage: grift"), "{said}");
+    assert_eq!(help.status.code(), Some(2));
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_is_an_error() {
-    let full = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/full")
-        .unwrap();
-    let out = run(&[], "(display \"data\")", Stdio::from(full));
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("output-error"));
+    // One failure, one kind, whichever word wrote.
+    for program in [
+        "(display \"data\")",
+        "((evaluate-in! write standard-output) \"data\")",
+    ] {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let out = run(&[], program, Stdio::from(full));
+        assert_eq!(out.status.code(), Some(1));
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("file-error \"standard-output\""), "{said}");
+    }
+}
+
+#[test]
+fn a_standard_stream_is_a_file_like_any_other() {
+    let dir = scratch("standard-streams");
+    let program = r#"
+        (display (equal? (names standard-input) (names (open-file "/dev/null")))
+                 (equal? (names standard-output) (names (create-file "/dev/null")))
+                 (evaluate-in! path standard-error))
+        ((evaluate-in! close standard-output))
+        (display-error (catch! (display "lost") e (list (evaluate-in! kind e) (evaluate-in! values e))))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(out, "#true#truestandard-error");
+    assert_eq!(err, "(closed (\"standard-output\"))");
 }
 
 #[test]
@@ -92,13 +132,22 @@ fn standard_input_is_data_for_a_script() {
     let all = "(display ((evaluate-in! read-all standard-input)))";
     let (_, out, _) = script(&dir, all, &[], "x\ny\n");
     assert_eq!(out, "x\ny\n");
-    // A program read from stdin can't read it again.
+    // A program read from stdin has read it to its end, so more reads find nothing.
     let out = run(
         &[],
-        "((evaluate-in! read-line standard-input))",
+        "(display (list ((evaluate-in! read-all standard-input)) ((evaluate-in! read-line standard-input))))",
         Stdio::piped(),
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("closed \"standard-input\""));
+    assert_eq!(
+        (out.status.code(), &out.stdout[..]),
+        (Some(0), &b"(\"\" \"\")"[..])
+    );
+}
+
+#[test]
+fn script_path_is_always_bound() {
+    let out = run(&[], "(display (list script-path))", Stdio::piped());
+    assert_eq!(out.stdout, b"(\"\")");
 }
 
 #[test]
@@ -130,7 +179,7 @@ fn files_are_contexts_of_operations() {
     let (status, out, err) = script(&dir, program, &[path], "");
     assert_eq!(status, Some(0), "{err}");
     let want = format!(
-        "#[context close path write write-bytes] {path}\n\
+        "#[context close path write] {path}\n\
          #[context close path read-all read-bytes read-line]\n\
          (\"one\\n\" \"two\\n\" \"\")\n(closed (\"{path}\"))\nclosed\nfile-error\n#false"
     );
@@ -187,7 +236,7 @@ fn standard_error_is_written_to_as_a_file_is() {
         (status, out.as_str(), err.as_str()),
         (Some(2), "data", "no rule\n")
     );
-    // Also for a program read from stdin, whose standard input alone is closed.
+    // Also for a program read from stdin.
     let out = run(&[], say, Stdio::piped());
     assert_eq!(out.stderr, b"no rule\n");
     let (status, _, err) = script(&dir, "((evaluate-in! write standard-error) 1)", &[], "");
@@ -325,6 +374,20 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     );
 }
 
+#[test]
+fn a_program_s_own_loader_gets_the_lines_load_gets() {
+    let dir = scratch("own-loader");
+    let program = r#"
+        (define! forms (read-forms "data.txt" "\n(a)\nsym\n(b\n (c))\n5"))
+        (display (map position forms) (position 1))
+        (for-each (lambda! (form) (evaluate form (current-context))) (read-forms "inner.grift" "\n(first 1)"))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(1));
+    assert_eq!(out, "((\"data.txt\" 2) () (\"data.txt\" 4) ())()");
+    assert!(err.contains("in (first 1) at inner.grift:2"), "{err}");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn nested_loads_need_no_rust_stack() {
@@ -367,7 +430,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
     let program = r#"
         (define! (copy) command-line-arguments)
         (define! read (evaluate-in! read-bytes standard-input))
-        (define! put (evaluate-in! write-bytes standard-output))
+        (define! put (evaluate-in! write standard-output))
         (define! whole
           (lambda! (chunks)
             (let! ((chunk (read 65536)))
@@ -375,7 +438,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
         (define! all (whole ()))
         (put (bytes-slice all (subtract (bytes-length all) 100) (bytes-length all)))
         (define! out (create-file copy))
-        ((evaluate-in! write-bytes out) all)
+        ((evaluate-in! write out) all)
         ((evaluate-in! close out))
         (define! in (open-file copy))
         (display-error (bytes-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "
@@ -452,12 +515,15 @@ fn a_parse_error_says_where_the_form_opened() {
     assert_eq!(status, Some(1));
     let path = dir.join("script.grift");
     let path = path.to_str().unwrap();
-    assert_eq!(err, format!("parse-error unclosed-list 2 1 in {path}\n"));
+    assert_eq!(
+        err,
+        format!("{path}: parse-error unclosed-list 2 1 in {path}\n")
+    );
     let error = run(&[], "(a\n  (b", Stdio::piped());
     assert_eq!(error.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(error.stderr).unwrap(),
-        "parse-error unclosed-list 2 3 in stdin\n"
+        "stdin: parse-error unclosed-list 2 3 in stdin\n"
     );
 }
 
@@ -578,4 +644,73 @@ fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
             .unwrap();
         assert_eq!(loaded, alone, "{text}");
     }
+}
+
+/// Types `input` at grift on a terminal of its own, once it has asked, and gives the exit status
+/// and everything the terminal showed after that first prompt.
+#[cfg(target_os = "linux")]
+fn at_a_terminal(input: &str) -> (Option<i32>, String) {
+    use std::io::Read;
+    let mut child = Command::new("script")
+        .args(["-qec", "stty -echo; exec \"$GRIFT\"", "/dev/null"])
+        .env("GRIFT", env!("CARGO_BIN_EXE_grift"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut asked = [0; 2];
+    stdout.read_exact(&mut asked).unwrap();
+    assert_eq!(&asked, b"> ");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let mut shown = String::new();
+    stdout.read_to_string(&mut shown).unwrap();
+    (child.wait().unwrap().code(), shown.replace("\r\n", "\n"))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
+    let (status, shown) =
+        at_a_terminal("(define! x\n 5)\nx\n(first 1)\n)\n(define! first 2)\n7 x\n\x04");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(shown.contains("  #inert\n"), "{shown}");
+    assert!(
+        shown.contains("stdin: type-error #[primitive first] 1 in (first 1) at stdin:1\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("stdin: parse-error unmatched-parenthesis 1 1 in stdin\n"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("> 5\n> "), "{shown}");
+    // Input that ends inside a form is that form's error, and `exit` gives its status.
+    let (status, shown) = at_a_terminal("(display\n\x04");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(
+        shown.contains("stdin: parse-error unclosed-list 1 1"),
+        "{shown}"
+    );
+    assert_eq!(at_a_terminal("(exit 9)\n").0, Some(9));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn input_with_no_forms_prints_nothing_at_a_terminal() {
+    let (_, shown) = at_a_terminal("\n; a comment\n1\n\x04");
+    assert_eq!(shown, "> > 1\n> ");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_at_a_terminal_reads_the_next_line() {
+    let (status, shown) =
+        at_a_terminal("((evaluate-in! read-line standard-input))\nafter\n(exit 0)\n");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(shown.contains("\"after\\n\"\n"), "{shown}");
 }

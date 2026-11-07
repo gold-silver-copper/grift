@@ -1,65 +1,89 @@
 ; The runner's operations on files, standard input, output and error, processes and loading.
-; main.rs evaluates this, in a private child of the built-in context, to a combiner it calls with
-; the top-level context, the script's path (or "" for none) and its host functions, which are bound
-; nowhere else.
-; Every operation a program gets is a closure over them, holding the number of its file: a
-; program reaches a file only through the context it was given, and can't name one by its
-; number.
-(lambda! (top script open-host create-host read-line-host read-all-host read-bytes-host
-          write-host write-bytes-host close-host run-host read-forms-host resolve-host)
-  ; A new context binding `names` to `values`.
-  (define! operations
-    (lambda! (names values)
-      (let! ((c (context ())))
-        (bind c names values)
-        c)))
-  (define! reading
-    (lambda! (file)
-      (list (lambda! () (read-line-host file))
-            (lambda! () (read-all-host file))
-            (lambda! (count) (read-bytes-host file count)))))
-  (define! writing
-    (lambda! (file)
-      (list (lambda! (text) (write-host file text))
-            (lambda! (bytes) (write-bytes-host file bytes)))))
-  (define! reader
-    (lambda! (path file)
-      (operations (quote! (path read-line read-all read-bytes close))
-                  (append (list path) (reading file) (list (lambda! () (close-host file)))))))
-  (define! writer
-    (lambda! (path file)
-      (operations (quote! (path write write-bytes close))
-                  (append (list path) (writing file) (list (lambda! () (close-host file)))))))
-  ; read-file: a file's whole text, by what any program can do with open-file.
-  (define! whole-text
-    (lambda! (path)
-      (let! ((file (open-host path)))
-        (finally! (read-all-host file) (close-host file)))))
-  ; The file whose forms are being loaded, at first the script; a relative path given `load` is
-  ; relative to it.
-  (define! loading (operations (quote! (file)) (list script)))
-  ; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in
-  ; `c` while a relative path given load is relative to the file. Each combination knows its line
-  ; in the file, so an error's trace says it.
-  (define! load-file
-    (lambda! (path c)
-      (let! ((outer (evaluate-in! file loading)))
-        (bind loading (quote! file) path)
-        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path (whole-text path)))
-                  (bind loading (quote! file) outer)))))
-  (bind top (quote! (standard-input standard-output standard-error open-file create-file
-                     read-file run-process load))
-    (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
-          (operations (quote! (write write-bytes)) (writing 2))
-          (operations (quote! (write write-bytes)) (writing 1))
-          (lambda! (path) (reader path (open-host path)))
-          (lambda! (path) (writer path (create-host path)))
-          whole-text
-          ; The record of a finished process: its status, output and error output.
-          (lambda! (program . arguments)
-            (operations (quote! (status output error-output))
-                        (apply run-host (pair program arguments))))
-          ; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's
-          ; load does; each load reads the file again.
-          (wrap (vau! (path) caller
-                  (load-file (resolve-host (evaluate-in! file loading) path) caller))))))
+; main.rs evaluates this in a private child of the built-in context, where it has bound its host
+; functions, `top` (the program's context), `script-path` and `command-line-arguments` by name.
+; A program gets only what the `for-each` at the end binds in `top`. An operation on a file is a closure
+; holding the file's number: a program reaches a file only through the context it was given, and
+; can't name one by its number.
+
+(define! reader
+  (lambda! (path file)
+    (record (quote! (path read-line read-all read-bytes close))
+                (list path
+                      (lambda! () (read-line-host file))
+                      (lambda! () (read-all-host file))
+                      (lambda! (count) (read-bytes-host file count))
+                      (lambda! () (close-host file))))))
+(define! writer
+  (lambda! (path file)
+    (record (quote! (path write close))
+                (list path
+                      (lambda! (data) (write-host file data))
+                      (lambda! () (close-host file))))))
+(define! standard-input (reader "standard-input" 0))
+(define! standard-error (writer "standard-error" 1))
+(define! standard-output (writer "standard-output" 2))
+(define! open-file (lambda! (path) (reader path (open-host path))))
+(define! create-file (lambda! (path) (writer path (create-host path))))
+; read-file: a file's whole text, by what any program can do with open-file.
+(define! read-file
+  (lambda! (path)
+    (let! ((file (open-host path)))
+      (finally! (read-all-host file) (close-host file)))))
+; The record of a finished process: its status, output and error output.
+(define! run-process
+  (lambda! (program . arguments)
+    (record (quote! (status output error-output))
+                (apply run-host (pair program arguments)))))
+; The file whose forms are being loaded, at first the script; a relative path given `load` is
+; relative to it.
+(define! loading (record (quote! (file)) (list script-path)))
+; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in
+; `c` while a relative path given load is relative to the file. Each combination knows its line
+; in the file, so an error's trace says it.
+(define! load-file
+  (lambda! (path c)
+    (let! ((outer (evaluate-in! file loading)))
+      (bind loading (quote! file) path)
+      (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms path (read-file path)))
+                (bind loading (quote! file) outer)))))
+; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's load does; each
+; load reads the file again.
+(define! load
+  (wrap (vau! (path) caller
+          (load-file (resolve-host (evaluate-in! file loading) path) caller))))
+
+; Whether `text` is a form left open, so the reader wants more of it. Only reading can say: a
+; `parse-error` from running the input doesn't mean there is more to come.
+(define! unfinished?
+  (lambda! (text)
+    (catch-kind! (sequence! (read-forms "stdin" text) #false) parse-error e
+      (member? (first (evaluate-in! values e)) (quote! (unclosed-list unclosed-string))))))
+; Evaluates the forms of `text` in the program's context and prints the last one's value.
+(define! evaluate-and-print
+  (lambda! (text)
+    (let! ((forms (read-forms "stdin" text)))
+      (when! (pair? forms)
+        (display (value-to-string (last (map (lambda! (form) (evaluate form top)) forms))) "\n")))))
+; The session at a terminal: a line at a time from standard input, which a program it runs reads
+; too, until a whole input has come. The host reports what goes wrong with an input and the session
+; goes on. Standard input ending inside a form is that form's error, and ends the session.
+(define! session
+  (lambda! (text prompt)
+    (display-error prompt)
+    (let! ((line (read-line-host 0))
+           (text (string-append text line)))
+      (conditional!
+        ((same? line "") (read-forms "stdin" text) #inert)
+        ((unfinished? text) (session text "  "))
+        (#true (report-host (lambda! () (evaluate-and-print text)))
+               (session "" "> "))))))
+
+(define! here (current-context))
+(for-each (lambda! (name) (bind top name (evaluate name here)))
+          (quote! (display display-error read-file read-forms position environment-variable
+                   wall-clock-nanoseconds elapsed-nanoseconds exit command-line-arguments
+                   script-path standard-input standard-output standard-error open-file create-file
+                   run-process load)))
+
+; What main.rs calls when stdin is a terminal.
+(lambda! () (session "" "> "))

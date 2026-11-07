@@ -77,7 +77,7 @@ with space and comments between them, and `)`. A bytes value prints so, every by
 bytes never look like a string. Anything else inside is a `parse-error` (`bad-byte`) at it, a `.`
 is `misplaced-dot`, and a missing `)` is `unclosed-list` at the `(`; `#bytes` with no `(` after it
 is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
-`write-bytes`.
+a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` wherever a token can start.
 For Rust hosts, `grift::write_string(text, out)` writes one quoted string literal with these same
 escapes, into a `std::fmt::Write`, without an interpreter or allocation. It returns `std::fmt::Result`;
