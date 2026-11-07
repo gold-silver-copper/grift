@@ -92,7 +92,7 @@ to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it h
 file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
 failed write (`file-error`) or a script it can't read, 2 on a usage error, or the status the
 program gave `exit`. At a terminal, errors are shown and the session goes on, ending 0 unless the
-program calls `exit`, input ends inside a form, or a pipe closes. It has no line editor: `rlwrap grift` gives
+program calls `exit` or input ends inside a form. A closed pipe ends the session too, with 0. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:
