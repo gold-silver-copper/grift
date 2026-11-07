@@ -198,9 +198,8 @@ fn main() -> Result<(), Error> {
   `read_in(source, text)`, the list of forms, nothing evaluated. `read_in` keeps each
   combination's source and opening line for later evaluation. If `read_in` or `evaluate_in`
   cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the
-  supplied source name as a string innermost in the trace. `read` and `evaluate` keep an empty
-  trace for unreadable text. A named parse error's source string lives with the interpreter,
-  so the host can still describe it after later evaluations collect.
+  supplied source name as a symbol innermost in the trace. `read` and `evaluate` keep an empty
+  trace for unreadable text.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
@@ -225,7 +224,7 @@ fn main() -> Result<(), Error> {
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
   not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
-  input to `read_in` or `evaluate_in`, the trace starts with the supplied source string; the
+  input to `read_in` or `evaluate_in`, the trace starts with the supplied source symbol; the
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.

@@ -300,7 +300,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     // A file that doesn't read is innermost in the trace, by its path: the line and column are its.
     assert_eq!(
         out,
-        format!("(first 2) 2 1 1 2 (unclosed-list 3 3)\"{lib}/bad.grift\" #true")
+        format!("(first 2) 2 1 1 2 (unclosed-list 3 3){lib}/bad.grift #true")
     );
     // Each combination in the trace says its file and line, the loaded file's and the script's.
     let path = dir.join("script.grift");
@@ -319,7 +319,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(
         err,
         format!(
-            "{path}: parse-error unclosed-list 3 3 in \"{lib}/bad.grift\"\n  \
+            "{path}: parse-error unclosed-list 3 3 in {lib}/bad.grift\n  \
              from (load d) at {path}:2\n"
         )
     );
@@ -454,13 +454,13 @@ fn a_parse_error_says_where_the_form_opened() {
     let path = path.to_str().unwrap();
     assert_eq!(
         err,
-        format!("parse-error unclosed-list 2 1 in \"{path}\"\n")
+        format!("parse-error unclosed-list 2 1 in {path}\n")
     );
     let error = run(&[], "(a\n  (b", Stdio::piped());
     assert_eq!(error.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(error.stderr).unwrap(),
-        "parse-error unclosed-list 2 3 in \"stdin\"\n"
+        "parse-error unclosed-list 2 3 in stdin\n"
     );
 }
 

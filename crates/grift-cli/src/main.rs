@@ -445,7 +445,8 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
         w: io::stderr().lock(),
         error: None,
     };
-    let named = e.trace.first().and_then(|at| g.as_str(at).ok().flatten()) == Some(source);
+    let named = matches!(e.trace.first(), Some(Value::Symbol(s))
+        if g.symbol_name(s).is_ok_and(|name| name == source));
     if !named {
         let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     }

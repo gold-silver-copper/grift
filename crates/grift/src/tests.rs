@@ -2050,12 +2050,9 @@ fn a_parse_error_says_why_and_where() {
             }
             .unwrap_err();
             assert_eq!((&named.kind, &named.values), (&e.kind, &e.values));
-            let trace: Vec<_> = named
-                .trace
-                .iter()
-                .map(|at| g.as_str(at).unwrap())
-                .collect();
-            if trace != [Some("broken.grift")] {
+            let source = Value::Symbol(g.symbol("broken.grift").unwrap());
+            let trace = named.trace;
+            if trace != [source] {
                 missing_source.push(format!("{entry}: {want}: {trace:?}"));
             }
         }

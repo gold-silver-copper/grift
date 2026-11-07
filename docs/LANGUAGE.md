@@ -235,11 +235,9 @@ Rust hosts can read such forms without evaluating them with `Grift::read_in(sour
 returns the list of all forms, as `Grift::read(text)` does. `Grift::position` gives each combination's
 source and opening line, also after a loader evaluates it later. If `read_in` or `evaluate_in`
 cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the supplied
-source name as a string innermost in the trace. `read` and `evaluate`, which take no source name,
+source name as a symbol innermost in the trace. `read` and `evaluate`, which take no source name,
 keep an empty trace for unreadable text. A loader can propagate the named error unchanged; the
 runner's loaded-file error starts with that path, followed by the outer load's combination.
-The source string lives with the interpreter, so a host can describe a held named parse error
-after later evaluations collect.
 When evaluation starts one of those named outer forms, including through a native branch or
 sequence, its trace retains a boundary for the form. A tail evaluation of another named outer
 form updates that boundary to the new form, so the finished one disappears and space stays

@@ -131,11 +131,9 @@ pub struct Error {
     /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
     /// [`Grift::position`] gives each one's source and line. If input to [`Grift::read_in`] or
     /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
-    /// [`Value::String`]; its values remain `(reason line column)`. An outer evaluation can add
+    /// [`Value::Symbol`]; its values remain `(reason line column)`. An outer evaluation can add
     /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
-    /// doesn't read, its trace is empty. The named parse error's source string lives with the
-    /// interpreter, so that error can still be described after later evaluations collect.
-    /// Checked as the values are when the error comes in.
+    /// doesn't read, its trace is empty. Checked as the values are when the error comes in.
     pub trace: Vec<Value>,
     /// Who began it, read with [`Error::is_limit`].
     origin: local::Origin,
@@ -213,7 +211,6 @@ pub struct Grift<T = ()> {
     built_in: heap::Reference,
     top: heap::Reference,
     /// The kept values' context, a root no program reaches, and the names free for the next.
-    /// Host-kept values use ids at KEPT and above; diagnostic source strings use interned ids.
     kept: heap::Reference,
     kept_free: Vec<u32>,
     kept_next: u32,
@@ -311,8 +308,7 @@ impl<T> Grift<T> {
     /// in order in `context`, as `evaluate` does at top level. Each combination read keeps its
     /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`]. If `src`
     /// doesn't read, `parse-error` keeps `(reason line column)` in its values and `source` as
-    /// a string at the start of its trace, as [`Grift::read_in`] does. That source string survives
-    /// later collections.
+    /// a symbol at the start of its trace, as [`Grift::read_in`] does.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -637,8 +633,8 @@ impl<T> Grift<T> {
     /// evaluation of another named outer form replaces the finished form's trace boundary;
     /// the host's entry boundary stays. No forms gives `()`.
     /// If `text` doesn't read, `parse-error` keeps `(reason line column)` in its values and
-    /// `source` as a string at the start of its trace, as [`Grift::evaluate_in`] does. That source
-    /// string survives later collections. Allocation failure is `out-of-memory`.
+    /// `source` as a symbol at the start of its trace, as [`Grift::evaluate_in`] does. Allocation
+    /// failure is `out-of-memory`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;

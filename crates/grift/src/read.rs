@@ -2,7 +2,7 @@
 
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
-use crate::local::{Error, K, Symbol, Value, boxed, push};
+use crate::local::{Error, K, Symbol, Value, push};
 use crate::{Grift, Position};
 use std::ops::Range;
 
@@ -113,14 +113,12 @@ impl<T> Grift<T> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) =
-            self.read_form(src, at, line, source).or_else(|mut e| {
-                if e.kind == K::ParseError.into()
-                    && let Some(source) = source
-                {
-                    let name = self.source_string(source)?;
-                    push(&mut e.trace, name)?;
+            self.read_form(src, at, line, source).map_err(|mut e| {
+                // With no memory to spare the trace stays as it is, as for any location.
+                if let Some(source) = source {
+                    let _ = push(&mut e.trace, Value::Symbol(source));
                 }
-                Err(e)
+                e
             })?
         {
             if let (Some(_), Value::Pair(r)) = (source, form)
@@ -132,20 +130,6 @@ impl<T> Grift<T> {
             (at, line) = (place.end, after);
         }
         Ok(forms.head)
-    }
-
-    // Only malformed named input needs this allocation path; keep it out of the reader loop.
-    #[cold]
-    #[inline(never)]
-    fn source_string(&mut self, source: Symbol) -> Result<Value, Error> {
-        // Source ids are interned, below the disjoint host-kept ids at KEPT and above.
-        if let Some(name) = self.find(self.kept, source)? {
-            return Ok(name);
-        }
-        let text = boxed(self.name(source))?;
-        let name = Value::String(self.heap.alloc(Object::String(text))?);
-        self.bind_symbol(self.kept, source, name)?;
-        Ok(name)
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
