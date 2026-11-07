@@ -1,6 +1,7 @@
 //! How a run ends: who began the unwinding decides what may catch it, never what its kind is called.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
+use crate::parked_tests::abandon;
 use crate::{Answer, Error, Grift, Interrupter, Parked, Ran, Value};
 
 fn kind<T>(g: &Grift<T>, e: &Error) -> String {
@@ -71,7 +72,7 @@ fn stop_then_force(mut h: Interrupter) -> std::thread::JoinHandle<()> {
 #[test]
 fn a_program_or_a_host_function_can_only_make_what_is_caught() {
     let (mut g, mut s) = host();
-    for name in ["interrupted", "out-of-memory", "abandoned"] {
+    for name in ["interrupted", "out-of-memory", "exit"] {
         for raised in [
             format!("(raise (error (quote! {name})))"),
             format!("(reports \"{name}\")"),
@@ -134,7 +135,7 @@ fn abandoning_passes_handlers_runs_cleanups_and_the_host_can_tell() {
         &mut s,
         "(catch! (finally! (wait) (note 1)) #ignore (note 2))",
     );
-    let e = g.abandon(&mut s, p).unwrap();
+    let e = abandon(&mut g, &mut s, p);
     assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("abandoned", true));
     assert_eq!(log(&mut g, &mut s), "(1)");
 }
@@ -172,7 +173,7 @@ fn a_program_in_a_cleanup_cannot_replace_what_the_host_began() {
         );
         let src = format!("(catch! (finally! (wait) {raised}) #ignore 0)");
         let p = parked(&mut g, &mut s, &src);
-        let e = g.abandon(&mut s, p).unwrap();
+        let e = abandon(&mut g, &mut s, p);
         assert_eq!(
             (kind(&g, &e).as_str(), e.is_limit()),
             ("abandoned", true),
@@ -268,7 +269,7 @@ fn a_parked_runs_cleanups_under_abandon_end_at_a_force() {
         "(finally! (finally! (wait) (spin 100000000) (note 1)) (spin 100000000) (note 2))",
     );
     let watchdog = stop_then_force(g.interrupter());
-    let e = g.abandon(&mut s, p).unwrap();
+    let e = abandon(&mut g, &mut s, p);
     watchdog.join().unwrap();
     assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");

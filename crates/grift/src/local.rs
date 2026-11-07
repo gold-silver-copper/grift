@@ -69,7 +69,7 @@ known_symbols! {
     NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
-    RangeError "range-error" CannotPark "cannot-park" Abandoned "abandoned"
+    RangeError "range-error" CannotPark "cannot-park"
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"

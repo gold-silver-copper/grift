@@ -33,7 +33,8 @@ def define_waiting_cleanup(ed, work, name):
 
 
 def waits_in_cleanup(binary, work):
-    """A cleanup that waits: on a normal end it waits; when abandoned that call fails."""
+    """A cleanup that waits: on a normal end and at C-g it waits; when the editor leaves that call
+    ends the cleanup."""
     out = {}
     for how in ("normal_end", "c_g", "c_x_c_c"):
         ed = start(binary, work)

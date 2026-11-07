@@ -80,10 +80,26 @@ fn dropping_a_handle_asks_for_no_memory() {
     let mut found = 0;
     while let Some(p) = g.forgotten() {
         found += 1;
-        g.abandon(&mut log, p).unwrap();
+        abandon(&mut g, &mut log, p);
     }
     assert_eq!(found, 5);
     assert_eq!(log, ["1"; 5]);
+}
+
+/// Gives a parked run up, as a host does: the waiting call answers a limit, and so does each wait
+/// of a cleanup on the way out. What the run ended with.
+pub(crate) fn abandon<T>(g: &mut Grift<T>, state: &mut T, mut p: Parked) -> Error {
+    loop {
+        let ending = g.error("abandoned", &[]).as_limit();
+        match g.resume(state, p, Err(ending)) {
+            Ok(Ran::Parked(again)) => p = again,
+            Ok(Ran::Finished(v)) => panic!("a limit ended with the value {v:?}"),
+            Err(e) => {
+                assert!(e.parked.is_none(), "{:?}", e.error);
+                return e.error;
+            }
+        }
+    }
 }
 
 #[track_caller]
@@ -215,7 +231,7 @@ fn a_parked_run_counts_for_its_size_when_the_collector_decides() {
          (down 50000)",
     ));
     let waiting = live(&mut g, &mut log);
-    let ended = g.abandon(&mut log, p).unwrap();
+    let ended = abandon(&mut g, &mut log, p);
     assert_eq!(kind(&g, &ended), "abandoned");
     let gone = live(&mut g, &mut log);
     // A context a level, and at least two frames.
@@ -336,8 +352,8 @@ fn real_out_of_memory_passes_handlers() {
 
 /// Generated programs, run two ways: each alone with its waits answered at once, which is what
 /// it means; and together in one interpreter, parked and taken up in random order, with the
-/// collector and the natives set at random, and with random stops, abandons and allocation
-/// failures. Whatever happens to one run, no other notices. The first way decides what a run
+/// collector and the natives set at random, and with random stops, forces, abandons and allocation
+/// failures, and programs forging the names of limits. Whatever happens to one run, no other notices. The first way decides what a run
 /// that nothing touched must do, down to its trace, and how far one that something touched
 /// must get; the cleanups it entered say, by themselves, whether they all ran.
 mod generated {
@@ -382,7 +398,7 @@ mod generated {
         }
 
         fn expression(&mut self, depth: u32) -> String {
-            let choice = self.r.below(if depth == 0 { 4 } else { 18 });
+            let choice = self.r.below(if depth == 0 { 4 } else { 22 });
             let id = self.id();
             let sub = |p: &mut Self| p.expression(depth.saturating_sub(1));
             match choice {
@@ -409,7 +425,7 @@ mod generated {
                         sub(self)
                     )
                 }
-                11 => format!("(catch! {} e (note {id}))", sub(self)),
+                11 => format!("(catch! {} e {})", sub(self), handler(id)),
                 12 => format!("(map (lambda! (x) {}) (list 1 2))", sub(self)),
                 13 => format!("(for-each (lambda! (x) {}) (list 1 2))", sub(self)),
                 14 => match self.r.below(2) {
@@ -418,12 +434,34 @@ mod generated {
                 },
                 15 => format!("(length (map list (range 0 {})))", self.r.below(self.churn)),
                 16 => format!("(nest (quote! {}))", sub(self)),
+                // A forgery of a limit's name: caught if something can catch it, only data if not.
+                17 => format!("(raise (error (quote! {}) (quote! forged)))", forged(id)),
+                18 => format!(
+                    "(catch! (raise (error (quote! {}) (quote! forged))) e {})",
+                    forged(id),
+                    handler(id)
+                ),
+                // A limit of the host's own: nothing catches it, in a run nothing else touched too.
+                19 => format!("(catch! (host-limit {id}) e {})", handler(id)),
                 _ => format!(
                     "(list (string-append \"held\" \"{id}\") {} (list {id}))",
                     sub(self)
                 ),
             }
         }
+    }
+
+    fn forged(id: u64) -> &'static str {
+        match id % 3 {
+            0 => "interrupted",
+            1 => "out-of-memory",
+            _ => "host-limit",
+        }
+    }
+
+    /// What a `catch!` runs. A limit has no business here, whatever it is called.
+    fn handler(id: u64) -> String {
+        format!("(seen {id} (evaluate-in! kind e) (evaluate-in! values e))")
     }
 
     /// The answer to a wait: it depends only on what was asked.
@@ -444,45 +482,92 @@ mod generated {
         at_once: bool,
         /// Host calls so far, and at which to stop.
         calls: u64,
-        stop_at: Option<u64>,
+        stop_at: Option<(u64, bool)>,
         stopper: Option<Interrupter>,
+        /// A handle that has reached no run, cloned for each force.
+        fresh: Option<Interrupter>,
         /// How many stops reached each run, and how long its log was at the first.
         stops: Vec<u64>,
         stopped_at: Vec<Option<usize>>,
+        /// How long each run's log was at its force.
+        forced_at: Vec<Option<usize>>,
     }
 
     impl World {
+        /// A host call, after it has logged: what is armed lands as it returns.
         fn call(&mut self) {
             self.calls += 1;
-            if self.stop_at.is_some_and(|at| self.calls >= at) {
-                self.stop_at = None;
-                if let Some(run) = self.logs.get(self.current) {
-                    let at = run.len();
-                    if self.stopper.as_mut().is_some_and(Interrupter::stop) {
-                        self.stops[self.current] += 1;
-                        self.stopped_at[self.current].get_or_insert(at);
-                    }
-                }
+            let Some((at, force)) = self.stop_at else {
+                return;
+            };
+            let Some(run) = self.logs.get(self.current) else {
+                return;
+            };
+            if self.calls < at {
+                return;
+            }
+            self.stop_at = None;
+            let len = run.len();
+            let current = self.current;
+            if force {
+                let mut fresh = self.fresh.clone().unwrap();
+                assert!(fresh.force(), "a run is in progress");
+                self.forced_at[current].get_or_insert(len);
+            } else if self.stopper.as_mut().is_some_and(Interrupter::stop) {
+                self.stops[current] += 1;
+                self.stopped_at[current].get_or_insert(len);
+            }
+        }
+
+        fn log(&mut self, line: String) {
+            if let Some(log) = self.logs.get_mut(self.current) {
+                log.push(line);
             }
         }
     }
 
     fn g_note(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
-        w.call();
-        if let Some(log) = w.logs.get_mut(w.current) {
-            for v in args {
-                log.push(show(g, v));
-            }
+        for v in args {
+            w.log(show(g, v));
         }
+        w.call();
         Ok(Value::Inert)
     }
 
     fn g_enter(_: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
-        w.call();
-        if let (Some(log), [Value::Integer(id)]) = (w.logs.get_mut(w.current), args) {
-            log.push(format!("+{id}"));
+        if let [Value::Integer(id)] = args {
+            w.log(format!("+{id}"));
         }
+        w.call();
         Ok(Value::Inert)
+    }
+
+    /// `(seen id kind values)`: a handler ran. Only what carries the forger's mark may have a
+    /// limit's name; the real thing would have passed.
+    fn g_seen(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+        let [Value::Integer(id), Value::Symbol(kind), values] = args else {
+            panic!("{args:?}");
+        };
+        let name = g.symbol_name(kind)?.to_string();
+        let forged = g.list_items(values)?.iter().any(
+            |v| matches!(v, Value::Symbol(s) if g.symbol_name(s).is_ok_and(|n| n == "forged")),
+        );
+        let limit = ["interrupted", "out-of-memory", "abandoned", "host-limit"];
+        assert!(
+            forged || !limit.contains(&name.as_str()),
+            "a handler saw {name}"
+        );
+        w.log(id.to_string());
+        w.call();
+        Ok(Value::Inert)
+    }
+
+    fn g_host_limit(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+        if let [Value::Integer(id)] = args {
+            w.log(format!("${id}"));
+        }
+        w.call();
+        Err(g.error("host-limit", args).as_limit())
     }
 
     fn g_wait(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
@@ -524,6 +609,10 @@ mod generated {
         g.define("enter", f).unwrap();
         let f = g.host_function("nest", g_nest).unwrap();
         g.define("nest", f).unwrap();
+        let f = g.host_function("seen", g_seen).unwrap();
+        g.define("seen", f).unwrap();
+        let f = g.host_function("host-limit", g_host_limit).unwrap();
+        g.define("host-limit", f).unwrap();
         g
     }
 
@@ -532,6 +621,7 @@ mod generated {
     struct Outcome {
         kind: Option<String>,
         text: String,
+        limit: bool,
     }
 
     fn outcome<T>(g: &Grift<T>, done: Result<Value, &Error>) -> Outcome {
@@ -539,6 +629,7 @@ mod generated {
             Ok(v) => Outcome {
                 kind: None,
                 text: show(g, &v),
+                limit: false,
             },
             Err(e) => {
                 let mut text = String::new();
@@ -546,6 +637,7 @@ mod generated {
                 Outcome {
                     kind: Some(kind(g, e)),
                     text,
+                    limit: e.is_limit(),
                 }
             }
         }
@@ -560,6 +652,7 @@ mod generated {
             at_once: true,
             stops: vec![0; run + 1],
             stopped_at: vec![None; run + 1],
+            forced_at: vec![None; run + 1],
             ..World::default()
         };
         let top = g.top_level();
@@ -570,7 +663,11 @@ mod generated {
             Ok(Ran::Parked(_)) => panic!("{src}: answered at once, and parked"),
             Err(e) => outcome(&g, Err(&e)),
         };
-        (out, std::mem::take(&mut w.logs[run]))
+        // Nothing else touched it: a name makes nothing real, and only the host's own limit is one.
+        let log = std::mem::take(&mut w.logs[run]);
+        let by_host = log.iter().any(|l| l.starts_with('$'));
+        assert!(!out.limit || by_host, "{out:?}\n{src}");
+        (out, log)
     }
 
     /// The most cleanups entered and never run, from the log alone, and that those that ran ran in
@@ -622,46 +719,58 @@ mod generated {
         touched: &Touched,
         context: &str,
     ) {
-        let (log, stops, stopped_at) = (
+        let (log, stops, stopped_at, forced_at) = (
             world.logs[run].as_slice(),
             world.stops[run],
             world.stopped_at[run],
+            world.forced_at[run],
         );
         let context = format!("run {run}: {got:?}\nlog {log:?}\nmeaning {meaning:?}\n{context}");
         if let Some(kind) = &got.kind {
             assert_ne!(kind, "stale-value", "{context}");
             assert_ne!(kind, "foreign-value", "{context}");
         }
-        let cut = stops > 0 || touched.refused > 0;
-        let clean_until = [touched.clean_until, stopped_at]
+        let cut = stops > 0 || touched.refused > 0 || forced_at.is_some();
+        let clean_until = [touched.clean_until, stopped_at, forced_at]
             .into_iter()
             .flatten()
             .min();
-        match (touched.abandoned, cut) {
-            (false, false) => {
-                assert_eq!(got, &meaning.0, "{context}");
-                assert_eq!(log, meaning.1.as_slice(), "{context}");
-            }
-            _ => {
-                let n = clean_until.unwrap_or(log.len()).min(meaning.1.len());
-                assert_eq!(log.get(..n), meaning.1.get(..n), "{context}");
-            }
+        if !touched.abandoned && !cut {
+            assert_eq!(got, &meaning.0, "{context}");
+            assert_eq!(log, meaning.1.as_slice(), "{context}");
+        } else {
+            let n = clean_until.unwrap_or(log.len()).min(meaning.1.len());
+            assert_eq!(log.get(..n), meaning.1.get(..n), "{context}");
         }
-        let allowed: &[&str] = match (touched.abandoned, stops > 0, touched.refused > 0) {
-            (false, false, false) => &[],
-            (true, false, false) => &["abandoned"],
-            (true, true, false) => &["abandoned", "interrupted"],
-            (true, false, true) => &["abandoned", "out-of-memory"],
-            (true, true, true) => &["abandoned", "interrupted", "out-of-memory"],
-            (false, true, false) => &["interrupted"],
-            (false, false, true) => &["out-of-memory"],
-            (false, true, true) => &["interrupted", "out-of-memory"],
-        };
-        if !allowed.is_empty() && got != &meaning.0 {
+        // A force is the end, whatever else happens: nothing more runs, and it names the ending.
+        if let Some(at) = forced_at {
+            assert_eq!(got.kind.as_deref(), Some("interrupted"), "{context}");
+            assert!(got.limit, "{context}");
+            assert_eq!(log.len(), at, "ran after a force\n{context}");
+            return;
+        }
+        if (touched.abandoned || cut) && got != &meaning.0 {
+            let mut allowed = Vec::new();
+            if touched.abandoned {
+                allowed.push("abandoned");
+            }
+            if stops > 0 {
+                allowed.push("interrupted");
+            }
+            if touched.refused > 0 {
+                allowed.push("out-of-memory");
+            }
+            if log.iter().any(|l| l.starts_with('$')) {
+                allowed.push("host-limit");
+            }
             let kind = got.kind.as_deref().unwrap_or("a value");
             assert!(
                 allowed.contains(&kind),
                 "{kind} not in {allowed:?}\n{context}"
+            );
+            assert!(
+                got.limit,
+                "only a limit can replace what a run meant\n{context}"
             );
         }
         let free = cut;
@@ -680,15 +789,18 @@ mod generated {
             logs: vec![Vec::new()],
             stops: vec![1],
             stopped_at: vec![None],
+            forced_at: vec![None],
             ..World::default()
         };
         let meant = Outcome {
             kind: Some("mine".to_string()),
             text: "mine".to_string(),
+            limit: false,
         };
         let got = Outcome {
             kind: None,
             text: "1".to_string(),
+            limit: false,
         };
         check_end(
             0,
@@ -707,6 +819,7 @@ mod generated {
         parks: usize,
         abandoned: usize,
         stopped: usize,
+        forced: usize,
         refused: usize,
     }
 
@@ -739,9 +852,11 @@ mod generated {
             current: usize::MAX,
             stops: vec![0; runs],
             stopped_at: vec![None; runs],
+            forced_at: vec![None; runs],
             ..World::default()
         };
         w.stopper = Some(g.interrupter());
+        w.fresh = Some(g.interrupter());
         g.evaluate(
             &mut w,
             "(define! churn (lambda! (n) (length (map list (range 0 n)))))",
@@ -753,6 +868,7 @@ mod generated {
         g.heap.stress = stress;
 
         let may_stop = r.one_in(2);
+        let may_force = r.one_in(3);
         let may_refuse = r.one_in(2);
         let may_abandon = r.one_in(2);
         let mut touched = vec![Touched::default(); runs];
@@ -785,6 +901,7 @@ mod generated {
                     reached.runs += 1;
                     reached.abandoned += usize::from(touched[run].abandoned);
                     reached.stopped += usize::from(w.stops[run] > 0);
+                    reached.forced += usize::from(w.forced_at[run].is_some());
                     reached.refused += usize::from(touched[run].refused > 0);
                     check_end(run, &got, &w, &meanings[run], &touched[run], &context);
                 }
@@ -815,7 +932,7 @@ mod generated {
                     }
                 };
             }
-            match r.below(10) {
+            match r.below(11) {
                 // Start the next.
                 0 | 1 if next_run < runs => {
                     let run = next_run;
@@ -835,12 +952,13 @@ mod generated {
                     touched[run].abandoned = true;
                     let at = w.logs[run].len();
                     touched[run].clean_until.get_or_insert(at);
-                    let ended_with = match g.abandon(&mut w, parked) {
-                        Ok(e) => e,
-                        Err(refused) => panic!("{:?}\n{context}", refused.error),
-                    };
+                    let ending = g.error("abandoned", &[]).as_limit();
+                    let done = g.resume(&mut w, parked, Err(ending)).map_err(|e| {
+                        assert!(e.parked.is_none(), "{:?}\n{context}", e.error);
+                        e.error
+                    });
                     charge!(run, at);
-                    came_to!(run, Err(ended_with));
+                    came_to!(run, done);
                 }
                 // Lose a handle and find it again.
                 3 if !waiting.is_empty() => {
@@ -866,9 +984,13 @@ mod generated {
                     w.current = usize::MAX;
                     g.heap.request_collection();
                     let _ = g.evaluate(&mut w, "#inert");
+                    // No run is in progress: these find nothing, now or later.
+                    assert!(!w.stopper.as_mut().unwrap().stop(), "{context}");
+                    assert!(!w.fresh.clone().unwrap().force(), "{context}");
                 }
-                // Arm a stop, or a refusal, for what comes next.
-                6 if may_stop => w.stop_at = Some(w.calls + r.below(6)),
+                // Arm a stop, a force or a refusal, for what comes next.
+                6 if may_stop => w.stop_at = Some((w.calls + r.below(6), false)),
+                8 if may_force => w.stop_at = Some((w.calls + r.below(8), true)),
                 7 if may_refuse && g.heap.refuse_in.is_none() => {
                     g.heap.refuse_in = Some(r.below(48) as usize);
                     g.heap.refuse_once = r.one_in(2);
@@ -938,9 +1060,14 @@ mod generated {
         if cases >= 60 {
             assert!(reached.parks > cases as usize, "{reached:?}");
             assert!(
-                [reached.abandoned, reached.stopped, reached.refused]
-                    .iter()
-                    .all(|&n| n > 5),
+                [
+                    reached.abandoned,
+                    reached.stopped,
+                    reached.forced,
+                    reached.refused
+                ]
+                .iter()
+                .all(|&n| n > 5),
                 "{reached:?}"
             );
         }

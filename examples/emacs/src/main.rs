@@ -15,7 +15,9 @@
 
 mod jobs;
 
-use grift::{Answer, Error, Grift, HostFunction, Kept, Parked, ParkingFunction, Ran, Value};
+use grift::{
+    Answer, Error, Grift, HostFunction, Kept, Parked, ParkingFunction, Ran, ResumeError, Value,
+};
 use jobs::{Event, Inbox, JobEvent};
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -292,6 +294,8 @@ impl Runs {
                 }
                 None
             }
+            // That it was given up is no news.
+            Err(e) if e.is_limit() && g.is_kind(&e, "abandoned").unwrap_or(false) => None,
             // With no run left reading keys, what the run left set for a while is the editor's to
             // put back. With one, the minibuffer may be that run's.
             Err(e) if self.keys.is_empty() => Some(report(g, h, "editor-recover", &e)),
@@ -303,7 +307,9 @@ impl Runs {
     fn abandon_job(&mut self, g: &mut G, h: &mut Host, id: i64) {
         h.inbox.set_stoppable(false);
         for parked in self.take_job(id) {
-            abandon(g, h, parked);
+            if let Some(again) = abandon(g, h, parked) {
+                self.settle(g, h, Ok(Ran::Parked(again)));
+            }
         }
     }
 
@@ -320,25 +326,44 @@ impl Runs {
     fn abandon_all(&mut self, g: &mut G, h: &mut Host) {
         h.inbox.set_stoppable(false);
         for parked in self.keys.drain(..).rev() {
-            abandon(g, h, parked);
+            leave(g, h, parked);
         }
         for (_, parked) in self.jobs.drain(..).rev() {
-            abandon(g, h, parked);
+            leave(g, h, parked);
         }
         // Any whose handle came back refused: each is tried once.
         for _ in 0..g.parked() {
             if let Some(parked) = g.forgotten() {
-                abandon(g, h, parked);
+                leave(g, h, parked);
             }
         }
     }
 }
 
-/// Ends a parked run. That it was abandoned is no news; anything else that cut a cleanup is.
-fn abandon(g: &mut G, h: &mut Host, parked: Parked) {
-    let ended = g.abandon(h, parked).unwrap_or_else(Error::from);
-    if !g.is_kind(&ended, "abandoned").unwrap_or(false) {
-        report(g, h, "editor-report", &ended);
+/// Gives a parked run up: its waiting call answers a limit, which nothing catches, so its cleanups
+/// run. That it was abandoned is no news; anything else that cut a cleanup is. A cleanup that waits
+/// comes back, waiting.
+fn abandon(g: &mut G, h: &mut Host, parked: Parked) -> Option<Parked> {
+    let ending = g.error("abandoned", &[]).as_limit();
+    let ResumeError { error, parked } = match g.resume(h, parked, Err(ending)) {
+        Ok(Ran::Parked(again)) => return Some(again),
+        Ok(Ran::Finished(_)) => return None,
+        Err(e) => e,
+    };
+    if !g.is_kind(&error, "abandoned").unwrap_or(false) {
+        report(g, h, "editor-report", &error);
+    }
+    parked
+}
+
+/// The editor is leaving, so nothing will answer what a cleanup waits for: each wait gets the same
+/// limit, up to a point past which the run goes with the process, as an endless cleanup would.
+fn leave(g: &mut G, h: &mut Host, mut parked: Parked) {
+    for _ in 0..64 {
+        match abandon(g, h, parked) {
+            Some(again) => parked = again,
+            None => return,
+        }
     }
 }
 
