@@ -66,7 +66,7 @@ core {
     CallWithHandler "call-with-handler" 2 2;
     Raise "raise" 1 1;
     // Making, changing and listing bindings.
-    Context "context" 0 1;
+    Context "context" 1 1;
     Bind "bind" 3 3;
     Unbind "unbind" 2 2;
     Names "names" 1 1;
@@ -1016,7 +1016,6 @@ impl<T> Grift<T> {
             e.values.rotate_right(1);
             return Err(e);
         }
-        let n = given.len();
         let mut a = [Value::EmptyList; 3];
         a.iter_mut().zip(given).for_each(|(d, s)| *d = *s);
         let [x, y, z] = a;
@@ -1044,8 +1043,8 @@ impl<T> Grift<T> {
             },
             P::Context => {
                 let parent = match x {
-                    Value::Context(c) if n == 1 => Some(c),
-                    _ if n == 0 => None,
+                    Value::Context(c) => Some(c),
+                    Value::EmptyList => None,
                     _ => return Err(type_error(p, x)),
                 };
                 Value::Context(

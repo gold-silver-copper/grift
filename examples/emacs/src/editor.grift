@@ -95,9 +95,9 @@
 
 (define! buffer
   (lambda! (name file lines)
-    (define! b (context))
+    (define! b (context ()))
     (bind b (quote! (name file above before after below row top keymap modified undo mode))
-      (list name file () () (string-to-code-points (first lines)) (rest lines) 0 0 (context)
+      (list name file () () (string-to-code-points (first lines)) (rest lines) 0 0 (context ())
             #false () ""))
     b))
 
@@ -347,7 +347,7 @@
 ; A keymap is a context binding key symbols to command names (symbols) or to keymaps (prefix
 ; keys). Commands are looked up by name when run, so redefining one takes effect.
 
-(define! global-map (context))
+(define! global-map (context ()))
 
 (define! lookup-key
   (lambda! (keymap event)
@@ -370,7 +370,7 @@
           (sequence!
             (define! sub (lookup-key keymap (first keys)))
             (when! (not? (context? sub))
-              (define! sub (context))
+              (define! sub (context ()))
               (bind keymap (first keys) sub))
             (walk sub (rest keys))))))
     (walk keymap (string-to-keys keys))))
@@ -438,7 +438,7 @@
 
 ; --- The minibuffer -----------------------------------------------------------------------------
 
-(define! minibuffer-map (context))
+(define! minibuffer-map (context ()))
 
 ; The buffer and minibuffer come back however the reading ends: with RET, or with an error or
 ; C-g that goes on to the host. A stop can cut the restore; editor-recover then finishes it.
@@ -677,7 +677,7 @@
 
 (define! make-job
   (lambda! (out)
-    (define! job (context))
+    (define! job (context ()))
     (bind job (quote! (out id status)) (list out () ()))
     job))
 
@@ -803,7 +803,7 @@
 ; --- Help ---------------------------------------------------------------------------------------
 
 (define! previous-buffer ())
-(define! help-map (context))
+(define! help-map (context ()))
 
 ; Shows `text` in the *Help* buffer, long lines broken at the window's width; q goes back.
 (define! show-help

@@ -10,7 +10,7 @@
   ; A new context binding `names` to `values`.
   (define! operations
     (lambda! (names values)
-      (let! ((c (context)))
+      (let! ((c (context ())))
         (bind c names values)
         c)))
   (define! reading

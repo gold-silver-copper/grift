@@ -154,7 +154,7 @@
 ; apply (5.5.1), its two-operand form: the underlying combiner sees a new empty context.
 (define! apply
   (lambda! (applicative arguments)
-    (evaluate (pair (unwrap applicative) arguments) (context))))
+    (evaluate (pair (unwrap applicative) arguments) (context ()))))
 
 ; any? and all? (not in Kernel): whether f gives #true for some element, for every element,
 ; stopping early.
@@ -191,7 +191,7 @@
 ; trace. raise raises it, and gives it where it happened.
 (define! error
   (lambda! (kind . values)
-    (let! ((e (context)))
+    (let! ((e (context ())))
       (bind e (quote! (kind values trace)) (list kind values ()))
       e)))
 
@@ -308,7 +308,7 @@
 (define! binds?
   ((lambda! (absent)
      (lambda! (c symbol) (not? (same? (lookup c symbol absent) absent))))
-   (context)))
+   (context ())))
 
 ; bindings: a context's own bindings as data, (name value) for each, sorted by name as names is,
 ; so a record's fields are a list a program reads with find-association and second.

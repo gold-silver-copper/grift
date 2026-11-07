@@ -26,7 +26,7 @@
 
 ; The context expressions see: the library's names, copied before this program defines any, so
 ; a typo in a query can't find one of the program's own definitions.
-(define! library-context (context))
+(define! library-context (context ()))
 (bind library-context built-in-names (map (lambda! (name) (evaluate name (current-context))) built-in-names))
 (bind library-context (quote! column)
   (vau! (name) caller (evaluate (string-to-symbol (evaluate name caller)) caller)))
@@ -307,7 +307,7 @@
 
 (define! group-rows
   (lambda! (keys rows)
-    (let! ((groups (context))
+    (let! ((groups (context ()))
            (add-row
              (lambda! (order row)
                (let! ((values (row-values keys row))

@@ -582,7 +582,7 @@ fn stopped_in_time(step: &'static str) -> bool {
 
 #[test]
 fn a_stop_ends_a_walk_of_a_parameter_tree() {
-    assert!(stopped_in_time("(bind (context) shared shared)"));
+    assert!(stopped_in_time("(bind (context ()) shared shared)"));
     assert!(stopped_in_time(
         "(evaluate (list vau! shared #ignore 1) (current-context))"
     ));

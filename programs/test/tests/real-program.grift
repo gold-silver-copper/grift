@@ -5,7 +5,7 @@
 ; A stand-in for standard-input, giving these lines.
 (define! input-of
   (lambda! lines
-    (let! ((self (context)))
+    (let! ((self (context ())))
       (bind self (quote! left) lines)
       (bind self (quote! read-line)
         (lambda! ()
@@ -19,7 +19,7 @@
 ; A stand-in for a file written, keeping the text.
 (define! file-to-keep
   (lambda! ()
-    (let! ((self (context)))
+    (let! ((self (context ())))
       (bind self (quote! text) "")
       (bind self (quote! write)
         (lambda! (more) (bind self (quote! text) (string-append (evaluate-in! text self) more))))
@@ -34,7 +34,7 @@
   (define! create-file (lambda! (path) kept))
   (define! run-process
     (lambda! (program path)
-      (let! ((record (context)))
+      (let! ((record (context ())))
         (bind record (quote! output) (evaluate-in! text kept))
         record)))
   (define! kept-status (catch! (load! count-words) e (evaluate-in! values e)))
@@ -50,7 +50,7 @@
   (define! create-file (lambda! (path) kept))
   (define! run-process
     (lambda! (program path)
-      (let! ((record (context)))
+      (let! ((record (context ())))
         (bind record (quote! output) "")
         record)))
   (expect-error! exit-called (load! count-words))

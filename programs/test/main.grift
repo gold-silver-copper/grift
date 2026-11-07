@@ -33,7 +33,7 @@
 ; A test file sees what any script sees and nothing of this program: `language` holds a copy of
 ; each name, because a program can't make a new child of the built-in context.
 (define! given-names (append built-in-names (names (current-context))))
-(define! language (context))
+(define! language (context ()))
 (for-each (lambda! (name) (bind language name (evaluate name (current-context)))) given-names)
 
 ; The state of the run. Only these change, each by a bind on `top`.
@@ -42,7 +42,7 @@
 (define! paths ())               ; the files, last first
 (define! listing #false)         ; whether --list was given
 (define! tests ())               ; each (name file line forms where), last first
-(define! seen (context))         ; a table of "file:name", to refuse a name given twice
+(define! seen (context ()))         ; a table of "file:name", to refuse a name given twice
 (define! group-names ())         ; the groups being loaded, innermost first
 (define! current-file "")        ; the file being loaded, or the running test's
 (define! current-text "")        ; the text of the file being loaded

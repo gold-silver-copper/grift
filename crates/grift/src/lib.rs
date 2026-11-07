@@ -371,7 +371,7 @@ impl<T> Grift<T> {
         self.exported(made)
     }
 
-    /// A new empty context, `(context)` or `(context parent)`: with no parent, a record, as
+    /// A new empty context, `(context parent)` with `()` for none: with no parent, a record, as
     /// `error` makes; with the top level as its parent, a place for a host's own definitions.
     pub fn context(&mut self, parent: Option<&Value>) -> Result<Value, Error> {
         let made = parent

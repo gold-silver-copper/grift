@@ -87,9 +87,9 @@
 
 (group! "raise of a made-up error"
   (test! "a context without the three fields is a type-error"
-    (expect-error! type-error (raise (context))))
+    (expect-error! type-error (raise (context ()))))
   (test! "a context with them raises"
-    (define! e (context))
+    (define! e (context ()))
     (bind e (quote! (kind values trace)) (list (quote! mine) (list 1) ()))
     (expect-error! mine (raise e))))
 

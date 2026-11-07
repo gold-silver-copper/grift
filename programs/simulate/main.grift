@@ -17,7 +17,7 @@
 ; record: a new context binding `names` to `values`, a record or table.
 (define! record
   (lambda! (names values)
-    (let! ((c (context)))
+    (let! ((c (context ())))
       (bind c names values)
       c)))
 
@@ -176,7 +176,7 @@
 (define! read-config
   (lambda! (path)
     (define! text (read-file path))
-    (define! config (context))
+    (define! config (context ()))
     (define! where (lambda! (offset) (string-append path ":" (integer-to-string (line-at text offset)) ": ")))
     (define! check
       (lambda! (form start)

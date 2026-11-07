@@ -91,8 +91,8 @@ fn primitives() {
             "(same? ((wrap (vau! (x) #ignore x)) (add 1 2)) 3)",
             "(equal? ((unwrap list) (add 1 2)) (quote! ((add 1 2))))",
             "(same? (evaluate (quote! (add 1 2)) (context (current-context))) 3)",
-            "(sequence! (define! e (context)) (equal? (names e) ()))",
-            "(sequence! (define! e (context)) (bind e (quote! (a (b))) (list 1 (list 2))) \
+            "(sequence! (define! e (context ())) (equal? (names e) ()))",
+            "(sequence! (define! e (context ())) (bind e (quote! (a (b))) (list 1 (list 2))) \
              (equal? (list (evaluate (quote! a) e) (names e)) (quote! (1 (a b)))))",
             "(equal? (pair 1 2) (quote! (1 . 2)))",
             "(same? (first (pair 1 2)) 1)",
@@ -796,7 +796,7 @@ fn catch_catches_errors_as_contexts() {
                 "again",
             ),
             ("(raise (quote! (kind (1))))", "type-error"),
-            ("(raise (context))", "type-error"),
+            ("(raise (context ()))", "type-error"),
             ("(raise (sequence! (define! e (error 1)) e))", "type-error"),
         ],
     );
@@ -889,7 +889,7 @@ fn binds_looks_through_parents() {
         &mut g,
         &[
             "(and!? (binds? e (quote! x)) (binds? e (quote! first)) (not? (binds? e (quote! nope))) \
-                    (not? (binds? (context) (quote! first))))",
+                    (not? (binds? (context ()) (quote! first))))",
         ],
     );
     // Both operands are evaluated: a computed symbol is the one looked up, not the name it is
@@ -1366,7 +1366,7 @@ fn same_and_equal() {
             "(same? (quote! a) (quote! a))",
             "(same? \"ab\" (string-append \"a\" \"b\"))",
             "(not? (same? (list 1) (list 1)))",
-            "(not? (same? (context) (context)))",
+            "(not? (same? (context ()) (context ())))",
             "(not? (same? (lambda! () 1) (lambda! () 1)))",
             "(sequence! (define! p (list 1)) (same? p p))",
             "(same? first first)",
@@ -1385,7 +1385,7 @@ fn same_and_equal() {
             // equal? compares pairs by structure, and everything else as same? does.
             "(equal? (list 1 (list 2.0 \"x\")) (list 1 (list 2.0 \"x\")))",
             "(not? (equal? (list 1 2) (list 1 3)))",
-            "(not? (equal? (context) (context)))",
+            "(not? (equal? (context ()) (context ())))",
             // Values of different types are never equal.
             "(not? (equal? 1 1.0))",
             "(not? (same? 1 1.0))",
@@ -1423,7 +1423,7 @@ fn a_predicate_for_every_type() {
         "(list 1)",
         "\"s\"",
         "#bytes(115)",
-        "(context)",
+        "(context ())",
         "if!",
         "first",
     ];
@@ -1531,7 +1531,7 @@ fn contexts() {
     let mut g = grift();
     g.evaluate(
         &mut (),
-        "(define! parent (context)) (bind parent (quote! (b a)) (list 1 2))
+        "(define! parent (context ())) (bind parent (quote! (b a)) (list 1 2))
          (define! child (context parent)) (bind child (quote! c) 3)",
     )
     .unwrap();
@@ -1563,7 +1563,7 @@ fn contexts() {
     // A context prints as its own names, sorted, never its values.
     let child = g.evaluate(&mut (), "child").unwrap();
     assert_eq!(show(&g, &child), "#[context a c]");
-    let empty = g.evaluate(&mut (), "(context)").unwrap();
+    let empty = g.evaluate(&mut (), "(context ())").unwrap();
     assert_eq!(show(&g, &empty), "#[context]");
     let e = g.evaluate(&mut (), "(error (quote! mine) 1)").unwrap();
     assert_eq!(show(&g, &e), "#[context kind trace values]");
@@ -1753,7 +1753,7 @@ fn value_to_string_is_the_printer() {
         "vau!",
         "(lambda! (x) (add x 1))",
         "(vau! (x . y) caller (x y))",
-        "(sequence! (define! c (context)) (bind c (quote! b) 1) (bind c (quote! a) 2) c)",
+        "(sequence! (define! c (context ())) (bind c (quote! b) 1) (bind c (quote! a) 2) c)",
     ] {
         let v = g.evaluate(&mut (), src).unwrap();
         let printed = show(&g, &v);
@@ -2082,9 +2082,25 @@ fn an_object_counts_its_storage_towards_the_next_collection() {
 }
 
 #[test]
+fn a_context_takes_one_operand_its_parent_or_none() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            "(same? (lookup (context ()) (quote! list) #false) #false)",
+            "(same? (lookup (context (current-context)) (quote! list) list) list)",
+        ],
+    );
+    fails(
+        &mut g,
+        &[("(context 1)", "type-error"), ("(context)", "arity-error")],
+    );
+}
+
+#[test]
 fn a_bind_that_fails_binds_nothing() {
     let mut g = grift();
-    g.evaluate(&mut (), "(define! c (context))").unwrap();
+    g.evaluate(&mut (), "(define! c (context ()))").unwrap();
     fails(
         &mut g,
         &[
@@ -2163,7 +2179,7 @@ fn lookup_and_unbind() {
             // lookup gives what evaluating the symbol gives, or `otherwise` where that fails.
             "(all? (lambda! (s) (equal? (lookup inner s ()) (evaluate s inner))) (quote! (x y first)))",
             "(same? (lookup inner (quote! nope) 7) 7)",
-            "(same? (lookup (context) (quote! first) 7) 7)",
+            "(same? (lookup (context ()) (quote! first) 7) 7)",
             // binds? says whether lookup finds it, whatever is bound, otherwise's value included.
             "(sequence! (bind inner (quote! z) 7) (binds? inner (quote! z)))",
             "(not? (binds? inner (quote! nope)))",
@@ -2419,7 +2435,7 @@ const OTHER_TEXTS: &[&str] = &[
     "(quote! x)",
     "(quote! first)",
     "here",
-    "(context)",
+    "(context ())",
     "record",
     "(list 1 2)",
     "(pair 1 2)",
@@ -2547,7 +2563,7 @@ fn argument(r: &mut Random, kind: char, depth: usize) -> String {
         (_, 'c') => &[
             "here",
             "record",
-            "(context)",
+            "(context ())",
             "(context record)",
             "1",
             "(malformed 0)",
@@ -2768,7 +2784,7 @@ fn twins() -> [Grift<Vec<String>>; 2] {
         g.evaluate(
             &mut Vec::new(),
             "(define! here (current-context))
-             (define! record (context))
+             (define! record (context ()))
              (bind record (quote! (x first)) (list 5 6))
              (define! double (lambda! (x) (list x x)))",
         )
@@ -3331,7 +3347,7 @@ fn a_run_reclaims_discarded_reader_allocations_before_needing_a_slot() {
                     .evaluate(
                         &mut (),
                         "(list (lambda! args 3) (list 2) \"live\"
-                    #bytes(3) (context) (vau! () #ignore #inert) (lambda! () #inert))",
+                    #bytes(3) (context ()) (vau! () #ignore #inert) (lambda! () #inert))",
                     )
                     .unwrap();
                 let inputs = g.list_items(&inputs).unwrap();

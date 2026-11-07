@@ -104,7 +104,7 @@
 ; The cells a list of references reads, each once, sorted by name; a context is the set.
 (define! cells-read
   (lambda! (refs)
-    (let! ((seen (context)))
+    (let! ((seen (context ())))
       (for-each (lambda! (r) (for-each (lambda! (c) (bind seen c #true)) (if! (cell? r) (list r) (range-cells r)))) refs)
       (names seen))))
 
@@ -114,14 +114,14 @@
 ; when failed). An empty cell is unbound.
 ; `dependents` is the graph's other direction: a cell name to the cells that read it.
 
-(define! cells (context))
-(define! dependents (context))
+(define! cells (context ()))
+(define! dependents (context ()))
 (define! cell-record (lambda! (name) (lookup cells name ())))
 (define! cell-names (lambda! () (names cells)))
 
 ; Formulas see the library as it was when the program started, the range functions, and the
 ; sheet's own functions; not this program's definitions.
-(define! library (context))
+(define! library (context ()))
 (for-each (lambda! (n) (bind library n (evaluate n (current-context)))) built-in-names)
 (define! functions (context library))
 (define! function-sources ())
@@ -152,7 +152,7 @@
 ; A new record for a cell's formula text; a formula that doesn't read is a failed cell.
 (define! make-cell
   (lambda! (source)
-    (let! ((cell (context))
+    (let! ((cell (context ()))
            (expression (catch! (read-formula source) e e))
            (unreadable (context? expression))
            (refs (if! unreadable () (references expression ()))))
@@ -189,7 +189,7 @@
 ; Every cell reachable from `starts` through dependents, starts included, that isn't empty.
 (define! affected-from
   (lambda! (starts)
-    (let! ((seen (context))
+    (let! ((seen (context ()))
            (visit (lambda! (#ignore todo)
                     (conditional! ((same? todo ()) #inert)
                                   ((binds? seen (first todo)) (visit #inert (rest todo)))
@@ -203,9 +203,9 @@
 ; Gives the cells in the order they were evaluated.
 (define! recalculate
   (lambda! (affected)
-    (let! ((inside (context))
-           (state (context))
-           (cycles (context))
+    (let! ((inside (context ()))
+           (state (context ()))
+           (cycles (context ()))
            ; path: the cells being visited, innermost first. A cell met again while it is being
            ; visited closes a cycle: the cells on the path back to it.
            (cycle-of (lambda! (name path) (if! (same? (first path) name) (list name) (pair (first path) (cycle-of name (rest path))))))

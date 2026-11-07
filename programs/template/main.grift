@@ -359,7 +359,7 @@
         (let! ((text (read-file path)) (data (context top)))
           (bind data (quote! record!)
             (vau! fields caller
-              (let! ((record (context)))
+              (let! ((record (context ())))
                 (for-each (lambda! ((name value)) (bind record name (evaluate value caller))) fields)
                 record)))
           (define! from

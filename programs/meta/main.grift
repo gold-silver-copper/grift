@@ -21,7 +21,7 @@
 ;   grift's. Every combiner the interpreted program can reach is made here.
 
 ; An empty context to call combiners in; they ignore it.
-(define! bare (context))
+(define! bare (context ()))
 
 ; The marker bound in the program's top-level context: a context binds it (through its parents)
 ; only if it belongs to the program, not to the library, so traces leave the library out, as
@@ -32,7 +32,7 @@
 ; It is kept here, not in the error: grift's raise copies a caught error into a new context with
 ; only kind, values and trace, so nothing added to it survives. Whoever catches an error takes
 ; its trace and starts the next one empty.
-(define! passing (context))
+(define! passing (context ()))
 (bind passing (quote! trace) ())
 
 ; Records that `form`, a program form evaluated in `c`, is one the passing error came through,
@@ -74,7 +74,7 @@
            applicative)))
 (define! table
   (lambda! (otherwise given values)
-    (let! ((t (context)))
+    (let! ((t (context ())))
       (for-each (lambda! (type) (bind t type otherwise)) types)
       (bind t given values)
       t)))
@@ -168,7 +168,7 @@
 
 (define! error-record
   (lambda! (e)
-    (child (context) (quote! (kind values trace))
+    (child (context ()) (quote! (kind values trace))
            (list (evaluate-in! kind e) (evaluate-in! values e) (take-trace)))))
 
 (define! meta-evaluate-with-cleanup
@@ -201,7 +201,7 @@
 
 ; The interpreter's built-in context: its primitives, then the library, loaded into it as grift
 ; loads its own.
-(define! root (context))
+(define! root (context ()))
 (bind root (quote! (vau! evaluate call-with-handler evaluate-with-cleanup value-to-string))
       (list (wrap meta-vau!) meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
             (native print)))
@@ -239,7 +239,7 @@
     (conditional!
       ((applicative? v) (native (lambda! arguments (host (apply v arguments)))))
       ((context? v)
-       (let! ((operations (context)))
+       (let! ((operations (context ())))
          (for-each (lambda! (name) (bind operations name (host (evaluate name v)))) (names v))
          operations))
       (#true v))))
