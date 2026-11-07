@@ -191,10 +191,22 @@ fn a_program_in_a_cleanup_cannot_replace_what_the_host_began() {
 }
 
 /// A force ends `src`, whose cleanups would otherwise take far longer, and no cleanup past it runs.
+/// `src`'s `(watch)` stops the run there, so the stop can't land before the cleanups are installed,
+/// and leaves a clone of the handle to force it a little later.
 fn forced(g: &mut Grift<Interrupter>, s: &mut Interrupter, src: &str) {
-    let watchdog = stop_then_force(g.interrupter());
+    let watch = g
+        .host_function("watch", |_, s, _| {
+            assert!(s.stop());
+            let mut watchdog = s.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                watchdog.force();
+            });
+            Ok(Value::Inert)
+        })
+        .unwrap();
+    g.define("watch", watch).unwrap();
     let e = g.evaluate(s, src).unwrap_err();
-    watchdog.join().unwrap();
     assert_eq!((kind(g, &e).as_str(), e.is_limit()), ("interrupted", true));
     assert_eq!(log(g, s), "()", "a cleanup finished or began");
 }
@@ -206,7 +218,8 @@ fn a_force_cuts_a_cleanup_that_never_ends() {
     forced(
         &mut g,
         &mut s,
-        "(finally! (finally! (spin 100000000) (spin 100000000) (note 1)) (note 2))",
+        "(finally! (finally! (sequence! (watch) (spin 100000000)) (spin 100000000) (note 1))
+                   (note 2))",
     );
 }
 
@@ -217,7 +230,8 @@ fn a_force_cuts_a_cleanup_that_never_ends_in_a_nested_run() {
     forced(
         &mut g,
         &mut s,
-        r#"(finally! (nested "(finally! (spin 100000000) (spin 100000000) (note 1))") (note 2))"#,
+        r#"(finally! (nested "(finally! (sequence! (watch) (spin 100000000)) (spin 100000000) (note 1))")
+                     (note 2))"#,
     );
 }
 
