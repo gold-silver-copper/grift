@@ -5,7 +5,7 @@
 //! closed stdout (a broken pipe) ends the run quietly.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
-//! `read-file`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
+//! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
 //! `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
 //! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
 
@@ -504,7 +504,7 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
 
 /// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
 /// those it should have.
-const HOSTS: [(&str, HostFunction<Runner>); 17] = [
+const HOSTS: [(&str, HostFunction<Runner>); 18] = [
     ("display", display),
     ("display-error", display_error),
     ("read-file", read_file),
@@ -520,15 +520,34 @@ const HOSTS: [(&str, HostFunction<Runner>); 17] = [
     ("write-host", write_host),
     ("close-host", close_host),
     ("run-host", run_host),
-    ("read-forms-host", read_forms_host),
+    ("read-forms", read_forms),
+    ("position", position),
     ("resolve-host", resolve_host),
 ];
 
-/// `(read-forms-host path)`: reads the file's forms, each combination with its source and line.
-fn read_forms_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let path = one_string(g, args)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| failed(g, "file-error", &path, &e))?;
-    g.read_in(&path, &text)
+/// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
+fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [source, text] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let (Some(source), Some(text)) = (g.as_string(source)?, g.as_string(text)?) else {
+        return Err(g.error("type-error", args));
+    };
+    g.read_in(&source, &text)
+}
+
+/// `(position form)`: the source and line of a combination `read-forms` or an evaluated text read,
+/// as a list; `()` for any other value.
+fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [form] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let Some((source, line)) = g.position(form)? else {
+        return Ok(Value::EmptyList);
+    };
+    let source = source.to_owned();
+    let source = g.string(&source)?;
+    g.list(&[source, Value::Integer(i64::from(line))])
 }
 
 /// Evaluates `runner.grift` in a private context holding what it needs, so the operations it

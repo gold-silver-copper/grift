@@ -45,7 +45,7 @@
   (lambda! (path c)
     (let! ((outer (evaluate-in! file loading)))
       (bind loading (quote! file) path)
-      (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path))
+      (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms path (read-file path)))
                 (bind loading (quote! file) outer)))))
 ; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's load does; each
 ; load reads the file again.
@@ -55,6 +55,6 @@
 
 (define! here (current-context))
 (for-each (lambda! (name) (bind top name (evaluate name here)))
-          (quote! (display display-error read-file environment-variable wall-clock-nanoseconds
+          (quote! (display display-error read-file read-forms position environment-variable wall-clock-nanoseconds
                    elapsed-nanoseconds exit command-line-arguments script-path standard-input
                    standard-output standard-error open-file create-file run-process load)))

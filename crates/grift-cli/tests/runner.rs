@@ -374,6 +374,20 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     );
 }
 
+#[test]
+fn a_program_s_own_loader_gets_the_lines_load_gets() {
+    let dir = scratch("own-loader");
+    let program = r#"
+        (define! forms (read-forms "data.txt" "\n(a)\nsym\n(b\n (c))\n5"))
+        (display (map position forms) (position 1))
+        (for-each (lambda! (form) (evaluate form (current-context))) (read-forms "inner.grift" "\n(first 1)"))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(1));
+    assert_eq!(out, "((\"data.txt\" 2) () (\"data.txt\" 4) ())()");
+    assert!(err.contains("in (first 1) at inner.grift:2"), "{err}");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn nested_loads_need_no_rust_stack() {

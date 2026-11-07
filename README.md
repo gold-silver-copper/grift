@@ -105,6 +105,8 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write data)`, a string's or a bytes value's bytes as they are, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
+| `(read-forms source text)` | The list of the text's forms, nothing evaluated; each combination keeps `source` and its line, so an error's trace says `at source:12`. A text that doesn't read is the `parse-error` naming `source`. |
+| `(position form)` | A combination's source and line, `("lib.grift" 12)`, if it was read with one; `()` for anything else. |
 | `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. A script whose path isn't UTF-8 gets `encoding-error` for a relative path. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
 | `script-path` | The script's path, as given; `""` when the program is stdin. |
