@@ -399,8 +399,9 @@
         (let! ((target (link-target s (add close 1))))
           (if! (same? target ()) () (pair close target)))))))
 
-; Whether text holds a link, at any depth, an image's description included. A link in a link
-; isn't one: it reads the source, as rendering each level twice would cost 2^depth.
+; Whether text holds a link, at any depth, an image's description included but not its destination
+; or title, nor what an autolink holds. A link in a link isn't one: it reads the source, as
+; rendering each level twice would cost 2^depth.
 (define! holds-link?
   (lambda! (text)
     (define! look
@@ -412,8 +413,16 @@
             ((same? c backtick)
               (let! ((n (run-of text j backtick)) (close (backtick-run text (add j n) n)))
                 (look (if! (same? close ()) (add j n) (add close n)))))
-            ((and!? (same? c bang) (same? (byte-at text (add j 1)) open-bracket)) (look (add j 2)))
+            ((and!? (same? c bang) (same? (byte-at text (add j 1)) open-bracket))
+              (let! ((image (bracket-target text (add j 1))))
+                (if! (same? image ())
+                  (look (add j 2))
+                  (let! (((close #ignore #ignore next) image))
+                    (if! (holds-link? (byte-substring text (add j 2) close)) #true (look next))))))
             ((and!? (same? c open-bracket) (pair? (bracket-target text j))) #true)
+            ((same? c less)
+              (let! ((autolink (autolink-at text j)))
+                (look (if! (same? autolink ()) (add j 1) (second autolink)))))
             (#true (look (add j 1)))))))
     (look 0)))
 

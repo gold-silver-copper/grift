@@ -152,3 +152,7 @@
 ("a link in a link isn't one, whatever emphasis lies across it, and it costs no more with depth"
  "[a [b](c) d](e)\n\n**)[[b](/u)*** ](x)\n\n[![[f](u)](v)](w)\n\n[![f](u)](w)\n\n![[a [b](c)](d)](e)\n\n[[[[[[[[[[[[[[[[[[[[[[[[[a](b)](c)](d)](e)](f)](g)](h)](i)](j)](k)](l)](m)](n)](o)](p)](q)](r)](s)](t)](u)](v)](w)](x)](y)](z)\n"
  "<p>[a <a href=\"c\">b</a> d](e)</p>\n<p><strong>)[<a href=\"/u\">b</a></strong>* ](x)</p>\n<p>[<img src=\"v\" alt=\"f\" />](w)</p>\n<p><a href=\"w\"><img src=\"u\" alt=\"f\" /></a></p>\n<p><img src=\"e\" alt=\"[a b](d)\" /></p>\n<p>[[[[[[[[[[[[[[[[[[[[[[[[<a href=\"b\">a</a>](c)](d)](e)](f)](g)](h)](i)](j)](k)](l)](m)](n)](o)](p)](q)](r)](s)](t)](u)](v)](w)](x)](y)](z)</p>\n")
+
+("a link looks in an image's description for a link, not in its destination or title or in an autolink"
+ "[![x](image \"[a](b)\")](outer)\n\n[![x]([a](b))](outer)\n\n[![x](<[a](b)> '[c](d)') y](outer)\n\n[![[a](b)](image \"[c](d)\")](outer)\n\n[![x](image \"[a](b)\") [c](d)](outer)\n\n[<http://x/[a](b)>](outer)\n"
+ "<p><a href=\"outer\"><img src=\"image\" alt=\"x\" title=\"[a](b)\" /></a></p>\n<p><a href=\"outer\"><img src=\"%5Ba%5D(b)\" alt=\"x\" /></a></p>\n<p><a href=\"outer\"><img src=\"%5Ba%5D(b)\" alt=\"x\" title=\"[c](d)\" /> y</a></p>\n<p>[<img src=\"image\" alt=\"a\" title=\"[c](d)\" />](outer)</p>\n<p>[<img src=\"image\" alt=\"x\" title=\"[a](b)\" /> <a href=\"d\">c</a>](outer)</p>\n<p><a href=\"outer\"><a href=\"http://x/%5Ba%5D(b)\">http://x/[a](b)</a></a></p>\n")
