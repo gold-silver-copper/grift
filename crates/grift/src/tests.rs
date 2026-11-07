@@ -3390,3 +3390,15 @@ fn a_body_of_several_forms_needs_no_binding_of_the_program() {
         ],
     );
 }
+
+#[test]
+fn an_overflow_is_reported_by_the_arithmetic_that_overflowed() {
+    holds(
+        &mut grift(),
+        &[
+            "(same? (first (catch! (absolute-value -9223372036854775808) e (evaluate-in! values e)))
+                    (unwrap subtract))",
+            "(same? (first (catch! (power 2 100) e (evaluate-in! values e))) (unwrap multiply))",
+        ],
+    );
+}
