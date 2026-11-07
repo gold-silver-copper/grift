@@ -1777,6 +1777,7 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     and a call reserves its bindings ahead again (U61 cost life about 2 points); one walker stays.
   - **A band missed, not revised.** Target: within +2% of one-model's head per step. Desk, 7 interleaved rounds, fat
     LTO, without U50: fib **+2.40%** (paired +2.11%) against `5cc9239` and -0.64% against master `56713e7`; life -0.42%,
-    -0.91%; programs total -19.15%, -25.90% (without meta -5.37%, -4.71%). Fib is what misses, by less than this pass's
-    own control: a byte copy of master read +3.37% against `5cc9239`. What is left wasn't separated. U50's arm read fib
+    -0.91%; programs total -19.15%, -25.90% (without meta -5.37%, -4.71%). Fib is what misses, steadily: a byte copy of master
+    read +0.30% against master, and every arm but `5cc9239` read 115 to 116 ms. Whether `5cc9239`'s 112 ms is real speed
+    or code layout wasn't separated. U50's arm read fib
     +2.85%, life -2.27%, programs total -32.88%, meta's suite 7.6 s against 11.8 s, `Grift::new` 0.64 ms against 0.63 ms.
