@@ -517,7 +517,10 @@ fn memory_refused_collects_once_however_many_cleanups_it_passes() {
 fn what_a_host_keeps_comes_back_what_it_was() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
-    let limit = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
+    let mut limit = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
+    // Its trace's combinations are garbage once the run is over: a collection before it comes back
+    // would make it stale-value, as `Error::is_limit` says. The kind and the limit are the point.
+    limit.trace.clear();
     let p = parked(
         &mut g,
         &mut s,

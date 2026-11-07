@@ -2158,7 +2158,8 @@ fn string_helpers() {
             "(same? (string-pad-left \"7\" 2 \"0\") \"07\")",
             "(same? (string-pad-left \"ab\" -9223372036854775808 \" \") \"ab\")",
             "(same? (string-pad-right \"ab\" -9223372036854775808 \" \") \"ab\")",
-            // string-repeat: as long as count copies, each one the string.
+            // string-repeat: as long as count copies, each one the string; a count below 1 is none.
+            "(same? (string-repeat \"a\" -1) \"\")",
             "(all? (lambda! (t)
                (all? (lambda! (n)
                        (let! ((r (string-repeat t n)))
@@ -2193,7 +2194,6 @@ fn string_helpers() {
             ("(string-pad-left \"a\" 3 \"ab\")", "range-error"),
             ("(string-pad-left \"a\" 3 \"\")", "range-error"),
             ("(string-pad-left \"a\" 3)", "arity-error"),
-            ("(string-repeat \"a\" -1)", "range-error"),
             ("(string-repeat 1 2)", "type-error"),
             ("(string-repeat \"a\" 1.0)", "type-error"),
             ("(string-to-lowercase 1)", "type-error"),
@@ -2549,18 +2549,20 @@ fn list_access_by_index() {
             "(all? (lambda! (i) (same? (length (take xs i)) i)) (range 0 11))",
             "(and!? (same? (second xs) 11) (same? (third xs) 12) (same? (last xs) 19))",
             "(same? (last (list 1)) 1)",
-            // Out of range: the index and the list's length.
-            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (quote! (10 10)))",
-            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (-1 10)))",
-            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (11 10)))",
-            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (12 10)))",
-            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (1 1)))",
+            // Out of range: the operands, the list and the index or count, as for a string.
+            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (list xs 10))",
+            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (list xs -1))",
+            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (list xs 11))",
+            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (list xs 12))",
+            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (list (list 1) 1))",
+            "(equal? (catch! (third (list 1 2)) e (evaluate-in! values e)) (list (list 1 2) 2))",
+            "(equal? (catch! (last ()) e (evaluate-in! values e)) (list ()))",
             "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list xs))",
             "(equal? (catch! (element-at xs -9223372036854775808) e (evaluate-in! values e))
-                     (quote! (-9223372036854775808 10)))",
+                     (list xs -9223372036854775808))",
             "(equal? (catch! (drop xs -9223372036854775808) e (evaluate-in! values e))
-                     (quote! (-9223372036854775808 10)))",
-            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (quote! (-1 10)))",
+                     (list xs -9223372036854775808))",
+            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (list xs -1))",
         ],
     );
     fails(

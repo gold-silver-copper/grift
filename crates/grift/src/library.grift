@@ -352,57 +352,36 @@
        (if! (same? xs ()) () (first (sorted xs (length xs) before?)))))))
 
 ; element-at, second, third, last, take and drop: an index counts from 0, as in Rust, and one
-; out of range is a range-error carrying the name, the index and the list's length.
+; out of range is a range-error carrying the operands, the list and the index or count.
 (define! (element-at second third last take drop)
   ((lambda! ()
-     ; The list after the first i of n elements asked for by name.
+     ; The list after its first n elements, checked: the one walk the others stand on.
      (define! after
-       (lambda! (name xs i n)
+       (lambda! (xs n)
+         (if! (integer? n)
+           (if! (less-than? n 0) (raise (error (quote! range-error) xs n)) (walk xs n xs n))
+           (raise (error (quote! type-error) n)))))
+     (define! walk
+       (lambda! (given n xs i)
          (if! (same? i 0)
            xs
            (if! (same? xs ())
-             (raise (error (quote! range-error) n (subtract n i)))
-             (after name (rest xs) (subtract i 1) n)))))
-     (define! element
-       (lambda! (name xs index)
-         (if! (same? xs ())
-           (raise (error (quote! range-error) index index))
-           (first xs))))
-     ; n, if it is an integer of 0 or more: given the list in its place, the error names the
-     ; combiner, and a negative one is out of range without counting down from it.
-     (define! counted
-       (lambda! (name xs n)
-         (if! (integer? n)
-           (if! (less-than? n 0) (raise (error (quote! range-error) n (length xs))) n)
-           (raise (error (quote! type-error) n)))))
+             (raise (error (quote! range-error) given n))
+             (walk given n (rest xs) (subtract i 1))))))
      (define! at
-       (lambda! (name xs index) (element name (after name xs (counted name xs index) index) index)))
+       (lambda! (xs n)
+         (let! ((more (after xs n)))
+           (if! (same? more ()) (raise (error (quote! range-error) xs n)) (first more)))))
      (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
+     ; The first n elements, once after has checked there are n.
      (define! taken
-       (lambda! (xs i n)
-         (if! (same? i 0)
-           ()
-           (if! (same? xs ())
-             (raise (error (quote! range-error) n (subtract n i)))
-             (pair (first xs) (taken (rest xs) (subtract i 1) n))))))
-     (list
-       (lambda! (xs index) (at (quote! element-at) xs index))
-       ; second and third take the list apart themselves, as (first (rest xs)) would, and walk it
-       ; again with at only to say why they can't.
-       (lambda! (xs)
-         (if! (same? xs ())
-           (at (quote! second) xs 1)
-           (if! (same? (rest xs) ()) (at (quote! second) xs 1) (first (rest xs)))))
-       (lambda! (xs)
-         (if! (same? xs ())
-           (at (quote! third) xs 2)
-           (if! (same? (rest xs) ())
-             (at (quote! third) xs 2)
-             (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
-       (lambda! (xs)
-         (if! (same? xs ()) (raise (error (quote! range-error) xs)) (final xs)))
-       (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
-       (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
+       (lambda! (xs n) (if! (same? n 0) () (pair (first xs) (taken (rest xs) (subtract n 1))))))
+     (list at
+           (lambda! (xs) (at xs 1))
+           (lambda! (xs) (at xs 2))
+           (lambda! (xs) (if! (same? xs ()) (raise (error (quote! range-error) xs)) (final xs)))
+           (lambda! (xs n) (sequence! (after xs n) (taken xs n)))
+           after))))
 
 ; The string helpers, over byte-at. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
@@ -481,14 +460,9 @@
                (less-than? (byte-at a at) (byte-at b at)))))))
      (lambda! (a b) (from a b 0 (byte-length a) (byte-length b))))))
 
-; string-repeat: s count times, as Rust's str::repeat; a count below 0 is a range-error.
+; string-repeat: s count times; a count below 1 is no copies.
 (define! string-repeat
-  (lambda! (s count)
-    (if! (and!? (string? s) (integer? count))
-      (if! (less-than? count 0)
-        (raise (error (quote! range-error) count))
-        (apply join (map (lambda! (#ignore) s) (range 0 count))))
-      (raise (error (quote! type-error) (if! (string? s) count s))))))
+  (lambda! (s count) (apply join (pair "" (map (lambda! (#ignore) s) (range 0 count))))))
 
 ; string-pad-left and string-pad-right: s with copies of fill, a string of one byte, before it,
 ; after it, up to width bytes.
