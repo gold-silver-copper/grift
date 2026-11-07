@@ -165,10 +165,11 @@ Generators and backtracking are closures or lazy streams; a language built on gr
 Continuations would cost the meaning of cleanup and of interruption, and the simplicity of the
 machine.
 
-A host can do one narrower thing (G-169): set a run aside at a call to one of its own functions, and
+One-shot delimited continuations were built four ways and measured; they removed no ending rule and
+added routing on top (G-171). A host can do one narrower thing (G-169): set a run aside at a call to one of its own functions, and
 take it up once. The language gains no name; no program can capture anything, or come back twice.
-Cleanups keep their meaning because a run left waiting is the host's to resume or abandon, and a run
-under a host call can't be set aside at all.
+Cleanups keep their meaning because a run left waiting is the host's to resume, with a value or a
+limit that ends it, and a run under a host call can't be set aside at all.
 
 ## Printing
 Every value prints as text that reads back where it can. A combiner prints its source: its

@@ -115,7 +115,7 @@ which a test shows no program can tell from the Rust.
 | `(bitwise-and a b)` `(bitwise-or a b)` `(bitwise-exclusive-or a b)` `(shift-left a n)` `(shift-right a n)` | Rust's `&` `\|` `^` `<<` `>>` on two integers: the bits shifted out are lost, as in Rust, and `shift-right` keeps the sign (`(shift-right -8 1)` is `-4`). A shift by an amount outside 0 to 63, where Rust's checked shift gives none, is `overflow`. |
 | `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) and `trunc`, of floats only. Results may differ slightly between platforms, as in Rust. `absolute-value` and `power` are the library's, below. |
 | `(integer-to-float n)`, `(float-to-integer x)` | Rust's `as`: the nearest float; the integer part, saturating at the ends of the 64-bit range, and 0 for `#not-a-number`. |
-| `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` replaces the one leaving, unless that one is a limit (see Errors) and the new one isn't. A stop from the host can cut `cleanup`, even before it does anything. Starting `cleanup` can need room on the machine's stacks: if that allocation fails, `cleanup` is passed over and `out-of-memory` goes on in that error's place, even one a `catch!` would have caught; the cleanups around it are still tried. Not a tail call. |
+| `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` meets the error leaving by the one rule (see Errors). A stop from the host can cut `cleanup`, even before it does anything. If memory is refused at its first step, `cleanup` has done nothing and `out-of-memory` goes on, by the same rule; the cleanups around it are still tried. Not a tail call. |
 | `(evaluate-with-handler x c handler)` | Evaluates `x` in `c` and returns its value. If an error leaves it, the cleanups inside run first, then the combiner `handler` is called in `c` with the error as a new context with no parent, binding `kind` (a symbol), `values` (a list) and `trace` (a list, see Errors); its value is `evaluate-with-handler`'s, as a tail call. A limit (see Errors) is never caught. |
 | `(raise e)` | Raises the error `e`, a context binding `kind`, `values` and `trace` as `error` makes and a handler gets. It keeps the trace it has, which then gains the `raise` and the combinations it passes on its way out, each once. The fields are looked up as any record's, so they may be inherited; others aren't carried. Anything else is a `type-error`. |
 | `(string-byte-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
@@ -159,7 +159,7 @@ which a test shows no program can tell from the Rust.
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.6). A binding that isn't `(parameters expression)` is an `arity-error`. |
-| `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on in its place, as in `evaluate-with-cleanup`. A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. After `out-of-memory` a cleanup stops at its first allocation that fails, so it may do nothing. While an error unwinds, a machine-stack allocation that fails as a cleanup starts passes that cleanup over, as in `evaluate-with-cleanup`; out of memory collects first, so the cleanups have what is free. |
+| `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on by the one rule (see Errors). A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. A force cuts every cleanup. Memory refused collects before the next cleanup's first step, so it has what is free; a cleanup stops at its first allocation that still fails, so it may do nothing. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. A limit (see Errors) is never caught. |
 | `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had. A `kind` that isn't a symbol is a `type-error`. |
 | `(bindings c)` | Context `c`'s own bindings as data: a list of `(name value)`, sorted by name as `names` gives them, so a record's fields are a list: `(bindings (error (quote! e) 1))` is `((kind e) (trace ()) (values (1)))`. |
@@ -261,13 +261,15 @@ retain their own boundaries too.
 
 **What can be caught.** What a program raises always can: the primitives' errors, the library's, a
 host function's, and the program's own, whatever kind they are called. A **limit** can't: an error
-the host or the machine began, a real stop (`interrupted`), a parked run given up (`abandoned`), the
-allocator refusing (`out-of-memory`), or a host function's error it made a limit. It goes on through
-every `catch!` to the host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through
-nested runs. A limit runs cleanups on the way, as any error does, though a stop can cut one and a
-failed allocation can pass one over (`evaluate-with-cleanup`). An ordinary error in one of those
-cleanups doesn't replace it, but another limit does. Nothing about the kind makes a limit: a program
-that raises its own `interrupted` raises an ordinary error, and `catch!` catches it.
+the host or the machine began, a real stop (`interrupted`), the allocator refusing (`out-of-memory`),
+or an error a host function or a host's answer made a limit. It goes on through every `catch!` to the
+host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through nested runs. Who began
+an unwinding decides this, and no name does: a program that raises its own `interrupted` raises an
+ordinary error, `catch!` catches it, and rebinding a kind's name changes nothing.
+
+**The one rule, for a reason arriving during a cleanup:** the newest reason wins, unless a program's
+would replace a limit. And the host can always end a run: a force ends it with `interrupted`, whatever
+its cleanups do.
 
 **Early exit** is `catch!` and a kind of error of the program's own; there is no other escape:
 
@@ -298,7 +300,6 @@ that raises its own `interrupted` raises an ordinary error, and `catch!` catches
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run in progress; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
-| `abandoned` | the host ended a run that was waiting, at the call it was waiting in | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | the host function |
 | any symbol | a program raised an error it made | the values given |
 
@@ -347,9 +348,8 @@ before the wait may be out of date after it. Nothing else changes: what the run 
 locals and arguments, stays as it was, however long it waits. Runs take turns, one at a time, and
 only at these calls: between two waiting calls no other run can come in.
 
-The host may end the waiting run instead. The call then raises `abandoned`, which no `catch!` catches,
-and the cleanups run on the way out. In such a cleanup a call that would wait fails with `cannot-park`:
-nothing could take the run up again. A cleanup can catch that and go on.
+The host may answer with a limit instead, to end the run. The call raises it, no `catch!` catches it,
+and the cleanups run on the way out. A cleanup that waits there is a run that waits like any other.
 
 A call that would wait inside a run that can't be set aside, because it runs under `Grift::evaluate`
 or `Grift::call` or inside a host function that called back into grift, is the error `cannot-park`,

@@ -239,9 +239,11 @@ fn main() -> Result<(), Error> {
   error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
   form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
   waiting together count as one; a later stop stops the run again, even in a cleanup that doesn't
-  end. `force()` ends the run this handle (or the one it was cloned from) last stopped, however its
-  cleanups behave: each is cut before its first form, at every level, and it never reaches a later
-  run. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  end. `force()` ends a run however its cleanups behave: each is cut before its first form, at every
+  level, and the run ends with `interrupted`, whatever else fails on the way. A handle forces the run
+  it last reached, by a stop or a force, and that one only, so a late force never reaches a later
+  run; a handle that has reached none (a clone starts as its source is) forces the run in progress.
+  `examples/stops.rs` shows all of this: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.
@@ -320,16 +322,13 @@ fn main() -> Result<(), Error> {
 }
 ```
 
-- **One shot, by the type.** `Parked` is neither `Copy` nor `Clone`, and `resume` and `abandon` take
-  it by value, so a second resume doesn't compile.
-- **`abandon(state, parked)`** is how a run that won't be resumed ends: the waiting call raises
-  `abandoned`, which nothing catches, every `finally!` runs, and you get back the error the run ended
-  with. A cleanup (all the forms of one `finally!`) that errors ends there, and the next one out runs. One that parks fails at that call with
-  `cannot-park` (`can_park()` tells its host function). One that never ends holds `abandon` up until
-  you stop it through an `Interrupter`; a stopped one ends there with `interrupted`, the next runs, and
-  `interrupted` is what comes back. With no memory to call a cleanup it's passed over, the next is
-  tried, and `out-of-memory` comes back. `abandon` doesn't rely on stops: it raises its error at the
-  wait, directly.
+- **One shot, by the type.** `Parked` is neither `Copy` nor `Clone`, and `resume` takes it by value,
+  so a second resume doesn't compile.
+- **Giving a run up** is an answer like any other: `resume(state, parked, Err(g.error("given-up", &[]).as_limit()))`.
+  Nothing catches a limit, every `finally!` runs, and the run ends with it, or with another limit
+  that replaced it. A cleanup that errors ends there, and the next one out runs. A cleanup that
+  waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
+  goes on, or with a limit and it ends there. One that never ends is yours to stop or force.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
   cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
   `forgotten()` gives a new handle. **Dropping the interpreter** with runs parked runs none of their
@@ -341,13 +340,14 @@ fn main() -> Result<(), Error> {
   Cleanups after out of memory have what a collection frees; `resume` itself needs none.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
   frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function.
-  `start`, `resume` and `abandon` inside a host call are refused too (`cannot-park`), the handle
+  `start` and `resume` inside a host call are refused too (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`.
 - **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
   things reach every host. Memory refused makes a collection due, before a cleanup's first step, and a
-  cleanup with no room on the machine's stacks to be called is passed over for the next. And a kind's name means nothing: a program's own
-  `interrupted` or `out-of-memory` is caught like any error, and only `is_limit()` says one is real.
+  cleanup whose first step is refused all the same is passed over for the next. And a kind's name
+  means nothing: a program's own `interrupted` or `out-of-memory` is caught like any error, and only
+  `is_limit()` says one is real.
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.
@@ -368,8 +368,8 @@ machine loop over a frame stack, so no Rust recursion grows with a program's nes
 loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
 argument stack, endings waiting for a cleanup, current expression and checked call inputs are its
 roots. Allocation never collects. An object the heap has no room for makes a collection due, before
-the next run needs room to read its input or build its call context, as does `out-of-memory`
-unwinding a run. Reads and constructors do not collect: more reads may be refused until an
+the next run needs room to read its input or build its call context, as does any memory refused
+that unwinds a run. Reads and constructors do not collect: more reads may be refused until an
 evaluation or call provides that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).

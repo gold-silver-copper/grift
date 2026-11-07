@@ -1,6 +1,6 @@
 //! What takes the machine's and the heap's insides to test: parking on a full heap, under the
 //! collector's stress, with the natives off, and generated programs with random points of pause,
-//! resume, abandon, stop and out-of-memory. The rest is in `tests/parking.rs`.
+//! resume, giving up, stop, force and out-of-memory. The rest is in `tests/parking.rs`.
 
 #![allow(
     clippy::unwrap_used,
