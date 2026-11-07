@@ -178,8 +178,9 @@ parameters, its context parameter and its body (not the context it was made in, 
 can print alike and differ). A context prints as its own names, sorted
 (`#[context close path read-all read-line]`), never its values, which may reach the context
 again. An error, a context, prints its names; the host reports its kind, its values and its trace.
-`write_string` writes the same string literal spelling for host text, without an interpreter or
-allocation. It and the value printer share the quoting and escapes the reader understands.
+A symbol prints as its spelling, whatever it is, so one made by `string-to-symbol` may not read
+back as itself: `"a b"` prints as two symbols, `"#true"` as a boolean, `"1"` as an integer. A
+host writes its own text as a string literal by making a string and writing it.
 
 ## Terms
 - **Symbol:** a value that is a name; a symbol names a value in a context.

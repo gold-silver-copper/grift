@@ -122,7 +122,9 @@ fn objects(g: &mut G) -> Vec<(&'static str, Value)> {
 fn primitives(g: &mut G) -> Vec<(String, Value)> {
     let names = evaluate(g, "built-in-names");
     let mut found = Vec::new();
-    for name in g.list_items(&names).unwrap() {
+    let mut rest = names;
+    while let Some((name, more)) = g.as_pair(&rest).unwrap() {
+        rest = more;
         let Value::Symbol(s) = &name else { panic!() };
         let text = g.symbol_name(s).unwrap().to_string();
         let v = evaluate(g, &format!("(catch! (unwrap {text}) #ignore #inert)"));
@@ -165,7 +167,6 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
             "pair, rest",
             g.pair(Value::EmptyList, bad.clone()).map(drop),
         ),
-        ("list", g.list(std::slice::from_ref(bad)).map(drop)),
         ("bind, the value", g.bind(&top, &x, bad.clone())),
         ("bind, the context", g.bind(bad, &x, Value::Inert)),
         ("bind, the parameters", g.bind(&top, bad, Value::Inert)),
@@ -186,7 +187,6 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
         ("as_pair", g.as_pair(bad).map(drop)),
         ("as_str", g.as_str(bad).map(drop)),
         ("as_bytes", g.as_bytes(bad).map(drop)),
-        ("list_items", g.list_items(bad).map(drop)),
     ];
     for (entry, r) in results {
         check(entry.into(), r.err().map_or("ok".into(), |e| kind(g, &e)));

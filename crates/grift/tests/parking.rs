@@ -429,8 +429,10 @@ fn values_across_a_wait() {
     let q = parked(run(&mut g, &mut w, "(wait-with (list 4 5 6))"));
     let unkept = w.saved.pop().unwrap();
     collect(&mut g, &mut w);
-    assert_eq!(g.list_items(&argument).unwrap().len(), 3);
-    assert!(kind(&g, &g.list_items(&unkept).unwrap_err()) == "stale-value");
+    let mut text = String::new();
+    g.write(&argument, &mut text).unwrap();
+    assert_eq!(text, "(1 2 3)");
+    assert!(kind(&g, &g.as_pair(&unkept).unwrap_err()) == "stale-value");
 
     // A stale answer is that call's error, as a host function's return is, and it can be caught.
     let done = resume(&mut g, &mut w, q, unkept);
@@ -774,7 +776,7 @@ fn the_request_stays_good_for_as_long_as_the_run_waits() {
     let done = resume(&mut g, &mut w, p, Value::Inert);
     assert_eq!(finished(&g, done), "#inert");
     collect(&mut g, &mut w);
-    assert_eq!(kind(&g, &g.list_items(&asked).unwrap_err()), "stale-value");
+    assert_eq!(kind(&g, &g.as_pair(&asked).unwrap_err()), "stale-value");
     // A request that isn't this interpreter's is that call's error: nothing parks.
     let mut other = grift();
     w.saved = vec![other.string("elsewhere").unwrap()];

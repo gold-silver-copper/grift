@@ -8,9 +8,10 @@
 //! once by the type, and it carries its interpreter's identity as every value does.
 
 use crate::evaluate::Machine;
+use crate::evaluate::Primitive;
 use crate::heap::Object;
 use crate::local::{self, K};
-use crate::{Error, Grift, Owner, Primitive, Value};
+use crate::{Error, Grift, Owner, Value};
 use std::sync::Weak;
 
 /// A host function that may answer later: [`Grift::parking_function`] makes one.

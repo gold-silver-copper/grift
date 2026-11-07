@@ -5,8 +5,9 @@
     clippy::indexing_slicing
 )]
 
+use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Error, Grift, Interrupter, Primitive, Value, local};
+use crate::{Error, Grift, Interrupter, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -54,6 +55,19 @@ const CORE: &[&str] = &[
 ];
 
 impl<T> Grift<T> {
+    /// The elements of a proper list, by `as_pair`, as a host reads one.
+    pub(crate) fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
+        let (mut items, mut rest) = (Vec::new(), list.clone());
+        while let Some((x, more)) = self.as_pair(&rest)? {
+            items.push(x);
+            rest = more;
+        }
+        match rest {
+            Value::EmptyList => Ok(items),
+            _ => Err(self.export_error(local::Error::new(local::K::TypeError, &[]))),
+        }
+    }
+
     /// From now on the natives are their grift definitions: each bound in the built-in context,
     /// where the library looks it up, wrapped if the native is, and no library form runs a native
     /// twin. As the library's own code, what this loads is skipped by traces.
@@ -2877,7 +2891,7 @@ impl Comparison<'_> {
                     }
                 }
                 // What a native is, its definition is: the comparison's one allowed difference.
-                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, *p) => {}
+                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, p.0) => {}
                 _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
                     return differ();
                 }
@@ -3286,7 +3300,7 @@ fn string_literals_share_the_reader_and_both_writers() {
     let read_form = g.evaluate(&mut (), "read-form").unwrap();
     for text in texts {
         let mut written = String::new();
-        crate::write_string(&text, &mut written).unwrap();
+        crate::print::write_string(&text, &mut written).unwrap();
         assert!(!written.chars().any(char::is_control));
         let value = g.string(&text).unwrap();
         assert_eq!(show(&g, &value), written);
@@ -3311,10 +3325,10 @@ fn string_literals_share_the_reader_and_both_writers() {
     }
     let sample = "a\n\"\\\0λ";
     let mut full = String::new();
-    crate::write_string(sample, &mut full).unwrap();
+    crate::print::write_string(sample, &mut full).unwrap();
     for budget in 0..full.len() {
         assert_eq!(
-            crate::write_string(sample, &mut RefusesAfter(budget)),
+            crate::print::write_string(sample, &mut RefusesAfter(budget)),
             Err(std::fmt::Error)
         );
     }

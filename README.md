@@ -182,8 +182,8 @@ fn main() -> Result<(), Error> {
     assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.list(&[hi.clone(), Value::Integer(1)])?;
-    assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]);
+    let list = g.pair(hi.clone(), Value::EmptyList)?; // a list is pairs, built from its end
+    assert_eq!(g.as_pair(&list)?, Some((hi, Value::EmptyList)));
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = String::new();
     g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
@@ -216,12 +216,12 @@ fn main() -> Result<(), Error> {
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `seal_library()` after a host's prelude makes its code
   count as library code, as grift's own: traces skip it.
-- **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
-  `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
-  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
-  `grift::write_string(text, out)` writes host text as one string literal, with the same quoting
-  and escapes, into any `std::fmt::Write`, without an interpreter or allocation; it returns
-  `std::fmt::Result`.
+- **Values:** `string`, `bytes(&[u8])`, `pair`, `symbol`; read with `as_str`, `as_bytes`,
+  `as_pair`, `symbol_name`, each `Result<Option<_>, Error>` or `Result<_, Error>`, so a reclaimed
+  value is `stale-value`, never a wrong answer; `write(&v, out)`. A list is built with `pair` from
+  its end and read with `as_pair` from its start. Host text is written as a string literal the
+  same way: `string`, then `write`. A `Value::Primitive` is opaque: a host compares and writes it,
+  and can't name or make one.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a

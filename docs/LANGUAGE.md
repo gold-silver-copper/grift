@@ -80,9 +80,6 @@ but an integer 0 to 255 is `bad-byte`, at it. A `.` is `misplaced-dot`, and a mi
 `unclosed-list` at the `(`; `#bytes` with no `(` after it is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
 a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` wherever a token can start.
-For Rust hosts, `grift::write_string(text, out)` writes one quoted string literal with these same
-escapes, into a `std::fmt::Write`, without an interpreter or allocation. It returns `std::fmt::Result`;
-`Grift::write` uses it for strings too.
 
 ## Primitives (Rust)
 

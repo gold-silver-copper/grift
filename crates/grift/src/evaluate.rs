@@ -31,13 +31,13 @@ macro_rules! primitives {
     ($($p:ident $name:literal $lo:literal $hi:expr;)*) => {
         /// The Rust primitives, each bound wrapped, as an applicative, until the library says otherwise.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Primitive { $($p),* }
+        pub(crate) enum Primitive { $($p),* }
 
         impl Primitive {
             pub(crate) const ALL: &[Primitive] = &[$(Primitive::$p),*];
 
             /// The name the primitive is bound to in the built-in context.
-            pub fn name(self) -> &'static str {
+            pub(crate) fn name(self) -> &'static str {
                 match self { $(Primitive::$p => $name),* }
             }
 
