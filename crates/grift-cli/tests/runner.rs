@@ -218,6 +218,56 @@ fn files_are_contexts_of_operations() {
     assert_eq!(std::fs::read(path).unwrap(), b"one\ntwo\n");
 }
 
+/// Each read or load keeps nothing: what 120,000 of them would keep, a 4 KB path each, doesn't fit
+/// the 400 MB of address space given here.
+#[cfg(target_os = "linux")]
+#[test]
+fn reading_and_loading_again_and_again_keep_nothing() {
+    let dir = scratch("repeated-reads");
+    let path = format!("/dev/{}null", "./".repeat(2000));
+    let file = dir.join("reads.grift");
+    let program = format!(
+        "(define! path \"{path}\")
+         (define! again
+           (lambda! (n)
+             (when! (less-than? 0 n) (read-file path) (load path) (again (subtract n 1)))))
+         (again 60000)
+         (display \"done\")"
+    );
+    std::fs::write(&file, program).unwrap();
+    let out = Command::new("prlimit")
+        .args(["--as=400000000", env!("CARGO_BIN_EXE_grift")])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}", &err[..err.len().min(300)]);
+    assert_eq!(out.stdout, b"done");
+}
+
+/// A file a program closed stays closed whatever is read or opened after it.
+#[test]
+fn a_closed_file_stays_closed_past_later_reads_and_opens() {
+    let dir = scratch("closed-stays");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::write(&a, "from a").unwrap();
+    std::fs::write(&b, "from b").unwrap();
+    let program = r#"
+        (define! (a b) command-line-arguments)
+        (define! one (open-file a))
+        ((evaluate-in! close one))
+        (define! read (read-file b))
+        (define! two (open-file b))
+        (display (list read
+                       ((evaluate-in! read-all two))
+                       (catch! ((evaluate-in! read-all one)) e (evaluate-in! kind e))))
+    "#;
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+    let (status, out, err) = script(&dir, program, &[a, b], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(out, "(\"from b\" \"from b\" closed)");
+}
+
 #[test]
 fn a_program_cannot_reach_the_runner_s_host_functions() {
     let dir = scratch("boundary");
@@ -764,6 +814,26 @@ fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
         "{shown}"
     );
     assert_eq!(at_a_terminal("(exit 9)\n").0, Some(9));
+}
+
+/// A session is a grift program, so an error in its own prompting or reading ends it.
+#[cfg(target_os = "linux")]
+#[test]
+fn closing_what_a_session_prompts_on_or_reads_ends_it_with_status_1() {
+    let (status, shown) = at_a_terminal("((evaluate-in! close standard-error))\n1\n\x04");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(shown.contains("#inert\n"), "{shown}");
+    assert!(
+        shown.contains("stdin: closed \"standard-error\""),
+        "{shown}"
+    );
+    assert!(!shown.contains("\n1\n"), "{shown}");
+    let (status, shown) = at_a_terminal("((evaluate-in! close standard-input))\n");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(
+        shown.contains("stdin: closed \"standard-input\""),
+        "{shown}"
+    );
 }
 
 #[cfg(target_os = "linux")]

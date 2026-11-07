@@ -3,7 +3,8 @@
 //! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0,
 //! 1 on a grift error (a script that can't be read, or failed output, is one), or what the program
 //! gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program calls
-//! `exit` or input ends inside a form. A write to a pipe no one reads, on any file, ends the run as
+//! `exit`, input ends inside a form, or standard input or error fails or is closed, which is the
+//! session's own error and ends it with 1. A write to a pipe no one reads, on any file, ends the run as
 //! `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
@@ -371,6 +372,17 @@ fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     Ok(Value::Inert)
 }
 
+/// `(forget-host)`: closes the file opened last and frees its number. For a file a program never
+/// held, so that reading again and again keeps nothing: a file a program closed keeps its entry,
+/// so its number is `closed` for ever and never comes to mean another file.
+fn forget_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    if !args.is_empty() {
+        return Err(g.error("arity-error", args));
+    }
+    r.files.pop();
+    Ok(Value::Inert)
+}
+
 /// `(environment-variable name)`: its value; `unset-variable` when it has none.
 fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let name = one_string(g, args)?;
@@ -471,7 +483,7 @@ fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error
 
 /// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
 /// those it should have.
-const HOSTS: [(&str, HostFunction<Runner>); 18] = [
+const HOSTS: [(&str, HostFunction<Runner>); 19] = [
     ("display", display),
     ("display-error", display_error),
     ("environment-variable", environment_variable),
@@ -485,6 +497,7 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
     ("read-bytes-host", read_bytes_host),
     ("write-host", write_host),
     ("close-host", close_host),
+    ("forget-host", forget_host),
     ("run-host", run_host),
     ("report-host", report_host),
     ("read-forms", read_forms),

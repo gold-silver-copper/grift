@@ -24,11 +24,12 @@
 (define! standard-output (writer "standard-output" 2))
 (define! open-file (lambda! (path) (reader path (open-host path))))
 (define! create-file (lambda! (path) (writer path (create-host path))))
-; read-file: a file's whole text, by what any program can do with open-file.
+; read-file: a file's whole text, as a program could with open-file. Nothing opens a file between
+; the two ends here and no program sees its number, so forgetting it, the last opened, is safe.
 (define! read-file
   (lambda! (path)
     (let! ((file (open-host path)))
-      (finally! (read-all-host file) (close-host file)))))
+      (finally! (read-all-host file) (forget-host)))))
 ; The record of a finished process: its status, output and error output.
 (define! run-process
   (lambda! (program . arguments)

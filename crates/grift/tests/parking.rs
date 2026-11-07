@@ -1032,10 +1032,11 @@ fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
     }
     let (mut g, mut w) = (grift(), World::default());
     let private = g.private_context().unwrap();
-    let hosts: [(&str, grift::HostFunction<World>); 12] = [
+    let hosts: [(&str, grift::HostFunction<World>); 13] = [
         ("open-host", open),
         ("read-all-host", read_all),
         ("close-host", close),
+        ("forget-host", close),
         ("read-forms", read_forms),
         ("resolve-host", resolve),
         ("display", unused),

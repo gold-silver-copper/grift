@@ -89,12 +89,14 @@ rlwrap cargo run --release                        # interactive: prints each res
 reader takes `#!` as starting a comment, as `;` does. With no script it reads the program from stdin,
 and when stdin is a terminal it evaluates each complete input and prints its result: a session that
 goes on past an error, where a program's `read-line` takes the next line typed, and a session that isn't
-ended by `exit` ends with status 0, or 1 if its input ends inside a form. Data goes
+ended by `exit` ends with status 0, or 1 if its input ends inside a form or standard input or error
+fails or is closed. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
 file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
 failed write (`file-error`) or a script it can't read, or the status the program gave `exit`. At a
 terminal, errors are shown and the session goes on. A pipe closing ends it with 0; otherwise it ends 0
-unless the program calls `exit` or input ends inside a form. It has no line editor: `rlwrap grift` gives
+unless the program calls `exit`, input ends inside a form, or standard input or error fails or is
+closed, which ends it with 1. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:
