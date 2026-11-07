@@ -35,7 +35,7 @@ fn read_file(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Value, Error> {
 }
 
 fn write_file(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    h.saved.extend(g.as_string(&args[1])?);
+    h.saved.extend(g.as_str(&args[1])?.map(str::to_owned));
     Ok(Value::Inert)
 }
 

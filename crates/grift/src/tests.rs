@@ -549,7 +549,7 @@ fn host_functions() {
 
 /// `(halves "ab")` is `("ab" . "ab")`, made from Rust; `(sum (1 2 3))` walks a list from Rust.
 fn halves(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    let s = g.as_string(&args[0])?.unwrap();
+    let s = g.as_str(&args[0])?.unwrap().to_owned();
     let (a, b) = (g.string(&s)?, g.string(&s)?);
     g.pair(a, b)
 }

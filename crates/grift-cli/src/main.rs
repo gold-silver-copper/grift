@@ -174,10 +174,24 @@ fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, 
     }
 }
 
+/// A copy of a string value's contents, `None` for anything else; a program that fills memory gets
+/// `out-of-memory`, not an abort.
+fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
+    let Some(len) = g.as_str(v)?.map(str::len) else {
+        return Ok(None);
+    };
+    let mut copy = String::new();
+    if copy.try_reserve_exact(len).is_err() {
+        return Err(g.error("out-of-memory", &[]));
+    }
+    copy.push_str(g.as_str(v)?.unwrap_or_default());
+    Ok(Some(copy))
+}
+
 /// The one string argument, or a `type-error` or an `arity-error`.
 fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
     match args {
-        [v] => match g.as_string(v)? {
+        [v] => match owned_string(g, v)? {
             Some(s) => Ok(s),
             None => Err(g.error("type-error", args)),
         },
@@ -411,7 +425,7 @@ fn exit(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let mut words = Vec::new();
     for v in args {
-        match g.as_string(v)? {
+        match owned_string(g, v)? {
             Some(s) => words.push(s),
             None => return Err(g.error("type-error", std::slice::from_ref(v))),
         }

@@ -503,35 +503,24 @@ impl<T> Grift<T> {
         self.exported(made.map(local::Value::String))
     }
 
-    /// The contents of a string value; `None` for anything else.
+    /// The contents of a string value; `None` for anything else. To hold them while it calls
+    /// `&mut self` methods a host copies them, as it does a bytes value's.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let path = g.string("notes.txt")?;
+    /// let path = g.as_str(&path)?.map(str::to_owned); // owned: g is free again
+    /// let e = g.error("file-error", &[]);
+    /// assert_eq!(path.as_deref(), Some("notes.txt"));
+    /// assert_eq!(g.symbol_name(&e.kind)?, "file-error");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn as_str(&self, v: &Value) -> Result<Option<&str>, Error> {
         let s = self.import(v).and_then(|v| match v {
             local::Value::String(_) => self.text(Primitive::StringAppend, v).map(Some),
             _ => Ok(None),
         });
         self.out(s)
-    }
-
-    /// A copy of a string value's contents, which the host can hold while it calls `&mut self`
-    /// methods; `None` for anything else.
-    ///
-    /// ```
-    /// let mut g: grift::Grift = grift::Grift::new()?;
-    /// let path = g.string("notes.txt")?;
-    /// let path = g.as_string(&path)?.unwrap(); // owned: g is free again
-    /// let e = g.error("file-error", &[]);
-    /// assert_eq!((path.as_str(), g.symbol_name(&e.kind)?), ("notes.txt", "file-error"));
-    /// # Ok::<(), grift::Error>(())
-    /// ```
-    pub fn as_string(&self, v: &Value) -> Result<Option<String>, Error> {
-        let Some(s) = self.as_str(v)? else {
-            return Ok(None);
-        };
-        let mut copy = String::new();
-        let reserved = copy
-            .try_reserve_exact(s.len())
-            .map_err(|_| local::Error::oom());
-        self.out(reserved).map(|()| Some(copy + s))
     }
 
     /// A new bytes value holding a copy of `b`.
@@ -595,7 +584,7 @@ impl<T> Grift<T> {
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let keys = g.evaluate(&mut (), "(list \"C-b\" \"v\")")?;
-    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_string(k).ok()?).collect();
+    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_str(k).ok()?.map(String::from)).collect();
     /// assert_eq!(keys, ["C-b", "v"]);
     /// let dotted = g.evaluate(&mut (), "(pair 1 2)")?;
     /// let e = g.list_items(&dotted).unwrap_err();

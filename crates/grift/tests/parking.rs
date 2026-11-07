@@ -51,7 +51,7 @@ fn wait_with(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Err
 
 /// Evaluates its string argument inside this host call.
 fn nest(g: &mut G, world: &mut World, args: &[Value]) -> Result<Value, Error> {
-    let src = g.as_string(&args[0])?.unwrap();
+    let src = g.as_str(&args[0])?.unwrap().to_owned();
     assert!(g.can_park());
     let done = g.evaluate(world, &src);
     assert!(g.can_park());
@@ -88,7 +88,7 @@ fn boom(_: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
 
 /// The forms of the text in the host's first saved value, as the runner's `read-forms-host`.
 fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
-    let name = g.as_string(&args[0])?.unwrap();
+    let name = g.as_str(&args[0])?.unwrap().to_owned();
     g.read_in(
         &name,
         "(note (quote! loaded))\n(define! from-file (wait))\n(first from-file)",
@@ -650,7 +650,7 @@ fn an_event_loop_runs_three_waiting_scripts() {
     }
 
     fn say(g: &mut Grift<Host>, host: &mut Host, args: &[Value]) -> Result<Value, Error> {
-        let text = g.as_string(&args[0])?.unwrap_or_default();
+        let text = g.as_str(&args[0])?.unwrap_or_default().to_owned();
         host.finished.push(format!("{} {text}", host.now));
         Ok(Value::Inert)
     }
@@ -967,7 +967,7 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
 #[test]
 fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
     fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
-        let path = g.as_string(&args[0])?.unwrap();
+        let path = g.as_str(&args[0])?.unwrap().to_owned();
         let text = std::fs::read_to_string(&path).unwrap();
         g.read_in(&path, &text)
     }

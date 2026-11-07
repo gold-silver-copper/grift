@@ -17,7 +17,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         }),
         ("force", |_, s, _| Ok(Value::Boolean(s.force()))),
         ("nested", |g, s, args| {
-            let src = g.as_string(&args[0])?.unwrap();
+            let src = g.as_str(&args[0])?.unwrap().to_owned();
             g.evaluate(s, &src)
         }),
         // Returns a nested stop's error after a collection has made its trace stale.
@@ -28,7 +28,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
             Err(e)
         }),
         ("reports", |g, _, args| {
-            let name = g.as_string(&args[0])?.unwrap();
+            let name = g.as_str(&args[0])?.unwrap().to_owned();
             Err(g.error(&name, &[]))
         }),
     ];

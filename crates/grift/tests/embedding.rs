@@ -179,7 +179,6 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
         ("keep", g.keep(bad.clone()).map(drop)),
         ("as_pair", g.as_pair(bad).map(drop)),
         ("as_str", g.as_str(bad).map(drop)),
-        ("as_string", g.as_string(bad).map(drop)),
         ("as_bytes", g.as_bytes(bad).map(drop)),
         ("list_items", g.list_items(bad).map(drop)),
     ];

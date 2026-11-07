@@ -81,7 +81,7 @@ fn job_start(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [command] = args else {
         return Err(g.error("arity-error", args));
     };
-    let Some(command) = g.as_string(command)? else {
+    let Some(command) = g.as_str(command)?.map(str::to_owned) else {
         return Err(g.error("type-error", args));
     };
     let id = h.inbox.register();
@@ -193,7 +193,7 @@ fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
     let [path] = args else {
         return Err(g.error("arity-error", args));
     };
-    let Some(name) = g.as_string(path)? else {
+    let Some(name) = g.as_str(path)?.map(str::to_owned) else {
         return Err(g.error("type-error", args));
     };
     match std::fs::read_to_string(&name) {

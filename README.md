@@ -207,7 +207,7 @@ fn main() -> Result<(), Error> {
   `define(name, value)` at top level. `seal_library()` after a host's prelude makes its code
   count as library code, as grift's own: traces skip it.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
-  `as_string` (an owned copy), `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
+  `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
   `grift::write_string(text, out)` writes host text as one string literal, with the same quoting
   and escapes, into any `std::fmt::Write`, without an interpreter or allocation; it returns
@@ -268,7 +268,7 @@ fn sleep(_: &mut Grift<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Res
 }
 
 fn say(g: &mut Grift<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
-    said.extend(g.as_string(&args[0])?);
+    said.extend(g.as_str(&args[0])?.map(str::to_owned));
     Ok(Value::Inert)
 }
 
