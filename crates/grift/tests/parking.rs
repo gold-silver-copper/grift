@@ -968,8 +968,14 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
 fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
     fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         let path = g.as_string(&args[0])?.unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        g.read_in(&path, &text)
+        g.string(&std::fs::read_to_string(&path).unwrap())
+    }
+    fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+        let (source, text) = (
+            g.as_string(&args[0])?.unwrap(),
+            g.as_string(&args[1])?.unwrap(),
+        );
+        g.read_in(&source, &text)
     }
     fn resolve(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         Ok(args[1].clone())
@@ -979,24 +985,37 @@ fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
     }
     let (mut g, mut w) = (grift(), World::default());
     let private = g.private_context().unwrap();
-    let setup = g
-        .evaluate_in(
-            &mut w,
-            &private,
-            "runner.grift",
-            include_str!("../../grift-cli/src/runner.grift"),
-        )
-        .unwrap();
-    let mut args = vec![g.top_level(), g.string("").unwrap()];
-    for n in 0..11 {
-        let f = match n {
-            9 => read_file as grift::HostFunction<World>,
-            10 => resolve,
-            _ => unused,
-        };
-        args.push(g.host_function("runner-operation", f).unwrap());
+    let hosts: [(&str, grift::HostFunction<World>); 10] = [
+        ("read-file", read_file),
+        ("read-forms", read_forms),
+        ("resolve-host", resolve),
+        ("display", unused),
+        ("display-error", unused),
+        ("position", unused),
+        ("environment-variable", unused),
+        ("wall-clock-nanoseconds", unused),
+        ("elapsed-nanoseconds", unused),
+        ("exit", unused),
+    ];
+    let mut bound = vec![
+        ("top", g.top_level()),
+        ("script-path", g.string("").unwrap()),
+        ("command-line-arguments", Value::EmptyList),
+    ];
+    for (name, f) in hosts {
+        bound.push((name, g.host_function(name, f).unwrap()));
     }
-    g.call(&mut w, &setup, &args).unwrap();
+    for (name, value) in bound {
+        let name = Value::Symbol(g.symbol(name).unwrap());
+        g.bind(&private, &name, value).unwrap();
+    }
+    g.evaluate_in(
+        &mut w,
+        &private,
+        "runner.grift",
+        include_str!("../../grift-cli/src/runner.grift"),
+    )
+    .unwrap();
     let path = format!(
         "{}/tests/fixtures/waiting-load.grift",
         env!("CARGO_MANIFEST_DIR")

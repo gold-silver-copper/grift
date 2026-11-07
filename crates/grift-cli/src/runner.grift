@@ -81,9 +81,10 @@
 
 (define! here (current-context))
 (for-each (lambda! (name) (bind top name (evaluate name here)))
-          (quote! (display display-error read-file read-forms position environment-variable wall-clock-nanoseconds
-                   elapsed-nanoseconds exit command-line-arguments script-path standard-input
-                   standard-output standard-error open-file create-file run-process load)))
+          (quote! (display display-error read-file read-forms position environment-variable
+                   wall-clock-nanoseconds elapsed-nanoseconds exit command-line-arguments
+                   script-path standard-input standard-output standard-error open-file create-file
+                   run-process load)))
 
 ; What main.rs calls when stdin is a terminal.
 (lambda! () (session "" "> "))
