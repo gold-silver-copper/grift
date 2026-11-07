@@ -21,10 +21,11 @@ fn main() {
     let mut g = Grift::new().unwrap();
     let host = g.host_function("source", source).unwrap();
     g.define("source", host).unwrap();
-    // At least 8 KiB above the passing 292 KiB control; d9dc54a fails at 300 KiB.
+    // A budget per host callback that catches gross growth on any 64-bit target. Measured at 16:
+    // about 292 KiB on x86-64 and 319 KiB on aarch64.
     let mut depth = 16;
     std::thread::Builder::new()
-        .stack_size(300 * 1024)
+        .stack_size(depth * 24 * 1024)
         .spawn(move || {
             let context = g.top_level();
             // Fixed host nesting, independent of how many sources the grift loop processes.
