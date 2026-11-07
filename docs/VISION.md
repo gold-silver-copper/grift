@@ -153,11 +153,11 @@ named text, so the host says `at config.grift:12`. `(error kind value ...)` make
 raises it: `(raise (error (quote! type-error) x))`. `finally!` runs cleanup as an error passes and
 lets it go on, unless the cleanup fails or a limit cuts it (`LANGUAGE.md` has each case).
 `catch!` catches: cleanups run first, then the handler receives the error as a context with no parent, binding `kind`, `values` and `trace`; `(raise e)` passes a caught error on,
-keeping its trace. Errors about the program can be caught; limits set by the host or the machine,
-`interrupted`, `abandoned` and `out-of-memory`, never can, and always reach the host. Early exit is `catch!` with
+keeping its trace. What a program raises can be caught; limits the host or the machine began,
+never, and they always reach the host. Early exit is `catch!` with
 an error kind of your own; there is no other escape. (Unlike Common Lisp's `catch`, which is a
 non-error escape, grift's `catch!` catches errors.) Under them are two primitives,
-`call-with-handler` and `evaluate-with-cleanup`.
+`evaluate-with-handler` and `evaluate-with-cleanup`.
 
 ## No continuations
 Generators and backtracking are closures or lazy streams; a language built on grift that wants

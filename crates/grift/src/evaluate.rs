@@ -734,10 +734,13 @@ impl<T> Grift<T> {
             Hosted::Plain(f) => f(self, state, &arguments).map(Answer::Now),
             Hosted::Parking(f) => f(self, state, &arguments),
         };
-        // Run numbers are never repeated, so this says the interpreter was replaced, or restored
-        // after a run inside gave this one up: the run is over, and what is on this machine is
-        // no part of it. The replaced interpreter's run ends as `hosting` drops.
-        if self.control.run() != run {
+        // Replaced, or restored after a run inside gave this one up: the run is over, and what is
+        // on this machine is no part of it. The replaced interpreter's run ends as `hosting` drops.
+        let same = hosting
+            .0
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && c.run() == run);
+        if !same {
             self.machine.clear();
             self.end_run();
             return Err(Error::new(K::ForeignValue, &[]));

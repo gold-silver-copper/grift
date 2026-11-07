@@ -14,24 +14,22 @@ const STOP: u64 = 1;
 const FORCE: u64 = 2;
 const ASKED: u64 = STOP | FORCE;
 
-/// Numbers runs in every interpreter, by the multiple of 4 that leaves the two bits free. Never
-/// repeated (at a run a nanosecond it wraps after a century), so a number says which run of which
-/// interpreter it is.
-static RUNS: AtomicU64 = AtomicU64::new(0);
-
 /// What an interpreter shares with its interrupters. Its allocation is also the interpreter's
 /// identity: the values it hands out point to it.
 #[derive(Default)]
 pub(crate) struct Control {
     word: AtomicU64,
+    /// The last run's number, a multiple of 4 that leaves the two bits free. Never repeated: at a
+    /// run a nanosecond it wraps after a century.
+    runs: AtomicU64,
     /// The kept names of parked runs whose handles were dropped, for the host to find again.
     forgotten: Mutex<Vec<u32>>,
 }
 
 impl Control {
     pub fn begin(&self) {
-        let run = RUNS.fetch_add(ASKED + 1, Relaxed).wrapping_add(ASKED + 1);
-        self.word.store(run, Relaxed);
+        let run = self.runs.fetch_add(ASKED + 1, Relaxed);
+        self.word.store(run.wrapping_add(ASKED + 1), Relaxed);
     }
 
     pub fn end(&self) {
@@ -47,6 +45,22 @@ impl Control {
     #[inline(always)]
     pub fn asked(&self) -> bool {
         self.word.load(Relaxed) & ASKED != 0
+    }
+
+    /// Sets `bit`, in one atomic step, if a run is in progress and it is one `wanted`; which it was.
+    fn ask(&self, bit: u64, wanted: impl Fn(u64) -> bool) -> Option<u64> {
+        let mut word = self.word.load(Relaxed);
+        loop {
+            let run = word & !ASKED;
+            if run == 0 || !wanted(run) {
+                return None;
+            }
+            let set = word | bit;
+            match self.word.compare_exchange_weak(word, set, Relaxed, Relaxed) {
+                Ok(_) => return Some(run),
+                Err(now) => word = now,
+            }
+        }
     }
 
     /// The machine acts on the stops asked so far: they count as one.
@@ -124,14 +138,11 @@ impl Interrupter {
     /// passed before its run began (while its source is read, say) asks again until one is, and
     /// no longer once the host knows its run ended: else it would stop the next.
     pub fn stop(&mut self) -> bool {
-        let was = self
-            .control
-            .word
-            .try_update(Relaxed, Relaxed, |w| (w != 0).then_some(w | STOP));
-        if let Ok(w) = was {
-            self.stopped = w & !ASKED;
+        let run = self.control.ask(STOP, |_| true);
+        if let Some(run) = run {
+            self.stopped = run;
         }
-        was.is_ok()
+        run.is_some()
     }
 
     /// Ends the run this handle last stopped, at its next check, however its cleanups behave:
@@ -143,11 +154,6 @@ impl Interrupter {
     ///
     /// [`Error::is_limit`]: crate::Error::is_limit
     pub fn force(&mut self) -> bool {
-        self.control
-            .word
-            .try_update(Relaxed, Relaxed, |w| {
-                (w != 0 && w & !ASKED == self.stopped).then_some(w | FORCE)
-            })
-            .is_ok()
+        self.control.ask(FORCE, |run| run == self.stopped).is_some()
     }
 }
