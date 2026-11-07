@@ -101,7 +101,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
 | `standard-input` | A context of operations: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin can't read it again (`closed`). |
-| `standard-output`, `standard-error` | Contexts of operations: `(write string)`, and `(write-bytes bytes)`, a bytes value, as a file's, to stdout or stderr. |
+| `standard-output`, `standard-error` | Contexts of operations: `(write string)`, and `(write-bytes bytes)`, a bytes value (anything else is a `type-error`), as a file's, to stdout or stderr. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write string)`, `(write-bytes bytes)`, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
