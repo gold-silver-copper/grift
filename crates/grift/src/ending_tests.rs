@@ -465,27 +465,47 @@ fn a_cleanups_install_makes_the_room_its_start_needs() {
     }
 }
 
-/// Memory refused to a machine stack, not by the heap: what the dropped frames held is worth
-/// collecting all the same. The cleanup empties what `Finish` reads, which fails as a refusal does.
+/// Memory refused to a machine stack or a host's value, not by the heap: what can be let go of is
+/// worth collecting all the same, for the cleanups or for the host's next try.
 #[test]
 fn memory_refused_outside_the_heap_asks_for_a_collection() {
-    let (mut g, mut s) = host();
-    let empty = g
-        .host_function("empty-waiting", |g, _, _| {
-            g.machine.lose_waiting();
-            g.heap.not_due();
+    let (mut g, _) = host();
+    g.heap.not_due();
+    let _ = g.unwind(crate::local::Error::oom(), 0);
+    assert!(g.heap.due());
+    g.heap.not_due();
+    let _ = g.export_error(crate::local::Error::oom());
+    assert!(g.heap.due());
+}
+
+/// A refusal asks for one collection, not one for each cleanup it goes through: each marks all the
+/// levels left, so that would take time in the square of the depth. Only a new refusal asks again.
+#[test]
+fn memory_refused_collects_once_however_many_cleanups_it_passes() {
+    let mut g: Grift<Vec<usize>> = Grift::new().unwrap();
+    let mut collections = Vec::new();
+    let seen = g
+        .host_function("seen", |g, seen: &mut Vec<usize>, _| {
+            seen.push(g.heap.collections);
             Ok(Value::Inert)
         })
         .unwrap();
-    g.define("empty-waiting", empty).unwrap();
-    let e = g
-        .evaluate(&mut s, "(finally! 1 (empty-waiting))")
-        .unwrap_err();
-    assert_eq!(
-        (kind(&g, &e).as_str(), e.is_limit()),
-        ("out-of-memory", true)
+    g.define("seen", seen).unwrap();
+    g.evaluate(
+        &mut collections,
+        "(define! down (lambda! (n) (finally! (down (add n 1)) (seen))))",
+    )
+    .unwrap();
+    g.heap.slot_limit = g.heap.len() + 20_000;
+    let e = g.evaluate(&mut collections, "(down 0)").unwrap_err();
+    assert_eq!(kind(&g, &e), "out-of-memory");
+    assert!(collections.len() > 500, "{} cleanups", collections.len());
+    let made = collections[collections.len() - 1] - collections[0];
+    assert!(
+        made < 10,
+        "{made} collections, {} cleanups",
+        collections.len()
     );
-    assert!(g.heap.due());
 }
 
 /// A host keeps a limit and hands it in later, from a host function or as an answer to a wait: it

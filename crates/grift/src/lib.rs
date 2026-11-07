@@ -1023,7 +1023,12 @@ impl<T> Grift<T> {
         }
     }
 
+    /// An error as the host's. Memory refused here, not on its way through a run, asks for its
+    /// collection now: the host's next try has that, as a run's cleanups do.
     pub(crate) fn export_error(&self, e: local::Error) -> Error {
+        if e.refused {
+            self.heap.request_collection();
+        }
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
         match (exported(&e.values), exported(&e.trace)) {
             (Ok(values), Ok(trace)) => Error {

@@ -58,7 +58,7 @@ impl<T> Grift<T> {
         let mut walked = 0;
         while let Some(item) = first.take().or_else(|| todo.pop()) {
             if self.walk_stopped(&mut walked) {
-                return Err(Error::host(K::Interrupted).into());
+                return Err(Error::interrupted().into());
             }
             let opens = matches!(item, Item::Value(Value::Pair(_)));
             let v = match item {
