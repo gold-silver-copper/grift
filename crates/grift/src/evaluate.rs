@@ -903,6 +903,16 @@ impl<T> Grift<T> {
         Ok(Mode::Evaluate(form, context))
     }
 
+    /// The names `context` binds, sorted, as a list. Apart from [`Grift::primitive`], so that it
+    /// doesn't change how the common primitives inline.
+    #[inline(never)]
+    fn names_list(&mut self, context: Reference) -> Result<Value, Error> {
+        let names = self.names_of(context)?;
+        names.iter().rev().try_fold(Value::EmptyList, |list, &s| {
+            self.pair_local(Value::Symbol(s), list)
+        })
+    }
+
     fn primitive(&mut self, p: Primitive, context: Reference, base: usize) -> Result<Mode, Error> {
         use Primitive as P;
         let given = self.machine.arguments.get(base..).unwrap_or_default();
@@ -971,12 +981,7 @@ impl<T> Grift<T> {
                 }
             }
             P::Names => match x {
-                Value::Context(c) => {
-                    let names = self.names_of(c)?;
-                    names.iter().rev().try_fold(Value::EmptyList, |list, &s| {
-                        self.pair_local(Value::Symbol(s), list)
-                    })?
-                }
+                Value::Context(c) => self.names_list(c)?,
                 _ => return Err(type_error(p, x)),
             },
             P::Pair => self.pair_local(x, y)?,
