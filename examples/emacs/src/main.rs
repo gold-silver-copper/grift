@@ -31,7 +31,9 @@ const USAGE: &str = "usage: grift-emacs [--init INIT.grift] [FILE]";
 /// The longest error text shown: an error may carry a whole buffer.
 const ERROR_TEXT_MAX: usize = 400;
 
-/// How long a cleanup may run once nobody can type C-g: the terminal has closed, or the editor leaves.
+/// How long cleanups get. Once the terminal has closed, the input thread stops what runs this often.
+/// When the editor leaves, [`leave`] looks at the clock only between waits: with the terminal still
+/// open this bounds a cleanup that keeps waiting, not one that keeps running, which C-g can stop.
 const CLEANUP_MAX: Duration = Duration::from_secs(2);
 
 /// What the host functions work on.
@@ -379,8 +381,8 @@ fn leave(g: &mut G, h: &mut Host, mut parked: Parked) {
 fn report(g: &mut G, h: &mut Host, through: &str, e: &Error) -> String {
     let text = describe(g, e);
     // If that fails too, the next frame or command says so.
-    let _ = g.string(&text).and_then(|shown| {
-        let f = g.evaluate(h, through)?;
+    let _ = g.evaluate(h, through).and_then(|f| {
+        let shown = g.string(&text)?;
         g.call(h, &f, &[shown, Value::Symbol(e.kind.clone())])
     });
     text

@@ -7,7 +7,6 @@
 
 use crate::heap::{Bindings, Object};
 use crate::{Error, Grift, Interrupter, Primitive, Value, local};
-use std::time::{Duration, Instant};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -1668,16 +1667,23 @@ fn contexts() {
     assert_eq!(show(&g, &e), "#[context kind trace values]");
 }
 
-/// Whether a test program finishes within this: about 5 times what it takes (2 s) and less than
-/// a search per frame takes (14 s), in a release build at a load of about 8 on 32 cores.
-const LINEAR: Duration = Duration::from_secs(10);
+/// What evaluating `src` does: machine steps, collections, and references and symbols compared.
+/// Counts, so they say the same on a loaded machine.
+fn work(g: &mut Grift, src: &str) -> (Result<Value, Error>, u64, usize, u64) {
+    (g.machine.steps, g.heap.collections) = (0, 0);
+    local::COMPARED.with(|n| n.set(0));
+    let value = g.evaluate(&mut (), src);
+    let compared = local::COMPARED.with(std::cell::Cell::get);
+    (value, g.machine.steps, g.heap.collections, compared)
+}
 
 #[test]
 fn unwinding_and_checking_parameters_search_nothing() {
     // 300,000 frames, each around a combination made for it, so the trace holds each of them.
     // Through a cleanup per frame, too.
-    for around in ["x", "(finally! x #inert)"] {
+    for around in ["((lambda! (x) x) {})", "(finally! {} #inert)"] {
         let mut g = grift();
+        let inner = around.replace("{}", "(deep (evaluate n caller))");
         let deep = format!(
             "(define! here (current-context))
              (define! deep
@@ -1685,21 +1691,24 @@ fn unwinding_and_checking_parameters_search_nothing() {
                  (if! (same? n 0)
                    (raise (error (quote! bottom)))
                    (evaluate (list (quote! add) 1 (list (quote! wrapped) (subtract n 1))) here))))
-             (define! wrapped (vau! (n) caller ((lambda! (x) {around}) (deep (evaluate n caller)))))
+             (define! wrapped (vau! (n) caller {inner}))
              (catch! (deep 300000) e (length (evaluate-in! trace e)))"
         );
-        let start = Instant::now();
-        let traced = g.evaluate(&mut (), &deep).unwrap();
-        assert!(start.elapsed() < LINEAR, "{:?}", start.elapsed());
-        assert!(matches!(traced, Value::Integer(n) if n >= 300_000));
+        // 160 steps a frame, 15 to 19 collections, a third of a comparison a step. A search per
+        // frame is 45 billion comparisons, a collection per cleanup 300,000 collections.
+        let (traced, steps, collections, compared) = work(&mut g, &deep);
+        assert!(steps < 150_000_000, "{steps} steps");
+        assert!(collections < 100, "{collections} collections");
+        assert!(compared < steps, "{compared} compared in {steps} steps");
+        assert!(matches!(traced, Ok(Value::Integer(n)) if n >= 300_000));
     }
-    // 300,000 parameters, in the order they intern fastest: 9 s with a search, 0.05 s without.
+    // 300,000 parameters: a search compares 45 billion times, a table a few.
     let mut g = grift();
     let names: Vec<String> = (0..300_000).map(|i| format!("p{i:06}")).collect();
-    let start = Instant::now();
     let good = format!("((wrap vau!) (quote! ({})) #ignore 1)", names.join(" "));
-    assert!(g.evaluate(&mut (), &good).is_ok());
-    assert!(start.elapsed() < LINEAR, "{:?}", start.elapsed());
+    let (made, _, _, compared) = work(&mut g, &good);
+    assert!(made.is_ok());
+    assert!(compared < 300_000, "{compared} compared");
     let twice = format!(
         "((wrap vau!) (quote! ({} p000000)) #ignore 1)",
         names.join(" ")
@@ -2383,10 +2392,13 @@ fn sort_is_ordered_and_stable() {
                (and!? (not? (before? (second xs) (first xs))) (ordered? (rest xs) before?)))))",
     )
     .unwrap();
-    let started = Instant::now();
-    g.evaluate(&mut (), "(define! sorted (sort numbers less-than?))")
-        .unwrap();
-    let took = started.elapsed();
+    // 14.5 million steps and 109 collections, about 13 comparisons of elements for each of the
+    // 10,000. A quadratic sort is thousands of comparisons each: billions of steps.
+    let (sorted, steps, collections, _) =
+        work(&mut g, "(define! sorted (sort numbers less-than?))");
+    assert!(steps < 40_000_000, "{steps} steps");
+    assert!(collections < 400, "{collections} collections");
+    sorted.unwrap();
     holds(
         &mut g,
         &[
@@ -2403,10 +2415,6 @@ fn sort_is_ordered_and_stable() {
             "(empty-list? (sort () less-than?))",
             "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") string-less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
         ],
-    );
-    assert!(
-        took < Duration::from_secs(2),
-        "sorting 10,000 took {took:?}"
     );
     fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
     // string-less-than? is Rust's < on str, byte by byte.

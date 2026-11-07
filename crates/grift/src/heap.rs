@@ -8,10 +8,19 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq)]
+#[cfg_attr(not(test), derive(PartialEq))]
 pub(crate) struct Reference {
     pub idx: u32,
     pub generation: u32,
+}
+
+#[cfg(test)]
+impl PartialEq for Reference {
+    fn eq(&self, other: &Reference) -> bool {
+        crate::local::COMPARED.with(|n| n.set(n.get() + 1));
+        self.idx == other.idx && self.generation == other.generation
+    }
 }
 
 impl Hash for Reference {

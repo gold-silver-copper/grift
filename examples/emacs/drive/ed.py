@@ -1,5 +1,5 @@
 """Drives the real grift-emacs binary in a pty of its own, and keeps a small model of its screen."""
-import fcntl, glob, json, os, pty, re, select, signal, struct, termios, time
+import fcntl, glob, json, os, pty, re, resource, select, signal, struct, termios, time
 
 ROWS, COLS = 24, 80
 CSI = re.compile(rb"\x1b\[([?0-9;]*)([A-Za-z])")
@@ -14,7 +14,7 @@ INIT = """
 
 
 class Editor:
-    def __init__(self, binary, work, init=True):
+    def __init__(self, binary, work, init=True, memory=None):
         self.work = work
         args = [binary]
         if init:
@@ -24,6 +24,8 @@ class Editor:
             args += ["--init", path]
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
+            if memory is not None:
+                resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
             os.execv(binary, args)
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
         self.rows = [""] * ROWS

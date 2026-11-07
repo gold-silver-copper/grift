@@ -223,6 +223,25 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
 }
 
 #[test]
+fn a_value_for_a_call_is_made_after_the_evaluate_that_finds_the_function() {
+    let mut g = grift();
+    let mut h = Host::default();
+    evaluate(&mut g, "(define! echo (lambda! (text) text))");
+    // Bytes count their storage, so these put a collection due.
+    let due = |g: &mut G| drop(g.bytes(&vec![0; 16 << 20]).unwrap());
+    due(&mut g);
+    let early = g.string("early").unwrap();
+    let f = g.evaluate(&mut h, "echo").unwrap();
+    let call = g.call(&mut h, &f, &[early]);
+    assert_eq!(outcome(&g, call), "stale-value");
+    due(&mut g);
+    let f = g.evaluate(&mut h, "echo").unwrap();
+    let late = g.string("late").unwrap();
+    let echoed = g.call(&mut h, &f, &[late]).unwrap();
+    assert_eq!(g.as_str(&echoed).unwrap(), Some("late"));
+}
+
+#[test]
 fn a_reclaimed_value_is_stale_value_everywhere() {
     let mut g = grift();
     let old = objects(&mut g);

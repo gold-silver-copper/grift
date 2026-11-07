@@ -103,6 +103,17 @@ def quits(binary, work):
     ed.close()
 
 
+def out_of_memory_shown(binary, work):
+    """Memory really runs out, with no cleanup on the way: the collection that asks for is still due
+    when the host reports, and the report must survive it."""
+    ed = Editor(binary, work, memory=300 << 20)
+    ed.run_for(0.2)
+    ed.command(":", "(sequence! (define! deeper (lambda! (n) (add 1 (deeper n)))) (deeper 0))")
+    said = ed.wait_until(lambda: "out-of-memory" in ed.echo(), 30) is not None
+    report("out of memory: the error reaches the echo area", said, f"echo={ed.echo()!r}")
+    ed.close()
+
+
 def hangs_up(binary, work):
     ed = fresh(binary, work)
     child, paths = background(ed, work, "pid-hup", 20)
@@ -337,7 +348,7 @@ def editor_broken(binary, work):
 def main():
     binary, work = sys.argv[1], sys.argv[2]
     os.makedirs(work, exist_ok=True)
-    tests = (ends, cancelled, fails, quits, hangs_up, hangs_up_on_a_runaway, scrolled_back, two_independent,
+    tests = (ends, cancelled, fails, out_of_memory_shown, quits, hangs_up, hangs_up_on_a_runaway, scrolled_back, two_independent,
              prompt_holds_nothing, chosen, runaway, waiting_command, under_a_prompt, run_asks,
              editor_broken, spawned_chain)
     for test in tests:

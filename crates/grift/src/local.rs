@@ -28,8 +28,26 @@ pub(crate) enum Value {
 }
 
 /// An interned symbol: its index among the names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, Hash)]
+#[cfg_attr(not(test), derive(PartialEq))]
+// The `eq` below only counts as well: it agrees with the hash.
+#[cfg_attr(test, allow(clippy::derived_hash_with_manual_eq))]
 pub(crate) struct Symbol(pub u32);
+
+#[cfg(test)]
+thread_local! {
+    /// References and symbols compared on this thread, for tests that something searches nothing:
+    /// a search by value, through a list or a table with a bad hash, comes through their `eq`.
+    pub(crate) static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl PartialEq for Symbol {
+    fn eq(&self, other: &Symbol) -> bool {
+        COMPARED.with(|n| n.set(n.get() + 1));
+        self.0 == other.0
+    }
+}
 
 /// A registered host function: its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
