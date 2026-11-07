@@ -34,7 +34,7 @@ expect "a test calling exit doesn't stop the run" has "failing/on-purpose.grift:
 expect "a form that raises ends only its test" has_lines \
     "failing/on-purpose.grift:17  a form raises, ending the test ... FAIL" \
     "     expression: (helper 1)" \
-    "     actual:     raised type-error #[primitive first] 1" \
+    "     actual:     raised type-error 1" \
     "       at:       (first x)" \
     "       at:       (add 1 (first x))"
 expect "a definition stays in its test" has "failing/on-purpose.grift:67  so this one sees nothing ... ok"
@@ -74,7 +74,7 @@ expect "every failed expectation of a test is shown" has_lines \
     "     expression: (empty-list? (list 1))"
 expect "wrong kind of error" has_lines \
     "     expected:   raises type-error" \
-    "     actual:     raised division-by-zero #[primitive divide] 1 0"
+    "     actual:     raised division-by-zero 1 0"
 expect "a test that checks nothing fails" has "no expectation ran: this test checks nothing"
 expect "a failed test's output is shown" has_lines "     | seen 42" "     | after"
 expect "values that print alike are explained" has "they print alike but aren't equal"

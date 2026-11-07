@@ -309,6 +309,35 @@ fn error_kinds() {
     assert_eq!(show(&g, &e.values[0]), "foo");
 }
 
+/// An error's values are the values involved and nothing else: no primitive, combiner or name
+/// says who failed, primitive, library or parameter tree alike; the trace says where.
+#[test]
+fn an_error_carries_its_values_and_no_one_who_failed() {
+    let mut g = grift();
+    for (src, values) in [
+        ("(first 1)", "(1)"),
+        ("(add 1 1.0)", "(1.0)"),
+        ("(add 1)", "((1))"),
+        ("(if! 1 2)", "((1 2))"),
+        ("((lambda! (x) x))", "(())"),
+        ("(string-byte \"a\" 5)", "(\"a\" 5)"),
+        ("(divide 1 0)", "(1 0)"),
+        ("(string-to-integer \"x\")", "(\"x\")"),
+        ("(symbol-to-string 1)", "(1)"),
+        ("(power 2 -1)", "(2 -1)"),
+        ("(catch-kind! 1 2 e 3)", "(2)"),
+        ("(string-split \"a\" \"\")", "(\"\")"),
+        ("(minimum 1 1.0)", "(1)"),
+    ] {
+        let e = g.evaluate(&mut (), src).unwrap_err();
+        let mut shown = Vec::new();
+        for v in &e.values {
+            shown.push(show(&g, v));
+        }
+        assert_eq!(format!("({})", shown.join(" ")), values, "{src}");
+    }
+}
+
 #[test]
 fn tail_calls_run_in_constant_space() {
     let mut g = grift();
@@ -744,7 +773,7 @@ fn cleanup_runs_and_the_error_goes_on() {
     let e = g
         .evaluate(&mut (), "(finally! (finally! (first 1) (rest 2)) (note 5))")
         .unwrap_err();
-    assert_eq!(show(&g, &e.values[0]), "#[primitive rest]");
+    assert_eq!(show(&g, &e.values[0]), "2");
     assert_eq!(g.evaluate(&mut (), "(first log)"), Ok(Value::Integer(5)));
     // A cleanup that succeeds doesn't lend the error its own location.
     let (protect, here) = (
@@ -811,7 +840,7 @@ fn a_running_program_reads_if_and_sequence_as_their_library_definitions() {
     // What a wrong shape raises is the operative's own parameter tree failing to match.
     let e = g.evaluate(&mut (), "(if! #true 1)").unwrap_err();
     assert_eq!(kind(&g, &e), "arity-error");
-    assert_eq!(show(&g, &e.values[0]), "(test consequent alternative)");
+    assert_eq!(show(&g, &e.values[0]), "(#true 1)");
 }
 
 #[test]
@@ -918,7 +947,7 @@ fn catch_catches_errors_as_contexts() {
             "(same? (catch! (finally! (finally! (first 1) (note 1)) (note 2)) #ignore (note 3) 7) 7)",
             "(equal? log (quote! (3 2 1)))",
             // catch! nests; an error in a handler goes to the catch! around it.
-            "(same? (catch! (catch! (first 1) #ignore (rest 1)) e (same? (first (evaluate-in! values e)) (unwrap rest))) #true)",
+            "(same? (catch! (catch! (first 1) #ignore (rest 1)) e (same? (first (evaluate-in! values e)) 1)) #true)",
             // catch! in a loop runs in constant space.
             "(sequence! (define! loop (lambda! (n) (if! (same? n 0) #true (sequence! (catch! (first n) #ignore 0) (loop (subtract n 1)))))) \
              (loop 20000))",
@@ -1042,7 +1071,7 @@ fn binds_looks_through_parents() {
         &[
             "(binds? e (string-to-symbol \"x\"))",
             "(not? (binds? e (string-to-symbol \"nope\")))",
-            "(same? (second (catch! (binds? e 1) x (evaluate-in! values x))) 1)",
+            "(same? (first (catch! (binds? e 1) x (evaluate-in! values x))) 1)",
             "(sequence! (define! s (quote! nope)) (not? (binds? e s)))",
             "(binds? (context e) (quote! first))",
         ],
@@ -1171,12 +1200,12 @@ fn bytes_by_offsets_and_their_conversions() {
         ("5", "(type-error (5 0))"),
     ] {
         let src = format!(
-            "(catch! (list-to-bytes {list}) e (list (evaluate-in! kind e) (rest (evaluate-in! values e))))"
+            "(catch! (list-to-bytes {list}) e (list (evaluate-in! kind e) (evaluate-in! values e)))"
         );
         let v = g.evaluate(&mut (), &src).unwrap();
         assert_eq!(show(&g, &v), want, "{list}");
     }
-    // Bytes that aren't UTF-8 aren't a string: encoding-error, with the primitive, the bytes
+    // Bytes that aren't UTF-8 aren't a string: encoding-error, with the bytes
     // themselves and Rust's valid_up_to, the offset of the first sequence that is cut short,
     // overlong, a surrogate, past U+10FFFF or no sequence at all.
     for bytes in [
@@ -1196,13 +1225,13 @@ fn bytes_by_offsets_and_their_conversions() {
             .evaluate(
                 &mut (),
                 "(catch! (bytes-to-string b) e
-                   (let! (((p original at) (evaluate-in! values e)))
-                     (list (evaluate-in! kind e) (same? p (unwrap bytes-to-string)) (same? original b) at)))",
+                   (let! (((original at) (evaluate-in! values e)))
+                     (list (evaluate-in! kind e) (same? original b) at)))",
             )
             .unwrap();
         assert_eq!(
             show(&g, &v),
-            format!("(encoding-error #true #true {at})"),
+            format!("(encoding-error #true {at})"),
             "{bytes:?}"
         );
     }
@@ -2489,18 +2518,18 @@ fn list_access_by_index() {
             "(all? (lambda! (i) (same? (length (take xs i)) i)) (range 0 11))",
             "(and!? (same? (second xs) 11) (same? (third xs) 12) (same? (last xs) 19))",
             "(same? (last (list 1)) 1)",
-            // Out of range: the name, the index and the list's length.
-            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (quote! (element-at 10 10)))",
-            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (element-at -1 10)))",
-            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (take 11 10)))",
-            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
-            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
-            "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list (quote! take) xs))",
+            // Out of range: the index and the list's length.
+            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (quote! (10 10)))",
+            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (-1 10)))",
+            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (11 10)))",
+            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (12 10)))",
+            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (1 1)))",
+            "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list xs))",
             "(equal? (catch! (element-at xs -9223372036854775808) e (evaluate-in! values e))
-                     (quote! (element-at -9223372036854775808 10)))",
+                     (quote! (-9223372036854775808 10)))",
             "(equal? (catch! (drop xs -9223372036854775808) e (evaluate-in! values e))
-                     (quote! (drop -9223372036854775808 10)))",
-            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (quote! (take -1 10)))",
+                     (quote! (-9223372036854775808 10)))",
+            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (quote! (-1 10)))",
         ],
     );
     fails(
@@ -3659,13 +3688,13 @@ fn a_body_of_several_forms_needs_no_binding_of_the_program() {
 }
 
 #[test]
-fn an_overflow_is_reported_by_the_arithmetic_that_overflowed() {
+fn an_overflow_carries_the_operands_of_the_arithmetic_that_overflowed() {
     holds(
         &mut grift(),
         &[
-            "(same? (first (catch! (absolute-value -9223372036854775808) e (evaluate-in! values e)))
-                    (unwrap subtract))",
-            "(same? (first (catch! (power 2 100) e (evaluate-in! values e))) (unwrap multiply))",
+            "(equal? (catch! (absolute-value -9223372036854775808) e (evaluate-in! values e))
+                     (list 0 -9223372036854775808))",
+            "(same? (catch! (power 2 100) e (evaluate-in! kind e)) (quote! overflow))",
         ],
     );
 }

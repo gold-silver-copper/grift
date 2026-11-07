@@ -600,7 +600,7 @@ fn a_trace_after_a_resume_shows_the_whole_path_through_a_load() {
     assert_eq!(w.log, ["loaded", "closed"]);
     assert_eq!(
         described(&g, &e),
-        "type-error #[primitive first] 1 in (first from-file) at inner.grift:3
+        "type-error 1 in (first from-file) at inner.grift:3
   from (for-each (lambda! (form) (evaluate form caller)) (read-forms-host path))
   from (finally! (for-each (lambda! (form) (evaluate form caller)) (read-forms-host path)) (note (quote! closed)))
   from (load \"inner.grift\") at script.grift:2"
@@ -628,7 +628,7 @@ fn parking_inside_a_host_call_is_refused_by_name() {
     assert_eq!(kind(&g, &e), "cannot-park");
     assert_eq!(
         described(&g, &e).lines().next().unwrap(),
-        "cannot-park #[host wait] in (wait)"
+        "cannot-park in (wait)"
     );
     // The outer run can still park after the nested one failed.
     let p = parked(run(&mut g, &mut w, "(catch! (nest \"(wait)\") e (wait))"));
@@ -640,7 +640,7 @@ fn parking_inside_a_host_call_is_refused_by_name() {
 fn a_run_that_cannot_park_says_so() {
     let (mut g, mut w) = (grift(), World::default());
     let e = g.evaluate(&mut w, "(wait)").unwrap_err();
-    assert_eq!(described(&g, &e), "cannot-park #[host wait] in (wait)");
+    assert_eq!(described(&g, &e), "cannot-park in (wait)");
     let f = g.evaluate(&mut w, "(lambda! () (wait))").unwrap();
     let e = g.call(&mut w, &f, &[]).unwrap_err();
     assert_eq!(kind(&g, &e), "cannot-park");

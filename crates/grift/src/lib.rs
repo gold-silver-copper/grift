@@ -325,7 +325,7 @@ impl<T> Grift<T> {
     /// assert_eq!(g.position(&e.trace[0])?, Some(("keys.grift", 2)));
     /// let mut text = String::new();
     /// g.describe(&e, &mut text).unwrap();
-    /// assert_eq!(text, "type-error #[primitive first] 1 in (first a) at keys.grift:2");
+    /// assert_eq!(text, "type-error 1 in (first a) at keys.grift:2");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn evaluate_in(
@@ -335,14 +335,12 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Value, Error> {
-        let done = self
-            .context_of(context, evaluate::Primitive::Evaluate)
-            .and_then(|c| {
-                self.prepare(std::iter::once(local::Value::Context(c)))?;
-                let source = self.intern(source)?;
-                let forms = self.read_local(src, Some(source))?;
-                self.evaluate_forms(Some(state), forms, c, false)
-            });
+        let done = self.context_of(context).and_then(|c| {
+            self.prepare(std::iter::once(local::Value::Context(c)))?;
+            let source = self.intern(source)?;
+            let forms = self.read_local(src, Some(source))?;
+            self.evaluate_forms(Some(state), forms, c, false)
+        });
         self.exported(done)
     }
 
@@ -377,7 +375,7 @@ impl<T> Grift<T> {
     /// `error` makes; with the top level as its parent, a place for a host's own definitions.
     pub fn context(&mut self, parent: Option<&Value>) -> Result<Value, Error> {
         let made = parent
-            .map(|p| self.context_of(p, evaluate::Primitive::Context))
+            .map(|p| self.context_of(p))
             .transpose()
             .and_then(|parent| {
                 self.heap
@@ -440,7 +438,7 @@ impl<T> Grift<T> {
         // Every value is checked before the context's kind, as the primitive's arguments are.
         let done = self.import(context).and_then(|c| {
             let (parameters, value) = (self.import(parameters)?, self.import(&value)?);
-            let c = context_kind(c, evaluate::Primitive::Bind)?;
+            let c = context_kind(c)?;
             self.bind_tree(c, parameters, value)
         });
         self.out(done)
@@ -451,16 +449,14 @@ impl<T> Grift<T> {
     pub fn lookup(&self, context: &Value, name: &Symbol) -> Result<Option<Value>, Error> {
         let found = self.import(context).and_then(|c| {
             let name = self.import_symbol(name)?;
-            self.find(context_kind(c, evaluate::Primitive::Lookup)?, name)
+            self.find(context_kind(c)?, name)
         });
         self.out(found.map(|v| v.map(|v| self.export(v))))
     }
 
     /// `(names context)`: the symbols bound in `context` itself, sorted by name.
     pub fn names(&self, context: &Value) -> Result<Vec<Symbol>, Error> {
-        let names = self
-            .context_of(context, evaluate::Primitive::Names)
-            .and_then(|c| self.names_of(c));
+        let names = self.context_of(context).and_then(|c| self.names_of(c));
         let names =
             names.and_then(|names| collected(names.into_iter().map(|s| self.export_symbol(s))));
         self.out(names)
@@ -480,7 +476,7 @@ impl<T> Grift<T> {
     /// let mut text = String::new();
     /// g.describe(&e, &mut text).unwrap();
     /// // The prelude's (first xs) is skipped: the error is the config's line.
-    /// assert_eq!(text, "type-error #[primitive first] 9 in (head 9) at config.grift:2");
+    /// assert_eq!(text, "type-error 9 in (head 9) at config.grift:2");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn seal_library(&mut self) {
@@ -531,7 +527,7 @@ impl<T> Grift<T> {
     /// ```
     pub fn as_str(&self, v: &Value) -> Result<Option<&str>, Error> {
         let s = self.import(v).and_then(|v| match v {
-            local::Value::String(_) => self.text(evaluate::Primitive::StringAppend, v).map(Some),
+            local::Value::String(_) => self.text(v).map(Some),
             _ => Ok(None),
         });
         self.out(s)
@@ -557,7 +553,7 @@ impl<T> Grift<T> {
     /// ```
     pub fn as_bytes(&self, v: &Value) -> Result<Option<&[u8]>, Error> {
         let b = self.import(v).and_then(|v| match v {
-            local::Value::Bytes(_) => self.bytes_of(evaluate::Primitive::BytesLength, v).map(Some),
+            local::Value::Bytes(_) => self.bytes_of(v).map(Some),
             _ => Ok(None),
         });
         self.out(b)
@@ -643,7 +639,7 @@ impl<T> Grift<T> {
     }
 
     /// Writes an error for a person: its kind and values, then each combination of its trace,
-    /// with its source and line where it has one: `type-error #[primitive first] 1 in (first a)
+    /// with its source and line where it has one: `type-error 1 in (first a)
     /// at keys.grift:2`, then `\n  from (f) at keys.grift:3` for each one around it.
     pub fn describe(&self, error: &Error, out: &mut dyn fmt::Write) -> Result<(), WriteError> {
         let e = self
@@ -813,13 +809,9 @@ impl<T> Grift<T> {
         self.may_park = false;
     }
 
-    /// The context `v` is, or a `type-error` naming `p`.
-    fn context_of(
-        &self,
-        v: &Value,
-        p: evaluate::Primitive,
-    ) -> Result<heap::Reference, local::Error> {
-        context_kind(self.import(v)?, p)
+    /// The context `v` is, or a `type-error`.
+    fn context_of(&self, v: &Value) -> Result<heap::Reference, local::Error> {
+        context_kind(self.import(v)?)
     }
 
     fn owns(&self, owner: &Owner) -> bool {
@@ -985,11 +977,11 @@ impl<T> Grift<T> {
     }
 }
 
-/// The context `v` is, or a `type-error` naming `p`.
-fn context_kind(v: local::Value, p: evaluate::Primitive) -> Result<heap::Reference, local::Error> {
+/// The context `v` is, or a `type-error`.
+fn context_kind(v: local::Value) -> Result<heap::Reference, local::Error> {
     match v {
         local::Value::Context(c) => Ok(c),
-        v => Err(evaluate::type_error(p, v)),
+        v => Err(evaluate::type_error(v)),
     }
 }
 

@@ -471,7 +471,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(
         err,
         format!(
-            "{path}: type-error #[primitive first] 2 in (first 2) at {lib}/b.grift:4\n  \
+            "{path}: type-error 2 in (first 2) at {lib}/b.grift:4\n  \
              from (define! c (first 2)) at {lib}/b.grift:4\n  \
              from (load \"lib/b.grift\") at {path}:13\n"
         )
@@ -825,7 +825,7 @@ fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
     assert_eq!(status, Some(0), "{shown}");
     assert!(shown.contains("  #inert\n"), "{shown}");
     assert!(
-        shown.contains("stdin: type-error #[primitive first] 1 in (first 1) at stdin:1\n"),
+        shown.contains("stdin: type-error 1 in (first 1) at stdin:1\n"),
         "{shown}"
     );
     assert!(

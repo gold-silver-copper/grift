@@ -296,8 +296,8 @@ impl Drop for Hosting {
     }
 }
 
-pub(crate) fn type_error(p: Primitive, v: Value) -> Error {
-    Error::new(K::TypeError, &[Value::Primitive(p), v])
+pub(crate) fn type_error(v: Value) -> Error {
+    Error::new(K::TypeError, &[v])
 }
 
 impl<T> Grift<T> {
@@ -324,7 +324,7 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let f = match f {
             Value::Applicative(r) => self.unwrapped(r)?,
-            _ => return Err(type_error(Primitive::Unwrap, f)),
+            _ => return Err(type_error(f)),
         };
         let operands = self.list_local(arguments)?;
         let context = self
@@ -398,9 +398,9 @@ impl<T> Grift<T> {
     /// kept entry holds, and this interpreter's machine is empty again. Everything that can fail
     /// comes first, so a run that can't park goes on where it was, with the error, and that it
     /// was asked to stop is the last of those. Its kept name is left for [`Grift::ran`].
-    fn park(&mut self, h: Host, request: Value) -> Result<(), Error> {
+    fn park(&mut self, request: Value) -> Result<(), Error> {
         if !self.may_park {
-            return Err(Error::new(K::CannotPark, &[Value::Host(h)]));
+            return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
         room.try_reserve_exact(1).map_err(|_| Error::oom())?;
@@ -546,7 +546,7 @@ impl<T> Grift<T> {
                         match v {
                             Value::Boolean(true) => Mode::Evaluate(consequent, context),
                             Value::Boolean(false) => Mode::Evaluate(alternative, context),
-                            _ => return Err(type_error(Primitive::Select, v)),
+                            _ => return Err(type_error(v)),
                         }
                     }
                     What::Body { rest } => {
@@ -737,19 +737,19 @@ impl<T> Grift<T> {
         }
         hosting.0 = None;
         self.machine.arguments.truncate(base);
-        self.answered(h, v)
+        self.answered(v)
     }
 
     /// What a host function answered, checked as everything the host hands in is. Apart from
     /// [`Grift::host`], so that its temporaries stay off the stack of a run under a nested one.
     #[inline(never)]
-    fn answered(&mut self, h: Host, v: Result<Answer, crate::Error>) -> Result<Mode, Error> {
+    fn answered(&mut self, v: Result<Answer, crate::Error>) -> Result<Mode, Error> {
         match v {
             Ok(Answer::Now(v)) => Ok(Mode::Return(self.import(&v)?)),
             // Parked, the machine is empty, so this value ends the loop.
             Ok(Answer::Later(request)) => {
                 let request = self.import(&request)?;
-                self.park(h, request).map(|()| Mode::Return(Value::Inert))
+                self.park(request).map(|()| Mode::Return(Value::Inert))
             }
             Err(e) => Err(self.incoming_error(&e)),
         }
@@ -809,7 +809,7 @@ impl<T> Grift<T> {
                 Ok(Mode::Evaluate(x, context))
             }
             Value::EmptyList => self.apply(combiner, context, base),
-            _ => Err(Error::new(K::TypeError, &[combiner, rest])),
+            _ => Err(type_error(rest)),
         }
     }
 
@@ -981,10 +981,8 @@ impl<T> Grift<T> {
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let (lo, hi) = p.arity();
         if given.len() < lo || given.len() > hi {
-            let mut e = Error::new(K::ArityError, given);
-            push(&mut e.values, Value::Primitive(p))?;
-            e.values.rotate_right(1);
-            return Err(e);
+            let operands = collected(given.iter().copied())?;
+            return Err(Error::new(K::ArityError, &[self.list_local(&operands)?]));
         }
         let mut a = [Value::EmptyList; 3];
         a.iter_mut().zip(given).for_each(|(d, s)| *d = *s);
@@ -1003,21 +1001,21 @@ impl<T> Grift<T> {
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)
             }
-            P::Wrap if !is_combiner(x) => return Err(type_error(p, x)),
+            P::Wrap if !is_combiner(x) => return Err(type_error(x)),
             P::Wrap => Value::Applicative(self.heap.alloc(Object::Applicative(x))?),
             P::Unwrap => match x {
                 Value::Applicative(r) => self.unwrapped(r)?,
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Evaluate => match y {
                 Value::Context(c) => return Ok(Mode::Evaluate(x, c)),
-                _ => return Err(type_error(p, y)),
+                _ => return Err(type_error(y)),
             },
             P::Context => {
                 let parent = match x {
                     Value::Context(c) => Some(c),
                     Value::EmptyList => None,
-                    _ => return Err(type_error(p, x)),
+                    _ => return Err(type_error(x)),
                 };
                 Value::Context(
                     self.heap
@@ -1029,12 +1027,12 @@ impl<T> Grift<T> {
                     self.bind_tree(c, y, z)?;
                     Value::Inert
                 }
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Unbind | P::Lookup => {
                 let (Value::Context(c), Value::Symbol(s)) = (x, y) else {
                     let bad = if matches!(x, Value::Context(_)) { y } else { x };
-                    return Err(type_error(p, bad));
+                    return Err(type_error(bad));
                 };
                 match p {
                     P::Unbind => Value::Boolean(self.bindings_mut(c)?.remove(&s).is_some()),
@@ -1043,7 +1041,7 @@ impl<T> Grift<T> {
             }
             P::Names => match x {
                 Value::Context(c) => self.names_list(c)?,
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Pair => self.pair_local(x, y)?,
             P::First | P::Rest => match x {
@@ -1051,13 +1049,13 @@ impl<T> Grift<T> {
                     let (a, b) = self.pair_at(r)?;
                     if p == P::First { a } else { b }
                 }
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Same => Value::Boolean(self.same(x, y)?),
             P::Select => match x {
                 Value::Boolean(true) => y,
                 Value::Boolean(false) => z,
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::TypeOf => Value::Symbol(type_of(x).into()),
             P::Add | P::Subtract | P::Multiply | P::Divide | P::Remainder | P::LessThan => {
@@ -1066,27 +1064,27 @@ impl<T> Grift<T> {
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
             }
-            P::Power => Value::Float(float_of(p, x)?.powf(float_of(p, y)?)),
-            P::SquareRoot => Value::Float(float_of(p, x)?.sqrt()),
-            P::Sine => Value::Float(float_of(p, x)?.sin()),
-            P::Cosine => Value::Float(float_of(p, x)?.cos()),
-            P::Tangent => Value::Float(float_of(p, x)?.tan()),
-            P::Exponential => Value::Float(float_of(p, x)?.exp()),
-            P::NaturalLogarithm => Value::Float(float_of(p, x)?.ln()),
-            P::Floor => Value::Float(float_of(p, x)?.floor()),
-            P::Ceiling => Value::Float(float_of(p, x)?.ceil()),
-            P::Round => Value::Float(float_of(p, x)?.round()),
-            P::Truncate => Value::Float(float_of(p, x)?.trunc()),
-            P::AbsoluteValue => Value::Float(float_of(p, x)?.abs()),
-            P::IntegerToFloat => Value::Float(integer_of(p, x)? as f64),
+            P::Power => Value::Float(float_of(x)?.powf(float_of(y)?)),
+            P::SquareRoot => Value::Float(float_of(x)?.sqrt()),
+            P::Sine => Value::Float(float_of(x)?.sin()),
+            P::Cosine => Value::Float(float_of(x)?.cos()),
+            P::Tangent => Value::Float(float_of(x)?.tan()),
+            P::Exponential => Value::Float(float_of(x)?.exp()),
+            P::NaturalLogarithm => Value::Float(float_of(x)?.ln()),
+            P::Floor => Value::Float(float_of(x)?.floor()),
+            P::Ceiling => Value::Float(float_of(x)?.ceil()),
+            P::Round => Value::Float(float_of(x)?.round()),
+            P::Truncate => Value::Float(float_of(x)?.trunc()),
+            P::AbsoluteValue => Value::Float(float_of(x)?.abs()),
+            P::IntegerToFloat => Value::Float(integer_of(x)? as f64),
             // Rust's `as`: saturating, and not-a-number becomes 0.
-            P::FloatToInteger => Value::Integer(float_of(p, x)? as i64),
+            P::FloatToInteger => Value::Integer(float_of(x)? as i64),
             P::EvaluateWithCleanup | P::EvaluateWithHandler if !is_combiner(z) => {
-                return Err(type_error(p, z));
+                return Err(type_error(z));
             }
             P::EvaluateWithCleanup | P::EvaluateWithHandler => {
                 let Value::Context(c) = y else {
-                    return Err(type_error(p, y));
+                    return Err(type_error(y));
                 };
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
@@ -1103,26 +1101,24 @@ impl<T> Grift<T> {
             P::Raise => {
                 return Err(self.error_of(x)?);
             }
-            P::StringByteLength => integer(self.text(p, x)?.len()),
+            P::StringByteLength => integer(self.text(x)?.len()),
             P::StringByte => {
-                let (s, i) = (self.text(p, x)?, integer_of(p, y)?);
+                let (s, i) = (self.text(x)?, integer_of(y)?);
                 let byte = usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i));
-                let byte =
-                    byte.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                let byte = byte.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 Value::Integer(i64::from(*byte))
             }
             P::ByteSubstring => {
-                let s = self.text(p, x)?;
+                let s = self.text(x)?;
                 let range = (
-                    usize::try_from(integer_of(p, y)?),
-                    usize::try_from(integer_of(p, z)?),
+                    usize::try_from(integer_of(y)?),
+                    usize::try_from(integer_of(z)?),
                 );
                 let part = match range {
                     (Ok(a), Ok(b)) => s.get(a..b),
                     _ => None,
                 };
-                let part =
-                    part.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y, z]))?;
+                let part = part.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
                 let part = boxed(part)?;
                 Value::String(self.heap.alloc(Object::String(part))?)
             }
@@ -1130,13 +1126,13 @@ impl<T> Grift<T> {
                 let given = self.machine.arguments.get(base..).unwrap_or_default();
                 let mut len = 0usize;
                 for &v in given {
-                    len = len.saturating_add(self.text(p, v)?.len());
+                    len = len.saturating_add(self.text(v)?.len());
                 }
                 // Exactly the length, so boxing it never reallocates.
                 let mut s = String::new();
                 s.try_reserve_exact(len).map_err(|_| Error::oom())?;
                 for &v in given {
-                    s.push_str(self.text(p, v)?);
+                    s.push_str(self.text(v)?);
                 }
                 Value::String(self.heap.alloc(Object::String(s.into_boxed_str()))?)
             }
@@ -1149,45 +1145,42 @@ impl<T> Grift<T> {
             | P::ListToBytes
             | P::BytesToList => self.bytes_primitive(p, [x, y, z], base)?,
             P::StringSearch => {
-                let (t, pattern) = (self.text(p, x)?, self.text(p, y)?);
-                let start = integer_of(p, z)?;
+                let (t, pattern) = (self.text(x)?, self.text(y)?);
+                let start = integer_of(z)?;
                 let after = usize::try_from(start)
                     .ok()
                     .and_then(|i| Some((i, t.get(i..)?)));
-                let (start, after) =
-                    after.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, z]))?;
+                let (start, after) = after.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
                 let found = after.find(pattern).map(|at| integer(start + at));
                 found.unwrap_or(Value::EmptyList)
             }
             P::CodePointToString => {
-                let c = u32::try_from(integer_of(p, x)?)
-                    .ok()
-                    .and_then(char::from_u32);
-                let c = c.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x]))?;
+                let c = u32::try_from(integer_of(x)?).ok().and_then(char::from_u32);
+                let c = c.ok_or_else(|| Error::new(K::RangeError, &[x]))?;
                 self.string_local(c.encode_utf8(&mut [0; 4]))?
             }
             P::StringToSymbol => {
-                let name = boxed(self.text(p, x)?)?;
+                let name = boxed(self.text(x)?)?;
                 Value::Symbol(self.intern(&name)?)
             }
             P::IntegerToString => {
-                integer_of(p, x)?;
+                integer_of(x)?;
                 self.printed(x)?
             }
             P::ValueToString => self.printed(x)?,
             P::StringToInteger | P::StringToFloat => {
-                let s = self.text(p, x)?;
+                let s = self.text(x)?;
                 let n = match p {
                     P::StringToInteger => s.parse().ok().map(Value::Integer),
                     _ => float_name(s).or_else(|| s.parse().ok()).map(Value::Float),
                 };
-                n.ok_or_else(|| Error::new(K::ParseError, &[Value::Primitive(p), x]))?
+                n.ok_or_else(|| Error::new(K::ParseError, &[x]))?
             }
             P::ReadForm => {
                 let Value::String(r) = x else {
-                    return Err(type_error(p, x));
+                    return Err(type_error(x));
                 };
-                let offset = usize::try_from(integer_of(p, y)?).ok();
+                let offset = usize::try_from(integer_of(y)?).ok();
                 // The text is lent to the reader, not copied: a program reads a long text one
                 // form at a time.
                 let Object::String(text) = self.heap.get_mut(r)? else {
@@ -1200,8 +1193,7 @@ impl<T> Grift<T> {
                 if let Object::String(s) = self.heap.get_mut(r)? {
                     *s = text;
                 }
-                let read =
-                    read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 match read? {
                     Some((form, place, _)) => {
                         self.list_local(&[form, integer(place.start), integer(place.end)])?
@@ -1224,26 +1216,24 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         use Primitive as P;
         Ok(match p {
-            P::BytesLength => integer(self.bytes_of(p, x)?.len()),
+            P::BytesLength => integer(self.bytes_of(x)?.len()),
             P::BytesByte => {
-                let (b, i) = (self.bytes_of(p, x)?, integer_of(p, y)?);
+                let (b, i) = (self.bytes_of(x)?, integer_of(y)?);
                 let byte = usize::try_from(i).ok().and_then(|i| b.get(i));
-                let byte =
-                    byte.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                let byte = byte.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 Value::Integer(i64::from(*byte))
             }
             P::BytesSlice => {
-                let b = self.bytes_of(p, x)?;
+                let b = self.bytes_of(x)?;
                 let range = (
-                    usize::try_from(integer_of(p, y)?),
-                    usize::try_from(integer_of(p, z)?),
+                    usize::try_from(integer_of(y)?),
+                    usize::try_from(integer_of(z)?),
                 );
                 let part = match range {
                     (Ok(start), Ok(end)) => b.get(start..end),
                     _ => None,
                 };
-                let part =
-                    part.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y, z]))?;
+                let part = part.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
                 self.bytes_local(collected(part.iter().copied())?)?
             }
             P::BytesAppend => {
@@ -1251,24 +1241,24 @@ impl<T> Grift<T> {
                 let mut len = 0usize;
                 for &v in given {
                     len = len
-                        .checked_add(self.bytes_of(p, v)?.len())
+                        .checked_add(self.bytes_of(v)?.len())
                         .ok_or_else(Error::oom)?;
                 }
                 let mut joined = Vec::new();
                 joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
                 for &v in given {
-                    joined.extend_from_slice(self.bytes_of(p, v)?);
+                    joined.extend_from_slice(self.bytes_of(v)?);
                 }
                 self.bytes_local(joined)?
             }
             P::StringToBytes => {
-                let b = collected(self.text(p, x)?.bytes())?;
+                let b = collected(self.text(x)?.bytes())?;
                 self.bytes_local(b)?
             }
             P::BytesToString => {
-                let text = std::str::from_utf8(self.bytes_of(p, x)?).map_err(|e| {
+                let text = std::str::from_utf8(self.bytes_of(x)?).map_err(|e| {
                     let at = integer(e.valid_up_to());
-                    Error::new(K::EncodingError, &[Value::Primitive(p), x, at])
+                    Error::new(K::EncodingError, &[x, at])
                 })?;
                 let text = boxed(text)?;
                 Value::String(self.heap.alloc(Object::String(text))?)
@@ -1280,33 +1270,33 @@ impl<T> Grift<T> {
                     let (v, next) = self.pair_at(r)?;
                     let at = integer(bytes.len());
                     let byte = match v {
-                        Value::Integer(n) => u8::try_from(n).map_err(|_| {
-                            Error::new(K::RangeError, &[Value::Primitive(p), v, at])
-                        })?,
-                        _ => return Err(Error::new(K::TypeError, &[Value::Primitive(p), v, at])),
+                        Value::Integer(n) => {
+                            u8::try_from(n).map_err(|_| Error::new(K::RangeError, &[v, at]))?
+                        }
+                        _ => return Err(Error::new(K::TypeError, &[v, at])),
                     };
                     push(&mut bytes, byte)?;
                     rest = next;
                 }
                 if rest != Value::EmptyList {
                     let at = integer(bytes.len());
-                    return Err(Error::new(K::TypeError, &[Value::Primitive(p), rest, at]));
+                    return Err(Error::new(K::TypeError, &[rest, at]));
                 }
                 self.bytes_local(bytes)?
             }
             P::BytesToList => {
-                let b = collected(self.bytes_of(p, x)?.iter().copied())?;
+                let b = collected(self.bytes_of(x)?.iter().copied())?;
                 b.iter().rev().try_fold(Value::EmptyList, |list, &byte| {
                     self.pair_local(Value::Integer(i64::from(byte)), list)
                 })?
             }
-            _ => return Err(type_error(p, x)),
+            _ => return Err(type_error(x)),
         })
     }
 
     /// The error an error context describes: one `error` made, or a handler got.
     fn error_of(&self, e: Value) -> Result<Error, Error> {
-        let bad = || type_error(Primitive::Raise, e);
+        let bad = || type_error(e);
         let Value::Context(r) = e else {
             return Err(bad());
         };
@@ -1342,36 +1332,32 @@ impl<T> Grift<T> {
     /// with the same bits, and otherwise the same object.
     fn same(&self, x: Value, y: Value) -> Result<bool, Error> {
         Ok(match (x, y) {
-            (Value::String(_), Value::String(_)) => {
-                self.text(Primitive::Same, x)? == self.text(Primitive::Same, y)?
-            }
-            (Value::Bytes(_), Value::Bytes(_)) => {
-                self.bytes_of(Primitive::Same, x)? == self.bytes_of(Primitive::Same, y)?
-            }
+            (Value::String(_), Value::String(_)) => self.text(x)? == self.text(y)?,
+            (Value::Bytes(_), Value::Bytes(_)) => self.bytes_of(x)? == self.bytes_of(y)?,
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             _ => x == y,
         })
     }
 
-    /// The contents of string `v`, or a type error naming `p`.
-    pub(crate) fn text(&self, p: Primitive, v: Value) -> Result<&str, Error> {
+    /// The contents of string `v`, or a type error.
+    pub(crate) fn text(&self, v: Value) -> Result<&str, Error> {
         match v {
             Value::String(r) => match self.heap.get(r)? {
                 Object::String(s) => Ok(s),
                 _ => Err(Error::new(K::StaleValue, &[v])),
             },
-            _ => Err(type_error(p, v)),
+            _ => Err(type_error(v)),
         }
     }
 
-    /// The contents of bytes value `v`, or a type error naming `p`.
-    pub(crate) fn bytes_of(&self, p: Primitive, v: Value) -> Result<&[u8], Error> {
+    /// The contents of bytes value `v`, or a type error.
+    pub(crate) fn bytes_of(&self, v: Value) -> Result<&[u8], Error> {
         match v {
             Value::Bytes(r) => match self.heap.get(r)? {
                 Object::Bytes(b) => Ok(b),
                 _ => Err(Error::new(K::StaleValue, &[v])),
             },
-            _ => Err(type_error(p, v)),
+            _ => Err(type_error(v)),
         }
     }
 
@@ -1438,9 +1424,7 @@ impl<T> Grift<T> {
                     push(&mut work, (tb, vb))?;
                     push(&mut work, (ta, va))
                 }),
-                (Value::Pair(_) | Value::EmptyList, _) => {
-                    Err(Error::new(K::ArityError, &[tree, value]))
-                }
+                (Value::Pair(_) | Value::EmptyList, _) => Err(Error::new(K::ArityError, &[value])),
                 _ => Err(Error::new(K::ParameterError, &[tree])),
             };
         }
@@ -1554,7 +1538,7 @@ fn locate(e: &mut Error, r: Reference) {
 /// outside 0 to 63 is `overflow`, where Rust panics, and the bits shifted out are lost, as in Rust.
 fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
     use Primitive as P;
-    let (a, b) = (integer_of(p, x)?, integer_of(p, y)?);
+    let (a, b) = (integer_of(x)?, integer_of(y)?);
     let amount = u32::try_from(b).ok();
     let r = match p {
         P::BitwiseAnd => Some(a & b),
@@ -1564,7 +1548,7 @@ fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
         _ => amount.and_then(|n| a.checked_shr(n)),
     };
     r.map(Value::Integer)
-        .ok_or_else(|| Error::new(K::Overflow, &[Value::Primitive(p), x, y]))
+        .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
 }
 
 /// A length or offset as a grift integer.
@@ -1572,17 +1556,17 @@ pub(crate) fn integer(n: usize) -> Value {
     Value::Integer(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
-fn integer_of(p: Primitive, v: Value) -> Result<i64, Error> {
+fn integer_of(v: Value) -> Result<i64, Error> {
     match v {
         Value::Integer(n) => Ok(n),
-        _ => Err(type_error(p, v)),
+        _ => Err(type_error(v)),
     }
 }
 
-fn float_of(p: Primitive, v: Value) -> Result<f64, Error> {
+fn float_of(v: Value) -> Result<f64, Error> {
     match v {
         Value::Float(f) => Ok(f),
-        _ => Err(type_error(p, v)),
+        _ => Err(type_error(v)),
     }
 }
 
@@ -1624,7 +1608,7 @@ fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
             P::Subtract => a.checked_sub(b),
             P::Multiply => a.checked_mul(b),
             P::Divide | P::Remainder if b == 0 => {
-                return Err(Error::new(K::DivisionByZero, &[Value::Primitive(p), x, y]));
+                return Err(Error::new(K::DivisionByZero, &[x, y]));
             }
             P::Divide => a.checked_div(b),
             P::Remainder => a.checked_rem(b),
@@ -1640,9 +1624,9 @@ fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
                 _ => return Ok(Value::Boolean(a < b)),
             }));
         }
-        (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(p, y)),
-        _ => return Err(type_error(p, x)),
+        (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(y)),
+        _ => return Err(type_error(x)),
     };
     r.map(Value::Integer)
-        .ok_or_else(|| Error::new(K::Overflow, &[Value::Primitive(p), x, y]))
+        .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
 }

@@ -143,7 +143,7 @@ broken "an error in a function the build file wrote" bad-function <<'D'
 D
 build
 expect_status 1
-expect_line "build: build.data line 2: type-error #[primitive string-append] 1"
+expect_line "build: build.data line 2: type-error 1"
 pass
 
 broken "an unclosed list" unclosed <<'D'

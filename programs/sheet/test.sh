@@ -62,8 +62,8 @@ expect "4 errors" "$out" \
   "3 Bus       45          #formula-error" \
   "4      1555.50          #unbound-symbol" \
   "5      1866.60" \
-  "E1 (divide 1 0) => error division-by-zero (#[primitive divide] 1 0)" \
-  'E2 (add 1 "x") => error type-error (#[primitive add] "x")' \
+  "E1 (divide 1 0) => error division-by-zero (1 0)" \
+  'E2 (add 1 "x") => error type-error ("x")' \
   'E3 (add 1 2 => error formula-error ("does not read: unclosed-list" "(add 1 2" 0)'
 
 # 5. Range functions over a column and a rectangle, and a function from the sheet file.

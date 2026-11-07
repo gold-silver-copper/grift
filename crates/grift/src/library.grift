@@ -102,7 +102,7 @@
                      (if! (same? (evaluate-in! kind e) wanted)
                        (handle e parameter handler (context caller))
                        (raise e)))))
-           (raise (error (quote! type-error) (quote! catch-kind!) wanted))))
+           (raise (error (quote! type-error) wanted))))
        ; record (not in Kernel): a new context with no parent, the values bound to the names. It
        ; branches on nothing, so the natives' definitions can stand on it.
        (lambda! (names values) (filled (context ()) names values))))))
@@ -262,7 +262,7 @@
        (lambda! (x y)
          (if! (and!? (integer? x) (integer? y))
            (if! (less-than? y 0)
-             (raise (error (quote! range-error) (quote! power) x y))
+             (raise (error (quote! range-error) x y))
              (raised 1 x y))
            (float-power x y)))))
    absolute-value
@@ -302,12 +302,12 @@
   (lambda! (s)
     (if! (symbol? s)
       (value-to-string s)
-      (raise (error (quote! type-error) (quote! symbol-to-string) s)))))
+      (raise (error (quote! type-error) s)))))
 (define! float-to-string
   (lambda! (f)
     (if! (float? f)
       (value-to-string f)
-      (raise (error (quote! type-error) (quote! float-to-string) f)))))
+      (raise (error (quote! type-error) f)))))
 
 ; filter (6.3.5), and, not in Kernel, fold, range, sort and the list access below.
 (define! filter
@@ -361,20 +361,20 @@
          (if! (same? i 0)
            xs
            (if! (same? xs ())
-             (raise (error (quote! range-error) name n (subtract n i)))
+             (raise (error (quote! range-error) n (subtract n i)))
              (after name (rest xs) (subtract i 1) n)))))
      (define! element
        (lambda! (name xs index)
          (if! (same? xs ())
-           (raise (error (quote! range-error) name index index))
+           (raise (error (quote! range-error) index index))
            (first xs))))
      ; n, if it is an integer of 0 or more: given the list in its place, the error names the
      ; combiner, and a negative one is out of range without counting down from it.
      (define! counted
        (lambda! (name xs n)
          (if! (integer? n)
-           (if! (less-than? n 0) (raise (error (quote! range-error) name n (length xs))) n)
-           (raise (error (quote! type-error) name n)))))
+           (if! (less-than? n 0) (raise (error (quote! range-error) n (length xs))) n)
+           (raise (error (quote! type-error) n)))))
      (define! at
        (lambda! (name xs index) (element name (after name xs (counted name xs index) index) index)))
      (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
@@ -383,7 +383,7 @@
          (if! (same? i 0)
            ()
            (if! (same? xs ())
-             (raise (error (quote! range-error) (quote! take) n (subtract n i)))
+             (raise (error (quote! range-error) n (subtract n i)))
              (pair (first xs) (taken (rest xs) (subtract i 1) n))))))
      (list
        (lambda! (xs index) (at (quote! element-at) xs index))
@@ -400,7 +400,7 @@
              (at (quote! third) xs 2)
              (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
        (lambda! (xs)
-         (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
+         (if! (same? xs ()) (raise (error (quote! range-error) xs)) (final xs)))
        (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
        (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
 
@@ -435,7 +435,7 @@
        ; empty separator is a range-error.
        (lambda! (text separator)
          (if! (same? separator "")
-           (raise (error (quote! range-error) (quote! string-split) separator))
+           (raise (error (quote! range-error) separator))
            (pieces text separator 0 (string-search text separator 0))))))))
 
 ; string-join: the strings with the separator between them.
@@ -486,9 +486,9 @@
   (lambda! (s count)
     (if! (and!? (string? s) (integer? count))
       (if! (less-than? count 0)
-        (raise (error (quote! range-error) (quote! string-repeat) count))
+        (raise (error (quote! range-error) count))
         (apply string-append (map (lambda! (#ignore) s) (range 0 count))))
-      (raise (error (quote! type-error) (quote! string-repeat) (if! (string? s) count s))))))
+      (raise (error (quote! type-error) (if! (string? s) count s))))))
 
 ; string-pad-left and string-pad-right: s with copies of fill, a string of one byte, before it,
 ; after it, up to width bytes.
@@ -498,7 +498,7 @@
        (lambda! (name s width fill)
          (if! (same? (string-byte-length fill) 1)
            (apply string-append (map (lambda! (#ignore) fill) (range (string-byte-length s) width)))
-           (raise (error (quote! range-error) name fill)))))
+           (raise (error (quote! range-error) fill)))))
      (list (lambda! (s width fill) (string-append (room (quote! string-pad-left) s width fill) s))
            (lambda! (s width fill) (string-append s (room (quote! string-pad-right) s width fill)))))))
 

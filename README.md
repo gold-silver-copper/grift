@@ -191,7 +191,7 @@ fn main() -> Result<(), Error> {
     let e = g.evaluate_in(&mut board, &top, "user.grift", "\n(f (quote! x))").unwrap_err();
     let mut text = String::new();
     g.describe(&e, &mut text).unwrap(); // innermost first, with the source and line
-    assert_eq!(text, "type-error #[primitive add] x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
+    assert_eq!(text, "type-error x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
     let kept = g.keep(f)?; // alive across evaluations until released
     g.release(kept).map_err(|(e, _)| e)?;
     Ok(())
@@ -230,7 +230,8 @@ fn main() -> Result<(), Error> {
   in a `private_context()`, that makes the operations as closures over them, as the runner's
   [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
   after it is closed is the error `closed`.
-- `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its trace lists the
+- `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its values are the values
+  involved, never who failed: `(first 1)` gives `type-error 1`. Its trace lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
   not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
@@ -365,7 +366,7 @@ fn main() -> Result<(), Error> {
   Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;
   refused the little it does need, the run waits still and the handle comes back.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
-  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function,
+  frames that can't be set aside. A waiting call there is the error `cannot-park`, its trace saying which call,
   and `can_park()` lets a host function do something else instead.
   `start` inside a host call is such a run. `resume` there is refused (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue it for your loop. Another

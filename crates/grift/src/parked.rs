@@ -8,7 +8,6 @@
 //! once by the type, and it carries its interpreter's identity as every value does.
 
 use crate::evaluate::Machine;
-use crate::evaluate::Primitive;
 use crate::heap::Object;
 use crate::local::{self, K};
 use crate::{Error, Grift, Owner, Value};
@@ -190,7 +189,7 @@ impl<T> Grift<T> {
         src: &str,
     ) -> Result<Ran, Error> {
         self.parkable(|g| {
-            let c = g.context_of(context, Primitive::Evaluate)?;
+            let c = g.context_of(context)?;
             g.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = g.intern(source)?;
             let forms = g.read_local(src, Some(source))?;
