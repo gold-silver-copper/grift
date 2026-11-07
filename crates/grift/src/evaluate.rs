@@ -47,7 +47,7 @@ macro_rules! primitives {
 
 primitives! {
     // Abstraction, wrapping and evaluation: the machine itself.
-    Vau "vau!" 3 3;
+    Vau "vau!" 2 usize::MAX;
     Wrap "wrap" 1 1;
     Unwrap "unwrap" 1 1;
     Evaluate "evaluate" 2 2;
@@ -883,7 +883,7 @@ impl<T> Grift<T> {
         let local = self
             .heap
             .alloc(Object::Context(Some(op.context), bindings))?;
-        Ok(Mode::Evaluate(op.body, local))
+        self.next_form(op.body, local, self.machine.here)
     }
 
     /// Evaluates the first of `forms`, a proper list, the last as a tail call; none is `#inert`.
@@ -919,10 +919,11 @@ impl<T> Grift<T> {
         let v = match p {
             P::Vau => {
                 self.check_parameters(x, y)?;
+                let body = self.arguments_list(base + 2)?;
                 let op = Operative {
                     parameters: x,
                     context_parameter: y,
-                    body: z,
+                    body,
                     context,
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)

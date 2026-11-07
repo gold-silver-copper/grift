@@ -26,16 +26,10 @@
 ; list (5.2.1).
 (define! list (wrap (vau! xs #ignore xs)))
 
-; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become a call of
-; sequence!'s value, read here in the built-in context, so no program's binding changes what a body
-; means.
+; lambda! (5.3.2, $lambda).
 (define! lambda!
   (vau! (parameters . body) caller
-    (wrap (evaluate (list vau! parameters #ignore
-                      (if! (if! (same? body ()) #false (same? (rest body) ()))
-                        (first body)
-                        (pair sequence! body)))
-                    caller))))
+    (wrap (evaluate (pair vau! (pair parameters (pair #ignore body))) caller))))
 
 ; The forms with a body: when! (not in Kernel), conditional! (5.6.1, $cond), let! (6.7.6, $letrec*),
 ; finally!, catch! and catch-kind!; and record, which shares a helper with them. Each form is an

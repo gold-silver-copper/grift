@@ -136,7 +136,7 @@
 ; parameter-error); a call binds them, and the context parameter, by bind's matching, in a new
 ; child of that context, and evaluates the body there as a tail call.
 (define! meta-vau!
-  (vau! ((parameters context-parameter body) c #ignore) #ignore
+  (vau! ((parameters context-parameter . body) c #ignore) #ignore
     (sequence!
       (evaluate (list vau! parameters context-parameter #inert) bare)
       (vau! (operands caller #ignore) #ignore
@@ -145,7 +145,7 @@
 (define! run-body
   (lambda! (local context-parameter caller body)
     (bind local context-parameter caller)
-    (meta-evaluate body local)))
+    (run-forms body local)))
 
 ; A primitive the interpreter takes from grift as it is: an applicative of its arguments. An
 ; error it raises is traced to the program's combination that called it.

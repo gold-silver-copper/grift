@@ -7,6 +7,8 @@ use crate::local::{Error, Growing, Value};
 use std::fmt::{self, Write};
 
 enum Item {
+    /// What's left of an operative's body: its forms, then the closing bracket.
+    Body(Value),
     Value(Value),
     /// The rest of a list after its first element.
     Tail(Value),
@@ -55,6 +57,19 @@ impl<T> Grift<T> {
                     out.write_str(" . ")?;
                     push(&mut todo, Item::Text(")"))?;
                     v
+                }
+                Item::Body(Value::Pair(r)) => {
+                    let Ok(Object::Pair(form, rest)) = self.heap.get(r) else {
+                        return Err(fmt::Error);
+                    };
+                    out.write_char(' ')?;
+                    push(&mut todo, Item::Body(*rest))?;
+                    push(&mut todo, Item::Value(*form))?;
+                    continue;
+                }
+                Item::Body(_) => {
+                    out.write_char(']')?;
+                    continue;
                 }
                 Item::Value(v) => v,
             };
@@ -115,14 +130,10 @@ impl<T> Grift<T> {
                         }
                         Ok(Object::Operative(op)) => {
                             out.write_str("#[operative ")?;
-                            let parts = [op.parameters, op.context_parameter, op.body];
-                            push(&mut todo, Item::Text("]"))?;
-                            for (i, part) in parts.into_iter().enumerate().rev() {
-                                push(&mut todo, Item::Value(part))?;
-                                if i > 0 {
-                                    push(&mut todo, Item::Text(" "))?;
-                                }
-                            }
+                            push(&mut todo, Item::Body(op.body))?;
+                            push(&mut todo, Item::Value(op.context_parameter))?;
+                            push(&mut todo, Item::Text(" "))?;
+                            push(&mut todo, Item::Value(op.parameters))?;
                         }
                         Ok(Object::Applicative(c)) => {
                             out.write_str("#[applicative ")?;

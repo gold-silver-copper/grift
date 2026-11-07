@@ -98,7 +98,7 @@ which a test shows no program can tell from the Rust.
 
 | Combiner | Meaning |
 |---|---|
-| `(vau! parameters context-parameter body)` | An operative closing over the current context (4.10.3). `parameters` is a tree of symbols, `#ignore`, `()` and pairs, with no symbol twice; `context-parameter` is a symbol not in it, or `#ignore`. Checked when the operative is made (`parameter-error`). A call binds them in a new child of that context and evaluates `body` as a tail call. |
+| `(vau! parameters context-parameter body ...)` | An operative closing over the current context (4.10.3). `parameters` is a tree of symbols, `#ignore`, `()` and pairs, with no symbol twice; `context-parameter` is a symbol not in it, or `#ignore`. Checked when the operative is made (`parameter-error`). A call binds them in a new child of that context and evaluates the body's forms in turn, the last as a tail call; `#inert` for none. |
 | `(wrap c)`, `(unwrap a)` | The applicative around combiner `c`; the combiner inside applicative `a` (4.10.4–5). Wrapping an applicative wraps it again. |
 | `(evaluate x c)` | Evaluates `x` in context `c`, as a tail call (4.8.3). |
 | `(context parent)` | A new empty context, a child of `parent`, or with no parent if that is `()` (4.8.4). |
@@ -142,7 +142,7 @@ which a test shows no program can tell from the Rust.
 | `(list x ...)` | The list of the arguments (5.2.1). |
 | `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. A native primitive. |
 | `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). A native primitive. |
-| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become a call of `sequence!`'s value, so a program's own binding of the name changes nothing (5.3.2). |
+| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body ...))` (5.3.2). |
 | `(current-context)` | The context it is called in (6.7.2). |
 | `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
 | `(not? b)`, `(and!? x ...)`, `(or!? x ...)` | Booleans (6.1). `and!?` and `or!?` evaluate left to right and stop early; every operand they evaluate must give a boolean, the last one included, so it isn't a tail call. |
@@ -211,7 +211,7 @@ counter                                                               ; => 1
 `((evaluate (quote! add) operations) x)` or `((lookup operations name default) x)` costs one
 lookup whatever the number of cases, where `conditional!` tests its clauses in order.
 
-**What the library forms cost.** `if!` and `sequence!` are native primitives, operatives whose
+**What the library forms cost.** `if!` and `sequence!` are native primitives, whose
 meaning is their definition in `natives.grift`. The other forms with a body walk
 their operands in grift, so in a loop run per byte or per node each costs a few calls. Measured with
 the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a

@@ -71,9 +71,9 @@ impl<T> Grift<T> {
             let meaning = self.find(meanings, name).unwrap().unwrap();
             let native = self.find(self.built_in, name).unwrap();
             let bound = match native {
-                Some(local::Value::Applicative(_)) => {
-                    local::Value::Applicative(self.heap.alloc(Object::Applicative(meaning)).unwrap())
-                }
+                Some(local::Value::Applicative(_)) => local::Value::Applicative(
+                    self.heap.alloc(Object::Applicative(meaning)).unwrap(),
+                ),
                 _ => meaning,
             };
             self.bind_symbol(self.built_in, name, bound).unwrap();
@@ -771,26 +771,25 @@ fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
 fn library_forms_build_no_code() {
     // Each form against the same thing written by hand: a use makes no operative and takes at
     // most six times the steps. They used to build new code each time: let! made two
-    // operatives, and conditional! took 29 times the steps. Both as grift: the natives off.
-    let mut g = grift();
-    g.run_definitions();
-    g.evaluate(&mut (), "(define! n 3) (define! e (current-context))")
-        .unwrap();
-    for (form, by_hand) in [
-        (
-            "(conditional! ((same? n 1) 1) ((same? n 2) 2) (#true 3))",
-            "(if! (same? n 1) 1 (if! (same? n 2) 2 3))",
-        ),
+    // operatives, and conditional! took 29 times the steps. What is written with if! compares with
+    // if! as grift, its definition, and what is written with lambda!, which runs no if!, with natives.
+    let by_lambda = [
         ("(let! ((x (add n 1))) x)", "((lambda! (x) x) (add n 1))"),
         (
             "(let! ((x (add n 1)) (y x)) y)",
             "((lambda! (x) ((lambda! (y) y) x)) (add n 1))",
         ),
-        ("(when! #true n)", "(if! #true n #inert)"),
         (
             "(sequence! 1 2 n)",
             "((lambda! (#ignore #ignore x) x) 1 2 n)",
         ),
+    ];
+    let by_if = [
+        (
+            "(conditional! ((same? n 1) 1) ((same? n 2) 2) (#true 3))",
+            "(if! (same? n 1) 1 (if! (same? n 2) 2 3))",
+        ),
+        ("(when! #true n)", "(if! #true n #inert)"),
         (
             "(and!? #true (same? n 3))",
             "(if! #true (same? n 3) #false)",
@@ -799,14 +798,39 @@ fn library_forms_build_no_code() {
             "(or!? #false (same? n 3))",
             "(if! #false #true (same? n 3))",
         ),
-    ] {
-        let ((steps, made), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
-        assert_eq!(made, 0, "{form} made operatives");
-        assert!(
-            steps <= 6 * by_hand_steps,
-            "{form}: {steps} steps against {by_hand_steps}"
-        );
+    ];
+    for (definitions, cases) in [(false, by_lambda.as_slice()), (true, by_if.as_slice())] {
+        let mut g = grift();
+        if definitions {
+            g.run_definitions();
+        }
+        g.evaluate(&mut (), "(define! n 3) (define! e (current-context))")
+            .unwrap();
+        for (form, by_hand) in cases {
+            let ((steps, made), (by_hand_steps, _)) = (cost(&mut g, form), cost(&mut g, by_hand));
+            assert_eq!(made, 0, "{form} made operatives");
+            assert!(
+                steps <= 6 * by_hand_steps,
+                "{form}: {steps} steps against {by_hand_steps}"
+            );
+        }
     }
+}
+
+#[test]
+fn an_operative_takes_any_number_of_body_forms_and_prints_them_as_written() {
+    let mut g = grift();
+    let source = "(define! sequence! 5) (define! n 1)
+                  (define! f (vau! (x) #ignore (bind (current-context) (quote! y) x) y))
+                  (define! g (lambda! (x) (first x) x))
+                  (list (f 2) (same? ((vau! () #ignore)) #inert))";
+    let v = g.evaluate(&mut (), source).unwrap();
+    assert_eq!(show(&g, &v), "(2 #true)");
+    let v = g.evaluate(&mut (), "g").unwrap();
+    assert_eq!(
+        show(&g, &v),
+        "#[applicative #[operative (x) #ignore (first x) x]]"
+    );
 }
 
 #[test]

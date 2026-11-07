@@ -20,7 +20,7 @@ impl Hash for Reference {
     }
 }
 
-/// A compound operative: its parameter tree, its context parameter, its body, the context it
+/// A compound operative: its parameter tree, its context parameter, its body's forms, the context it
 /// was made in.
 #[derive(Clone, Copy)]
 pub(crate) struct Operative {
