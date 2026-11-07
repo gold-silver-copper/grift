@@ -2732,11 +2732,7 @@ impl Comparison<'_> {
                     ));
                 }
                 if a.trace.len() != b.trace.len() {
-                    return Err(format!(
-                        "trace {} against {}",
-                        a.trace.len(),
-                        b.trace.len()
-                    ));
+                    return Err(format!("trace {} against {}", a.trace.len(), b.trace.len()));
                 }
                 for (x, y) in a.trace.iter().zip(&b.trace) {
                     if l.position(x) != r.position(y) {
@@ -3212,10 +3208,7 @@ fn positions_name_each_combination_s_source_and_line() {
     for n in 0..30 {
         let src = format!("{}(f {n})", "\n".repeat(n));
         let e = g.evaluate_in(&mut (), &top, "g.grift", &src).unwrap_err();
-        assert_eq!(
-            g.position(&e.trace[1]),
-            Ok(Some(("g.grift", n as u32 + 1)))
-        );
+        assert_eq!(g.position(&e.trace[1]), Ok(Some(("g.grift", n as u32 + 1))));
         g.evaluate(&mut (), "(length (map list (range 0 5000)))")
             .unwrap();
     }

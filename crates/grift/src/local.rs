@@ -27,16 +27,13 @@ pub(crate) enum Value {
     Bytes(Reference),
 }
 
-/// An interned symbol: its index among the names. Indices at or above [`KEPT`] name kept values.
+/// An interned symbol: its index among the names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct Symbol(pub u32);
 
 /// A registered host function: its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Host(pub u32);
-
-/// The first symbol index no text can name: the names of kept values start here.
-pub(crate) const KEPT: u32 = 1 << 31;
 
 /// Who began an unwinding. Nothing about the error's kind says so: this alone decides whether a
 /// handler may catch it, and a program can only ever make [`Origin::Program`].

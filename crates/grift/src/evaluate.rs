@@ -388,7 +388,7 @@ impl<T> Grift<T> {
     }
 
     /// Sets the run in progress aside: its whole machine moves into a new heap object, which a
-    /// kept binding holds, and this interpreter's machine is empty again. Everything that can fail
+    /// kept entry holds, and this interpreter's machine is empty again. Everything that can fail
     /// comes first, so a run that can't park goes on where it was, with the error. A stop that
     /// reached the run before its last moment stops it here instead.
     fn park(&mut self, h: Host, request: Value) -> Result<(), Error> {
@@ -403,8 +403,7 @@ impl<T> Grift<T> {
         let name = self.keep_local(Value::Pair(fiber))?;
         while !self.control.parks(self.run) {
             if self.interrupted() {
-                self.bindings_mut(self.kept)?.remove(&Symbol(name));
-                self.kept_free.push(name);
+                self.clear_kept(name);
                 return Err(Error::host(K::Interrupted));
             }
         }
@@ -695,10 +694,10 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection, never suspended runs.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
-        let roots = self.machine.roots().chain(current).chain([
+        let kept = self.kept.iter().flatten().copied();
+        let roots = self.machine.roots().chain(current).chain(kept).chain([
             Value::Context(self.built_in),
             Value::Context(self.top),
-            Value::Context(self.kept),
             #[cfg(test)]
             Value::Context(self.definitions),
         ]);

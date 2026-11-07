@@ -2,14 +2,14 @@
 //! on until it resumes the run once, with a value or an error, or abandons it.
 //!
 //! An interpreter has one machine. Parking moves that whole machine into a heap object, which a
-//! kept binding holds, so the collector sees a parked run's frames and arguments as it sees any
+//! kept entry holds, so the collector sees a parked run's frames and arguments as it sees any
 //! kept value; the interpreter's machine is then empty, for whatever runs next. Taking a run up
 //! moves the machine back. The [`Parked`] handle says which: it is linear, so a run goes on at most
 //! once by the type, and it carries its interpreter's identity as every value does.
 
 use crate::evaluate::Machine;
 use crate::heap::Object;
-use crate::local::{self, K, Symbol};
+use crate::local::{self, K};
 use crate::{Error, Grift, Owner, Primitive, Value};
 use std::sync::Weak;
 
@@ -249,8 +249,7 @@ impl<T> Grift<T> {
 
     /// A handle to the run parked under kept name `name`.
     fn parked_handle(&self, name: u32) -> Parked {
-        let found = self.find(self.kept, Symbol(name)).ok().flatten();
-        let request = match found {
+        let request = match self.kept_value(name) {
             Some(local::Value::Pair(fiber)) => match self.heap.get(fiber) {
                 Ok(Object::Fiber(room)) => room.first().map(|m| m.request),
                 _ => None,
@@ -376,8 +375,7 @@ impl<T> Grift<T> {
         self.kept_free
             .try_reserve(1)
             .map_err(|_| local::Error::oom())?;
-        let name = Symbol(parked.name);
-        let Some(local::Value::Pair(fiber)) = self.find(self.kept, name)? else {
+        let Some(local::Value::Pair(fiber)) = self.kept_value(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));
         };
         self.begin_run()?;
@@ -389,8 +387,7 @@ impl<T> Grift<T> {
             self.end_run();
             return Err(local::Error::new(K::StaleValue, &[]));
         };
-        self.bindings_mut(self.kept)?.remove(&name);
-        self.kept_free.push(parked.name);
+        self.clear_kept(parked.name);
         Ok(machine)
     }
 
@@ -404,9 +401,8 @@ impl<T> Grift<T> {
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
     /// about to park too: no more runs are parked than there are kept names.
     pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
-        let (_, kept) = self.context_at(self.kept)?;
         self.control
-            .room_to_forget(kept.len() + 1)
+            .room_to_forget(self.kept.len() + 1)
             .map_err(|_| local::Error::oom())
     }
 
@@ -417,8 +413,7 @@ impl<T> Grift<T> {
             local::Value::Pair(r) => matches!(self.heap.get(*r), Ok(Object::Fiber(_))),
             _ => false,
         };
-        self.context_at(self.kept)
-            .map_or(0, |(_, kept)| kept.values().filter(fiber).count())
+        self.kept.iter().flatten().filter(fiber).count()
     }
 
     /// A new handle for a parked run whose handle was dropped, one at a time: the only way to its

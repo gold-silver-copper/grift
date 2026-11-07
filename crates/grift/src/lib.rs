@@ -16,7 +16,7 @@ mod tests;
 
 use heap::{Bindings, Heap, IdHasher, Object};
 use interrupt::Control;
-use local::{K, KEPT, boxed, push};
+use local::{K, boxed, push};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -166,8 +166,8 @@ pub enum WriteError {
     Output,
 }
 
-/// A value the host keeps across evaluations: a binding in a context the interpreter owns, under a
-/// name no program can make. Read it with [`Grift::kept`]; [`Grift::release`] unbinds it. Neither
+/// A value the host keeps across evaluations: an entry in a table the collector marks and no
+/// program reaches. Read it with [`Grift::kept`]; [`Grift::release`] clears it. Neither
 /// `Copy` nor `Clone`, so it is released at most once and never used after; one dropped without
 /// a release keeps its value until the interpreter is dropped (there are no finalizers).
 ///
@@ -210,10 +210,9 @@ pub struct Grift<T = ()> {
     hosts: Vec<(local::Symbol, parked::Hosted<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
-    /// The kept values' context, a root no program reaches, and the names free for the next.
-    kept: heap::Reference,
+    /// The kept values, a root no program reaches, and the entries free for the next.
+    kept: Vec<Option<local::Value>>,
     kept_free: Vec<u32>,
-    kept_next: u32,
     machine: evaluate::Machine,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
@@ -246,9 +245,8 @@ impl<T> Grift<T> {
             hosts: Vec::new(),
             built_in: heap::Reference::NONE,
             top: heap::Reference::NONE,
-            kept: heap::Reference::NONE,
+            kept: Vec::new(),
             kept_free: Vec::new(),
-            kept_next: 0,
             machine: evaluate::Machine::default(),
             identity: Owner(Weak::new()),
             control: Arc::new(Control::default()),
@@ -273,7 +271,6 @@ impl<T> Grift<T> {
             |heap: &mut Heap, parent| heap.alloc(Object::Context(parent, Bindings::default()));
         self.built_in = context(&mut self.heap, None)?;
         self.top = context(&mut self.heap, Some(self.built_in))?;
-        self.kept = context(&mut self.heap, None)?;
         for name in local::K_NAMES {
             self.intern(name)?;
         }
@@ -752,35 +749,45 @@ impl<T> Grift<T> {
         }
     }
 
-    /// Binds `v` under a new kept name.
+    /// Puts `v` in the table: its name is its entry there, a released one first, so keeping on
+    /// every event never runs out of names.
     pub(crate) fn keep_local(&mut self, v: local::Value) -> Result<u32, local::Error> {
-        // A released name first, so keeping on every event never runs out of names.
-        let name = match self.kept_free.last() {
-            Some(&name) => name,
-            None if self.kept_next < KEPT => KEPT | self.kept_next,
-            None => return Err(local::Error::oom()),
-        };
-        self.bind_symbol(self.kept, local::Symbol(name), v)?;
-        if self.kept_free.pop().is_none() {
-            self.kept_next += 1;
+        if let Some(name) = self.kept_free.pop() {
+            if let Some(entry) = self.kept.get_mut(name as usize) {
+                *entry = Some(v);
+            }
+            return Ok(name);
         }
+        let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
+        push(&mut self.kept, Some(v))?;
         Ok(name)
+    }
+
+    /// What the entry `name` holds.
+    pub(crate) fn kept_value(&self, name: u32) -> Option<local::Value> {
+        self.kept.get(name as usize).copied().flatten()
+    }
+
+    /// Clears the entry `name`, for the next value. The caller has made room in `kept_free`.
+    pub(crate) fn clear_kept(&mut self, name: u32) {
+        if let Some(entry) = self.kept.get_mut(name as usize) {
+            *entry = None;
+        }
+        self.kept_free.push(name);
     }
 
     /// The value `k` keeps.
     pub fn kept(&self, k: &Kept) -> Result<Value, Error> {
         let found = match self.owns(&k.owner) {
-            true => self.find(self.kept, local::Symbol(k.name)),
+            true => self
+                .kept_value(k.name)
+                .ok_or_else(|| local::Error::new(K::StaleValue, &[])),
             false => Err(local::Error::new(K::ForeignValue, &[])),
         };
-        match found {
-            Ok(Some(v)) => Ok(self.export(v)),
-            Ok(None) => Err(self.export_error(local::Error::new(K::StaleValue, &[]))),
-            Err(e) => Err(self.export_error(e)),
-        }
+        self.exported(found)
     }
 
-    /// Unbinds the value `k` keeps, so it can be collected. Another interpreter's `Kept` is the
+    /// Clears the value `k` keeps, so it can be collected. Another interpreter's `Kept` is the
     /// error `foreign-value`, and comes back with it, to be released in its own.
     pub fn release(&mut self, k: Kept) -> Result<(), (Error, Kept)> {
         if !self.owns(&k.owner) {
@@ -792,22 +799,16 @@ impl<T> Grift<T> {
         if self.kept_free.try_reserve(1).is_err() {
             return Err((self.export_error(local::Error::oom()), k));
         }
-        if let Ok(bindings) = self.bindings_mut(self.kept) {
-            bindings.remove(&local::Symbol(k.name));
-        }
-        self.kept_free.push(k.name);
+        self.clear_kept(k.name);
         Ok(())
     }
 
-    /// Interns `name`. The ids from [`KEPT`] up are the kept values' names, so no text gets one.
+    /// Interns `name`.
     pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
         if let Some(symbol) = self.interned(name) {
             return Ok(symbol);
         }
-        let id = u32::try_from(self.names.len())
-            .ok()
-            .filter(|&id| id < KEPT)
-            .ok_or_else(local::Error::oom)?;
+        let id = u32::try_from(self.names.len()).map_err(|_| local::Error::oom())?;
         let (spelling, key) = (boxed(name)?, boxed(name)?);
         self.names.try_reserve(1).map_err(|_| local::Error::oom())?;
         self.symbols

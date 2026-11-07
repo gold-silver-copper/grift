@@ -42,7 +42,7 @@ pub(crate) enum Object {
     Applicative(Value),
     Bytes(Vec<u8>),
     /// A parked run's machine, none once it is taken up again: a vector, not a box, so that making
-    /// room for it can report failure. Only a kept binding refers to one, under a pair's reference
+    /// room for it can report failure. Only a kept entry refers to one, under a pair's reference
     /// (marking follows a reference whatever its kind says): no program or host value ever holds it.
     Fiber(Vec<Machine>),
 }
