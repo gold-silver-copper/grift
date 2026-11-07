@@ -1,22 +1,27 @@
 //! The evaluator: an explicit machine loop over a frame stack, and the Rust primitives.
 //!
-//! The machine's state is its frame stack, its argument stack, the errors waiting for a
+//! The machine's state is its frame stack, its argument stack, the endings waiting for a
 //! cleanup to finish, where it is in the program and the current [`Mode`]. The collector runs
 //! at the top of the loop and before a host's evaluation or call needs its first slot, with that
 //! state, the root contexts and the new call's checked inputs as its roots. Allocation never
 //! collects: Rust locals stay valid until the next run entry or machine safe point. The loop
-//! checks for a stop just before its safe point.
+//! checks for a stop just after each step.
+//!
+//! A run ends one way: an error unwinds it. An error the host or the machine began is a limit,
+//! whatever its kind is called, and two things follow: handlers pass it, and when a new error meets
+//! one waiting, the rule in [`Grift::unwind`] decides. A stop is such an error. A force is a stop
+//! that stays asked, so every cleanup it meets is cut before its first form.
 //!
 //! Three library forms have a native twin: `if!`, `sequence!` and `string-search` are the
 //! library's own operatives, flagged, and run in Rust when their operands have the shape the twin
 //! handles; any other shape runs the operative's body, so what a program sees never differs.
 
-use crate::Grift;
-use crate::collected;
 use crate::heap::{Bindings, Object, Operative, Reference, Seen};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
+use crate::parked::{Answer, Hosted};
 use crate::read::float_name;
+use crate::{Grift, collected};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -58,7 +63,7 @@ core {
     Evaluate "evaluate" 2 2;
     // Unwinding: machine frames.
     EvaluateWithCleanup "evaluate-with-cleanup" 3 3;
-    CallWithHandler "call-with-handler" 2 2;
+    EvaluateWithHandler "evaluate-with-handler" 3 3;
     Raise "raise" 1 1;
     // Making, changing and listing bindings.
     Context "context" 0 1;
@@ -173,10 +178,8 @@ enum What {
     /// When an error leaves the evaluation above, call `handler` with it as a value instead;
     /// `base` is the argument stack's height to go back to. A value passes through.
     Handler { handler: Value, base: usize },
-    /// The cleanup above ran after this value: deliver it.
-    Deliver(Value),
-    /// The cleanup above ran after an error, the last one waiting: raise it again.
-    Raise,
+    /// The cleanup above has ended: the ending it waited on, the last one saved, goes on.
+    Finish,
     /// Native `if!`: the value is the test; evaluate one of these as a tail call.
     Branch {
         consequent: Value,
@@ -196,32 +199,69 @@ impl Frame {
             | What::Combine { operands: v }
             | What::Cleanup { cleanup: v, .. }
             | What::Handler { handler: v, .. }
-            | What::Deliver(v)
             | What::Body { rest: v } => (v, empty),
             What::Arguments { combiner, rest, .. } => (combiner, rest),
             What::Branch {
                 consequent,
                 alternative,
             } => (consequent, alternative),
-            What::Raise | What::Form => (empty, empty),
+            What::Finish | What::Form => (empty, empty),
         };
         [a, b, Value::Context(self.context), Value::Pair(self.at)]
     }
 }
 
+/// A run's state, all of it: a run that parks moves this into the heap, and what belongs to a run
+/// but lives anywhere else stays behind when it does. An interpreter has one, empty between runs.
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     arguments: Vec<Value>,
-    /// Errors waiting for a cleanup to finish, one per `Raise` frame.
-    raised: Vec<Error>,
+    /// One per `Cleanup` frame, its room to save the ending it meets, and one per `Finish` frame,
+    /// that ending. Holding the room from the start, saving an ending can't fail.
+    waiting: Vec<Result<Value, Error>>,
     /// The innermost combination of the program being evaluated, or [`Reference::NONE`]. A
     /// `Reference`, not a `Value`: this is written and read at every step.
     here: Reference,
     /// Scratch for matching parameter trees.
     work: Vec<(Value, Value)>,
+    /// What a parked run asked its host for, held for as long as it waits.
+    pub request: Value,
     /// Steps taken, for tests of what a form costs.
     #[cfg(test)]
     pub steps: u64,
+}
+
+impl Machine {
+    /// What this machine holds for the collector, running or parked.
+    pub(crate) fn roots(&self) -> impl Iterator<Item = Value> {
+        let waiting = self.waiting.iter().flat_map(|ending| {
+            let (value, values, trace) = match ending {
+                Ok(v) => (Some(*v), &[][..], &[][..]),
+                Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
+            };
+            value.into_iter().chain(values.iter().chain(trace).copied())
+        });
+        self.frames
+            .iter()
+            .flat_map(|f| f.values())
+            .chain(self.arguments.iter().copied())
+            .chain(waiting)
+            .chain([Value::Pair(self.here), self.request])
+    }
+
+    /// Empty again, keeping its room: a run ended without coming back here is over.
+    pub(crate) fn clear(&mut self) {
+        self.frames.clear();
+        self.arguments.clear();
+        self.waiting.clear();
+        self.here = Reference::NONE;
+        self.request = Value::Inert;
+    }
+
+    /// How many objects a parked machine counts as, for when to collect: every collection walks it.
+    pub(crate) fn weight(&self) -> usize {
+        self.frames.len() + self.arguments.len() + self.waiting.len()
+    }
 }
 
 #[cfg(test)]
@@ -230,6 +270,11 @@ impl Machine {
     pub fn frames_high(&self) -> usize {
         self.frames.capacity()
     }
+
+    /// Only this much room above the frames, as if no more could be had.
+    pub fn leave_room(&mut self, room: usize) {
+        self.frames.shrink_to(self.frames.len() + room);
+    }
 }
 
 impl Default for Machine {
@@ -237,9 +282,10 @@ impl Default for Machine {
         Machine {
             frames: Vec::new(),
             arguments: Vec::new(),
-            raised: Vec::new(),
+            waiting: Vec::new(),
             here: Reference::NONE,
             work: Vec::new(),
+            request: Value::Inert,
             #[cfg(test)]
             steps: 0,
         }
@@ -247,7 +293,7 @@ impl Default for Machine {
 }
 
 /// Held while a host function runs: if it doesn't return to the interpreter it was called from,
-/// by a panic or by replacing it, that interpreter's run ends.
+/// by a panic or by replacing it, that interpreter's run ends, and its next one clears its machine.
 struct Hosting(Option<Arc<Control>>);
 
 impl Drop for Hosting {
@@ -270,9 +316,10 @@ impl<T> Grift<T> {
         state: Option<&mut T>,
         forms: Value,
         context: Reference,
+        parks: bool,
     ) -> Result<Value, Error> {
         let top = What::Forms { rest: forms };
-        self.start(state, &[(top, context)], Mode::Return(Value::Inert))
+        self.enter(state, &[(top, context)], Mode::Return(Value::Inert), parks)
     }
 
     /// [`Grift::call`], on this interpreter's values.
@@ -281,6 +328,7 @@ impl<T> Grift<T> {
         state: Option<&mut T>,
         f: Value,
         arguments: &[Value],
+        parks: bool,
     ) -> Result<Value, Error> {
         let f = match f {
             Value::Applicative(r) => self.unwrapped(r)?,
@@ -291,45 +339,95 @@ impl<T> Grift<T> {
             .heap
             .alloc(Object::Context(None, Bindings::default()))?;
         let call = What::Combine { operands };
-        self.start(state, &[(call, context)], Mode::Return(f))
+        self.enter(state, &[(call, context)], Mode::Return(f), parks)
     }
 
     /// Runs the machine on top of the current frames from `mode`, with `frames` pushed, until
     /// they are all gone; then everything is as it was, whatever the outcome. The first frame
     /// pushed holds where the machine was, so the collector sees it until it is restored. An
-    /// outer run gets its generation, for stops.
-    fn start(
+    /// outer run gets its number, for stops. Only an outer run may park, if the host asked for
+    /// that: a run inside a host call has that call's Rust frames under it, which can't be set
+    /// aside.
+    fn enter(
         &mut self,
         state: Option<&mut T>,
         frames: &[(What, Reference)],
         mode: Mode,
+        parks: bool,
     ) -> Result<Value, Error> {
-        let outer = self.begin_run()?;
-        // A host function may replace the interpreter or abandon this run: then the machine
-        // state is gone and nothing is restored into another's.
-        let (owner, run) = (Arc::as_ptr(&self.control), self.run);
+        let outer = self.begin_run();
+        let around = std::mem::replace(&mut self.may_park, outer && parks);
         let m = &mut self.machine;
-        let (base, arguments, raised, here) =
-            (m.frames.len(), m.arguments.len(), m.raised.len(), m.here);
-        let held = What::Deliver(Value::EmptyList);
+        let (base, arguments, waiting, here) =
+            (m.frames.len(), m.arguments.len(), m.waiting.len(), m.here);
+        let held = What::Forms {
+            rest: Value::EmptyList,
+        };
         let result = self.frame(held, Reference::NONE, here).and_then(|()| {
             frames
                 .iter()
                 .try_for_each(|&(what, context)| self.frame(what, context, Reference::NONE))
         });
         let result = result.and_then(|()| self.run(state, mode, base + 1));
-        if !std::ptr::eq(owner, Arc::as_ptr(&self.control)) || self.run != run {
-            return result;
-        }
+        // A machine that parked or was given up has nothing left to restore: these do nothing.
         let m = &mut self.machine;
+        m.here = here;
         m.frames.truncate(base);
         m.arguments.truncate(arguments);
-        m.raised.truncate(raised);
-        m.here = here;
+        m.waiting.truncate(waiting);
         if outer {
             self.end_run();
+        } else {
+            self.may_park = around;
         }
         result
+    }
+
+    /// Takes up parked `machine` with the host's answer, until it ends or parks again. Nothing is
+    /// around it: the machine is its own, as it was when it began as an outer run.
+    pub(crate) fn wake(
+        &mut self,
+        state: Option<&mut T>,
+        machine: Machine,
+        answer: Result<Value, Error>,
+    ) -> Result<Value, Error> {
+        self.machine = machine;
+        self.machine.request = Value::Inert;
+        // The frame `enter` pushed first, holding where the machine was, stays under the run.
+        let floor = 1;
+        let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e, floor));
+        let result = mode.and_then(|mode| self.run(state, mode, floor));
+        self.machine = Machine::default();
+        self.end_run();
+        result
+    }
+
+    /// Sets the run in progress aside: its whole machine moves into a new heap object, which a
+    /// kept binding holds, and this interpreter's machine is empty again. Everything that can fail
+    /// comes first, so a run that can't park goes on where it was, with the error, and that it
+    /// was asked to stop is the last of those. Its kept name, which nothing else can be, is what
+    /// the run returns.
+    fn park(&mut self, h: Host, request: Value) -> Result<Value, Error> {
+        if !self.may_park {
+            return Err(Error::new(K::CannotPark, &[Value::Host(h)]));
+        }
+        let mut room = Vec::new();
+        room.try_reserve_exact(1).map_err(|_| Error::oom())?;
+        self.kept_free.try_reserve(1).map_err(|_| Error::oom())?;
+        self.room_to_forget()?;
+        let fiber = self.heap.alloc(Object::Fiber(room))?;
+        let name = self.keep_local(Value::Pair(fiber))?;
+        if !self.control.parks() {
+            self.bindings_mut(self.kept)?.remove(&Symbol(name));
+            self.kept_free.push(name);
+            return Err(Error::interrupted());
+        }
+        self.machine.request = request;
+        let machine = std::mem::take(&mut self.machine);
+        if let Object::Fiber(room) = self.heap.get_mut(fiber)? {
+            room.push(machine);
+        }
+        Ok(Value::Symbol(Symbol(name)))
     }
 
     fn frame(&mut self, what: What, context: Reference, at: Reference) -> Result<(), Error> {
@@ -347,12 +445,6 @@ impl<T> Grift<T> {
             {
                 self.machine.steps += 1;
             }
-            // Before every step and as the run ends: the last step may have been a long native or
-            // host call, and a stop that came during it stops the run here.
-            if self.interrupted() {
-                mode = self.unwind(Error::new(K::Interrupted, &[]), floor)?;
-                continue;
-            }
             if let Mode::Return(v) = mode
                 && self.machine.frames.len() <= floor
             {
@@ -362,13 +454,14 @@ impl<T> Grift<T> {
                 Mode::Host(h, base) => self.host(state.as_deref_mut(), h, base),
                 _ => self.step(mode),
             });
+            // A stop that came during the step, however long, is how the step ended, whatever it
+            // would have answered: the cleanups then run.
             mode = match next {
-                Ok(mode) => mode,
-                // So too a stop that came during a step that failed, even with a limit: the
-                // stop is that failure, and the cleanups then run.
-                Err(_) if self.interrupted() => {
-                    self.unwind(Error::new(K::Interrupted, &[]), floor)?
+                _ if self.control.asked() => {
+                    self.control.acted();
+                    self.unwind(Error::interrupted(), floor)?
                 }
+                Ok(mode) => mode,
                 Err(e) => self.unwind(e, floor)?,
             };
         }
@@ -448,14 +541,12 @@ impl<T> Grift<T> {
                     }
                     What::Cleanup { cleanup, .. } => {
                         self.machine.here = at;
-                        self.frame(What::Deliver(v), Reference::NONE, Reference::NONE)?;
-                        self.call_thunk(cleanup, context, at)?
+                        self.start_cleanup(Ok(v), cleanup, context, at)?
                     }
                     What::Handler { .. } => {
                         self.machine.here = at;
                         Mode::Return(v)
                     }
-                    What::Deliver(v) => Mode::Return(v),
                     What::Branch {
                         consequent,
                         alternative,
@@ -471,11 +562,15 @@ impl<T> Grift<T> {
                         self.machine.here = at;
                         self.next_form(rest, context, at)?
                     }
-                    What::Raise => {
-                        // The error already says where it happened, or that it can't: not here.
-                        self.machine.here = Reference::NONE;
-                        return Err(self.machine.raised.pop().unwrap_or_else(Error::oom));
-                    }
+                    // A cleanup's install gave its `Finish` this entry, so the fallback never acts.
+                    What::Finish => match self.machine.waiting.pop().unwrap_or(Ok(v)) {
+                        Ok(v) => Mode::Return(v),
+                        Err(e) => {
+                            // It already says where it happened, or that it can't: not here.
+                            self.machine.here = Reference::NONE;
+                            return Err(e);
+                        }
+                    },
                 }
             }
             Mode::Host(..) => return Err(Error::new(K::NotACombiner, &[])),
@@ -503,12 +598,17 @@ impl<T> Grift<T> {
 
     /// An error stops the evaluation at `here`. Frames above `floor` are dropped down to the
     /// innermost cleanup or handler, adding where each was to the error's trace. A cleanup then
-    /// runs, the error waiting until it is done; a handler is called with the error instead.
-    /// With neither, the error goes to the caller. An error in a cleanup replaces the one
-    /// waiting, unless that one is a limit and the new one isn't. If starting a cleanup fails
-    /// for memory, `out-of-memory` goes to the caller at once, and the cleanups further out
-    /// don't run.
-    fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
+    /// runs, the error waiting until it is done; a handler, unless the error is a limit, is called
+    /// with it instead. What can't be called fails there like any call, with that error, and the
+    /// next frame goes on from it. With neither left, the error goes to the caller.
+    pub(crate) fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
+        // The garbage is what the cleanups will run on, and the host's next run: the next safe
+        // point collects, with the frames dropped here let go of. Once: what is left to free comes
+        // a level at a time, and a collection walks all the levels left. A cleanup refused memory
+        // is a new refusal, and asks again.
+        if std::mem::take(&mut e.refused) {
+            self.heap.request_collection();
+        }
         locate(&mut e, self.machine.here);
         while self.machine.frames.len() > floor {
             let Some(Frame { what, context, at }) = self.machine.frames.pop() else {
@@ -519,32 +619,62 @@ impl<T> Grift<T> {
                     locate(&mut e, at);
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    push(&mut self.machine.raised, e)?;
-                    self.frame(What::Raise, Reference::NONE, Reference::NONE)?;
-                    return self.call_thunk(cleanup, context, at);
+                    return self.start_cleanup(Err(e), cleanup, context, at);
                 }
-                What::Handler { handler, base } if !limit(e.kind) => {
+                What::Handler { handler, base } if !e.limit => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
                     match self.handle(&e, handler, context) {
                         Ok(mode) => return Ok(mode),
-                        // Calling it failed, here: that error goes on instead.
                         Err(failed) => {
                             e = failed;
                             locate(&mut e, at);
                         }
                     }
                 }
-                // The cleanup's error replaces the one waiting, unless that one is a limit and
-                // the new one isn't.
-                What::Raise => match self.machine.raised.pop() {
-                    Some(waiting) if limit(waiting.kind) && !limit(e.kind) => e = waiting,
-                    _ => {}
-                },
+                What::Finish => {
+                    // The one rule: the newest reason wins, unless a program's would replace a
+                    // limit.
+                    if let Some(Err(waiting)) = self.machine.waiting.pop()
+                        && waiting.limit
+                        && !e.limit
+                    {
+                        e = waiting;
+                    }
+                }
                 _ => locate(&mut e, at),
             }
         }
         Err(e)
+    }
+
+    /// A popped `Cleanup` frame becomes a `Finish` frame and a call of the cleanup, and its room in
+    /// `waiting` this ending. Its install made all that room, so a cleanup's start doesn't fail: the
+    /// next check comes first, and a refusal after it is the cleanup's first step failing. The
+    /// call's frame goes on the machine's usual way, a plain `push` here costing every step 25%.
+    fn start_cleanup(
+        &mut self,
+        ending: Result<Value, Error>,
+        cleanup: Value,
+        context: Reference,
+        at: Reference,
+    ) -> Result<Mode, Error> {
+        let m = &mut self.machine;
+        m.waiting.pop();
+        m.waiting.push(ending);
+        #[cfg(test)]
+        assert!(
+            m.frames.len() + 2 <= m.frames.capacity(),
+            "its install made the room"
+        );
+        m.frames.push(Frame {
+            what: What::Finish,
+            context: Reference::NONE,
+            at: Reference::NONE,
+        });
+        let operands = Value::EmptyList;
+        self.frame(What::Combine { operands }, context, at)?;
+        Ok(Mode::Return(cleanup))
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
@@ -564,9 +694,6 @@ impl<T> Grift<T> {
     /// A host's next run may need slots before reaching the machine loop. Collect here first,
     /// with its checked inputs and the suspended machine as roots; never during allocation.
     pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
-        if self.run != 0 && self.control.active() != self.run {
-            self.abandon();
-        }
         if self.heap.due() {
             self.collect(current)?;
         }
@@ -576,19 +703,7 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection, never suspended runs.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
-        let m = &self.machine;
-        let raised = m
-            .raised
-            .iter()
-            .flat_map(|e| e.values.iter().chain(&e.trace).copied());
-        let roots = m
-            .frames
-            .iter()
-            .flat_map(|f| f.values())
-            .chain(m.arguments.iter().copied())
-            .chain(raised);
-        let roots = roots.chain(current).chain([
-            Value::Pair(m.here),
+        let roots = self.machine.roots().chain(current).chain([
             Value::Context(self.built_in),
             Value::Context(self.top),
             Value::Context(self.kept),
@@ -612,25 +727,40 @@ impl<T> Grift<T> {
             .try_reserve_exact(given.len())
             .map_err(|_| Error::oom())?;
         arguments.extend(given.iter().map(|&v| self.export(v)));
-        let run = self.run;
+        let run = self.control.run();
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
-        let v = f(self, state, &arguments);
-        // Replaced, or restored after a run inside was abandoned: this run is over, and its
-        // control says so (as it does if `f` panics).
+        let v = match f {
+            Hosted::Plain(f) => f(self, state, &arguments).map(Answer::Now),
+            Hosted::Parking(f) => f(self, state, &arguments),
+        };
+        // Replaced, or restored after a run inside gave this one up: the run is over, and what is
+        // on this machine is no part of it. The replaced interpreter's run ends as `hosting` drops.
         let same = hosting
             .0
             .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && self.run == run && c.active() == run);
+            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && c.run() == run);
         if !same {
-            self.abandon();
+            self.machine.clear();
+            self.end_run();
             return Err(Error::new(K::ForeignValue, &[]));
         }
         hosting.0 = None;
         self.machine.arguments.truncate(base);
-        // What comes back is checked as everything the host hands in is.
+        self.answered(h, v)
+    }
+
+    /// What a host function answered, checked as everything the host hands in is. Apart from
+    /// [`Grift::host`], so that its temporaries stay off the stack of a run under a nested one.
+    #[inline(never)]
+    fn answered(&mut self, h: Host, v: Result<Answer, crate::Error>) -> Result<Mode, Error> {
         match v {
-            Ok(v) => Ok(Mode::Return(self.import(&v)?)),
-            Err(e) => Err(self.import_error(&e).unwrap_or_else(|failed| failed)),
+            Ok(Answer::Now(v)) => Ok(Mode::Return(self.import(&v)?)),
+            // Parked, the machine is empty, so this value ends the loop.
+            Ok(Answer::Later(request)) => {
+                let request = self.import(&request)?;
+                self.park(h, request).map(Mode::Return)
+            }
+            Err(e) => Err(self.incoming_error(&e)),
         }
     }
 
@@ -991,31 +1121,27 @@ impl<T> Grift<T> {
             P::IntegerToFloat => Value::Float(integer_of(p, x)? as f64),
             // Rust's `as`: saturating, and not-a-number becomes 0.
             P::FloatToInteger => Value::Integer(float_of(p, x)? as i64),
-            P::EvaluateWithCleanup if !is_combiner(z) => return Err(type_error(p, z)),
-            P::EvaluateWithCleanup => match y {
-                Value::Context(c) => {
-                    let cleanup = What::Cleanup { cleanup: z, base };
-                    self.frame(cleanup, c, self.machine.here)?;
-                    return Ok(Mode::Evaluate(x, c));
-                }
-                _ => return Err(type_error(p, y)),
-            },
-            P::CallWithHandler => {
-                if let Some(&v) = [x, y].iter().find(|&&v| !is_combiner(v)) {
-                    return Err(type_error(p, v));
-                }
+            P::EvaluateWithCleanup | P::EvaluateWithHandler if !is_combiner(z) => {
+                return Err(type_error(p, z));
+            }
+            P::EvaluateWithCleanup | P::EvaluateWithHandler => {
+                let Value::Context(c) = y else {
+                    return Err(type_error(p, y));
+                };
                 let at = self.machine.here;
-                self.frame(What::Handler { handler: y, base }, context, at)?;
-                return self.call_thunk(x, context, at);
+                if p == P::EvaluateWithHandler {
+                    self.frame(What::Handler { handler: z, base }, c, at)?;
+                } else {
+                    let m = &mut self.machine;
+                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    m.frames.try_reserve(2).map_err(|_| Error::oom())?;
+                    self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
+                    self.machine.waiting.push(Ok(Value::Inert));
+                }
+                return Ok(Mode::Evaluate(x, c));
             }
             P::Raise => {
-                let e = self.error_of(x)?;
-                // A new error happens here; a caught one keeps where it happened, and the raise
-                // itself isn't one of its locations.
-                if !e.trace.is_empty() {
-                    self.machine.here = Reference::NONE;
-                }
-                return Err(e);
+                return Err(self.error_of(x)?);
             }
             P::StringByteLength => integer(self.text(p, x)?.len()),
             P::StringByte => {
@@ -1207,21 +1333,13 @@ impl<T> Grift<T> {
         })
     }
 
-    /// Calls combiner `f` with no arguments in `context`.
-    fn call_thunk(&mut self, f: Value, context: Reference, at: Reference) -> Result<Mode, Error> {
-        let operands = Value::EmptyList;
-        self.frame(What::Combine { operands }, context, at)?;
-        Ok(Mode::Return(f))
-    }
-
     /// The error an error context describes: one `error` made, or a handler got.
     fn error_of(&self, e: Value) -> Result<Error, Error> {
         let bad = || type_error(Primitive::Raise, e);
         let Value::Context(r) = e else {
             return Err(bad());
         };
-        let (_, fields) = self.context_at(r)?;
-        let field = |k: K| fields.get(&k.into()).copied().ok_or_else(bad);
+        let field = |k: K| self.find(r, k.into())?.ok_or_else(bad);
         let Value::Symbol(kind) = field(K::Kind)? else {
             return Err(bad());
         };
@@ -1234,6 +1352,8 @@ impl<T> Grift<T> {
             _ => None,
         }));
         Ok(Error {
+            limit: false,
+            refused: false,
             kind,
             values,
             trace,
@@ -1332,7 +1452,7 @@ impl<T> Grift<T> {
         let mut walked = 0;
         while let Some(t) = todo.pop() {
             if self.walk_stopped(&mut walked) {
-                return Err(Error::new(K::Interrupted, &[]));
+                return Err(Error::interrupted());
             }
             match t {
                 Value::Symbol(s) => {
@@ -1370,7 +1490,7 @@ impl<T> Grift<T> {
         let mut walked = 0;
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = match (t, v) {
-                _ if self.walk_stopped(&mut walked) => Err(Error::new(K::Interrupted, &[])),
+                _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
                 (Value::Symbol(s), _) => bindings
                     .try_reserve(1)
                     .map(|()| {
@@ -1481,11 +1601,6 @@ impl<T> Grift<T> {
             _ => Err(Error::new(K::StaleValue, &[Value::Applicative(r)])),
         }
     }
-}
-
-/// Whether an error is a limit set by the host or the machine, which no handler catches.
-fn limit(kind: Symbol) -> bool {
-    kind == K::Interrupted.into() || kind == K::OutOfMemory.into()
 }
 
 /// Adds program combination `r` to the error's trace, unless it is there already. With no

@@ -18,7 +18,7 @@ impl<T> Grift<T> {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here)?;
         let forms = self.read_local(MEANINGS, None)?;
-        self.evaluate_forms(None, forms, here)?;
+        self.evaluate_forms(None, forms, here, false)?;
         let name = self.intern("meanings")?;
         if let Some(local::Value::Context(meanings)) = self.find(here, name)? {
             self.definitions = meanings;
@@ -759,8 +759,8 @@ fn catch_catches_errors_as_contexts() {
              (quote! (not-integer (a 2))))",
             "(equal? (catch! (first 1) e (evaluate-in! trace e)) (quote! ((first 1))))",
             // A handler that fails on being called still says where.
-            "(equal? (catch! (call-with-handler (lambda! () (first 1)) (vau! () #ignore 1)) e (evaluate-in! trace e)) \
-             (quote! ((call-with-handler (lambda! () (first 1)) (vau! () #ignore 1)))))",
+            "(equal? (catch! (evaluate-with-handler (quote! (first 1)) (current-context) (vau! () #ignore 1)) e (evaluate-in! trace e)) \
+             (quote! ((evaluate-with-handler (quote! (first 1)) (current-context) (vau! () #ignore 1)))))",
             "(equal? (catch! (first 1) e (names e)) (quote! (kind trace values)))",
             "(catch! (first 1) e (not? (binds? e (quote! list))))",
             // error makes the same kind of context, with an empty trace, and raises nothing.
@@ -789,7 +789,11 @@ fn catch_catches_errors_as_contexts() {
     fails(
         &mut g,
         &[
-            ("(call-with-handler 1 first)", "type-error"),
+            (
+                "(evaluate-with-handler 1 (current-context) 1)",
+                "type-error",
+            ),
+            ("(evaluate-with-handler 1 2 first)", "type-error"),
             ("(let! ((x 1 2)) x)", "arity-error"),
             (
                 "(catch! (first 1) e (raise (apply error (pair (quote! again) (evaluate-in! values e)))))",
@@ -800,7 +804,7 @@ fn catch_catches_errors_as_contexts() {
             ("(raise (sequence! (define! e (error 1)) e))", "type-error"),
         ],
     );
-    // raise passes a caught error on as it was, its trace included.
+    // raise passes a caught error on, its trace kept, and adds where it is as any location is.
     let e = g
         .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
@@ -811,17 +815,18 @@ fn catch_catches_errors_as_contexts() {
         [
             "(raise (error (quote! not-integer) x 2))",
             "(add 1 (check (quote! a)))",
+            "(raise e)",
             "(catch! (add 1 (check (quote! a))) e (raise e))"
         ]
     );
-    // ... the raise itself not among them; a new error starts at its raise.
+    // A new error starts at its raise.
     let trace = g
         .evaluate(
             &mut (),
             "(catch! (catch! (first 1) e (raise e)) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, &trace), "((first 1))");
+    assert_eq!(show(&g, &trace), "((first 1) (raise e))");
     let trace = g
         .evaluate(
             &mut (),
@@ -841,7 +846,7 @@ fn stop(_: &mut Grift<Interrupter>, s: &mut Interrupter, _: &[Value]) -> Result<
     Ok(Value::Inert)
 }
 
-/// A host function that fails as the program's mistake, or reports that memory ran out.
+/// A host function that fails as the program's mistake, or says that memory ran out.
 fn fail<T>(g: &mut Grift<T>, _: &mut T, args: &[Value]) -> Result<Value, Error> {
     match args {
         [] => Err(g.error("out-of-memory", &[])),
@@ -860,9 +865,11 @@ fn catch_catches_errors_about_the_program_and_never_the_limits() {
         .evaluate(&mut s, "(catch! (fail 7) e (evaluate-in! kind e))")
         .unwrap();
     assert_eq!(show(&g, &caught), "bad-input");
-    // The allocator's limit and the host's go through every catch! to the host.
-    let e = g.evaluate(&mut s, "(catch! (fail) #ignore 0)").unwrap_err();
-    assert_eq!(kind(&g, &e), "out-of-memory");
+    // So is one a host function makes, whatever its kind is called: only the machine can run out.
+    let caught = g
+        .evaluate(&mut s, "(catch! (fail) e (evaluate-in! kind e))")
+        .unwrap();
+    assert_eq!(show(&g, &caught), "out-of-memory");
     // A cleanup that fails while a limit passes doesn't turn it into an error catch! catches.
     let e = g
         .evaluate(&mut s, "(catch! (finally! (stop) (first 1)) #ignore 0)")
@@ -1635,7 +1642,7 @@ fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
                (and!? (equal? (first trace) 1)
                       (same? (first (rest trace)) at)
                       (same? (first (rest (rest trace))) at)
-                      (equal? (length trace) 4)))",
+                      (equal? (length trace) 5)))",
         ],
     );
 }
@@ -2178,12 +2185,13 @@ fn catch_kind_catches_one_kind_and_lets_the_rest_go_on_as_they_were() {
             "(same? (catch-kind! (deep 1) type-error e (evaluate-in! kind e)) (quote! type-error))",
             "(same? (catch-kind! (deep (list 1)) type-error e 0) 2)",
             "(same? (catch-kind! (raise (error (quote! found) 4)) found e (first (evaluate-in! values e))) 4)",
-            // Another kind goes on with the trace a catch! that raises it again gives it, and the
-            // body's own combinations in it.
-            "(equal? (trace-of (quote! (catch-kind! (deep 1) parse-error e 0)))
-                     (trace-of (quote! (catch! (deep 1) e (raise e)))))",
+            // Another kind goes on, its trace the body's own combinations and the form it passed.
+            "(equal? (length (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
+                     (add 1 (length (trace-of (quote! (deep 1))))))",
             "(equal? (first (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
                      (first (trace-of (quote! (deep 1)))))",
+            "(equal? (last (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
+                     (quote! (catch-kind! (deep 1) parse-error e 0)))",
             "(same? (catch-kind! (catch-kind! (deep 1) parse-error e 1) type-error e 2) 2)",
         ],
     );
@@ -3145,52 +3153,6 @@ fn positions_name_each_combination_s_source_and_line() {
     }
 }
 
-/// A host function's state for leaving its run: the interpreter swapped out, and two stoppers.
-struct Leaving {
-    saved: Option<Grift<Leaving>>,
-    stops: Vec<Interrupter>,
-}
-
-/// A stop of the run in progress, whole, then the interpreter swapped out.
-fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
-    if let Some(whole) = s.stops.first_mut() {
-        assert!(whole.stop(), "a run to stop");
-    }
-    s.saved = Some(std::mem::replace(g, Grift::new()?));
-    Ok(Value::Inert)
-}
-
-/// Gives up a run inside by swapping the interpreter out and back; then another stop makes only
-/// its first store.
-fn restore(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
-    let _ = g.evaluate(s, "(swap-out)");
-    if let Some(old) = s.saved.take() {
-        *g = old;
-    }
-    if let Some(half) = s.stops.get_mut(1) {
-        half.stop_halfway();
-    }
-    Err(g.error("restored", &[]))
-}
-
-#[test]
-fn a_poll_with_no_run_in_progress_acts_on_nothing() {
-    // The interleaving the q2 model found (abandon_poll_race), made here in order: a run its host
-    // function left is given up, and the poll that follows finds no run in progress, while one
-    // stop is whole and another has stored its count but not its run. Neither acts.
-    let mut g: Grift<Leaving> = Grift::new().unwrap();
-    define(&mut g, "swap-out", swap_out);
-    define(&mut g, "restore", restore);
-    let mut s = Leaving {
-        saved: None,
-        stops: vec![g.interrupter(), g.interrupter()],
-    };
-    let e = g.evaluate(&mut s, "(restore)").unwrap_err();
-    assert_eq!(kind(&g, &e), "foreign-value", "the run its host left");
-    assert!(!g.interrupted(), "a poll with no run in progress acted");
-    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
-}
-
 /// Asks for a stop of the run in progress, then walks the tree it was given, with no step of the
 /// machine between them: each long walk must find the stop itself.
 fn walks_with_a_stop_waiting(
@@ -3219,6 +3181,45 @@ fn walks_with_a_stop_waiting(
 fn each_long_walk_finds_a_stop_by_itself() {
     let mut g: Grift<Interrupter> = Grift::new().unwrap();
     define(&mut g, "walk", walks_with_a_stop_waiting);
+    let mut stop = g.interrupter();
+    let r = g.evaluate(
+        &mut stop,
+        "(define! grow (lambda! (d n) (if! (same? n 0) d (grow (pair d d) (subtract n 1)))))
+         (walk (grow () 16))",
+    );
+    assert_eq!(kind(&g, &r.unwrap_err()), "interrupted");
+}
+
+/// As [`walks_with_a_stop_waiting`], for a force, with the stop already acted on: it stays asked,
+/// so each walk finds it by itself.
+fn walks_with_a_force_waiting(
+    g: &mut Grift<Interrupter>,
+    stop: &mut Interrupter,
+    args: &[Value],
+) -> Result<Value, Error> {
+    assert!(stop.stop(), "a run to stop");
+    g.control.acted();
+    assert!(!g.control.asked());
+    assert!(stop.force(), "the run this handle stopped");
+    let tree = g.import(&args[0]).unwrap();
+    assert!(
+        g.check_parameters(tree, local::Value::Ignore)
+            .unwrap_err()
+            .limit
+    );
+    let mut bindings = Bindings::default();
+    assert!(g.match_tree(&mut bindings, tree, tree).unwrap_err().limit);
+    let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
+        panic!("printing went on past a force");
+    };
+    assert!(e.is_limit());
+    Ok(Value::Inert)
+}
+
+#[test]
+fn each_long_walk_finds_a_force_by_itself() {
+    let mut g: Grift<Interrupter> = Grift::new().unwrap();
+    define(&mut g, "walk", walks_with_a_force_waiting);
     let mut stop = g.interrupter();
     let r = g.evaluate(
         &mut stop,

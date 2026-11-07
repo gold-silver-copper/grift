@@ -1,15 +1,17 @@
 //! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments. With no
 //! script it reads the program from stdin; when stdin is a terminal it evaluates each complete
-//! input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
-//! failed output, 2 on a usage error or unreadable input, or what the program gave `exit`. A
-//! closed stdout (a broken pipe) ends the run quietly.
+//! input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a
+//! grift error (a script that can't be read, or failed output, is one), 2 on a usage error, or what
+//! the program gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the
+//! program calls `exit` or input ends inside a form. A write to a pipe no one reads, on any file,
+//! ends the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
 //! `read-file`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
 //! `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
 //! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
 
-use grift::{Error, Grift, HostFunction, Interrupter, Value, WriteError};
+use grift::{Error, Grift, HostFunction, Value, WriteError};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -34,31 +36,36 @@ enum Stream {
     Writing(Box<dyn Write>),
 }
 
-/// The runner's state: the files opened, standard input, error and output first, the status `exit`
-/// gave, what stops the program when it does, when the run started, and the script.
+/// The runner's state: the files opened, standard input, error and output first, when the run
+/// started, and the script.
 struct Runner {
     files: Vec<Opened>,
-    exit: Option<u8>,
-    stop: Interrupter,
     started: Instant,
     script: Option<PathBuf>,
 }
 
 type G = Grift<Runner>;
 
-/// A `fmt::Write` straight into an `io::Write`, keeping the I/O error, so printing a value
+/// A `fmt::Write` straight into an `io::Write`, keeping what failed first, so printing a value
 /// needs no buffer that could grow without bound.
 struct Sink<W: Write> {
     w: W,
-    error: Option<io::Error>,
+    failure: Option<io::Error>,
+}
+
+impl<W: Write> Sink<W> {
+    fn note(&mut self, wrote: io::Result<()>) -> fmt::Result {
+        wrote.map_err(|e| {
+            self.failure.get_or_insert(e);
+            fmt::Error
+        })
+    }
 }
 
 impl<W: Write> fmt::Write for Sink<W> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.w.write_all(s.as_bytes()).map_err(|e| {
-            self.error = Some(e);
-            fmt::Error
-        })
+        let wrote = self.w.write_all(s.as_bytes());
+        self.note(wrote)
     }
 }
 
@@ -67,52 +74,45 @@ fn say(text: fmt::Arguments) {
     let _ = io::stderr().write_fmt(text);
 }
 
-/// Ends the run quietly because stdout closed, as `(exit 0)` does unless `exit` came first.
-fn stdout_closed(r: &mut Runner) -> Value {
-    r.exit.get_or_insert(0);
-    r.stop.stop();
-    Value::Inert
-}
-
-/// Writes the values to `w`, strings without quotes when `raw`, then `end`, and flushes. A broken
-/// pipe ends the run quietly only when `w` is stdout, which is when `stdout` holds the runner.
+/// Writes the values to the file `path` that `w` is, strings without quotes when `raw`, then `end`,
+/// and flushes.
 fn put(
     g: &mut G,
     values: &[Value],
     raw: bool,
     end: &str,
+    path: &str,
     w: &mut dyn Write,
-    stdout: Option<&mut Runner>,
 ) -> Result<Value, Error> {
-    let mut out = Sink { w, error: None };
+    let mut out = Sink { w, failure: None };
     let mut written = values.iter().try_for_each(|v| match g.as_str(v) {
         Ok(Some(s)) if raw => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
         _ => g.write(v, &mut out),
     });
     written =
         written.and_then(|()| fmt::Write::write_str(&mut out, end).map_err(|_| WriteError::Output));
-    if written.is_ok()
-        && let Err(e) = out.w.flush()
-    {
-        out.error = Some(e);
-        written = Err(WriteError::Output);
-    }
-    match (written, out.error, stdout) {
-        (Ok(()), ..) => Ok(Value::Inert),
-        (Err(WriteError::Value(e)), ..) => Err(e),
-        (Err(_), Some(e), Some(r)) if e.kind() == io::ErrorKind::BrokenPipe => Ok(stdout_closed(r)),
-        (Err(_), ..) => Err(g.error("output-error", values)),
+    let flushed = out.w.flush();
+    let flushed = out.note(flushed).map_err(|_| WriteError::Output);
+    match written.and(flushed) {
+        Ok(()) => Ok(Value::Inert),
+        Err(WriteError::Value(e)) => Err(e),
+        Err(WriteError::Output) => {
+            let e = out
+                .failure
+                .unwrap_or_else(|| io::Error::other("the output refused"));
+            Err(write_failed(g, path, &e))
+        }
     }
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
-fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stdout().lock(), Some(r))
+fn display(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    put(g, args, true, "", "standard-output", &mut io::stdout())
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
 fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, args, true, "", &mut io::stderr().lock(), None)
+    put(g, args, true, "", "standard-error", &mut io::stderr())
 }
 
 /// `(read-file path)`: the whole text of the file.
@@ -185,9 +185,17 @@ fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
     }
 }
 
-/// An I/O error about `what` (a path or a program): `encoding-error` for bytes that aren't
-/// UTF-8, else `kind` with the system's message.
+/// Memory refused: the limit a real allocation failure is, wherever it happens.
+fn no_memory(g: &mut G) -> Error {
+    g.error("out-of-memory", &[]).as_limit()
+}
+
+/// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
+/// aren't UTF-8, else `kind` with the system's message.
 fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
+    if e.kind() == io::ErrorKind::OutOfMemory {
+        return no_memory(g);
+    }
     let what = match g.string(what) {
         Ok(v) => v,
         Err(e) => return e,
@@ -197,6 +205,18 @@ fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
     }
     match g.string(&e.to_string()) {
         Ok(message) => g.error(kind, &[what, message]),
+        Err(e) => e,
+    }
+}
+
+/// A failed write to the file `path`: a pipe no one reads is the limit that ends the run quietly, as
+/// [`exit_status`] says, and only a real write makes it.
+fn write_failed(g: &mut G, path: &str, e: &io::Error) -> Error {
+    if e.kind() != io::ErrorKind::BrokenPipe {
+        return failed(g, "file-error", path, e);
+    }
+    match g.string(path) {
+        Ok(path) => g.error("broken-pipe", &[path]).as_limit(),
         Err(e) => e,
     }
 }
@@ -211,7 +231,7 @@ fn opened(
     let path = one_string(g, args)?;
     match open(&path) {
         Ok(file) => {
-            let id = i64::try_from(r.files.len()).map_err(|_| g.error("out-of-memory", &[]))?;
+            let id = i64::try_from(r.files.len()).map_err(|_| no_memory(g))?;
             r.files.push(Opened {
                 path,
                 file: Some(file),
@@ -308,7 +328,7 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
             Err(e) => return Err(failed(g, "file-error", path, &e)),
         };
         if bytes.try_reserve(chunk.len()).is_err() {
-            return Err(g.error("out-of-memory", &[]));
+            return Err(no_memory(g));
         }
         bytes.extend_from_slice(chunk);
         let used = chunk.len();
@@ -330,7 +350,7 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
     };
     let wrote = out.write_all(text.as_bytes()).and_then(|()| out.flush());
     let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, r, id, wrote)
+    written(g, wrote)
 }
 
 /// `(write-bytes bytes)` on a file: all of the bytes value's bytes.
@@ -346,23 +366,14 @@ fn write_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, 
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
     let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, r, id, wrote)
+    written(g, wrote)
 }
 
-/// After a write to file `id`: `#inert`, or the error with the file's path; a closed stdout ends
-/// the run quietly, as for `display`.
-fn written(
-    g: &mut G,
-    r: &mut Runner,
-    id: &Value,
-    wrote: Result<(), (io::Error, String)>,
-) -> Result<Value, Error> {
+/// After a write to a file: `#inert`, or the error with the file's path.
+fn written(g: &mut G, wrote: Result<(), (io::Error, String)>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
-        Err((e, _)) if e.kind() == io::ErrorKind::BrokenPipe && *id == Value::Integer(2) => {
-            Ok(stdout_closed(r))
-        }
-        Err((e, path)) => Err(failed(g, "file-error", &path, &e)),
+        Err((e, path)) => Err(write_failed(g, &path, &e)),
     }
 }
 
@@ -390,19 +401,30 @@ fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Val
     }
 }
 
-/// `(exit status)`: ends the run with `status`, 0 to 255. The program stops at its next step,
-/// as when the host interrupts it, so no `catch!` can keep it going. A `finally!` whose body it
-/// leaves runs its cleanup forms; a cleanup that calls it ends there.
-fn exit(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+/// `(exit status)`: ends the run with `status`, 0 to 255, by a limit of kind `exit`: no `catch!`
+/// keeps it, each `finally!` it leaves runs its cleanup forms, and [`exit_status`] reads it at the
+/// end.
+fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     match args {
         [Value::Integer(n)] => {
-            let status = u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
-            r.exit = Some(status);
-            r.stop.stop();
-            Ok(Value::Inert)
+            u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
+            Err(g.error("exit", args).as_limit())
         }
         [_] => Err(g.error("type-error", args)),
         _ => Err(g.error("arity-error", args)),
+    }
+}
+
+/// The status a run ended with by the runner's own limits, which a program can't begin: what `exit`
+/// gave, or 0 for a pipe no one reads, so `grift script | head` is quiet.
+fn exit_status(g: &G, e: &Error) -> Option<u8> {
+    if !e.is_limit() {
+        return None;
+    }
+    match e.values.as_slice() {
+        _ if g.is_kind(e, "broken-pipe").unwrap_or(false) => Some(0),
+        [Value::Integer(n)] if g.is_kind(e, "exit").unwrap_or(false) => u8::try_from(*n).ok(),
+        _ => None,
     }
 }
 
@@ -443,7 +465,7 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
         w: io::stderr().lock(),
-        error: None,
+        failure: None,
     };
     let named = e.trace().first().and_then(|at| g.as_str(at).ok().flatten()) == Some(source);
     if !named {
@@ -465,7 +487,6 @@ fn unfinished(g: &mut G, e: &Error) -> bool {
 }
 
 fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
-    let mut status = ExitCode::SUCCESS;
     let mut src = String::new();
     let mut pending = None;
     say(format_args!("> "));
@@ -473,8 +494,8 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
         let line = match line {
             Ok(line) => line,
             Err(e) => {
-                say(format_args!("grift: stdin: {e}\n"));
-                return ExitCode::from(2);
+                let e = failed(g, "file-error", "stdin", &e);
+                return report(g, "grift", &e);
             }
         };
         src.push_str(&line);
@@ -492,23 +513,22 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
             continue;
         }
         let done = match g.evaluate_in(r, top, "stdin", &src) {
-            Ok(v) => put(g, &[v], false, "\n", &mut io::stdout().lock(), Some(r)),
+            Ok(v) => put(g, &[v], false, "\n", "standard-output", &mut io::stdout()),
             Err(e) => Err(e),
         };
-        if let Some(status) = r.exit {
-            return ExitCode::from(status);
+        if let Err(e) = done {
+            if let Some(status) = exit_status(g, &e) {
+                return ExitCode::from(status);
+            }
+            report(g, "stdin", &e);
         }
-        status = match done {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => report(g, "stdin", &e),
-        };
         src.clear();
         say(format_args!("> "));
     }
     // End of input in the middle of a form: that form is an error.
     match pending {
         Some(e) => report(g, "stdin", &e),
-        None => status,
+        None => ExitCode::SUCCESS,
     }
 }
 
@@ -617,8 +637,6 @@ fn main() -> ExitCode {
                 file: Some(Stream::Writing(Box::new(io::stdout()))),
             },
         ],
-        exit: None,
-        stop: g.interrupter(),
         started: Instant::now(),
         script: script.as_ref().map(PathBuf::from),
     };
@@ -648,14 +666,15 @@ fn main() -> ExitCode {
     let text = match text {
         Ok(text) => text,
         Err(e) => {
-            say(format_args!("grift: {name}: {e}\n"));
-            return ExitCode::from(2);
+            let e = failed(&mut g, "file-error", &name, &e);
+            return report(&g, "grift", &e);
         }
     };
-    let done = g.evaluate_in(&mut r, &top, &name, &text);
-    match (r.exit, done) {
-        (Some(status), _) => ExitCode::from(status),
-        (None, Ok(_)) => ExitCode::SUCCESS,
-        (None, Err(e)) => report(&g, &name, &e),
+    match g.evaluate_in(&mut r, &top, &name, &text) {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(e) => match exit_status(&g, &e) {
+            Some(status) => ExitCode::from(status),
+            None => report(&g, &name, &e),
+        },
     }
 }

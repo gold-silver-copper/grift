@@ -26,8 +26,8 @@
 ; afterwards. An expectation that fails is recorded and the test goes on; a form that raises ends
 ; its test. A test no expectation ran in fails: it has checked nothing. In a test, `display` is
 ; kept and shown only if it fails, `exit` raises `exit-called` with the status, and
-; `command-line-arguments` is empty. Limits can't be caught (`interrupted`, `out-of-memory`), so a
-; test that raises one ends the run, reported, with status 1. A test that never ends is not noticed:
+; `command-line-arguments` is empty. What the host or the machine began can't be caught (a stop, no
+; memory left), so a test it reaches ends the run, reported, with status 1. A test that never ends is not noticed:
 ; grift has no timer, so run the whole thing under `timeout`.
 
 ; A test file sees what any script sees and nothing of this program: `language` holds a copy of
@@ -397,7 +397,7 @@
         ; Only a limit gets here with a test running, and no catch! could stop it.
         (when! (pair? running)
           (say "STOP")
-          (say-indented "it raised interrupted or out-of-memory, which no catch! stops;")
+          (say-indented "the host or the machine ended it, which no catch! stops;")
           (say-indented "the tests after it did not run")
           (say-summary (length chosen))
           (exit 1)))

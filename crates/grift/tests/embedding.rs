@@ -16,6 +16,12 @@ use grift::{Error, Grift, Interrupter, Value, WriteError};
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// A handle can be shared between threads, not only sent.
+const _: () = {
+    const fn shared<T: Send + Sync>() {}
+    shared::<Interrupter>()
+};
+
 /// What the host functions below work on: what `give` returns, a stopper, and whom `started`
 /// tells.
 #[derive(Default)]
@@ -690,4 +696,13 @@ fn bytes_copy_the_input_and_borrow_the_payload() {
     assert_eq!(g.as_bytes(&Value::Integer(0)).unwrap(), None);
     let text = g.string("abc").unwrap();
     assert_eq!(g.as_bytes(&text).unwrap(), None);
+}
+
+#[path = "../../../examples/stops.rs"]
+mod stops;
+
+/// The example the README points to does what it says.
+#[test]
+fn the_stops_example_runs() {
+    stops::main().unwrap();
 }

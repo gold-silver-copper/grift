@@ -1,7 +1,7 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
 //! sweep.
 
-use crate::evaluate::Native;
+use crate::evaluate::{Machine, Native};
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -43,6 +43,10 @@ pub(crate) enum Object {
     Operative(Operative),
     Applicative(Value),
     Bytes(Vec<u8>),
+    /// A parked run's machine, none once it is taken up again: a vector, not a box, so that making
+    /// room for it can report failure. Only a kept binding refers to one, under a pair's reference
+    /// (marking follows a reference whatever its kind says): no program or host value ever holds it.
+    Fiber(Vec<Machine>),
 }
 
 /// A context's bindings.
@@ -90,6 +94,7 @@ const GC_MIN: usize = 4096;
 fn weight(obj: &Object) -> usize {
     match obj {
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
+        Object::Fiber(room) => 1 + room.iter().map(Machine::weight).sum::<usize>(),
         _ => 1,
     }
 }
@@ -106,6 +111,20 @@ pub(crate) struct Heap {
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
+    /// Collect at every safe point, to test what a collection could lose.
+    #[cfg(test)]
+    pub stress: bool,
+    /// Refuse a slot after this many more, to choose where memory runs out; and how many were
+    /// refused. `refuse_once` lets the next one through.
+    #[cfg(test)]
+    pub refuse_in: Option<usize>,
+    #[cfg(test)]
+    pub refuse_once: bool,
+    #[cfg(test)]
+    pub refused: usize,
+    /// Collections so far.
+    #[cfg(test)]
+    pub collections: usize,
 }
 
 impl Default for Heap {
@@ -120,6 +139,16 @@ impl Default for Heap {
             operatives: 0,
             #[cfg(test)]
             slot_limit: usize::MAX,
+            #[cfg(test)]
+            stress: false,
+            #[cfg(test)]
+            refuse_in: None,
+            #[cfg(test)]
+            refuse_once: false,
+            #[cfg(test)]
+            refused: 0,
+            #[cfg(test)]
+            collections: 0,
         }
     }
 }
@@ -152,6 +181,17 @@ impl Heap {
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
+            match self.refuse_in {
+                Some(0) => {
+                    self.refused += 1;
+                    if self.refuse_once {
+                        self.refuse_in = None;
+                    }
+                    return Err(self.refused());
+                }
+                Some(n) => self.refuse_in = Some(n - 1),
+                None => {}
+            }
         }
         let idx = self.free;
         if let Some(slot) = self.slots.get_mut(idx as usize)
@@ -166,22 +206,28 @@ impl Heap {
         }
         #[cfg(test)]
         if self.slots.len() >= self.slot_limit {
-            return Err(Error::oom());
+            return Err(self.refused());
         }
         let idx = u32::try_from(self.slots.len())
             .ok()
             .filter(|&i| i != NONE)
-            .ok_or_else(Error::oom)?;
-        push(
-            &mut self.slots,
-            Slot {
-                generation: 0,
-                marked: false,
-                library: false,
-                obj,
-            },
-        )?;
+            .ok_or_else(|| self.refused())?;
+        let slot = Slot {
+            generation: 0,
+            marked: false,
+            library: false,
+            obj,
+        };
+        push(&mut self.slots, slot).map_err(|_| self.refused())?;
         Ok(Reference { idx, generation: 0 })
+    }
+
+    /// No room for an object: collection comes next, at the machine's next safe point or as a
+    /// host's next run begins.
+    #[cold]
+    fn refused(&self) -> Error {
+        self.request_collection();
+        Error::oom()
     }
 
     /// A new bytes object, counted as the slots its storage would fill besides its own.
@@ -233,13 +279,29 @@ impl Heap {
         }
     }
 
+    /// What the last collection found alive, by weight.
+    #[cfg(test)]
+    pub fn live(&self) -> usize {
+        self.live
+    }
+
+    /// Puts the next collection off, as if the last had just been.
+    #[cfg(test)]
+    pub fn not_due(&self) {
+        self.since_gc.set(0);
+    }
+
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
     #[inline]
     pub fn due(&self) -> bool {
+        #[cfg(test)]
+        if self.stress {
+            return true;
+        }
         self.since_gc.get() >= self.live.max(GC_MIN)
     }
 
-    /// Any reported OOM requests collection, including failures in an `&self` host operation.
+    /// The next safe point collects.
     pub fn request_collection(&self) {
         self.since_gc.set(usize::MAX);
     }
@@ -247,6 +309,10 @@ impl Heap {
     /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
     /// nothing is freed and the error is `out-of-memory`.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>) -> Result<(), Error> {
+        #[cfg(test)]
+        {
+            self.collections += 1;
+        }
         let mut marks = std::mem::take(&mut self.marks);
         marks.clear();
         let marked = self.mark(roots, &mut marks);
@@ -315,6 +381,11 @@ impl Heap {
                         child(Value::Context(op.context))?;
                     }
                     Object::Applicative(c) => child(*c)?,
+                    Object::Fiber(room) => {
+                        for v in room.iter().flat_map(Machine::roots) {
+                            child(v)?;
+                        }
+                    }
                 }
             }
         }

@@ -1,12 +1,23 @@
-; The editor, in grift. The host (main.rs) gives it bytes and files only:
-;   (key)                          the next byte typed, as an integer
+; The editor, in grift. The host (main.rs) gives it bytes, files and shell commands only:
+;   (key)                          the next byte typed, as an integer; the run waits, the host goes on
+;   (job-start command)            runs a shell command beside the editor; the job's number
+;   (job-wait job)                 the job's exit status once it ends; the run waits, the host goes on
+;   (job-cancel job)               kills the job's command
+;   (job-abandon job)              ends the runs waiting for the job, through their cleanups
+;   (spawn f)                      calls f as a run of its own, beside this one
+;   (quit-editor)                  ends the editor, abandoning whatever waits
+;   (temporary-file)               a new path for a temporary file
+;   (delete-file path)             removes a file
 ;   (terminal-write s ...)         strings to the terminal, shown when the next key is read
 ;   (terminal-size)                (rows columns)
 ;   (read-file path)               the file's text, () if it doesn't exist
 ;   (write-file path s)            replaces the file with the string's bytes
-; The host starts the editor with (editor-main file message) and, after an error stopped a
-; command, goes on with (editor-recover message). C-g while a command runs interrupts it.
-; Everything else is here: the buffer, redisplay, keys and keymaps, the minibuffer, the
+; The loop is the host's. It starts the editor with (editor-main file message), then whenever no
+; run waits for a key starts a (command-step): every command is a run of its own, so a command that
+; waits holds up nothing else. It draws with (redisplay) before each wait, gives what a job did to
+; (job-event event) and an error that ended a run to (editor-report text kind), or (editor-recover
+; text kind) when no other run is reading keys. C-g while a command
+; is busy interrupts it. Everything else is here: the buffer, redisplay, keys and keymaps, the minibuffer, the
 ; commands. It is evaluated at top level, so every name here can be redefined while the editor
 ; runs, with M-: or an init file.
 
@@ -85,9 +96,9 @@
 (define! buffer
   (lambda! (name file lines)
     (define! b (context))
-    (bind b (quote! (name file above before after below row top keymap modified undo))
+    (bind b (quote! (name file above before after below row top keymap modified undo mode))
       (list name file () () (string-to-code-points (first lines)) (rest lines) 0 0 (context)
-            #false ()))
+            #false () ""))
     b))
 
 ; (field! name) and (define-field! name value): a field of the current buffer.
@@ -213,6 +224,8 @@
       (string-append
         (if! (evaluate-in! modified b) "-**- " "---- ")
         (evaluate-in! name b)
+        (evaluate-in! mode b)
+        (if! (empty-list? jobs) "" (string-append " [" (integer-to-string (length jobs)) " running]"))
         "   L" (integer-to-string (add (evaluate-in! row b) 1))
         "   C" (integer-to-string (length (evaluate-in! before b)))))
     (string-append s (spaces (subtract columns (code-point-count s))))))
@@ -398,9 +411,9 @@
     (conditional!
       ((context? binding)
        (message (string-append (keys-description (reverse keys)) "-"))
-       (redisplay)
        (define! next (read-event))
        (message "")
+       (when! (same? next (quote! C-g)) (raise (error (quote! quit))))
        (dispatch binding next (pair next keys)))
       ((same? binding #false)
        (if! (and!? (integer? event) (empty-list? (rest keys)))
@@ -410,7 +423,6 @@
 
 (define! command-step
   (lambda! ()
-    (redisplay)
     (define! event (read-event))
     (message "")
     (bind editor-context (quote! last-command-event) event)
@@ -452,28 +464,29 @@
     (buffer (if! (empty-list? file) "*scratch*" file) file
       (if! (empty-list? text) (list "") (text-to-lines text)))))
 
-(define! quit-flag #false)
-
 (define! editor-main
   (lambda! (file text)
     (bind editor-context (quote! window-buffer) (find-file-noselect file))
     (bind editor-context (quote! current-buffer) window-buffer)
     ; An empty text keeps what the init file put in the echo area.
-    (when! (not? (same? text "")) (message text))
-    (main-loop)))
+    (when! (not? (same? text "")) (message text))))
 
-(define! main-loop
-  (lambda! () (command-step) (if! quit-flag #inert (main-loop))))
+; What the echo area says of an error, from its text and its kind.
+(define! error-message
+  (lambda! (text kind) (if! (same? kind (quote! quit)) "Quit" text)))
 
-; After an error stopped a command: the error in the echo area, and on. A run that ended has
-; no minibuffer open, and a stop can leave one behind, before its finally! is installed or
-; while that finally! restores: start again from the window's buffer.
+; After an error ended a run: the error in the echo area. What it set for a while (the minibuffer)
+; its finally! has put back.
+(define! editor-report (lambda! (text kind) (message (error-message text kind))))
+
+; After an error ended the run that was reading keys, so that none is. A run that ended has no
+; minibuffer open, and a stop can leave one behind, before its finally! is installed or while that
+; finally! restores: start again from the window's buffer.
 (define! editor-recover
-  (lambda! (text)
+  (lambda! (text kind)
     (bind editor-context (quote! (current-buffer minibuffer exit-flag))
       (list window-buffer () #false))
-    (message text)
-    (main-loop)))
+    (message (error-message text kind))))
 
 ; --- Commands -----------------------------------------------------------------------------------
 
@@ -623,9 +636,22 @@
   (lambda! ()
     (when! (or!? (not? (evaluate-in! modified window-buffer))
                  (equal? (read-from-minibuffer "Modified buffer; quit anyway? (yes or no) ") "yes"))
-      (bind editor-context (quote! quit-flag) #true))))
+      (quit-editor))))
 
-(define! keyboard-quit (lambda! () (raise (error (quote! quit)))))
+; C-g reaches what you are looking at: a prompt ends, and the command whose output is in the window
+; is cancelled. Any other window: the newest command, one at a time. Nothing running, it only quits.
+(define! keyboard-quit
+  (lambda! ()
+    (define! shown (filter (lambda! (j) (same? (evaluate-in! out j) window-buffer)) jobs))
+    (define! chosen
+      (conditional!
+        ((pair? shown) shown)
+        ((any? (lambda! (b) (same? b window-buffer)) output-buffers) ())
+        (#true jobs)))
+    (when! (or!? (not? (empty-list? minibuffer)) (empty-list? chosen))
+      (raise (error (quote! quit))))
+    (quit-job (first chosen))
+    (message (string-append "Cancelled " (evaluate-in! name (evaluate-in! out (first chosen)))))))
 
 (define! recenter
   (lambda! () (terminal-write (control-sequence "2J")) (bind window-buffer (quote! top) -1000)))
@@ -645,6 +671,138 @@
   (lambda! ()
     (define! forms (read-forms (read-from-minibuffer "Eval: ") 0))
     (message (value-to-string (evaluate (pair (quote! sequence!) forms) editor-context)))))
+
+; --- Shell commands -----------------------------------------------------------------------------
+; A job is a record: the buffer its output goes to, the host's number for it (() until it starts)
+; and its status (() until it ends).
+
+(define! jobs ())
+(define! output-buffers ())
+
+(define! make-job
+  (lambda! (out)
+    (define! job (context))
+    (bind job (quote! (out id status)) (list out () ()))
+    job))
+
+(define! add-job
+  (lambda! (job id)
+    (bind job (quote! id) id)
+    (bind editor-context (quote! jobs) (pair job jobs))))
+
+(define! job-running? (lambda! (job) (any? (lambda! (j) (same? j job)) jobs)))
+
+(define! cancel-job
+  (lambda! (job) (when! (job-running? job) (job-cancel (evaluate-in! id job)))))
+
+; Waits for the job: the run is set aside, the host's loop goes on, and this returns when it ends.
+(define! wait-for
+  (lambda! (job) (when! (job-running? job) (job-wait (evaluate-in! id job)))))
+
+; C-g's way to end a command: its command is killed and the run waiting for it is abandoned, so
+; every finally! in that run goes off.
+(define! quit-job
+  (lambda! (job)
+    (cancel-job job)
+    (job-abandon (evaluate-in! id job))))
+
+; A buffer for a command's output, one C-x b away.
+(define! output-buffer
+  (lambda! (command)
+    (define! out (buffer (string-append "*" command "*") () (list "")))
+    (bind editor-context (quote! output-buffers) (pair out output-buffers))
+    (bind editor-context (quote! previous-buffer) out)
+    out))
+
+; Adds text at the end of buffer b. A point at the end stays at the end, so the window follows;
+; a point elsewhere stays where it is. Only the lines at the seams become code points.
+(define! append-output
+  (lambda! (b text)
+    (define! parts (string-split text "\n"))
+    (define! head (first parts))
+    (define! more (rest parts))
+    (define! lines (subtract (length parts) 1))
+    (if! (and!? (empty-list? (evaluate-in! below b)) (empty-list? (evaluate-in! after b)))
+      (sequence!
+        (define! line (reverse-onto (string-to-code-points head) (evaluate-in! before b)))
+        (if! (empty-list? more)
+          (bind b (quote! before) line)
+          (sequence!
+            (define! reversed (reverse more))
+            (bind b (quote! (above before row))
+              (list (append (rest reversed)
+                            (pair (code-points-to-string (reverse line)) (evaluate-in! above b)))
+                    (reverse (string-to-code-points (first reversed)))
+                    (add (evaluate-in! row b) lines))))))
+      (if! (empty-list? (evaluate-in! below b))
+        (bind b (quote! (after below))
+          (list (append (evaluate-in! after b) (string-to-code-points head)) more))
+        (sequence!
+          (define! reversed (reverse (evaluate-in! below b)))
+          (bind b (quote! below)
+            (reverse-onto (rest reversed)
+              (pair (string-append (first reversed) head) more))))))))
+
+(define! set-mode (lambda! (b text) (bind b (quote! mode) text)))
+
+; What a job did, from the host: (output job text) or (ended job status).
+(define! job-event
+  (lambda! (event)
+    (define! (what number value) event)
+    (define! found (filter (lambda! (j) (same? (evaluate-in! id j) number)) jobs))
+    (when! (pair? found)
+      (define! job (first found))
+      (if! (same? what (quote! output))
+        (append-output (evaluate-in! out job) value)
+        (sequence!
+          (bind job (quote! status) value)
+          (bind editor-context (quote! jobs)
+            (filter (lambda! (j) (not? (same? j job))) jobs)))))))
+
+; (run-shell command): runs the command, waiting for it without stopping the editor, its output
+; in a buffer of its own. A temporary file and the buffer's mode last as long as it does. However
+; it ends, the finally! kills what is left of it and puts those back. A status that isn't 0 is
+; the error shell-failed.
+(define! run-shell
+  (lambda! (command)
+    (define! out (output-buffer command))
+    (define! lock (temporary-file))
+    (define! job (make-job out))
+    (finally!
+      (sequence!
+        (set-mode out " [running]")
+        (write-file lock command)
+        (add-job job (job-start command))
+        (wait-for job)
+        (when! (not? (member? (evaluate-in! status job) (list () 0)))
+          (raise (error (quote! shell-failed) command (evaluate-in! status job)))))
+      (cancel-job job)
+      (delete-file lock)
+      (set-mode out ""))))
+
+; M-!: the command runs beside whatever you do next, the prompt you typed it in included.
+(define! shell-command
+  (lambda! ()
+    (define! command (read-from-minibuffer "Shell command: "))
+    (spawn (lambda! () (run-shell command)))))
+
+; C-x j: the window goes to the next command's output, newest first, so C-g can reach that one.
+(define! next-output-buffer
+  (lambda! ()
+    (define! after
+      (lambda! (buffers)
+        (conditional!
+          ((empty-list? buffers) output-buffers)
+          ((same? (first buffers) window-buffer)
+           (if! (pair? (rest buffers)) (rest buffers) output-buffers))
+          (#true (after (rest buffers))))))
+    (define! back
+      (if! (any? (lambda! (b) (same? b window-buffer)) output-buffers) previous-buffer window-buffer))
+    (if! (empty-list? output-buffers)
+      (message "No commands yet")
+      (sequence!
+        (switch-to (first (after output-buffers)))
+        (bind editor-context (quote! previous-buffer) back)))))
 
 ; --- Help ---------------------------------------------------------------------------------------
 
@@ -710,7 +868,6 @@
 (define! describe-key
   (lambda! ()
     (message "Describe key: ")
-    (redisplay)
     (define! describe
       (lambda! (keymap keys)
         (define! binding (lookup-key keymap (first keys)))
@@ -751,8 +908,7 @@
 (global-set-key "C-y" (quote! yank))
 (global-set-key "C-_" (quote! undo))
 (global-set-key "C-x u" (quote! undo))
-; C-g also stops whatever the editor runs (the host does), so this runs only for a C-g typed
-; between two runs, while the host recovers from the last.
+; C-g also stops a command that is busy (the host does), so this runs when none is.
 (global-set-key "C-g" (quote! keyboard-quit))
 (global-set-key "C-l" (quote! recenter))
 (global-set-key "C-x C-s" (quote! save-buffer))
@@ -760,6 +916,8 @@
 (global-set-key "C-x b" (quote! other-buffer))
 (global-set-key "M-x" (quote! execute-extended-command))
 (global-set-key "M-:" (quote! eval-expression))
+(global-set-key "M-!" (quote! shell-command))
+(global-set-key "C-x j" (quote! next-output-buffer))
 (global-set-key "C-h f" (quote! describe-function))
 (global-set-key "C-h b" (quote! describe-bindings))
 (global-set-key "C-h k" (quote! describe-key))

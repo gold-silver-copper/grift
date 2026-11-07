@@ -52,21 +52,19 @@ fn statuses() {
     assert_eq!(failed.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&failed.stderr).contains("type-error"));
 
-    // A program can't pass its own error off as a closed stdout.
+    // A program can't pass its own error off as a closed pipe.
     let spoof = run(
         &[],
-        "(raise (error (quote! stdout-closed) 1))",
+        "(raise (error (quote! broken-pipe) 1))",
         Stdio::piped(),
     );
     assert_eq!(spoof.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&spoof.stderr).contains("broken-pipe"));
 
     assert_eq!(run(&["--help"], "", Stdio::piped()).status.code(), Some(2));
-    assert_eq!(
-        run(&["no/such/file.grift"], "", Stdio::piped())
-            .status
-            .code(),
-        Some(2)
-    );
+    let unreadable = run(&["no/such/file.grift"], "", Stdio::piped());
+    assert_eq!(unreadable.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&unreadable.stderr).contains("file-error"));
 }
 
 #[cfg(target_os = "linux")]
@@ -78,7 +76,41 @@ fn a_failed_write_is_an_error() {
         .unwrap();
     let out = run(&[], "(display \"data\")", Stdio::from(full));
     assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("output-error"));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("file-error \"standard-output\""), "{err}");
+}
+
+/// Memory refused to a read is the limit `out-of-memory`: its cleanups run and no `catch!` keeps it.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_to_a_read_is_a_limit() {
+    let dir = scratch("read-refused");
+    let path = dir.join("big.grift");
+    for read in [
+        "((evaluate-in! read-bytes (open-file \"/dev/zero\")) 900000000)",
+        "((evaluate-in! read-all (open-file \"/dev/zero\")))",
+        "(read-file \"/dev/zero\")",
+    ] {
+        let src =
+            format!("(catch! (finally! {read} (display \"cleanup\")) e (display \"caught\"))");
+        std::fs::write(&path, src).unwrap();
+        let out = Command::new("bash")
+            .args([
+                "-c",
+                "ulimit -c 0; ulimit -v 400000; exec \"$@\"",
+                "read-test",
+            ])
+            .arg(env!("CARGO_BIN_EXE_grift"))
+            .arg(&path)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            (out.status.code(), &out.stdout[..]),
+            (Some(1), &b"cleanup"[..])
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("out-of-memory"));
+    }
 }
 
 #[test]
@@ -226,6 +258,12 @@ fn exit_ends_the_run_with_its_status() {
     let (status, _, err) = script(&dir, "(exit 256)", &[], "");
     assert_eq!(status, Some(1));
     assert!(err.contains("range-error"));
+    // A program's own error of that name is only that: it is caught, and uncaught it is reported.
+    let forged = "(catch! (raise (error (quote! exit) 3)) e (display \"caught\"))";
+    assert_eq!(script(&dir, forged, &[], "").1, "caught");
+    let (status, _, err) = script(&dir, "(raise (error (quote! exit) 3))", &[], "");
+    assert_eq!(status, Some(1));
+    assert!(err.contains("exit 3"), "{err}");
 }
 
 #[test]
@@ -465,8 +503,7 @@ fn a_parse_error_says_where_the_form_opened() {
 }
 
 #[test]
-fn a_closed_stderr_is_an_error_not_a_quiet_end() {
-    // Only a closed stdout ends the run quietly; a failed message to stderr is a failure.
+fn a_closed_stderr_is_the_same_as_any_closed_pipe() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -481,7 +518,7 @@ fn a_closed_stderr_is_an_error_not_a_quiet_end() {
         .write_all(b"(display-error \"lost\") (display \"after\")")
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert_eq!((out.status.code(), &out.stdout[..]), (Some(1), &b""[..]));
+    assert_eq!((out.status.code(), &out.stdout[..]), (Some(0), &b""[..]));
 }
 
 /// The write end of a pipe whose read end is gone.
@@ -519,15 +556,46 @@ fn a_closed_stdout_ends_the_run_whatever_catches_the_write() {
 }
 
 #[test]
+fn a_closed_pipe_is_a_limit_on_any_file() {
+    let dir = scratch("closed-pipe");
+    let path = dir.join("script.grift");
+    for write in ["display", "(evaluate-in! write standard-output)"] {
+        let run = |src: &str| {
+            std::fs::write(&path, src).unwrap();
+            Command::new(env!("CARGO_BIN_EXE_grift"))
+                .arg(&path)
+                .stdin(Stdio::null())
+                .stdout(closed_pipe())
+                .stderr(Stdio::piped())
+                .output()
+                .unwrap()
+        };
+        let out = run(&format!("({write} \"y\")"));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(0), &b""[..]));
+        // Its cleanups run, and a program's error in one doesn't replace it.
+        let out = run(&format!(
+            "(finally! ({write} \"y\") (display-error \"cleanup\") (first 1))"
+        ));
+        assert_eq!(
+            (out.status.code(), &out.stderr[..]),
+            (Some(0), &b"cleanup"[..])
+        );
+        // An exit in a cleanup is the newer limit, and says the status.
+        let out = run(&format!("(finally! ({write} \"y\") (exit 3))"));
+        assert_eq!(out.status.code(), Some(3));
+    }
+}
+
+#[test]
 fn a_closed_stderr_does_not_panic_the_runner() {
-    for args in [&["--help"][..], &["no/such.grift"][..]] {
+    for (args, code) in [(&["--help"][..], 2), (&["no/such.grift"][..], 1)] {
         let status = Command::new(env!("CARGO_BIN_EXE_grift"))
             .args(args)
             .stdin(Stdio::null())
             .stderr(closed_pipe())
             .status()
             .unwrap();
-        assert_eq!(status.code(), Some(2));
+        assert_eq!(status.code(), Some(code));
     }
 }
 

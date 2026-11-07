@@ -31,7 +31,7 @@
   (test! "raise passes a caught error on, keeping its trace"
     (define! once (catch! (raise (error (quote! k))) e e))
     (expect-equal! (catch! (raise once) e (evaluate-in! trace e))
-                   (evaluate-in! trace once)))
+                   (append (evaluate-in! trace once) (quote! ((raise once))))))
   (test! "an early exit is a kind of the program's own"
     (define! first-even
       (lambda! (xs)

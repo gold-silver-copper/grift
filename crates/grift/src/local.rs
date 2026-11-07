@@ -41,6 +41,12 @@ pub(crate) const KEPT: u32 = 1 << 31;
 /// An error as the machine carries it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Error {
+    /// Whether the host or the machine began this, not a program: whatever its kind is called,
+    /// this alone says a handler may not catch it, and a program can't set it.
+    pub limit: bool,
+    /// Whether memory really was refused to make this: then what the frames it unwinds held is
+    /// worth collecting. A fact about how it began, which no name and no host can claim.
+    pub refused: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Vec<Value>,
@@ -63,7 +69,7 @@ known_symbols! {
     NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
-    RangeError "range-error"
+    RangeError "range-error" CannotPark "cannot-park"
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
@@ -84,18 +90,31 @@ impl Error {
     pub fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut e = Error::oom();
         if e.values.try_reserve_exact(values.len()).is_ok() {
+            e.limit = false;
+            e.refused = false;
             e.kind = kind.into();
             e.values.extend_from_slice(values);
         }
         e
     }
 
+    /// The machine ran out of memory.
     pub fn oom() -> Error {
         Error {
+            limit: true,
+            refused: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Vec::new(),
             seen: Seen::default(),
+        }
+    }
+
+    /// The run was stopped.
+    pub fn interrupted() -> Error {
+        Error {
+            limit: true,
+            ..Error::new(K::Interrupted, &[])
         }
     }
 }

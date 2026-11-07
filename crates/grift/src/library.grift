@@ -94,16 +94,14 @@
        (vau! (body . cleanup) caller
          (evaluate-with-cleanup body caller (wrap (vau! () #ignore (run cleanup caller)))))
        ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then
-       ; the handler forms. interrupted and out-of-memory are never caught.
+       ; the handler forms. What the host or the machine began is never caught, whatever its kind.
        (vau! (body parameter . handler) caller
-         (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (wrap (vau! (e) #ignore (handle e parameter handler caller)))))
+         (evaluate-with-handler body caller (wrap (vau! (e) #ignore (handle e parameter handler caller)))))
        ; catch-kind!: catch!, for the errors of one kind, a symbol; any other goes on as it was,
        ; with its trace. It names symbol? and the forms after it, which exist when it runs.
        (vau! (body wanted parameter . handler) caller
          (if! (symbol? wanted)
-           (call-with-handler
-             (wrap (vau! () #ignore (evaluate body caller)))
+           (evaluate-with-handler body caller
              (wrap (vau! (e) #ignore
                      (if! (same? (evaluate-in! kind e) wanted)
                        (handle e parameter handler caller)

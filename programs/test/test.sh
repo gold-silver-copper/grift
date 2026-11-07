@@ -54,8 +54,8 @@ run no-such-file.grift tests/numbers.grift
 expect "a missing file names itself, and the others run" has 'raised file-error "no-such-file.grift"'
 expect "after a missing file the others run" has "tests/numbers.grift:4  integers / divide and remainder truncate toward zero ... ok"
 expect "a missing file fails the run" status_is 1
-run failing/stops-the-run.grift
-expect "a limit ends the run, reported" has "failing/stops-the-run.grift:4  raises the host's limit ... STOP"
+(ulimit -v 60000; timeout 60 "$grift" main.grift failing/stops-the-run.grift >"$out" 2>"$err"); status=$?
+expect "a limit ends the run, reported" has "failing/stops-the-run.grift:5  runs out of memory ... STOP"
 expect "after a limit the summary still prints" has "1 passed, 0 failed, 0 not selected, 0 failed to load"
 expect "after a limit the status is 1" status_is 1
 timeout 2 "$grift" main.grift failing/never-ends.grift >"$out" 2>"$err"; status=$?

@@ -58,9 +58,15 @@ fn saved_after(keys: &[u8]) -> Vec<String> {
         g.define(name, f).unwrap();
     }
     g.evaluate(&mut h, EDITOR).unwrap();
-    // The run ends with an error when the keys do, or at a command the last keys named.
-    let _ = g.evaluate(&mut h, "(editor-main \"notes\" \"\")");
-    assert!(h.keys.is_empty(), "the keys left: {:?}", h.keys);
+    g.evaluate(&mut h, "(editor-main \"notes\" \"\")").unwrap();
+    // The loop is the host's: a run for each command, until the keys end. A run ends with an error
+    // when they do, or at a command the last keys named.
+    let mut runs = 0;
+    while !h.keys.is_empty() {
+        runs += 1;
+        assert!(runs < 100, "command-step reads no key: {:?} left", h.keys);
+        let _ = g.evaluate(&mut h, "(command-step)");
+    }
     h.saved
 }
 

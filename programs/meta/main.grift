@@ -44,12 +44,11 @@
                     (not? (and!? (pair? trace) (same? (first trace) form))))
         (bind passing (quote! trace) (pair form trace))))))
 
-; The handler that records `form` and lets the error go on: call-with-handler with it is catch!
+; The handler that records `form` and lets the error go on: evaluate-with-handler with it is catch!
 ; for the one case the interpreter needs, for less (catch! also makes a context
 ; and binds the error's name in it for its handler forms).
 (define! passing-through
   (lambda! (form c) (lambda! (e) (sequence! (trace-through form c) (raise e)))))
-
 ; The trace of the error just caught, which ends its passing.
 (define! take-trace
   (lambda! ()
@@ -92,7 +91,7 @@
   (table itself (quote! (symbol pair))
          (list evaluate
                (lambda! (x c)
-                 (call-with-handler (lambda! () (meta-evaluate x c)) (passing-through x c))))))
+                 (evaluate-with-handler (quote! (meta-evaluate x c)) (current-context) (passing-through x c))))))
 
 ; combine: an operative gets the operands unevaluated with the caller's context; an applicative
 ; gets them evaluated, left to right, and passes them to the combiner it wraps.
@@ -105,8 +104,8 @@
          (list (lambda! (f operands c form) (evaluate (list f operands c form) bare))
                (lambda! (f operands c form)
                  (combine (unwrap f)
-                          (call-with-handler (lambda! () (evaluate-operands operands c))
-                                             (passing-through form c))
+                          (evaluate-with-handler (quote! (evaluate-operands operands c)) (current-context)
+                                   (passing-through form c))
                           c
                           form)))))
 
@@ -152,17 +151,17 @@
 (define! native
   (lambda! (f)
     (wrap (vau! (arguments c form) #ignore
-      (call-with-handler (lambda! () (apply f arguments)) (passing-through form c))))))
+      (evaluate-with-handler (quote! (apply f arguments)) (current-context) (passing-through form c))))))
 
 ; The primitives that run interpreted code: evaluate, and the two under catch! and finally!.
 (define! meta-evaluate-applicative
   (wrap (vau! ((x c) #ignore #ignore) #ignore (meta-evaluate x c))))
 
-; call-with-handler: a caught error reaches the handler as grift's do, a context with no parent
+; evaluate-with-handler: a caught error reaches the handler as grift's do, a context with no parent
 ; binding kind, values and trace, the trace being the program forms the error passed.
-(define! meta-call-with-handler
-  (wrap (vau! ((thunk handler) c form) #ignore
-    (catch! (call thunk () c form)
+(define! meta-evaluate-with-handler
+  (wrap (vau! ((x c handler) #ignore form) #ignore
+    (catch! (meta-evaluate x c)
             e
             (call handler (list (error-record e)) c form)))))
 
@@ -202,8 +201,8 @@
 ; The interpreter's built-in context: its primitives, then the library, loaded into it as grift
 ; loads its own.
 (define! root (context))
-(bind root (quote! (vau! evaluate call-with-handler evaluate-with-cleanup value-to-string))
-      (list meta-vau! meta-evaluate-applicative meta-call-with-handler meta-evaluate-with-cleanup
+(bind root (quote! (vau! evaluate evaluate-with-handler evaluate-with-cleanup value-to-string))
+      (list meta-vau! meta-evaluate-applicative meta-evaluate-with-handler meta-evaluate-with-cleanup
             (native print)))
 (for-each (lambda! (name) (bind root name (native (evaluate name (current-context)))))
           (quote! (wrap unwrap context bind unbind lookup names pair first rest same? select type-of
