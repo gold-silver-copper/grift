@@ -74,9 +74,10 @@ escape), and grift's `\xHEX;` takes any scalar value in place of Rust's `\xNN` a
 A bytes literal is `#bytes(`, the bytes as integers 0 to 255 written as the reader reads integers,
 with space and comments between them, and `)`. A bytes value prints so, every byte as the integer
 `bytes-byte` gives for it, and reads back as the same bytes; there is no text and no hex in it, so
-bytes never look like a string. Anything else inside is a `parse-error` (`bad-byte`) at it, a `.`
-is `misplaced-dot`, and a missing `)` is `unclosed-list` at the `(`; `#bytes` with no `(` after it
-is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
+bytes never look like a string. Inside, a token is read as anywhere: one that doesn't read is its
+own `parse-error` (`bad-number`, `unknown-constant`, `unclosed-string`) and one that reads as anything
+but an integer 0 to 255 is `bad-byte`, at it. A `.` is `misplaced-dot`, and a missing `)` is
+`unclosed-list` at the `(`; `#bytes` with no `(` after it is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
 a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` wherever a token can start.
 For Rust hosts, `grift::write_string(text, out)` writes one quoted string literal with these same
@@ -155,7 +156,7 @@ which a test shows no program can tell from the Rust.
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
 | `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
-| `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. `second` and `third` are `(first (rest list))` and `(first (rest (rest list)))`, so a list too short is `first`'s `type-error`. |
+| `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`; `(last ())`, with no index, gives `range-error last ()`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
@@ -307,8 +308,8 @@ A text that doesn't read says why, as a symbol, and where: `unclosed-list` and `
 at the `(` or `"` left open (the innermost, for lists), not at the end of the text;
 `unmatched-parenthesis` at a `)` with no `(`; `misplaced-dot` at a `.` or what follows it outside
 `(a . b)`; `bad-escape` at a `\` that isn't one of the escapes; `bad-number` at a token that starts
-as a number and isn't one; `unknown-constant` at a `#` name that isn't one; `bad-byte` at what
-isn't an integer 0 to 255 inside `#bytes(`. `(read-form "(a\n (b" 0)`
+as a number and isn't one; `unknown-constant` at a `#` name that isn't one; `bad-byte` at a value
+inside `#bytes(` that isn't an integer 0 to 255. `(read-form "(a\n (b" 0)`
 is `parse-error unclosed-list 2 2`.
 A host function that replaces its interpreter ends the run with `foreign-value` too.
 
@@ -367,7 +368,7 @@ had died. The README's embedding section gives the host's side.
   strings; grift's offsets count bytes of UTF-8, so `string-byte` is O(1), and there is no
   character type: a code point is an integer.
 - **`apply` has one form,** `(apply a arguments)`, with a new empty context; `for-each` takes one
-  list, and `map` lists of one length, as Kernel's does. `context` takes at most one parent.
+  list, and `map` lists of one length, as Kernel's does. `context` takes one operand, its parent or `()`.
 - **New, not in Kernel:** `bind`, `unbind`, `lookup`, `names` and `built-in-names`, `select`,
   `type-of`, `when!`, `record`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
   `any?`, `all?`, `fold`, `range`, `sort`, the list access by index, the bitwise

@@ -351,13 +351,9 @@
      (lambda! (xs before?)
        (if! (same? xs ()) () (first (sorted xs (length xs) before?)))))))
 
-; second and third: first of what rest leaves, so a list too short is first's type-error.
-(define! second (lambda! (xs) (first (rest xs))))
-(define! third (lambda! (xs) (first (rest (rest xs)))))
-
-; element-at, last, take and drop: an index counts from 0, as in Rust, and one out of range is a
-; range-error carrying the name, the index and the list's length.
-(define! (element-at last take drop)
+; element-at, second, third, last, take and drop: an index counts from 0, as in Rust, and one
+; out of range is a range-error carrying the name, the index and the list's length.
+(define! (element-at second third last take drop)
   ((lambda! ()
      ; The list after the first i of n elements asked for by name.
      (define! after
@@ -368,9 +364,9 @@
              (raise (error (quote! range-error) name n (subtract n i)))
              (after name (rest xs) (subtract i 1) n)))))
      (define! element
-       (lambda! (xs index)
+       (lambda! (name xs index)
          (if! (same? xs ())
-           (raise (error (quote! range-error) (quote! element-at) index index))
+           (raise (error (quote! range-error) name index index))
            (first xs))))
      ; n, if it is an integer of 0 or more: given the list in its place, the error names the
      ; combiner, and a negative one is out of range without counting down from it.
@@ -379,6 +375,8 @@
          (if! (integer? n)
            (if! (less-than? n 0) (raise (error (quote! range-error) name n (length xs))) n)
            (raise (error (quote! type-error) name n)))))
+     (define! at
+       (lambda! (name xs index) (element name (after name xs (counted name xs index) index) index)))
      (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
      (define! taken
        (lambda! (xs i n)
@@ -388,8 +386,19 @@
              (raise (error (quote! range-error) (quote! take) n (subtract n i)))
              (pair (first xs) (taken (rest xs) (subtract i 1) n))))))
      (list
-       (lambda! (xs index)
-         (element (after (quote! element-at) xs (counted (quote! element-at) xs index) index) index))
+       (lambda! (xs index) (at (quote! element-at) xs index))
+       ; second and third take the list apart themselves, as (first (rest xs)) would, and walk it
+       ; again with at only to say why they can't.
+       (lambda! (xs)
+         (if! (same? xs ())
+           (at (quote! second) xs 1)
+           (if! (same? (rest xs) ()) (at (quote! second) xs 1) (first (rest xs)))))
+       (lambda! (xs)
+         (if! (same? xs ())
+           (at (quote! third) xs 2)
+           (if! (same? (rest xs) ())
+             (at (quote! third) xs 2)
+             (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
        (lambda! (xs)
          (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
        (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
