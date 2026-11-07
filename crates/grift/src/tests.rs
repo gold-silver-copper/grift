@@ -3402,3 +3402,16 @@ fn an_overflow_is_reported_by_the_arithmetic_that_overflowed() {
         ],
     );
 }
+
+#[test]
+fn string_split_searches_at_string_searchs_speed() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! short \"abc\") (define! long (string-repeat \"abc\" 1000))",
+    )
+    .unwrap();
+    let (short, _) = cost(&mut g, "(string-split short \",\")");
+    let (long, _) = cost(&mut g, "(string-split long \",\")");
+    assert_eq!(short, long);
+}

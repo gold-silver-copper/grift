@@ -411,8 +411,11 @@
            (if! (same? (string-byte text (add at i)) (string-byte pattern i))
              (matches? text at pattern (add i 1) size)
              #false))))
+     ; string-search: the offset of the first place at or after start where pattern is, or ().
+     ; The empty substring refuses a start out of range or off a character boundary.
      (define! search
        (lambda! (text pattern start)
+         (byte-substring text start start)
          (let! ((size (string-byte-length pattern))
                 (last (subtract (string-byte-length text) size))
                 (from
@@ -431,11 +434,7 @@
              (pair (byte-substring text from at)
                    (pieces text separator next (search text separator next)))))))
      (list
-       ; string-search: the offset of the first place at or after start where pattern is, or ().
-       ; The empty substring refuses a start out of range or off a character boundary.
-       (lambda! (text pattern start)
-         (byte-substring text start start)
-         (search text pattern start))
+       search
        (lambda! (text prefix)
          (let! ((size (string-byte-length prefix)))
            (and!? (not? (less-than? (string-byte-length text) size))
