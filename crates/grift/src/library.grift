@@ -76,7 +76,7 @@
            (bind local parameter e)
            (run handler local)))
        ; sequence!: each in turn, the last one's value; #inert for none.
-       (vau! body caller (if! (same? body ()) #inert (forms #inert body caller)))
+       (vau! body caller (run body caller))
        ; when!: the body if the test is #true, #inert if it is #false.
        (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
        ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
