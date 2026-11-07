@@ -438,17 +438,14 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     g.pair(status, list)
 }
 
-/// Prints an error to stderr as its kind followed by its values and where it happened, the
+/// Prints an error to stderr as its source, then its kind followed by its values and where it happened, the
 /// innermost combination on the error's line and each one around it on a line of its own.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
         w: io::stderr().lock(),
         error: None,
     };
-    let named = e.trace().first().and_then(|at| g.as_str(at).ok().flatten()) == Some(source);
-    if !named {
-        let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
-    }
+    let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     let _ = g.describe(e, &mut err);
     let _ = fmt::Write::write_str(&mut err, "\n");
     ExitCode::FAILURE

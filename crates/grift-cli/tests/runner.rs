@@ -471,13 +471,13 @@ fn a_parse_error_says_where_the_form_opened() {
     let path = path.to_str().unwrap();
     assert_eq!(
         err,
-        format!("parse-error unclosed-list 2 1 in \"{path}\"\n")
+        format!("{path}: parse-error unclosed-list 2 1 in \"{path}\"\n")
     );
     let error = run(&[], "(a\n  (b", Stdio::piped());
     assert_eq!(error.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(error.stderr).unwrap(),
-        "parse-error unclosed-list 2 3 in \"stdin\"\n"
+        "stdin: parse-error unclosed-list 2 3 in \"stdin\"\n"
     );
 }
 
