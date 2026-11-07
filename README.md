@@ -60,7 +60,7 @@ built-in-names                              ; every primitive and library name
 (bytes-to-string #bytes(104 105))           ; => "hi"; bytes that aren't UTF-8 are encoding-error
 ```
 
-The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup call-with-handler raise
+The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup evaluate-with-handler raise
 context bind unbind lookup names pair first rest same? select type-of add subtract multiply divide
 remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
 square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
@@ -91,9 +91,10 @@ and when stdin is a terminal it evaluates each complete input and prints its res
 goes on past an error, where a program's `read-line` takes the next line typed, and a session that isn't
 ended by `exit` ends with status 0, or 1 if its input ends inside a form. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
-file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error or
-a failed write (`file-error`), 2 on a usage error or unreadable input, or the status the program
-gave `exit`; a closed pipe on stdout ends it quietly. It has no line editor: `rlwrap grift` gives
+file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
+failed write (`file-error`) or a script it can't read, or the status the program gave `exit`. At a
+terminal, errors are shown and the session goes on, ending 0 unless the program calls `exit` or
+input ends inside a form. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:
@@ -114,7 +115,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `script-path` | The script's path, as given; `""` when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
 | `(environment-variable name)` | Its value, a string; `unset-variable` when it has none. |
-| `(exit status)` | Ends the run with `status`, 0 to 255. The program stops at its next step, as when the host interrupts it: no `catch!` can keep it going. A `finally!` whose body it leaves runs its cleanup forms; a cleanup that calls `exit` ends there, its later forms cut. |
+| `(exit status)` | Ends the run with `status`, 0 to 255, by a limit of kind `exit`: no `catch!` can keep it going. A `finally!` whose body it leaves runs its cleanup forms; a cleanup that calls `exit` ends there, its later forms cut, and the last `exit` says the status. |
 | `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it), `output` and `error-output` (what it wrote, as strings). |
 
 Call an operation a context holds by looking it up there: `((evaluate-in! write f) "text")`. The
@@ -122,9 +123,11 @@ operations call host functions that are bound only in a context no program can r
 program reaches a file only through a context it was given; closing is explicit, and using a file
 after it is closed is the error `closed`. The runner's error kinds: `file-error` (the path and the
 system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the path),
-`unset-variable` (the name), `process-error` (the program and the message). A
-write to stdout that finds it closed, by `display` or through `standard-output`, ends the run
-quietly, as `(exit 0)` does: no `catch!` can keep it going.
+`unset-variable` (the name), `process-error` (the program and the message), `broken-pipe`. A write
+to a pipe no one reads, on any file, is `broken-pipe`, an error like the others; if nothing catches
+it, the run ends quietly with status 0, so `grift script | head` is quiet. Memory refused while
+reading is the limit `out-of-memory`, except that `run-process` aborts the runner, since `std`
+buffers its output without asking.
 
 ```lisp
 #!/usr/bin/env grift
@@ -239,10 +242,18 @@ fn main() -> Result<(), Error> {
   error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
   form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
   waiting together count as one; a later stop stops the run again, even in a cleanup that doesn't
-  end. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  end. `force()` ends a run however its cleanups behave: each is cut before its first form, at every
+  level, and the run ends with `interrupted`, whatever else fails on the way. A handle forces the run
+  it last reached, by a stop or a force, and that one only, so a late force never reaches a later
+  run; a handle that has reached none (a clone starts as its source is) forces the run in progress.
+  `examples/stops.rs` shows all of this: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.
+- **Limits.** `e.is_limit()` says the host or the machine began an error, not a program: handlers
+  pass it, a program's error in a cleanup doesn't replace it, and it stays one through nested runs.
+  A host function makes its own with `g.error(kind, values).as_limit()`, and reads `e.kind` and
+  `e.values` when the run has ended: the runner's `exit` carries its status this way.
 - **Waiting.** A host function can answer "not yet", so a script waits for an event in a call that
   looks like any other while the host's loop goes on, with no thread held. See below.
 - **A returned `Value` stays valid until the next `evaluate`, `call`, `start` or `resume`**, which may collect it.
@@ -314,16 +325,13 @@ fn main() -> Result<(), Error> {
 }
 ```
 
-- **One shot, by the type.** `Parked` is neither `Copy` nor `Clone`, and `resume` and `abandon` take
-  it by value, so a second resume doesn't compile.
-- **`abandon(state, parked)`** is how a run that won't be resumed ends: the waiting call raises
-  `abandoned`, which nothing catches, every `finally!` runs, and you get back the error the run ended
-  with. A cleanup (all the forms of one `finally!`) that errors ends there, and the next one out runs. One that parks fails at that call with
-  `cannot-park` (`can_park()` tells its host function). One that never ends holds `abandon` up until
-  you stop it through an `Interrupter`; a stopped one ends there with `interrupted`, the next runs, and
-  `interrupted` is what comes back. With no memory to call a cleanup it's passed over, the next is
-  tried, and `out-of-memory` comes back. `abandon` doesn't rely on stops: it raises its error at the
-  wait, directly.
+- **One shot, by the type.** `Parked` is neither `Copy` nor `Clone`, and `resume` takes it by value,
+  so a second resume doesn't compile.
+- **Giving a run up** is an answer like any other: `resume(state, parked, Err(g.error("given-up", &[]).as_limit()))`.
+  Nothing catches a limit, every `finally!` runs, and the run ends with it, or with another limit
+  that replaced it. A cleanup that errors ends there, and the next one out runs. A cleanup that
+  waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
+  goes on, or with a limit and it ends there. One that never ends is yours to stop or force.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
   cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
   `forgotten()` gives a new handle. **Dropping the interpreter** with runs parked runs none of their
@@ -332,17 +340,18 @@ fn main() -> Result<(), Error> {
   nothing and says `false`. Each `resume` is a run of its own for stops. A stop that reaches a run
   as it would park stops it instead, so no stop is lost at a park. The run's cleanups then run, and
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
-  Out of memory starts by collecting, so cleanups have what's free; `resume` itself needs none.
+  Cleanups after out of memory have what a collection frees; `resume` itself needs none.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
-  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function.
-  `start`, `resume` and `abandon` inside a host call are refused too (`cannot-park`), the handle
+  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function,
+  and `can_park()` lets a host function do something else instead.
+  `start` and `resume` inside a host call are refused too (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`.
 - **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
-  things reach every host. Out of memory while an error unwinds starts by collecting, and a cleanup
-  it can't call is passed over for the next. And `abandoned` is a limit kind, whoever raises it: a
-  program's or a host function's own error of that kind can't be caught, and an ordinary error in a
-  cleanup doesn't replace it.
+  things reach every host. Memory refused makes a collection due, before a cleanup's first step, and a
+  cleanup whose first step is refused all the same is passed over for the next. And a kind's name
+  means nothing: a program's own `interrupted` or `out-of-memory` is caught like any error, and only
+  `is_limit()` says one is real.
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.
@@ -361,11 +370,11 @@ reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`):
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
 loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
-argument stack, errors waiting for a cleanup, current expression and checked call inputs are its
-roots. Allocation never collects. Reporting `out-of-memory`, from any operation, requests
-collection before the next run needs room to read its input or build its call context. Reads
-and constructors do not collect: more reads may be refused until an evaluation or call provides
-that recovery point.
+argument stack, endings waiting for a cleanup, current expression and checked call inputs are its
+roots. Allocation never collects. An object the heap has no room for makes a collection due, before
+the next run needs room to read its input or build its call context, as does any memory refused
+that unwinds a run. Reads and constructors do not collect: more reads may be refused until an
+evaluation or call provides that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
 `if!` and `sequence!` are native primitives that take their operands unevaluated, each defined in

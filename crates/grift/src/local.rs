@@ -35,19 +35,15 @@ pub(crate) struct Symbol(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Host(pub u32);
 
-/// Who began an unwinding. Nothing about the error's kind says so: this alone decides whether a
-/// handler may catch it, and a program can only ever make [`Origin::Program`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Origin {
-    Program,
-    Host,
-    Machine,
-}
-
 /// An error as the machine carries it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Error {
-    pub origin: Origin,
+    /// Whether the host or the machine began this, not a program: whatever its kind is called,
+    /// this alone says a handler may not catch it, and a program can't set it.
+    pub limit: bool,
+    /// Whether memory really was refused to make this: then what the frames it unwinds held is
+    /// worth collecting. A fact about how it began, which no name and no host can claim.
+    pub refused: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Vec<Value>,
@@ -70,7 +66,7 @@ known_symbols! {
     NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
-    RangeError "range-error" CannotPark "cannot-park" Abandoned "abandoned"
+    RangeError "range-error" CannotPark "cannot-park"
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
@@ -91,7 +87,8 @@ impl Error {
     pub fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut e = Error::oom();
         if e.values.try_reserve_exact(values.len()).is_ok() {
-            e.origin = Origin::Program;
+            e.limit = false;
+            e.refused = false;
             e.kind = kind.into();
             e.values.extend_from_slice(values);
         }
@@ -107,7 +104,8 @@ impl Error {
             _ => None,
         }));
         Ok(Error {
-            origin: Origin::Program,
+            limit: false,
+            refused: false,
             kind,
             values,
             trace,
@@ -118,7 +116,8 @@ impl Error {
     /// The machine ran out of memory.
     pub fn oom() -> Error {
         Error {
-            origin: Origin::Machine,
+            limit: true,
+            refused: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Vec::new(),
@@ -129,7 +128,7 @@ impl Error {
     /// An unwinding the host begins, of a kind that needs no values.
     pub fn host(kind: K) -> Error {
         Error {
-            origin: Origin::Host,
+            limit: true,
             ..Error::new(kind, &[])
         }
     }

@@ -56,7 +56,7 @@
   (lambda! (primitive (c s otherwise))
     (if! (context? c)
       (if! (symbol? s)
-        (call-with-handler (wrap (vau! () #ignore (evaluate s c))) (wrap (vau! (e) #ignore (absent e s otherwise))))
+        (evaluate-with-handler s c (wrap (vau! (e) #ignore (absent e s otherwise))))
         (type-failed primitive s))
       (type-failed primitive c))))
 ; otherwise where the symbol itself is unbound; any other error goes on as it was.

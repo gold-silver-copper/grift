@@ -1,5 +1,5 @@
 //! Runs that wait. A host function answers "not yet", the run is set aside, and the host's loop goes
-//! on until it resumes the run once, with a value or an error, or abandons it.
+//! on until it resumes the run once, with a value or an error.
 //!
 //! An interpreter has one machine. Parking moves that whole machine into a heap object, which a
 //! kept entry holds, so the collector sees a parked run's frames and arguments as it sees any
@@ -44,16 +44,6 @@ impl<T> Clone for Hosted<T> {
 
 impl<T> Copy for Hosted<T> {}
 
-/// Whether the run in progress may park.
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(crate) enum Parking {
-    #[default]
-    Refused,
-    Allowed,
-    /// It just did, under this kept name.
-    Done(u32),
-}
-
 /// How a run that may park came back to its host, when it didn't fail.
 #[must_use]
 #[derive(Debug)]
@@ -64,9 +54,8 @@ pub enum Ran {
     Parked(Parked),
 }
 
-/// A run set aside. It is neither `Copy` nor `Clone`, and [`Grift::resume`] and [`Grift::abandon`]
-/// take it by value, so a run goes on at most once: a second resume doesn't compile. The run stays
-/// alive in the interpreter, holding everything it refers to, until then. A dropped handle is
+/// A run set aside. It is neither `Copy` nor `Clone`, and [`Grift::resume`] takes it by value, so a
+/// run goes on at most once: a second resume doesn't compile. The run stays alive in the interpreter, holding everything it refers to, until then. A dropped handle is
 /// not the end of the run, whose cleanups are still owed: [`Grift::forgotten`] gives a new one,
 /// and [`Grift::parked`] counts what is waiting. If the interpreter is dropped first, its parked
 /// runs go with it, their cleanups not run, as if the process had died, and handles to them do nothing.
@@ -136,14 +125,13 @@ impl Drop for Parked {
 #[cfg(doctest)]
 struct ParkedIsNotClone;
 
-/// `resume` and `abandon` use the handle up: by value they are these types, the only reason the
-/// next two examples don't compile.
+/// `resume` uses the handle up: by value it is this type, the only reason a second one doesn't
+/// compile.
 ///
 /// ```
 /// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
 /// let _: fn(&mut Grift, &mut (), Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
 ///     Grift::resume;
-/// let _: fn(&mut Grift, &mut (), Parked) -> Result<Error, ResumeError> = Grift::abandon;
 /// ```
 #[cfg(doctest)]
 struct HandlesGoInByValue;
@@ -156,14 +144,7 @@ struct HandlesGoInByValue;
 #[cfg(doctest)]
 struct ResumeTakesNoReference;
 
-/// ```compile_fail
-/// use grift::{Error, Grift, Parked, ResumeError};
-/// let _: fn(&mut Grift, &mut (), &Parked) -> Result<Error, ResumeError> = Grift::abandon;
-/// ```
-#[cfg(doctest)]
-struct AbandonTakesNoReference;
-
-/// Why [`Grift::resume`] or [`Grift::abandon`] didn't take the run up, or what ended it.
+/// Why [`Grift::resume`] didn't take the run up, or what ended it.
 #[derive(Debug)]
 pub struct ResumeError {
     /// What went wrong.
@@ -195,7 +176,7 @@ impl<T> Grift<T> {
         self.parkable(|g| {
             let f = g.prepare_call(f, arguments)?;
             let arguments = g.imported(arguments)?;
-            g.call_local(Some(state), f, &arguments)
+            g.call_local(Some(state), f, &arguments, true)
         })
     }
 
@@ -212,7 +193,7 @@ impl<T> Grift<T> {
             g.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = g.intern(source)?;
             let forms = g.read_local(src, Some(source))?;
-            g.evaluate_forms(Some(state), forms, c)
+            g.evaluate_forms(Some(state), forms, c, true)
         })
     }
 
@@ -223,27 +204,22 @@ impl<T> Grift<T> {
         if let Err(e) = self.outside_a_run() {
             return Err(self.export_error(e));
         }
-        self.parking = Parking::Allowed;
         let done = go(self);
         self.ran(done).map_err(|e| self.export_error(e))
     }
 
-    /// A run left behind by a host function that didn't return is over; one in progress refuses.
-    fn outside_a_run(&mut self) -> Result<(), local::Error> {
-        if self.run != 0 && self.control.active() != self.run {
-            self.abandon_run();
-        }
-        match self.run {
+    fn outside_a_run(&self) -> Result<(), local::Error> {
+        match self.control.run() {
             0 => Ok(()),
             _ => Err(local::Error::new(K::CannotPark, &[])),
         }
     }
 
+    /// What a run came to: parked, if it left its kept name, or else what it returned.
     fn ran(&mut self, done: Result<local::Value, local::Error>) -> Result<Ran, local::Error> {
-        match (std::mem::take(&mut self.parking), done) {
-            (Parking::Done(name), _) => Ok(Ran::Parked(self.parked_handle(name))),
-            (_, Ok(v)) => Ok(Ran::Finished(self.export(v))),
-            (_, Err(e)) => Err(e),
+        match self.parked_as.take() {
+            Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
+            None => done.map(|v| Ran::Finished(self.export(v))),
         }
     }
 
@@ -267,43 +243,13 @@ impl<T> Grift<T> {
     /// so a stale value or an error is raised there, and the run goes on until it ends or parks
     /// again. Each resume is a run of its own for stops. It needs no memory to begin. Refused, the
     /// run waiting still and the handle back in [`ResumeError::parked`], as that type says.
-    pub fn resume(
-        &mut self,
-        state: &mut T,
-        parked: Parked,
-        answer: Result<Value, Error>,
-    ) -> Result<Ran, ResumeError> {
-        let answer = match &answer {
-            Ok(v) => self.import(v),
-            Err(e) => self.import_error(e).and_then(Err),
-        };
-        self.take_up(state, parked, answer, Parking::Allowed)
-    }
-
-    /// Ends a parked run. The waiting call raises `abandoned`, an error nothing catches, so the
-    /// run unwinds through every cleanup, and the error it ended with comes back: `abandoned`, or
-    /// `interrupted` or `out-of-memory` if one of those cut a cleanup. This asks nothing of
-    /// [`Interrupter`](crate::Interrupter): it works however stops behave, and a stop that came
-    /// before it is no part of it.
     ///
-    /// Each `finally!` a run is inside has its cleanup, all its forms together, and that is a call
-    /// like any other on the way out of the run:
-    /// - one that **errors** ends there, its later forms not run; `abandoned` stays the error, and
-    ///   the next `finally!` out runs its cleanup;
-    /// - one that **parks** fails at that call with `cannot-park`, and goes on from there as for any
-    ///   error: after `abandon` the run is gone, so nothing could take it up. [`Grift::can_park`]
-    ///   lets its host function do something else;
-    /// - one that **never ends** holds up `abandon`, as it would any run: it is the host's to stop;
-    /// - one that **is stopped** ends there with `interrupted`, and the next one out runs, so several
-    ///   that never end take as many stops. `interrupted` is then what comes back;
-    /// - one with **no memory to be called** is passed over, the next one out is tried, and `out-of-memory`
-    ///   is what comes back.
-    ///
-    /// Refused, the run waiting still and the handle back in [`ResumeError::parked`], as that
-    /// type says. The error that ended the run, whatever it was, is `Ok` here.
+    /// To give a run up, answer with a limit ([`Error::as_limit`]): nothing catches it, every
+    /// `finally!` runs on the way out, and it is what the run ends with. A cleanup that waits is
+    /// a run that waits like any other, which this same answer ends in turn.
     ///
     /// ```
-    /// use grift::{Answer, Grift, Ran, Value};
+    /// use grift::{Answer, Grift, Ran, ResumeError, Value};
     /// let mut g: Grift = Grift::new()?;
     /// let wait = g.parking_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
     /// g.define("wait", wait)?;
@@ -315,46 +261,40 @@ impl<T> Grift<T> {
     /// let Ran::Parked(parked) = g.start_in(&mut (), &top, "script", src)? else {
     ///     panic!("it waits");
     /// };
-    /// let ended = g.abandon(&mut (), parked)?;
-    /// assert_eq!(g.symbol_name(&ended.kind)?, "abandoned");
+    /// let ending = g.error("given-up", &[]).as_limit();
+    /// let Err(ResumeError { error, parked: None }) = g.resume(&mut (), parked, Err(ending)) else {
+    ///     panic!("it ends");
+    /// };
+    /// assert!(error.is_limit() && g.symbol_name(&error.kind)? == "given-up");
     /// assert_eq!(g.evaluate(&mut (), "closed")?, Value::Boolean(true));
     /// # Ok::<(), grift::Error>(())
     /// ```
-    pub fn abandon(&mut self, state: &mut T, parked: Parked) -> Result<Error, ResumeError> {
-        let ending = local::Error::host(K::Abandoned);
-        match self.take_up(state, parked, Err(ending), Parking::Refused) {
-            Err(ResumeError {
-                error,
-                parked: None,
-            }) => Ok(error),
-            Err(refused) => Err(refused),
-            // Nothing can end this way: nothing catches `abandoned`, and nothing here may park.
-            Ok(_) => Ok(self.export_error(local::Error::host(K::Abandoned))),
-        }
-    }
-
-    fn take_up(
+    pub fn resume(
         &mut self,
         state: &mut T,
         mut parked: Parked,
-        answer: Result<local::Value, local::Error>,
-        parking: Parking,
+        answer: Result<Value, Error>,
     ) -> Result<Ran, ResumeError> {
-        match self.claim(&parked, &answer) {
-            Ok(machine) => {
-                parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
-                self.parking = parking;
-                let done = self.wake(Some(state), machine, answer);
-                self.ran(done).map_err(|e| ResumeError {
+        let answer = match &answer {
+            Ok(v) => self.import(v),
+            Err(e) => Err(self.incoming_error(e)),
+        };
+        let machine = match self.claim(&parked, &answer) {
+            Ok(machine) => machine,
+            Err(e) => {
+                return Err(ResumeError {
                     error: self.export_error(e),
-                    parked: None,
-                })
+                    parked: Some(parked),
+                });
             }
-            Err(e) => Err(ResumeError {
-                error: self.export_error(e),
-                parked: Some(parked),
-            }),
-        }
+        };
+        parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
+        self.may_park = true;
+        let done = self.wake(Some(state), machine, answer);
+        self.ran(done).map_err(|e| ResumeError {
+            error: self.export_error(e),
+            parked: None,
+        })
     }
 
     /// The parked run's machine, its fiber let go, and a new run begun, once nothing can refuse.
@@ -378,7 +318,7 @@ impl<T> Grift<T> {
         let Some(local::Value::Pair(fiber)) = self.kept_value(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));
         };
-        self.begin_run()?;
+        self.begin_run();
         let machine = match self.heap.get_mut(fiber)? {
             Object::Fiber(room) => room.pop(),
             _ => None,
@@ -392,10 +332,9 @@ impl<T> Grift<T> {
     }
 
     /// Whether a [`ParkingFunction`] called now may answer [`Answer::Later`]: not under
-    /// [`Grift::evaluate`] or [`Grift::call`], not in any run inside a host call, and not in a
-    /// cleanup [`Grift::abandon`] runs.
+    /// [`Grift::evaluate`] or [`Grift::call`], and not in any run inside a host call.
     pub fn can_park(&self) -> bool {
-        self.parking == Parking::Allowed
+        self.may_park
     }
 
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
@@ -406,8 +345,7 @@ impl<T> Grift<T> {
             .map_err(|_| local::Error::oom())
     }
 
-    /// How many runs are parked. Each holds what it refers to until resumed or abandoned, so a
-    /// host that sees this grow has forgotten some: [`Grift::forgotten`].
+    /// How many runs are parked. Each holds what it refers to until it ends, so a host that sees this grow has forgotten some: [`Grift::forgotten`].
     pub fn parked(&self) -> usize {
         let fiber = |v: &&local::Value| match v {
             local::Value::Pair(r) => matches!(self.heap.get(*r), Ok(Object::Fiber(_))),

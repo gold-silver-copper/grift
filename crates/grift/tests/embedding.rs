@@ -690,3 +690,12 @@ fn bytes_copy_the_input_and_borrow_the_payload() {
     let text = g.string("abc").unwrap();
     assert_eq!(g.as_bytes(&text).unwrap(), None);
 }
+
+#[path = "../../../examples/stops.rs"]
+mod stops;
+
+/// The example the README points to does what it says.
+#[test]
+fn the_stops_example_runs() {
+    stops::main().unwrap();
+}

@@ -136,15 +136,16 @@ pub struct Error {
     /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
     /// doesn't read, its trace is empty. Checked as the values are when the error comes in.
     pub trace: Vec<Value>,
-    /// Who began it, read with [`Error::is_limit`].
-    origin: local::Origin,
+    /// Read with [`Error::is_limit`].
+    limit: bool,
 }
 
 impl Error {
-    /// Whether the host (a stop, a force, an abandon) or the machine (out of memory) began this,
-    /// so that no handler could catch it. Never so for what a program raises or a host function
-    /// makes with [`Grift::error`], whatever its kind is called, and an error passing through a
-    /// nested run or a host function stays what it was. Its kind then says which limit it is.
+    /// Whether the host (a stop, a force, [`Error::as_limit`]) or the machine (out of memory) began
+    /// this, so that no handler could catch it. Never so for what a program raises or a host
+    /// function makes with [`Grift::error`], whatever its kind is called, and an error passing
+    /// through a nested run or a host function stays what it was. Its kind then says which limit it
+    /// is, or, if the host handed one in after its values were reclaimed, `stale-value`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -153,7 +154,25 @@ impl Error {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn is_limit(&self) -> bool {
-        self.origin != local::Origin::Program
+        self.limit
+    }
+
+    /// This error as a limit: a host function that returns it ends the run, past every handler,
+    /// through every cleanup, as a stop does, and it keeps its kind and values for the host to
+    /// read when the run has ended.
+    ///
+    /// ```
+    /// use grift::{Grift, Value};
+    /// let mut g: Grift = Grift::new()?;
+    /// let quit = g.host_function("quit", |g, _, args| Err(g.error("quit", args).as_limit()))?;
+    /// g.define("quit", quit)?;
+    /// let e = g.evaluate(&mut (), "(catch! (quit 3) e 0) (add 1 2)").unwrap_err();
+    /// assert!(g.symbol_name(&e.kind)? == "quit" && e.values == [Value::Integer(3)]);
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn as_limit(mut self) -> Error {
+        self.limit = true;
+        self
     }
 }
 
@@ -214,21 +233,17 @@ pub struct Grift<T = ()> {
     /// The kept values, a root no program reaches, and the entries free for the next.
     kept: Vec<Option<local::Value>>,
     kept_free: Vec<u32>,
+    /// The kept name of the run that has just parked, for whoever began or resumed it.
+    parked_as: Option<u32>,
     machine: evaluate::Machine,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
     identity: Owner,
-    /// Whether the run in progress may park, and whether it just has.
-    parking: parked::Parking,
-    /// The generation of the outer run in progress, 0 for none, and the last one given out.
-    run: u64,
-    runs: u64,
+    /// Whether the run in progress may park.
+    may_park: bool,
     /// Where each combination read under a name is, by its slot's index.
     positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
-    /// This many cleanups' calls fail, as when a machine stack can't grow.
-    #[cfg(test)]
-    pub(crate) refuse_cleanup_calls: usize,
 }
 
 impl<T> Grift<T> {
@@ -243,15 +258,12 @@ impl<T> Grift<T> {
             top: heap::Reference::NONE,
             kept: Vec::new(),
             kept_free: Vec::new(),
+            parked_as: None,
             machine: evaluate::Machine::default(),
             identity: Owner(Weak::new()),
             control: Arc::new(Control::default()),
-            parking: parked::Parking::Refused,
-            run: 0,
-            runs: 0,
+            may_park: false,
             positions: HashMap::default(),
-            #[cfg(test)]
-            refuse_cleanup_calls: 0,
         };
         g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();
@@ -273,7 +285,7 @@ impl<T> Grift<T> {
             self.bind_symbol(self.built_in, s, v)?;
         }
         let forms = self.read_local(LIBRARY, None)?;
-        self.evaluate_forms(None, forms, self.built_in)?;
+        self.evaluate_forms(None, forms, self.built_in, false)?;
         // Everything in the heap now is the library's; errors skip its code.
         self.heap.seal_library();
         Ok(())
@@ -286,7 +298,7 @@ impl<T> Grift<T> {
         let forms = self
             .prepare(std::iter::empty())
             .and_then(|()| self.read_local(src, None));
-        let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top));
+        let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
         self.exported(done)
     }
 
@@ -317,7 +329,7 @@ impl<T> Grift<T> {
             self.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = self.intern(source)?;
             let forms = self.read_local(src, Some(source))?;
-            self.evaluate_forms(Some(state), forms, c)
+            self.evaluate_forms(Some(state), forms, c, false)
         });
         self.exported(done)
     }
@@ -328,7 +340,7 @@ impl<T> Grift<T> {
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.prepare_call(f, arguments).and_then(|f| {
             let arguments = self.imported(arguments)?;
-            self.call_local(Some(state), f, &arguments)
+            self.call_local(Some(state), f, &arguments, false)
         });
         self.exported(done)
     }
@@ -479,7 +491,7 @@ impl<T> Grift<T> {
                 kind: self.export_symbol(kind),
                 values: collected(values.iter().cloned())?,
                 trace: Vec::new(),
-                origin: local::Origin::Program,
+                limit: false,
             })
         });
         made.unwrap_or_else(|e| self.export_error(e))
@@ -638,22 +650,13 @@ impl<T> Grift<T> {
         let v = self
             .import(v)
             .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        let mut out = Watched {
-            out,
-            refused: false,
-        };
-        self.print(v, &mut out)
-            .map_err(|_| self.write_failed(out.refused))
+        self.print(v, out).map_err(|why| self.write_failed(why))
     }
 
-    fn write_failed(&self, refused: bool) -> WriteError {
-        match refused {
-            true => WriteError::Output,
-            // The printer stops by itself only for a stop, or when its own stack can't grow.
-            false if self.control.waiting(self.run) => {
-                WriteError::Value(self.export_error(local::Error::host(K::Interrupted)))
-            }
-            false => WriteError::Value(self.export_error(local::Error::oom())),
+    fn write_failed(&self, why: print::Unprinted) -> WriteError {
+        match why {
+            print::Unprinted::Output => WriteError::Output,
+            print::Unprinted::Value(e) => WriteError::Value(self.export_error(e)),
         }
     }
 
@@ -664,15 +667,15 @@ impl<T> Grift<T> {
         let e = self
             .import_error(error)
             .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        let mut out = Watched {
-            out,
-            refused: false,
-        };
-        self.write_error(&e, &mut out)
-            .map_err(|_| self.write_failed(out.refused))
+        self.write_error(&e, out)
+            .map_err(|why| self.write_failed(why))
     }
 
-    fn write_error(&self, e: &local::Error, out: &mut dyn fmt::Write) -> fmt::Result {
+    fn write_error(
+        &self,
+        e: &local::Error,
+        out: &mut dyn fmt::Write,
+    ) -> Result<(), print::Unprinted> {
         self.print(local::Value::Symbol(e.kind), out)?;
         for &v in &e.values {
             out.write_char(' ')?;
@@ -802,50 +805,30 @@ impl<T> Grift<T> {
         self.names.get(s.0 as usize).map_or("", |n| n)
     }
 
-    /// Whether a stop of the run in progress came since the last one acted on: those waiting
-    /// count as one, and a later one stops it again.
-    #[inline(always)]
-    pub(crate) fn interrupted(&self) -> bool {
-        self.control.stopped(self.run)
-    }
-
     /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
     /// can share, so a few objects can be a tree no walk finishes; the failed step then acts on the
     /// stop. A walk shorter than [`WALK_CHECK`] items never asks, so it can't be cut.
     #[inline(always)]
     pub(crate) fn walk_stopped(&self, walked: &mut usize) -> bool {
         *walked = walked.wrapping_add(1);
-        *walked & (WALK_CHECK - 1) == 0 && self.control.waiting(self.run)
+        *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
     }
 
-    /// Starts an outer run, unless one is in progress: the next generation, published for
-    /// interrupters. Whether it started one, which [`Grift::end_run`] then ends. A run abandoned
-    /// is already gone: every entry goes through [`Grift::prepare`] first.
-    pub(crate) fn begin_run(&mut self) -> Result<bool, local::Error> {
-        if self.run != 0 {
-            return Ok(false);
+    /// Starts an outer run, unless one is in progress; whether it did, which [`Grift::end_run`]
+    /// then ends. What a host function left behind when it panicked or replaced the interpreter is
+    /// over: its machine goes here.
+    pub(crate) fn begin_run(&mut self) -> bool {
+        let outer = self.control.run() == 0;
+        if outer {
+            self.machine.clear();
+            self.control.begin();
         }
-        // Generations never repeat, so a late stop can't match a later run.
-        self.runs = self
-            .runs
-            .checked_add(1)
-            .ok_or_else(|| local::Error::new(K::Overflow, &[]))?;
-        self.run = self.runs;
-        self.control.begin(self.run);
-        Ok(true)
+        outer
     }
 
     pub(crate) fn end_run(&mut self) {
         self.control.end();
-        self.run = 0;
-    }
-
-    /// Gives up the run in progress and the machine's state: what a host function left behind
-    /// when it replaced or restored the interpreter, or panicked.
-    pub(crate) fn abandon_run(&mut self) {
-        self.machine = evaluate::Machine::default();
-        self.parking = parked::Parking::Refused;
-        self.end_run();
+        self.may_park = false;
     }
 
     /// The context `v` is, or a `type-error` naming `p`.
@@ -906,8 +889,17 @@ impl<T> Grift<T> {
         let kind = self.import_symbol(&e.kind)?;
         let imported = local::Error::from_parts(kind, values, trace)?;
         Ok(local::Error {
-            origin: e.origin,
+            limit: e.limit,
             ..imported
+        })
+    }
+
+    /// An error the host hands in, as the reason a run unwinds. One that can't come in, its values
+    /// reclaimed or another interpreter's, is that error instead, and stays a limit if it was one.
+    pub(crate) fn incoming_error(&self, e: &Error) -> local::Error {
+        self.import_error(e).unwrap_or_else(|mut failed| {
+            failed.limit |= e.limit;
+            failed
         })
     }
 
@@ -982,19 +974,15 @@ impl<T> Grift<T> {
 
     pub(crate) fn export_error(&self, e: local::Error) -> Error {
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
-        let e = match (exported(&e.values), exported(&e.trace)) {
+        match (exported(&e.values), exported(&e.trace)) {
             (Ok(values), Ok(trace)) => Error {
                 kind: self.export_symbol(e.kind),
                 values,
                 trace,
-                origin: e.origin,
+                limit: e.limit,
             },
             _ => self.export_error(local::Error::oom()),
-        };
-        if e.origin == local::Origin::Machine {
-            self.heap.request_collection();
         }
-        e
     }
 
     fn exported(&self, r: Result<local::Value, local::Error>) -> Result<Value, Error> {
@@ -1046,16 +1034,4 @@ fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local
         .map_err(|_| local::Error::oom())?;
     v.extend(items);
     Ok(v)
-}
-
-/// A sink that notes whether it refused text, to tell that from the printer's own failure.
-struct Watched<'a> {
-    out: &'a mut dyn fmt::Write,
-    refused: bool,
-}
-
-impl fmt::Write for Watched<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.out.write_str(s).inspect_err(|_| self.refused = true)
-    }
 }

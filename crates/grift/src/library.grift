@@ -88,14 +88,12 @@
        ; catch!: the body's value; if an error leaves it, the cleanups inside run first, then
        ; the handler forms. What the host or the machine began is never caught, whatever its kind.
        (vau! (body parameter . handler) caller
-         (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (wrap (vau! (e) #ignore (handle e parameter handler (context caller))))))
+         (evaluate-with-handler body caller (wrap (vau! (e) #ignore (handle e parameter handler (context caller))))))
        ; catch-kind!: catch!, for the errors of one kind, a symbol; any other goes on as it was,
        ; with its trace. It names symbol? and the forms after it, which exist when it runs.
        (vau! (body wanted parameter . handler) caller
          (if! (symbol? wanted)
-           (call-with-handler
-             (wrap (vau! () #ignore (evaluate body caller)))
+           (evaluate-with-handler body caller
              (wrap (vau! (e) #ignore
                      (if! (same? (evaluate-in! kind e) wanted)
                        (handle e parameter handler (context caller))
