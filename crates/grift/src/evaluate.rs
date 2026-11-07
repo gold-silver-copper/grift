@@ -873,11 +873,13 @@ impl<T> Grift<T> {
             Object::Operative(op) => *op,
             _ => return Err(stale()),
         };
-        // The bindings are made first, then the context.
+        // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
+        bindings
+            .try_reserve(op.size as usize)
+            .map_err(|_| Error::oom())?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Value::Symbol(s) = op.context_parameter {
-            bindings.try_reserve(1).map_err(|_| Error::oom())?;
             bindings.insert(s, Value::Context(context));
         }
         let local = self
@@ -928,13 +930,14 @@ impl<T> Grift<T> {
         let [x, y, z] = a;
         let v = match p {
             P::Vau => {
-                self.check_parameters(x, y)?;
+                let size = self.check_parameters(x, y)?;
                 let body = self.arguments_list(base + 2)?;
                 let op = Operative {
                     parameters: x,
                     context_parameter: y,
                     body,
                     context,
+                    size: u32::try_from(size).map_err(|_| Error::oom())?,
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)
             }
@@ -1347,17 +1350,17 @@ impl<T> Grift<T> {
     }
 
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
-    /// symbol not in the tree.
+    /// symbol not in the tree. The number of bindings a call makes.
     pub(crate) fn check_parameters(
         &mut self,
         tree: Value,
         context_parameter: Value,
-    ) -> Result<(), Error> {
+    ) -> Result<usize, Error> {
         let mut bound = Bindings::default();
         self.match_tree(&mut bound, tree, tree)?;
         match context_parameter {
-            Value::Symbol(s) if !bound.contains_key(&s) => Ok(()),
-            Value::Ignore => Ok(()),
+            Value::Symbol(s) if !bound.contains_key(&s) => Ok(bound.len() + 1),
+            Value::Ignore => Ok(bound.len()),
             _ => Err(Error::new(K::ParameterError, &[context_parameter])),
         }
     }

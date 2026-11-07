@@ -21,13 +21,14 @@ impl Hash for Reference {
 }
 
 /// A compound operative: its parameter tree, its context parameter, its body's forms, the context it
-/// was made in.
+/// was made in, and how many bindings a call makes.
 #[derive(Clone, Copy)]
 pub(crate) struct Operative {
     pub parameters: Value,
     pub context_parameter: Value,
     pub body: Value,
     pub context: Reference,
+    pub size: u32,
 }
 
 pub(crate) enum Object {
