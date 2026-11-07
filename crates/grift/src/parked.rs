@@ -316,7 +316,7 @@ impl<T> Grift<T> {
     ///     panic!("it waits");
     /// };
     /// let ended = g.abandon(&mut (), parked)?;
-    /// assert!(g.is_kind(&ended, "abandoned")?);
+    /// assert_eq!(g.symbol_name(&ended.kind)?, "abandoned");
     /// assert_eq!(g.evaluate(&mut (), "closed")?, Value::Boolean(true));
     /// # Ok::<(), grift::Error>(())
     /// ```

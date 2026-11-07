@@ -337,15 +337,15 @@ impl Runs {
 /// Ends a parked run. That it was abandoned is no news; anything else that cut a cleanup is.
 fn abandon(g: &mut G, h: &mut Host, parked: Parked) {
     let ended = g.abandon(h, parked).unwrap_or_else(Error::from);
-    if !g.is_kind(&ended, "abandoned").unwrap_or(false) {
+    if !g.symbol_name(&ended.kind).is_ok_and(|kind| kind == "abandoned") {
         report(g, h, "editor-report", &ended);
     }
 }
 
 /// Puts an error in the echo area, through the editor's own function `through`; its text.
 fn report(g: &mut G, h: &mut Host, through: &str, e: &Error) -> String {
-    let text = match g.is_kind(e, "quit") {
-        Ok(true) => "Quit".to_string(),
+    let text = match g.symbol_name(&e.kind) {
+        Ok("quit") => "Quit".to_string(),
         _ => describe(g, e),
     };
     // If that fails too, the next frame or command says so.

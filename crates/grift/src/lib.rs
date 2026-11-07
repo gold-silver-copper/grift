@@ -122,7 +122,8 @@ pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, 
 /// [`Grift::describe`] writes it for a person.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Error {
-    /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::is_kind`] asks.
+    /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::symbol_name`]
+    /// reads it.
     pub kind: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
@@ -148,7 +149,7 @@ impl Error {
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let forged = g.evaluate(&mut (), "(raise (error (quote! interrupted)))").unwrap_err();
-    /// assert!(g.is_kind(&forged, "interrupted")? && !forged.is_limit());
+    /// assert!(g.symbol_name(&forged.kind)? == "interrupted" && !forged.is_limit());
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn is_limit(&self) -> bool {
@@ -496,13 +497,6 @@ impl<T> Grift<T> {
         made.unwrap_or_else(|e| self.export_error(e))
     }
 
-    /// Whether `error` is of the kind named `name`.
-    pub fn is_kind(&self, error: &Error, name: &str) -> Result<bool, Error> {
-        // A name never interned is no error's kind.
-        let kind = self.import_symbol(&error.kind);
-        self.out(kind.map(|kind| self.interned(name) == Some(kind)))
-    }
-
     /// A new string holding a copy of `s`.
     pub fn string(&mut self, s: &str) -> Result<Value, Error> {
         let made = boxed(s).and_then(|s| self.heap.alloc(Object::String(s)));
@@ -526,7 +520,7 @@ impl<T> Grift<T> {
     /// let path = g.string("notes.txt")?;
     /// let path = g.as_string(&path)?.unwrap(); // owned: g is free again
     /// let e = g.error("file-error", &[]);
-    /// assert_eq!((path.as_str(), g.is_kind(&e, "file-error")?), ("notes.txt", true));
+    /// assert_eq!((path.as_str(), g.symbol_name(&e.kind)?), ("notes.txt", "file-error"));
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn as_string(&self, v: &Value) -> Result<Option<String>, Error> {
@@ -604,7 +598,8 @@ impl<T> Grift<T> {
     /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_string(k).ok()?).collect();
     /// assert_eq!(keys, ["C-b", "v"]);
     /// let dotted = g.evaluate(&mut (), "(pair 1 2)")?;
-    /// assert!(g.is_kind(&g.list_items(&dotted).unwrap_err(), "type-error")?);
+    /// let e = g.list_items(&dotted).unwrap_err();
+    /// assert_eq!(g.symbol_name(&e.kind)?, "type-error");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {

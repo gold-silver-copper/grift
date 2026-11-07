@@ -268,8 +268,8 @@ fn another_interpreters_value_is_foreign_value_everywhere() {
     ));
     // An error of theirs: its kind is their symbol.
     let e = theirs.error("only-theirs", &[]);
-    if ours.is_kind(&e, "only-theirs").is_ok() {
-        broken.push("is_kind of their error".into());
+    if ours.symbol_name(&e.kind).is_ok() {
+        broken.push("the kind of their error".into());
     }
     let Value::Symbol(s) = &symbol else { panic!() };
     if ours.symbol_name(s).is_ok() {

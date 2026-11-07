@@ -184,7 +184,7 @@ impl Control {
 ///     }
 /// });
 /// let e = g.evaluate(&mut (), "(define! spin (lambda! () (spin))) (spin)").unwrap_err();
-/// assert!(g.is_kind(&e, "interrupted")?);
+/// assert_eq!(g.symbol_name(&e.kind)?, "interrupted");
 /// timer.join().unwrap();
 /// // The next run is not stopped.
 /// assert_eq!(g.evaluate(&mut (), "(add 1 2)")?, grift::Value::Integer(3));

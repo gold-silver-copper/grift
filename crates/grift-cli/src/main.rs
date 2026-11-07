@@ -461,7 +461,7 @@ fn unfinished(g: &mut G, e: &Error) -> bool {
         Some(Value::Symbol(s)) => g.symbol_name(s).unwrap_or_default(),
         _ => "",
     };
-    g.is_kind(e, "parse-error").unwrap_or(false)
+    g.symbol_name(&e.kind).is_ok_and(|kind| kind == "parse-error")
         && ["unclosed-list", "unclosed-string"].contains(&reason)
 }
 

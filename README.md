@@ -227,7 +227,7 @@ fn main() -> Result<(), Error> {
   input to `read_in` or `evaluate_in`, the trace starts with the supplied source symbol; the
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
-  `is_kind(&e, "type-error")` asks its kind; `error(kind, &[Value])` makes one.
+  `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send` and cloneable; `stop()` from
   any thread stops the run in progress at its next step, inside a long walk of a tree, or as its
   last host call returns, with the error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
