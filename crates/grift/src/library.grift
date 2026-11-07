@@ -24,15 +24,15 @@
   (vau! (test consequent alternative) caller
     (evaluate (select (evaluate test caller) consequent alternative) caller)))
 
-; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become
-; (sequence! ...) with the symbol, as if written so, so printing the combiner shows the body as
-; written. sequence! is defined next, by code that runs no such body while it loads.
+; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become a call of
+; sequence!'s value, read here in the built-in context, so no program's binding changes what a body
+; means. sequence! is defined next, by code that makes no such body while it loads.
 (define! lambda!
   (vau! (parameters . body) caller
     (wrap (evaluate (list vau! parameters #ignore
                       (if! (if! (same? body ()) #false (same? (rest body) ()))
                         (first body)
-                        (pair (quote! sequence!) body)))
+                        (pair sequence! body)))
                     caller))))
 
 ; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
@@ -71,13 +71,10 @@
        (define! done (lambda! (#ignore #ignore local) local))
        ; The context c, with the values bound to the names there.
        (define! filled (lambda! (c names values) (done (bind c names values) #ignore c)))
-       ; A caught error's handler forms, with the parameter bound in a new child of the caller's
-       ; context.
+       ; A caught error's handler forms, with the parameter bound in local, a new child of the
+       ; caller's context.
        (define! handle
-         (lambda! (e parameter handler caller)
-           (define! local (context caller))
-           (bind local parameter e)
-           (run handler local)))
+         (lambda! (e parameter handler local) (run handler (filled local parameter e))))
        ; sequence!: each in turn, the last one's value; #inert for none.
        (vau! body caller (run body caller))
        ; when!: the body if the test is #true, #inert if it is #false.
@@ -100,7 +97,7 @@
        ; the handler forms. What the host or the machine began is never caught, whatever its kind.
        (vau! (body parameter . handler) caller
          (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (wrap (vau! (e) #ignore (handle e parameter handler caller)))))
+                            (wrap (vau! (e) #ignore (handle e parameter handler (context caller))))))
        ; catch-kind!: catch!, for the errors of one kind, a symbol; any other goes on as it was,
        ; with its trace. It names symbol? and the forms after it, which exist when it runs.
        (vau! (body wanted parameter . handler) caller
@@ -109,7 +106,7 @@
              (wrap (vau! () #ignore (evaluate body caller)))
              (wrap (vau! (e) #ignore
                      (if! (same? (evaluate-in! kind e) wanted)
-                       (handle e parameter handler caller)
+                       (handle e parameter handler (context caller))
                        (raise e)))))
            (raise (error (quote! type-error) (quote! catch-kind!) wanted))))
        ; record (not in Kernel): a new context with no parent, the values bound to the names. It

@@ -352,12 +352,6 @@ fn printing_reads_back() {
         show(&g, &f),
         "#[applicative #[operative (x) #ignore (multiply x x)]]"
     );
-    // A body of several forms prints as written, not as sequence!'s own source.
-    let f = g.evaluate(&mut (), "(lambda! (x) (f x) x)").unwrap();
-    assert_eq!(
-        show(&g, &f),
-        "#[applicative #[operative (x) #ignore (sequence! (f x) x)]]"
-    );
     // Control characters print as escapes that read back.
     let v = g
         .evaluate(&mut (), "\"\\x1b;[2J\\ta\\x7f;\\x3bb;\"")
@@ -3380,6 +3374,19 @@ fn record_is_a_new_context_of_its_names_alone() {
             "(same? (evaluate-in! y (record (quote! (x y)) (list 1 2))) 2)",
             "(equal? (names (record (quote! (x y)) (list 1 2))) (quote! (x y)))",
             "(not? (binds? (record () ()) (quote! list)))",
+        ],
+    );
+}
+
+#[test]
+fn a_body_of_several_forms_needs_no_binding_of_the_program() {
+    let mut g = grift();
+    g.evaluate(&mut (), "(define! sequence! 5)").unwrap();
+    holds(
+        &mut g,
+        &[
+            "(same? ((lambda! () 1 2)) 2)",
+            "(same? ((evaluate (list lambda! () 1 2) (context))) 2)",
         ],
     );
 }

@@ -142,7 +142,7 @@ which a test shows no program can tell from the Rust.
 | `(list x ...)` | The list of the arguments (5.2.1). |
 | `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. A native twin runs it (see "What the library forms cost"). |
 | `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). A native twin runs it. |
-| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become `(sequence! form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
+| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become a call of `sequence!`'s value, so a program's own binding of the name changes nothing (5.3.2). |
 | `(current-context)` | The context it is called in (6.7.2). |
 | `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
 | `(not? b)`, `(and!? x ...)`, `(or!? x ...)` | Booleans (6.1). `and!?` and `or!?` evaluate left to right and stop early; every operand they evaluate must give a boolean, the last one included, so it isn't a tail call. |
@@ -381,5 +381,3 @@ had died. The README's embedding section gives the host's side.
   `type-of`, `when!`, `record`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
   `any?`, `all?`, `fold`, `range`, `sort`, the list access by index, the bitwise
   operations, and the string and float primitives and helpers.
-- **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as
-  written. It is looked up where the body runs, like any other name in it.
