@@ -497,8 +497,9 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
     }
 }
 
-/// The host functions the program gets by name.
-const PUBLIC: [(&str, HostFunction<Runner>); 7] = [
+/// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
+/// those it should have.
+const HOSTS: [(&str, HostFunction<Runner>); 17] = [
     ("display", display),
     ("display-error", display_error),
     ("read-file", read_file),
@@ -506,10 +507,6 @@ const PUBLIC: [(&str, HostFunction<Runner>); 7] = [
     ("wall-clock-nanoseconds", wall_clock_nanoseconds),
     ("elapsed-nanoseconds", elapsed_nanoseconds),
     ("exit", exit),
-];
-
-/// The host functions only `runner.grift`'s closures get.
-const PRIVATE: [(&str, HostFunction<Runner>); 10] = [
     ("open-host", open_host),
     ("create-host", create_host),
     ("read-line-host", read_line_host),
@@ -529,30 +526,30 @@ fn read_forms_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, E
     g.read_in(&path, &text)
 }
 
-/// Binds the runner's operations in the top-level context.
+/// Evaluates `runner.grift` in a private context holding what it needs, so the operations it
+/// makes look names up there, never where the program could redefine them. It counts as library
+/// code from then on, so an error's trace has only the program's combinations.
 fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Result<(), Error> {
-    for (name, f) in PUBLIC {
+    let private = g.private_context()?;
+    let bind = |g: &mut G, name: &str, value: Value| {
+        let name = Value::Symbol(g.symbol(name)?);
+        g.bind(&private, &name, value)
+    };
+    for (name, f) in HOSTS {
         let f = g.host_function(name, f)?;
-        g.define(name, f)?;
+        bind(g, name, f)?;
     }
     let mut list = Value::EmptyList;
     for a in arguments.iter().rev() {
         let a = g.string(a)?;
         list = g.pair(a, list)?;
     }
-    g.define("command-line-arguments", list)?;
+    bind(g, "command-line-arguments", list)?;
     let script = g.string(script)?;
-    g.define("script-path", script.clone())?;
-    // The setup is made in a private context, so the operations it makes look names up there,
-    // never where the program could redefine them. It counts as library code from then on, so
-    // an error's trace has only the program's combinations.
-    let private = g.private_context()?;
-    let setup = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
-    let mut hosts = vec![g.top_level(), script];
-    for (name, f) in PRIVATE {
-        hosts.push(g.host_function(name, f)?);
-    }
-    g.call(r, &setup, &hosts)?;
+    bind(g, "script-path", script)?;
+    let top = g.top_level();
+    bind(g, "top", top)?;
+    g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
     g.seal_library();
     Ok(())
 }

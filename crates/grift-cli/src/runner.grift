@@ -1,58 +1,63 @@
 ; The runner's operations on files, standard input, output and error, processes and loading.
-; main.rs evaluates this, in a private child of the built-in context, to a combiner it calls with
-; the top-level context, the script's path (or "" for none) and its host functions, which are bound
-; nowhere else.
-; Every operation a program gets is a closure over them, holding the number of its file: a
-; program reaches a file only through the context it was given, and can't name one by its
-; number.
-(lambda! (top script open-host create-host read-line-host read-all-host read-bytes-host
-          write-host close-host run-host read-forms-host resolve-host)
-  ; A new context binding `names` to `values`.
-  (define! operations
-    (lambda! (names values)
-      (let! ((c (context)))
-        (bind c names values)
-        c)))
-  (define! reading
-    (lambda! (file)
-      (list (lambda! () (read-line-host file))
-            (lambda! () (read-all-host file))
-            (lambda! (count) (read-bytes-host file count)))))
-  (define! writing
-    (lambda! (file)
-      (list (lambda! (data) (write-host file data)))))
-  (define! reader
-    (lambda! (path file)
-      (operations (quote! (path read-line read-all read-bytes close))
-                  (append (list path) (reading file) (list (lambda! () (close-host file)))))))
-  (define! writer
-    (lambda! (path file)
-      (operations (quote! (path write close))
-                  (append (list path) (writing file) (list (lambda! () (close-host file)))))))
-  ; The file whose forms are being loaded, at first the script; a relative path given `load` is
-  ; relative to it.
-  (define! loading (operations (quote! (file)) (list script)))
-  ; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in
-  ; `c` while a relative path given load is relative to the file. Each combination knows its line
-  ; in the file, so an error's trace says it.
-  (define! load-file
-    (lambda! (path c)
-      (let! ((outer (evaluate-in! file loading)))
-        (bind loading (quote! file) path)
-        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path))
-                  (bind loading (quote! file) outer)))))
-  (bind top (quote! (standard-input standard-output standard-error open-file create-file
-                     run-process load))
-    (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
-          (operations (quote! (write)) (writing 2))
-          (operations (quote! (write)) (writing 1))
-          (lambda! (path) (reader path (open-host path)))
-          (lambda! (path) (writer path (create-host path)))
-          ; The record of a finished process: its status, output and error output.
-          (lambda! (program . arguments)
-            (operations (quote! (status output error-output))
-                        (apply run-host (pair program arguments))))
-          ; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's
-          ; load does; each load reads the file again.
-          (wrap (vau! (path) caller
-                  (load-file (resolve-host (evaluate-in! file loading) path) caller))))))
+; main.rs evaluates this in a private child of the built-in context, where it has bound its host
+; functions, `top` (the program's context), `script-path` and `command-line-arguments` by name.
+; A program gets only what the last form below binds in `top`. An operation on a file is a closure
+; holding the file's number: a program reaches a file only through the context it was given, and
+; can't name one by its number.
+
+; A new context binding `names` to `values`.
+(define! operations
+  (lambda! (names values)
+    (let! ((c (context)))
+      (bind c names values)
+      c)))
+(define! reader
+  (lambda! (path file)
+    (operations (quote! (path read-line read-all read-bytes close))
+                (list path
+                      (lambda! () (read-line-host file))
+                      (lambda! () (read-all-host file))
+                      (lambda! (count) (read-bytes-host file count))
+                      (lambda! () (close-host file))))))
+(define! writer
+  (lambda! (path file)
+    (operations (quote! (path write close))
+                (list path
+                      (lambda! (data) (write-host file data))
+                      (lambda! () (close-host file))))))
+(define! standard-input (operations (quote! (read-line read-all read-bytes))
+                                    (list (lambda! () (read-line-host 0))
+                                          (lambda! () (read-all-host 0))
+                                          (lambda! (count) (read-bytes-host 0 count)))))
+(define! standard-error (operations (quote! (write)) (list (lambda! (data) (write-host 1 data)))))
+(define! standard-output (operations (quote! (write)) (list (lambda! (data) (write-host 2 data)))))
+(define! open-file (lambda! (path) (reader path (open-host path))))
+(define! create-file (lambda! (path) (writer path (create-host path))))
+; The record of a finished process: its status, output and error output.
+(define! run-process
+  (lambda! (program . arguments)
+    (operations (quote! (status output error-output))
+                (apply run-host (pair program arguments)))))
+; The file whose forms are being loaded, at first the script; a relative path given `load` is
+; relative to it.
+(define! loading (operations (quote! (file)) (list script-path)))
+; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in
+; `c` while a relative path given load is relative to the file. Each combination knows its line
+; in the file, so an error's trace says it.
+(define! load-file
+  (lambda! (path c)
+    (let! ((outer (evaluate-in! file loading)))
+      (bind loading (quote! file) path)
+      (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path))
+                (bind loading (quote! file) outer)))))
+; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's load does; each
+; load reads the file again.
+(define! load
+  (wrap (vau! (path) caller
+          (load-file (resolve-host (evaluate-in! file loading) path) caller))))
+
+(define! here (current-context))
+(for-each (lambda! (name) (bind top name (evaluate name here)))
+          (quote! (display display-error read-file environment-variable wall-clock-nanoseconds
+                   elapsed-nanoseconds exit command-line-arguments script-path standard-input
+                   standard-output standard-error open-file create-file run-process load)))
