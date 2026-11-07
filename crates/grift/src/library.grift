@@ -26,25 +26,25 @@
 ; list (5.2.1).
 (define! list (wrap (vau! xs #ignore xs)))
 
-; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become
-; (sequence! ...) with the symbol, as if written so, so printing the combiner shows the body as
-; written.
+; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become a call of
+; sequence!'s value, read here in the built-in context, so no program's binding changes what a body
+; means.
 (define! lambda!
   (vau! (parameters . body) caller
     (wrap (evaluate (list vau! parameters #ignore
                       (if! (if! (same? body ()) #false (same? (rest body) ()))
                         (first body)
-                        (pair (quote! sequence!) body)))
+                        (pair sequence! body)))
                     caller))))
 
 ; The forms with a body: when! (not in Kernel), conditional! (5.6.1, $cond), let! (6.7.6, $letrec*),
-; finally!, catch! and catch-kind!. Each is an operative that walks its operands and evaluates only
-; them, in the caller's context or one it made; none builds code to evaluate. A loop that evaluates
-; something only for its effect gets its value as an ignored first operand, and a list known not to
-; be empty is taken apart in the parameters. `list` evaluates the helpers' definitions in order, and
-; the outer define! ignores their values.
-(define! (#ignore #ignore #ignore #ignore #ignore #ignore
-          when! conditional! let! finally! catch! catch-kind!)
+; finally!, catch! and catch-kind!; and record, which shares a helper with them. Each form is an
+; operative that walks its operands and evaluates only them, in the caller's context or one it made;
+; none builds code to evaluate. A loop that evaluates something only for its effect gets its value as
+; an ignored first operand, and a list known not to be empty is taken apart in the parameters. `list`
+; evaluates the helpers' definitions in order, and the outer define! ignores their values.
+(define! (#ignore #ignore #ignore #ignore #ignore #ignore #ignore
+          when! conditional! let! finally! catch! catch-kind! record)
   ((lambda! ()
      (list
        ; The forms of a body in turn, the last as a tail call; called only with a form left.
@@ -69,13 +69,12 @@
             more
             local)))
        (define! done (lambda! (#ignore #ignore local) local))
-       ; A caught error's handler forms, with the parameter bound in a new child of the caller's
-       ; context.
+       ; The context c, with the values bound to the names there.
+       (define! filled (lambda! (c names values) (done (bind c names values) #ignore c)))
+       ; A caught error's handler forms, with the parameter bound in local, a new child of the
+       ; caller's context.
        (define! handle
-         (lambda! (e parameter handler caller)
-           (define! local (context caller))
-           (bind local parameter e)
-           (run handler local)))
+         (lambda! (e parameter handler local) (run handler (filled local parameter e))))
        ; when!: the body if the test is #true, #inert if it is #false.
        (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
        ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
@@ -96,7 +95,7 @@
        ; the handler forms. What the host or the machine began is never caught, whatever its kind.
        (vau! (body parameter . handler) caller
          (call-with-handler (wrap (vau! () #ignore (evaluate body caller)))
-                            (wrap (vau! (e) #ignore (handle e parameter handler caller)))))
+                            (wrap (vau! (e) #ignore (handle e parameter handler (context caller))))))
        ; catch-kind!: catch!, for the errors of one kind, a symbol; any other goes on as it was,
        ; with its trace. It names symbol? and the forms after it, which exist when it runs.
        (vau! (body wanted parameter . handler) caller
@@ -105,9 +104,12 @@
              (wrap (vau! () #ignore (evaluate body caller)))
              (wrap (vau! (e) #ignore
                      (if! (same? (evaluate-in! kind e) wanted)
-                       (handle e parameter handler caller)
+                       (handle e parameter handler (context caller))
                        (raise e)))))
-           (raise (error (quote! type-error) (quote! catch-kind!) wanted))))))))
+           (raise (error (quote! type-error) (quote! catch-kind!) wanted))))
+       ; record (not in Kernel): a new context with no parent, the values bound to the names. It
+       ; branches on nothing, so the natives' definitions can stand on it.
+       (lambda! (names values) (filled (context ()) names values))))))
 
 ; current-context (6.7.2, get-current-environment).
 (define! current-context (wrap (vau! () caller caller)))
@@ -119,9 +121,11 @@
 ; not? (6.1.1).
 (define! not? (lambda! (x) (select x #false #true)))
 
-; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value. #inert and #ignore, each the
-; only value of its type, are (same? x #inert) and (same? x #ignore).
+; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value: one for each type type-of
+; gives.
 (define! empty-list? (lambda! (x) (same? x ())))
+(define! inert? (lambda! (x) (same? x #inert)))
+(define! ignore? (lambda! (x) (same? x #ignore)))
 (define! boolean? (lambda! (x) (same? (type-of x) (quote! boolean))))
 (define! integer? (lambda! (x) (same? (type-of x) (quote! integer))))
 (define! float? (lambda! (x) (same? (type-of x) (quote! float))))
@@ -185,10 +189,7 @@
 ; error (not in Kernel): a new error, a context with no parent binding kind, values and an empty
 ; trace. raise raises it, and gives it where it happened.
 (define! error
-  (lambda! (kind . values)
-    (let! ((e (context ())))
-      (bind e (quote! (kind values trace)) (list kind values ()))
-      e)))
+  (lambda! (kind . values) (record (quote! (kind values trace)) (list kind values ()))))
 
 ; length (6.3.1), of a proper list, counting in a loop.
 (define! length
@@ -244,7 +245,7 @@
 ; absolute-value and power (12.5.12, abs; 12.9.6, expt), of integers or floats, as add is: Rust's
 ; checked abs and pow on integers, abs and powf on floats. The most negative integer has no
 ; absolute value, and an integer power with a negative exponent isn't an integer (Rust's pow takes
-; a u32): overflow, range-error.
+; a u32): the arithmetic's overflow, a range-error.
 (define! (absolute-value power)
   ((lambda! (float-absolute float-power)
      ; product times base to the exponent, by squaring; base is squared only while a bit of the
@@ -261,21 +262,12 @@
          (if! (same? exponent 0) product (raised product (multiply base base) exponent))))
      (list
        (lambda! (x)
-         (if! (integer? x)
-           (if! (less-than? x 0)
-             (if! (same? x -9223372036854775808)
-               (raise (error (quote! overflow) (quote! absolute-value) x))
-               (subtract 0 x))
-             x)
-           (float-absolute x)))
+         (if! (integer? x) (if! (less-than? x 0) (subtract 0 x) x) (float-absolute x)))
        (lambda! (x y)
          (if! (and!? (integer? x) (integer? y))
            (if! (less-than? y 0)
              (raise (error (quote! range-error) (quote! power) x y))
-             (catch-kind! (raised 1 x y)
-                          overflow
-                          #ignore
-                          (raise (error (quote! overflow) (quote! power) x y))))
+             (raised 1 x y))
            (float-power x y)))))
    absolute-value
    power))
@@ -321,8 +313,7 @@
       (value-to-string f)
       (raise (error (quote! type-error) (quote! float-to-string) f)))))
 
-; filter (6.3.5), and, not in Kernel, each asked for by three or more programs: fold, range, sort
-; and the list access below.
+; filter (6.3.5), and, not in Kernel, fold, range, sort and the list access below.
 (define! filter
   (lambda! (f xs)
     (if! (same? xs ())
@@ -364,9 +355,13 @@
      (lambda! (xs before?)
        (if! (same? xs ()) () (first (sorted xs (length xs) before?)))))))
 
-; element-at, second, third, last, take and drop: an index counts from 0, as in Rust, and one
-; out of range is a range-error carrying the name, the index and the list's length.
-(define! (element-at second third last take drop)
+; second and third: first of what rest leaves, so a list too short is first's type-error.
+(define! second (lambda! (xs) (first (rest xs))))
+(define! third (lambda! (xs) (first (rest (rest xs)))))
+
+; element-at, last, take and drop: an index counts from 0, as in Rust, and one out of range is a
+; range-error carrying the name, the index and the list's length.
+(define! (element-at last take drop)
   ((lambda! ()
      ; The list after the first i of n elements asked for by name.
      (define! after
@@ -377,9 +372,9 @@
              (raise (error (quote! range-error) name n (subtract n i)))
              (after name (rest xs) (subtract i 1) n)))))
      (define! element
-       (lambda! (name xs index)
+       (lambda! (xs index)
          (if! (same? xs ())
-           (raise (error (quote! range-error) name index index))
+           (raise (error (quote! range-error) (quote! element-at) index index))
            (first xs))))
      ; n, if it is an integer of 0 or more: given the list in its place, the error names the
      ; combiner, and a negative one is out of range without counting down from it.
@@ -388,8 +383,6 @@
          (if! (integer? n)
            (if! (less-than? n 0) (raise (error (quote! range-error) name n (length xs))) n)
            (raise (error (quote! type-error) name n)))))
-     (define! at
-       (lambda! (name xs index) (element name (after name xs (counted name xs index) index) index)))
      (define! final (lambda! (xs) (if! (same? (rest xs) ()) (first xs) (final (rest xs)))))
      (define! taken
        (lambda! (xs i n)
@@ -399,25 +392,14 @@
              (raise (error (quote! range-error) (quote! take) n (subtract n i)))
              (pair (first xs) (taken (rest xs) (subtract i 1) n))))))
      (list
-       (lambda! (xs index) (at (quote! element-at) xs index))
-       ; second and third take the list apart themselves, as (first (rest xs)) would, and walk it
-       ; again with at only to say why they can't.
-       (lambda! (xs)
-         (if! (same? xs ())
-           (at (quote! second) xs 1)
-           (if! (same? (rest xs) ()) (at (quote! second) xs 1) (first (rest xs)))))
-       (lambda! (xs)
-         (if! (same? xs ())
-           (at (quote! third) xs 2)
-           (if! (same? (rest xs) ())
-             (at (quote! third) xs 2)
-             (if! (same? (rest (rest xs)) ()) (at (quote! third) xs 2) (first (rest (rest xs)))))))
+       (lambda! (xs index)
+         (element (after (quote! element-at) xs (counted (quote! element-at) xs index) index) index))
        (lambda! (xs)
          (if! (same? xs ()) (raise (error (quote! range-error) (quote! last) xs)) (final xs)))
        (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
        (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
 
-; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
+; The string helpers, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
 (define! (string-starts-with? string-ends-with? string-split)
   ((lambda! ()
@@ -548,6 +530,11 @@
        (bytes-slice b start start)
        (let! ((size (bytes-length pattern)))
          (from b pattern start (subtract (bytes-length b) size) size 0))))))
+
+; standard-context (6.7.7, make-kernel-standard-environment): a new child of the built-in context,
+; which sees the language and nothing of any program. The context itself stays out of reach.
+(define! standard-context
+  ((lambda! (built-in) (lambda! () (context built-in))) (current-context)))
 
 ; Not in Kernel: the names bound here, the primitives' and this library's, so a program can
 ; list them. The built-in context itself stays out of reach, so no program can change what the

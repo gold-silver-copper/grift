@@ -419,12 +419,6 @@ fn printing_reads_back() {
         show(&g, &f),
         "#[applicative #[operative (x) #ignore (multiply x x)]]"
     );
-    // A body of several forms prints as written, not as sequence!'s own source.
-    let f = g.evaluate(&mut (), "(lambda! (x) (f x) x)").unwrap();
-    assert_eq!(
-        show(&g, &f),
-        "#[applicative #[operative (x) #ignore (sequence! (f x) x)]]"
-    );
     // Control characters print as escapes that read back.
     let v = g
         .evaluate(&mut (), "\"\\x1b;[2J\\ta\\x7f;\\x3bb;\"")
@@ -2413,7 +2407,6 @@ fn list_access_by_index() {
             "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (element-at -1 10)))",
             "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (take 11 10)))",
             "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
-            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
             "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list (quote! take) xs))",
             "(equal? (catch! (element-at xs -9223372036854775808) e (evaluate-in! values e))
                      (quote! (element-at -9223372036854775808 10)))",
@@ -2426,7 +2419,8 @@ fn list_access_by_index() {
         &mut g,
         &[
             ("(last ())", "range-error"),
-            ("(third (list 1 2))", "range-error"),
+            ("(second (list 1))", "type-error"),
+            ("(third (list 1 2))", "type-error"),
             ("(element-at xs 1.0)", "type-error"),
             ("(drop 2 xs)", "type-error"),
         ],
@@ -3553,4 +3547,91 @@ fn out_of_memory_from_a_run_or_host_allocation_allows_the_next_run() {
         }
     }
     assert!(refused.is_empty(), "{}", refused.join("\n"));
+}
+
+#[test]
+fn record_is_a_new_context_of_its_names_alone() {
+    holds(
+        &mut grift(),
+        &[
+            "(same? (evaluate-in! y (record (quote! (x y)) (list 1 2))) 2)",
+            "(equal? (names (record (quote! (x y)) (list 1 2))) (quote! (x y)))",
+            "(not? (binds? (record () ()) (quote! list)))",
+        ],
+    );
+}
+
+#[test]
+fn a_body_of_several_forms_needs_no_binding_of_the_program() {
+    let mut g = grift();
+    g.evaluate(&mut (), "(define! sequence! 5)").unwrap();
+    holds(
+        &mut g,
+        &[
+            "(same? ((lambda! () 1 2)) 2)",
+            "(same? ((evaluate (list lambda! () 1 2) (context ()))) 2)",
+        ],
+    );
+}
+
+#[test]
+fn an_overflow_is_reported_by_the_arithmetic_that_overflowed() {
+    holds(
+        &mut grift(),
+        &[
+            "(same? (first (catch! (absolute-value -9223372036854775808) e (evaluate-in! values e)))
+                    (unwrap subtract))",
+            "(same? (first (catch! (power 2 100) e (evaluate-in! values e))) (unwrap multiply))",
+        ],
+    );
+}
+
+#[test]
+fn string_split_searches_at_string_searchs_speed() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! short \"abc\") (define! long (string-repeat \"abc\" 1000))",
+    )
+    .unwrap();
+    let (short, _) = cost(&mut g, "(string-split short \",\")");
+    let (long, _) = cost(&mut g, "(string-split long \",\")");
+    assert_eq!(short, long);
+}
+
+#[test]
+fn standard_context_is_a_new_child_of_the_built_in_context() {
+    let mut g = grift();
+    g.evaluate(
+        &mut (),
+        "(define! list 0) (define! mine 1) (define! c (standard-context))",
+    )
+    .unwrap();
+    holds(
+        &mut g,
+        &[
+            "(equal? (evaluate (quote! (list 1 2)) c) (quote! (1 2)))",
+            "(not? (binds? c (quote! mine)))",
+            "(same? (names c) ())",
+            "(same? (bind c (quote! map) 5) #inert)",
+            "(applicative? (evaluate (quote! map) (standard-context)))",
+        ],
+    );
+}
+
+#[test]
+fn every_type_has_a_predicate_named_for_it() {
+    holds(
+        &mut grift(),
+        &[
+            "(all? (lambda! (v)
+                     ((evaluate (string-to-symbol (string-append (symbol-to-string (type-of v)) \"?\"))
+                                (current-context))
+                      v))
+                   (list () #true #inert #ignore 1 1.0 (quote! a) (pair 1 2) \"s\" #bytes() (context ())
+                         vau! first))",
+            "(not? (inert? ()))",
+            "(not? (ignore? #inert))",
+        ],
+    );
 }

@@ -111,7 +111,7 @@
 
 ; Laying out: an output record holds the pieces written so far, newest first, and the column.
 (define! output
-  (lambda! () (let! ((out (context ()))) (bind out (quote! (pieces column)) (list () 0)) out)))
+  (lambda! () (record (quote! (pieces column)) (list () 0))))
 (define! emit-at
   (lambda! (out s column)
     (bind out (quote! (pieces column)) (list (pair s (evaluate-in! pieces out)) column))))

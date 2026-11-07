@@ -142,11 +142,11 @@ which a test shows no program can tell from the Rust.
 | `(list x ...)` | The list of the arguments (5.2.1). |
 | `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. A native primitive. |
 | `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). A native primitive. |
-| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become `(sequence! form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
+| `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become a call of `sequence!`'s value, so a program's own binding of the name changes nothing (5.3.2). |
 | `(current-context)` | The context it is called in (6.7.2). |
 | `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
 | `(not? b)`, `(and!? x ...)`, `(or!? x ...)` | Booleans (6.1). `and!?` and `or!?` evaluate left to right and stop early; every operand they evaluate must give a boolean, the last one included, so it isn't a tail call. |
-| `(empty-list? x)` `(boolean? x)` `(integer? x)` `(float? x)` `(symbol? x)` `(pair? x)` `(string? x)` `(bytes? x)` `(context? x)` `(operative? x)` `(applicative? x)` | A predicate for each type `type-of` gives (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), but `#inert` and `#ignore`, each the only value of its type: `(same? x #inert)`. |
+| `(empty-list? x)` `(inert? x)` `(ignore? x)` `(boolean? x)` `(integer? x)` `(float? x)` `(symbol? x)` `(pair? x)` `(string? x)` `(bytes? x)` `(context? x)` `(operative? x)` `(applicative? x)` | A predicate for each type `type-of` gives (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
 | `(apply a arguments)` | Calls applicative `a`'s combiner on the list `arguments`, in a new empty context (5.5.1). |
 | `(map a list ...)`, `(for-each a list)` | The list of `a` applied to each element, or with several lists to the elements at each place, the lists being of one length (a `type-error` otherwise); `a` on each element in turn, giving `#inert` (5.9.1, 6.9.1). |
 | `(any? a list)`, `(all? a list)` | Whether `a` gives `#true` for some element, for every element, from the left, stopping at the answer. `a` must give booleans. |
@@ -154,7 +154,7 @@ which a test shows no program can tell from the Rust.
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
 | `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
-| `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
+| `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. `second` and `third` are `(first (rest list))` and `(first (rest (rest list)))`, so a list too short is `first`'s `type-error`. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`; `(last ())`, with no index, gives `range-error last ()`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
 | `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
@@ -163,6 +163,7 @@ which a test shows no program can tell from the Rust.
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. `interrupted`, `abandoned` and `out-of-memory` are never caught. |
 | `(catch-kind! body kind e handler ...)` | `catch!` for the errors of one kind, the symbol `kind`, unevaluated: `(catch-kind! (string-to-integer s) parse-error e 0)`. An error of any other kind goes on unchanged, with the trace it had, as `(raise e)` in a `catch!` passes it on. A `kind` that isn't a symbol is a `type-error`. |
 | `(bindings c)` | Context `c`'s own bindings as data: a list of `(name value)`, sorted by name as `names` gives them, so a record's fields are a list: `(bindings (error (quote! e) 1))` is `((kind e) (trace ()) (values (1)))`. |
+| `(record names values)` | A new context with no parent, `values` bound to `names` as `bind` matches them: `(record (quote! (x y)) (list 1 2))`. |
 | `(error kind value ...)` | A new error: a context with no parent binding `kind`, `values` (the list of the values) and an empty `trace`. It raises nothing; `raise` does. |
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
@@ -182,6 +183,7 @@ which a test shows no program can tell from the Rust.
 | `(string-repeat s count)` | `s` `count` times, as Rust's `str::repeat`; a count below 0 is a `range-error`. |
 | `(string-pad-left s width fill)`, `(string-pad-right s width fill)` | `s` with copies of `fill`, a string of one byte, before it, after it, up to `width` bytes; `s` itself if it is that long already: `(string-pad-left "7" 2 "0")` is `"07"`. A `fill` of any other length is a `range-error`. |
 | `(string-to-lowercase s)` | `s` with `A` to `Z` made `a` to `z` and every other byte as it is, as Rust's `to_ascii_lowercase`. |
+| `(standard-context)` | A new child of the built-in context: it sees the language and nothing of any program, and what is bound in it stays there (6.7.7). The built-in context itself stays out of reach. |
 | `built-in-names` | The list of every name above and every primitive's, bound when the library is loaded. |
 
 Programs run in the **top-level context**, a child of the **built-in context**, which is out of
@@ -284,7 +286,7 @@ reports `out-of-memory`, isn't caught either.
 | `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the primitive and the operands; or the parameters and the value |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
-| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the primitive or library combiner's name, and the operands |
+| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included, where the arithmetic inside them reports it; a shift by an amount outside 0 to 63 | the primitive and its operands |
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
 | `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative count or exponent; a fill that isn't one byte | the primitive and the operands; or the library combiner's name and the value; for a list index, the name, the index and the length; for `list-to-bytes`, the primitive, the integer and its position |
 | `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the primitive, the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
@@ -307,16 +309,7 @@ is `parse-error unclosed-list 2 2`.
 A host function that replaces its interpreter ends the run with `foreign-value` too.
 
 The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
-describes each. Those added with the evidence of wave 4:
-
-| Operation | Meaning |
-|---|---|
-| `(load path)` | The file's forms, all read first, evaluated in turn in the caller's context, as Kernel's `load`; a relative path is relative to the file being loaded when `load` is called (at first the script). Its combinations keep their lines, so the runner reports an error `at path:line`. |
-| `script-path` | The script's path as given; unbound for a program on stdin. |
-| `(read-file path)` | The file's whole text. |
-| `(display-error v ...)` | `display`, to stderr. |
-| `(read-bytes count)`, `(write-bytes bytes)` | On reader and writer contexts (`open-file`'s, `create-file`'s, `standard-input`, `standard-output`, `standard-error`): a bytes value of `count` bytes as soon as they have come, fewer at the end of input, `#bytes()` at the end; a bytes value's bytes, as they are (anything else is a `type-error`). |
-| `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | The system's time since 1970 UTC, which can be set back; the time since the run started, which never goes back. |
+describes each.
 
 ## Calls that wait
 
@@ -373,8 +366,6 @@ had died. The README's embedding section gives the host's side.
 - **`apply` has one form,** `(apply a arguments)`, with a new empty context; `for-each` takes one
   list, and `map` lists of one length, as Kernel's does. `context` takes at most one parent.
 - **New, not in Kernel:** `bind`, `unbind`, `lookup`, `names` and `built-in-names`, `select`,
-  `type-of`, `when!`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
+  `type-of`, `when!`, `record`, `error`, `raise`, `catch-kind!`, `reverse`, `read-form`, `value-to-string`, bytes,
   `any?`, `all?`, `fold`, `range`, `sort`, the list access by index, the bitwise
   operations, and the string and float primitives and helpers.
-- **`lambda!` keeps the symbol `sequence!`** in a body of several forms, so the body prints as
-  written. It is looked up where the body runs, like any other name in it.

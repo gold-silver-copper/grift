@@ -121,9 +121,7 @@
 
 ; Formulas see the library as it was when the program started, the range functions, and the
 ; sheet's own functions; not this program's definitions.
-(define! library (context ()))
-(for-each (lambda! (n) (bind library n (evaluate n (current-context)))) built-in-names)
-(define! functions (context library))
+(define! functions (standard-context))
 (define! function-sources ())
 ; The range functions. grift never mixes integers and floats, but a column often does
 ; (1200 and 310.5), so sum and average add integers as floats once a float is among them.

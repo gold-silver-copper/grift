@@ -26,13 +26,6 @@
   (lambda! (x xs)
     (if! (same? xs ()) () (pair (first xs) (if! (equal? x (first xs)) () (up-to x (rest xs)))))))
 
-; A new context binding names to values: a record.
-(define! record
-  (lambda! (names values)
-    (let! ((c (context ())))
-      (bind c names values)
-      c)))
-
 ; ---------------------------------------------------------------------------------------------
 ; Errors. The tool's own are of kind build-error; their values are the pieces of the message.
 
