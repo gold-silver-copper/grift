@@ -545,7 +545,7 @@ impl<T> Grift<T> {
                     }
                     What::Cleanup { cleanup, .. } => {
                         self.machine.here = at;
-                        self.start_cleanup(Ok(v), cleanup, context, at)
+                        self.start_cleanup(Ok(v), cleanup, context, at)?
                     }
                     What::Handler { .. } => {
                         self.machine.here = at;
@@ -621,7 +621,7 @@ impl<T> Grift<T> {
                     locate(&mut e, at);
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    return Ok(self.start_cleanup(Err(e), cleanup, context, at));
+                    return self.start_cleanup(Err(e), cleanup, context, at);
                 }
                 What::Handler { handler, base } if !e.limit => {
                     self.machine.arguments.truncate(base);
@@ -651,15 +651,16 @@ impl<T> Grift<T> {
     }
 
     /// A popped `Cleanup` frame becomes a `Finish` frame and a call of the cleanup, and its room in
-    /// `waiting` this ending. Its install made all that room, so a cleanup's start can't fail: the
-    /// next check comes first, and a refusal after it is the cleanup's first step failing.
+    /// `waiting` this ending. Its install made all that room, so a cleanup's start doesn't fail: the
+    /// next check comes first, and a refusal after it is the cleanup's first step failing. The
+    /// call's frame goes on the machine's usual way, a plain `push` here costing every step 25%.
     fn start_cleanup(
         &mut self,
         ending: Result<Value, Error>,
         cleanup: Value,
         context: Reference,
         at: Reference,
-    ) -> Mode {
+    ) -> Result<Mode, Error> {
         let m = &mut self.machine;
         m.waiting.pop();
         m.waiting.push(ending);
@@ -674,9 +675,8 @@ impl<T> Grift<T> {
             at: Reference::NONE,
         });
         let operands = Value::EmptyList;
-        let what = What::Combine { operands };
-        m.frames.push(Frame { what, context, at });
-        Mode::Return(cleanup)
+        self.frame(What::Combine { operands }, context, at)?;
+        Ok(Mode::Return(cleanup))
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,

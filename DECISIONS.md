@@ -1574,3 +1574,127 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   can't be caught by `catch!` or `catch-kind!`, and an ordinary error in a cleanup doesn't replace
   it. A limit goes by its kind (`limit` in `evaluate.rs`), as `interrupted` and `out-of-memory`
   already did. `cannot-park` isn't a limit and stays catchable. `programs/` doesn't use the name.
+
+## One model of how a run ends, 2026-11-06
+
+- **G-170. A run ends one way: it unwinds with a reason, and who began the unwinding decides what may
+  catch it** (the owner: "the philosophy of grift is that it must be super simple"; of `limit()`'s
+  test of a kind's name: "completely against the philosophy of grift"; "don't care about the recorded
+  decisions too much, they can be changed if evidence is against them").
+  - **The model.** An error carries one bit, `limit`, which only the host (a stop, a force,
+    `Error::as_limit`) and the machine (memory refused) can set. A handler runs only if it is clear.
+    No kind's name decides anything: kinds are data. **One rule for a reason arriving during a
+    cleanup: the newest reason wins, unless a program's would replace a limit** (`What::Finish` in
+    `unwind`, and LANGUAGE "What can be caught"). **The host can always end a run:** that beats
+    "cleanups always finish", as every working build chose and a 10/10 panel voted. So: `stop` as it
+    was, `force` ending everything, no hold, no run report.
+  - **One word instead of mailboxes.** An interpreter and its handles share an atomic word: the run
+    in progress and two bits. A stop and a force are one compare-exchange, parking is a
+    compare-exchange that fails if anything was asked, and the machine clears only the stop bit, so a
+    force needs no code of its own: it is a stop that stays asked.
+  - **Replaces in G-17:** "only loaded and stored, never swapped". Its reason was `thumbv6m`, gone
+    with G-25 and G-32; `AtomicU64` already excludes that target and wasm32 has it. Atomics are
+    lock-free where they exist, so a compare-exchange is safe in a signal handler, and no signal
+    handler stops a run in this repo. Force had already broken the rule with `fetch_max`.
+  - **Replaces in G-26 and G-35:** a limit "known by its code". Evidence: `limit()` was a test of a
+    name in a language where any word can be rebound; a program's `(raise (error (quote!
+    interrupted)))` could not be caught and looked real to the host.
+  - **Reverses, by the owner, G-35's acceptance** "the host can't tell it from a real one; accepted,
+    since only the program loses by it". A program can't forge a limit now: its error of any name is
+    caught, and `is_limit` says false. (`a_program_or_a_host_function_can_only_make_what_is_caught`,
+    and the forgeries in the generated test.)
+  - **Replaces in G-168:** the cleanup a machine-stack allocation can pass over as it starts. A
+    cleanup's install now makes the room its start needs, so its start can't fail, and the first
+    thing that can is its first step, where the next check comes first. Evidence: a property test
+    found force, then a refused cleanup call, reporting `out-of-memory` where the docs said
+    `interrupted` (seed 9077, on four of seven builds). (`a_force_names_the_ending_whatever_memory_refuses_next`,
+    `a_cleanups_install_makes_the_room_its_start_needs`.) G-168's other findings stand as true.
+  - **Replaces in G-169:** `abandoned` as a reserved limit kind, `limit` by kind, `Deliver`/`Raise`,
+    `enum Parking`, and `Grift::abandon` with its "**Not taken:** a cleanup that waits during
+    `abandon`". A host gives a run up by answering its wait with a limit, so abandon is no longer a
+    thing. Evidence: both judges named it as already expressible; it removes the method, `take_up`'s
+    flag, the kind, one replacement place, one decision, and the only exception sentence any build
+    removed. G-169 feared hosts must loop and a run may outlive the call that ends it: they loop
+    only if they want to end a cleanup that waits, which is what a run that waits is, and `examples/emacs`
+    needed about 20 lines for it. The fiber, the linear handle, `forgotten` and their tests stand.
+  - **Replaces G-109, G-112, G-125, G-129's counts, G-131 and G-140** (one mailbox per handle, a lock
+    stops don't take, counts per mailbox, a poll with no run): the word has no half-written state, so
+    the interleavings they guarded can't exist. **G-123** (interrupter allocations may abort): a handle
+    no longer allocates. **G-130** stands in behaviour; tests for panic, replacement and restore pass
+    unedited.
+  - **Replaces in G-70 and G-82:** `exit` setting the runner's interrupt: `exit` is a limit of kind
+    `exit`, its status in its values, read once at the boundary; a program's own `exit` error is
+    ordinary. An unreadable script is `file-error`, status 1, and 2 is usage only. A broken pipe is the
+    error `broken-pipe` on any file, which uncaught ends the run quietly with 0, so nothing knows which
+    file is stdout.
+  - **Replaces in G-48 and G-115:** `call-with-handler`. `(evaluate-with-handler x c h)` has
+    `evaluate-with-cleanup`'s shape, and `catch!` allocates one closure less. A judge asked for the
+    library wrapper back; another for no helper: none, since nothing needs it and `programs/meta` now
+    calls the primitive directly.
+  - **Replaces in G-22 and G-26:** a re-raise adds no location; its reason went with G-29. Every raise
+    adds its own, once.
+  - **Questions settled, each by the simplest true rule:**
+    - *Force on a handle that never stopped anything:* it forces the run in progress. A handle forces
+      the run it last reached, by a stop or a force, and that one only; a clone starts as its source
+      is. So a late force from a handle that reached a run never reaches another. A fresh handle has
+      the hazard a stop has. Evidence: a watchdog that only forces waited for ever (two red teams, three judges).
+    - *A cleanup that waits while a limit leaves:* it is a run that waits, like any other. Answered
+      with a value it goes on; with a limit it ends there, and the first limit stays unless a newer one replaces it.
+    - *A stale limit:* it arrives as `stale-value` and stays a limit. The kind says what the host
+      handed in; the bit says who began it.
+    - *The first refusal costs the cleanup it lands in:* that cleanup was tried. A later one has what
+      the collection freed. One retry was measured on another build and did not fix it.
+    - *Only memory really refused asks for a collection,* by a `refused` mark `Error::oom` sets and
+      nothing else can, not by the kind. A host's limit named `out-of-memory` collects nothing: it names
+      a reason, and the host can say that without any memory having been refused.
+    - *Run numbers wrap after 2^62 runs,* 146 years at one a nanosecond. Not handled: a refusal path for
+      it would be code for a case that can't happen. One judge asked for it.
+  - **Not done:** `run-process` still aborts on memory refused: `Command::output` buffers infallibly,
+    and replacing it means hand-written pipes and threads. Stale limits don't keep their kind, so a
+    stale `exit` is status 1.
+  - **What this is by the count the owner asked for** (hand recount on both censuses' manifests, against
+    `ce508a4`, master plus #206 plus force, the same features): Opus count ending decisions 43 to 23,
+    reason replacements 14 to 8; Codex count 48 to 31 and 9 to 9. The rule set before the work says a
+    real removal halves both, so this is **only renames by that rule, nearly there on one census and not on the other**.
+    What did go: the mailbox protocol, force's own path, the left-the-run checks, the `Parking`
+    enum, `abandon`. Non-test Rust 3348 to 3219 lines; public items 90 to 91; exception sentences 6 to 5.
+
+- **G-171. The continuations spike: "no continuations" stands, on this evidence and not because it was
+  recorded** (the owner: "use all our agentic skills to spike continuations"; tests G-35's and G-53's "no
+  continuations of any kind"). The hypothesis: `catch!`, `finally!`, stop, force, exit, out of memory,
+  abandon and parked runs are one thing, delimited one-shot continuations with markers, and holding a
+  marker replaces a name. Four independent builds, by writers who hadn't seen the others, on branches
+  `spike/continuations-k1` to `k4`, which stay local:
+
+  | Build | Mechanism | Ending decisions, Opus / Codex | Replacements, Opus / Codex | Rust lines against baseline | fib, life, `finally!`, `catch!` against master |
+  |---|---|---:|---:|---:|---|
+  | baseline | master, #206 and force | 43 / 48 | 14 / 9 | | +2.12, +3.29, +3.82, +3.43 |
+  | k1 | public capture, marker on `raise` | 50 / 62 | 14 / 9 | +271 | **+4.96, +7.81, +7.85, +6.46** |
+  | k2 | public markers, capture, one-shot resume | 69 / 84 | 21 / 14 | +455 | **+7.07, +5.65, +8.24, +8.01** |
+  | k3 | prompt and jump in the library, no capture | 39 / 47 | 11 / 10 | -107 | -4.78, -2.05, **+25.37**, -5.69 |
+  | k4 | private markers and a captured suffix | 59 / 70 | 19 / 15 | +248 | -0.99, +0.58, +1.24, -0.11 |
+  | G-170's model, as judged | one bit on the error | 24 / 32 | 9 / 9 | -114 | -6.14, -3.07, -1.80, -7.33 |
+
+  Halving, the rule set before counting, is 21 and 7 on the Opus count, 24 and 4 on the Codex count: no
+  continuation build comes near, and three grow. Bold misses the speed bands of +2% on fib and life and
+  +5% on all four; one desk pass with another program loaded from its 53rd second, whose first two
+  rounds give the same verdicts. All builds keep all 6 exception sentences (5 on the Codex count).
+  - **Red teams.** Two, on all builds. No design defect in any continuation build: their defects were
+    small fixes, 11 to 16 lines each, so this is no finding that continuations are unsound. But a kept
+    limit became catchable on all four, because a fresh validation error lost its authority, and on k4
+    even a rooted one, because an error's address dies with its run; a cleanup above a deep stack
+    starved on all four, 75 of 75 budgets in one sweep. The two public mechanisms' 41 and 40 continuation
+    tests pass, a 3,000-step generator and a 200,000-link chain among them.
+  - **Samples and property test.** Same harm on all of them once measurement effects are removed, 185
+    to 248 per 11,700 trials, against master's 612 lost workers to their 121 to 221. Three builds' new
+    kind `forced` made about 1,400 trials per build read as plain errors to unchanged hosts. A late
+    force from an old handle ended the next run on all four.
+  - **What the hypothesis survives as.** Stop, force, exit, out of memory and abandon are one thing,
+    and what unifies them is one bit, not an address: the only destinations in use are "a program's
+    handler" and "the host". Addresses add liveness and routing decisions on top of the same policy:
+    the more general the mechanism, the higher the count. Parked runs don't unify: capture refuses to
+    cross a cleanup or a host floor and parking must cross cleanups, so public capture carries both
+    mechanisms. Force isn't a transfer to anywhere, and out of memory still needs a collection.
+  - **Three blind judges, one pick:** this model, 87, 87 and 87 of 100; the best continuation build 61,
+    69 and 60.5. None dissented. If a language ever wants generators as a feature, that is a
+    feature to weigh by itself: the k1 and k2 tests show it can work, and nothing here asks for it.
