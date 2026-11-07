@@ -1698,3 +1698,61 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   - **Three blind judges, one pick:** this model, 87, 87 and 87 of 100; the best continuation build 61,
     69 and 60.5. None dissented. If a language ever wants generators as a feature, that is a
     feature to weigh by itself: the k1 and k2 tests show it can work, and nothing here asks for it.
+
+- **G-172. The audit's cleanups on one way for a run to end** (the special-cases audit: findings U1 to U134,
+  each routed by two readers; this PR carries 45 of them, on G-170's model). G-170 wins on stop, force,
+  exit, parking and unwinding wherever the two met. Each line names what it replaces and its evidence,
+  a test unless it says otherwise.
+  - **Replaces in G-6, G-83:** the interactive loop in Rust. It is grift in `runner.grift`, under one
+    host word that reports an error as any run's is; G-83's read-before-evaluate holds in `unfinished?`.
+    Evidence: `a_terminal_session_goes_on_past_an_error_and_ends_with_its_input`, `a_program_at_a_terminal_reads_the_next_line`, which hung before.
+  - **Replaces in G-70, G-82, G-100, G-106, G-146:** standard streams are files like any other, with
+    `path` and `close`; a program on stdin finds it at its end, not `closed`; `write` takes a string or
+    bytes and `write-bytes` goes; `display` fails with `file-error` and the stream's path and
+    `output-error` goes, so `broken-pipe` (G-170) comes from the one path. Evidence: `a_standard_stream_is_a_file_like_any_other`, `standard_input_is_data_for_a_script`, `a_failed_write_is_an_error`.
+  - **Replaces in G-170 and G-69:** "2 is usage only". The first argument is always the script, so
+    no usage error is left and nothing gives status 2. One that can't be read is G-170's `file-error`,
+    status 1, then the usage. Evidence: `the_first_argument_is_the_script_whatever_its_spelling`.
+  - **Replaces in G-98:** `script-path` conditional; it is always bound, `""` on stdin. **In G-119,
+    G-120, G-151:** programs get `read-forms` and `position`, and `load` is grift over them. **In G-164,
+    its last rule:** the runner's prefix exception; every error starts with its source. Evidence: `script_path_is_always_bound`, `a_program_s_own_loader_gets_the_lines_load_gets`, `a_parse_error_says_where_the_form_opened`.
+  - **Replaces in G-111, G-108, G-11, G-113, G-152:** the third root context and the reserved `KEPT` ids. A kept
+    value is an entry in one private table. **In G-170's parking:** a parked run returned its kept name as
+    a symbol nothing else could be; with no reserved ids, `park` leaves the name in one field `ran` takes.
+    What a host and a program see of parking is G-170's. Evidence: the API and parking tests, unchanged.
+  - **Replaces in G-76, G-120:** `Error::trace()`, `is_kind` and `as_string`; `trace` is a public field checked
+    as values are, kinds are read with `symbol_name`, and hosts copy with `as_str`. The audit's one
+    loss, a runner out-of-memory copying a string becoming catchable, is gone: G-170's `as_limit` makes it a limit.
+  - **Replaces in G-97, G-136, G-151, G-163, G-164:** a source held as a string in the trace; it is a symbol.
+    **In G-77, G-142, G-144:** the reader's second loop for `#bytes(`; the literal stands.
+    **In G-69, G-87:** `#!` on the first line only; it starts a comment wherever a token can.
+    **In G-143, G-147:** only bytes counting their storage; strings do too. The finding's 522 MiB against 13 MiB was not re-measured here.
+  - **Replaces in G-14, G-20, G-103, G-118:** `(context)`; `(context ())` is the one form. **In G-60, G-20, G-118:**
+    a program can make a child of the built-in context with `(standard-context)`. **In G-7:** `built-in-names`
+    is a listing only. **In G-67, G-85:** `inert?` and `ignore?` are back: every type has a predicate. **In G-94,
+    G-102:** an overflow names the arithmetic that overflowed, and `second` and `third` give `first`'s type-error.
+  - **Replaces in G-5, G-160, G-161, G-162, G-165:** the build script and fixed-size parts of the stack test; a
+    scratch Cargo package and 24 KiB a callback. 384 KiB passes and 288 KiB overflows, on aarch64 only.
+  - **Replaces in G-116, G-126, G-135:** the machine's switch for tests. Tests rebind each native's definition;
+    the 3,129-case comparison passes. **In G-110, G-117, G-126, G-148, G-81:** twins. `if!`, `sequence!` and
+    `string-search` are native primitives with definitions in `natives.grift`, `string-split` calls the search
+    (split -91.9%), and `bytes-search` is the one search walker. **G-128, G-141 and G-150** stay as records of what
+    was measured then; G-150's meta test went from 19.3 s to 7.5 s against master on this head.
+  - **G-33, G-31 and `vau!`:** `vau!` takes any number of body forms, so `lambda!`'s branch, G-33's complaint,
+    is gone. The rule it replaces wasn't in a decision: G-31 says nothing about it, whatever a routing reader
+    wrote; it was the `(vau! parameters context-parameter body)` line of `LANGUAGE.md`. Evidence: `an_operative_takes_any_number_of_body_forms_and_prints_them_as_written`.
+  - **Settled by G-170 and not done again:** U2, U10, U16, U22, U53, U54, U57, U58, U63, U89 and the other job-one findings.
+    **Dropped by measurement:** U46 (fib +0.79 alone, over the limit with U50), U55 (1M calls +115.6%), U97
+    (life +4.75%, 300k-element loop +145%), U32, all 24 (smallest loss +1066%).
+  - **Two speed reversals inside the audit:** `names` has its own function (U78 cost fib about 5 points)
+    and a call reserves its bindings ahead again (U61 cost life about 2 points); one walker stays.
+  - **A band revised (CLAUDE.md's rule).** Original target: within +2% of one-model's head per step. Desk, 7
+    interleaved rounds, fat LTO: fib **+5.97%** against `a1bd80f`, **-1.21%** against master `56713e7`; life -0.51%,
+    -3.44%; programs total -31.68%, -36.46% (without meta -5.28%, +1.00%). Fib is what misses. Head runs 0.8% fewer
+    instructions on fib than `a1bd80f`, and pinning code alignment still leaves +4.7%. Without U50 (a timing-only build)
+    fib is +3.15%, its branch misses fall from 769k to 474k, and `finally!` goes from +4.87% to +1.32%. Other
+    shapes of U50 didn't help: `combine` hinted inline +5.69%, `if!` read directly +8.05%, on top of three earlier.
+    So U50 costs fib about 2.7 points and dropping it wouldn't reach the band. Kept, because it removes the
+    twin mechanism and an earlier pass measured it as most of meta's gain (-46.8%; not re-measured without it here). New target, as measured: fib within about +6% of one-model's
+    head and level with master. What is left of the +3.15% wasn't separated. A byte copy of master read +6.87%
+    against one-model's head in that pass, so much of the gap is how fast one-model's own fib came out.
