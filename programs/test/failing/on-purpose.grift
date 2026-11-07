@@ -77,7 +77,7 @@
 (test! "an expectation of the file's own, failing"
   (expect-even! (add 1 2)))
 
-(define! make-point (lambda! (x y) (let! ((p (context))) (bind p (quote! (x y)) (list x y)) p)))
+(define! make-point (lambda! (x y) (let! ((p (context ()))) (bind p (quote! (x y)) (list x y)) p)))
 
 (test! "two records with the same fields"
   (expect-equal! (make-point 1 2) (make-point 1 2)))

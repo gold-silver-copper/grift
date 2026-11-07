@@ -2,18 +2,19 @@
 
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
-use crate::local::{Error, K, Symbol, Value, boxed, push};
+use crate::local::{Error, K, Symbol, Value, push};
 use crate::{Grift, Position};
 use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
-/// and line of its `(`.
+/// and line of its `(`. A `#bytes(` literal is a list whose elements go in `bytes` instead.
 struct List {
     head: Value,
     last: Value,
     dot: Dot,
     start: usize,
     line: u32,
+    bytes: Option<Vec<u8>>,
 }
 
 impl List {
@@ -24,6 +25,7 @@ impl List {
             dot: Dot::No,
             start,
             line,
+            bytes: None,
         }
     }
 }
@@ -46,12 +48,7 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn peek(&self) -> Option<char> {
-        let &byte = self.src.as_bytes().get(self.at)?;
-        if byte.is_ascii() {
-            Some(char::from(byte))
-        } else {
-            self.src.get(self.at..)?.chars().next()
-        }
+        self.src.get(self.at..)?.chars().next()
     }
 
     fn next(&mut self) -> Option<char> {
@@ -65,9 +62,9 @@ impl Cursor<'_> {
 
     fn skip_space(&mut self) {
         while let Some(c) = self.peek() {
+            let rest = self.src.get(self.at..).unwrap_or_default();
             match c {
-                ';' => {
-                    let rest = self.src.get(self.at..).unwrap_or_default();
+                _ if c == ';' || rest.starts_with("#!") => {
                     self.at += rest.find('\n').unwrap_or(rest.len());
                 }
                 c if c.is_whitespace() => {}
@@ -111,14 +108,12 @@ impl<T> Grift<T> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) =
-            self.read_form(src, at, line, source).or_else(|mut e| {
-                if e.kind == K::ParseError.into()
-                    && let Some(source) = source
-                {
-                    let name = self.source_string(source)?;
-                    push(&mut e.trace, name)?;
+            self.read_form(src, at, line, source).map_err(|mut e| {
+                // With no memory to spare the trace stays as it is, as for any location.
+                if let Some(source) = source {
+                    let _ = push(&mut e.trace, Value::Symbol(source));
                 }
-                Err(e)
+                e
             })?
         {
             if let (Some(_), Value::Pair(r)) = (source, form)
@@ -130,20 +125,6 @@ impl<T> Grift<T> {
             (at, line) = (place.end, after);
         }
         Ok(forms.head)
-    }
-
-    // Only malformed named input needs this allocation path; keep it out of the reader loop.
-    #[cold]
-    #[inline(never)]
-    fn source_string(&mut self, source: Symbol) -> Result<Value, Error> {
-        // Source ids are interned, below the disjoint host-kept ids at KEPT and above.
-        if let Some(name) = self.find(self.kept, source)? {
-            return Ok(name);
-        }
-        let text = boxed(self.name(source))?;
-        let name = Value::String(self.heap.alloc(Object::String(text))?);
-        self.bind_symbol(self.kept, source, name)?;
-        Ok(name)
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
@@ -160,10 +141,6 @@ impl<T> Grift<T> {
             at: from,
             line,
         };
-        // A first line starting with `#!` reads as a comment, so a script can run itself.
-        if from == 0 && src.starts_with("#!") {
-            cur.at = src.find('\n').unwrap_or(src.len());
-        }
         cur.skip_space();
         let start = cur.at;
         let mut open: Vec<List> = Vec::new();
@@ -171,6 +148,7 @@ impl<T> Grift<T> {
             cur.skip_space();
             let begin = cur.at;
             let fail = |reason| parse_error(src, begin, reason);
+            let in_bytes = open.last().is_some_and(|list| list.bytes.is_some());
             let Some(c) = cur.next() else {
                 return match open.last() {
                     None => Ok(None),
@@ -178,11 +156,15 @@ impl<T> Grift<T> {
                 };
             };
             let datum = match c {
+                '(' if in_bytes => return Err(fail(K::BadByte)),
                 '(' => {
                     push(&mut open, List::new(begin, cur.line))?;
                     continue;
                 }
                 ')' => match open.pop() {
+                    Some(List {
+                        bytes: Some(bytes), ..
+                    }) => self.bytes_local(bytes)?,
                     Some(list) if list.dot != Dot::Tail => {
                         if let (Some(source), Value::Pair(r)) = (source, list.head) {
                             self.place(r, source, list.line)?;
@@ -208,17 +190,23 @@ impl<T> Grift<T> {
                         }
                     }
                     if token == "#bytes" && cur.peek() == Some('(') {
-                        let open = cur.at;
-                        cur.next();
-                        self.read_bytes(&mut cur, open)?
-                    } else {
-                        let reason = if token.starts_with('#') {
-                            K::UnknownConstant
-                        } else {
-                            K::BadNumber
+                        if in_bytes {
+                            return Err(fail(K::BadByte));
+                        }
+                        let list = List {
+                            bytes: Some(Vec::new()),
+                            ..List::new(cur.at, cur.line)
                         };
-                        self.atom(token).ok_or_else(|| fail(reason))??
+                        push(&mut open, list)?;
+                        cur.next();
+                        continue;
                     }
+                    let reason = if token.starts_with('#') {
+                        K::UnknownConstant
+                    } else {
+                        K::BadNumber
+                    };
+                    self.atom(token).ok_or_else(|| fail(reason))??
                 }
             };
             let Some(list) = open.last_mut() else {
@@ -227,7 +215,16 @@ impl<T> Grift<T> {
             if list.dot == Dot::Done {
                 return Err(fail(K::MisplacedDot));
             }
-            self.add(list, datum)?;
+            match &mut list.bytes {
+                Some(bytes) => {
+                    let byte = match datum {
+                        Value::Integer(n) => u8::try_from(n).ok(),
+                        _ => None,
+                    };
+                    push(bytes, byte.ok_or_else(|| fail(K::BadByte))?)?;
+                }
+                None => self.add(list, datum)?,
+            }
         }
     }
 
@@ -297,36 +294,6 @@ impl<T> Grift<T> {
             _ => return Some(self.intern(token).map(Value::Symbol)),
         };
         Some(Ok(v))
-    }
-
-    /// The bytes of a `#bytes(...)` literal after its `(`, at offset `open`: integers 0 to 255,
-    /// as the reader reads an integer, with space and comments between them, up to the `)`.
-    fn read_bytes(&mut self, cur: &mut Cursor, open: usize) -> Result<Value, Error> {
-        let src = cur.src;
-        let mut bytes = Vec::new();
-        loop {
-            cur.skip_space();
-            let begin = cur.at;
-            match cur.next() {
-                None => return Err(parse_error(src, open, K::UnclosedList)),
-                Some(')') => break,
-                Some(c) if delimiter(c) => return Err(parse_error(src, begin, K::BadByte)),
-                Some(_) => {
-                    while cur.peek().is_some_and(|c| !delimiter(c)) {
-                        cur.next();
-                    }
-                    let token = src.get(begin..cur.at).unwrap_or_default();
-                    match token.parse::<i64>().ok().and_then(|n| u8::try_from(n).ok()) {
-                        Some(byte) => push(&mut bytes, byte)?,
-                        None if token == "." => {
-                            return Err(parse_error(src, begin, K::MisplacedDot));
-                        }
-                        None => return Err(parse_error(src, begin, K::BadByte)),
-                    }
-                }
-            }
-        }
-        self.bytes_local(bytes)
     }
 
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,

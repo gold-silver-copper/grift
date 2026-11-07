@@ -4,7 +4,7 @@
 
 (define! make-counter
   (lambda! ()
-    (let! ((state (context)))
+    (let! ((state (context ())))
       (bind state (quote! count) 0)
       (lambda! ()
         (bind state (quote! count) (add (evaluate (quote! count) state) 1))

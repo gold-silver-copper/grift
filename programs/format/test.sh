@@ -82,5 +82,18 @@ listed=$($format --check "$work/tricky.grift" "$work/formatted.grift"); status=$
 $format --check "$work/nope.grift" 2>/dev/null; [ $? = 1 ] && pass "5 a missing file is an error" || fail "5 missing file"
 $format 2>/dev/null; [ $? = 2 ] && pass "usage error exits 2" || fail "usage"
 
+# 6. A #! comment wherever a token can start is kept as a ; comment is, and what follows is formatted.
+printf '(list 1 #!x\n)\n' > "$work/inner.grift"
+printf '(list 1)\n#!x\n' > "$work/last.grift"
+printf '#!x\n(list   1)\n' > "$work/first.grift"
+printf '(list 1) #!x\n(list   2)\n' > "$work/trailing.grift"
+for f in inner last first trailing; do
+    if ! $format "$work/$f.grift" > "$work/$f.1"; then fail "6 $f: format failed"; continue; fi
+    grep -q '#!x$' "$work/$f.1" && pass "6 $f keeps its comment" || fail "6 $f lost its comment"
+    $grift "$here/tests/same-forms.grift" "$work/$f.grift" "$work/$f.1" && pass "6 $f reads back the same" || fail "6 $f: forms changed"
+done
+grep -qx '(list 1)' "$work/first.1" && pass "6 a form after a #! comment is formatted" || fail "6 form after a comment"
+grep -qx '(list 2)' "$work/trailing.1" && pass "6 a form after a trailing #! comment is formatted" || fail "6 form after a trailing comment"
+
 echo "$failures failures"
 [ $failures = 0 ]

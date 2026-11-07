@@ -129,7 +129,7 @@ from an id. Closing is explicit (no finalizers), and using it after that is the 
 
 ## The runner
 The `grift` runner is a Unix tool: it runs a script or stdin, prints data to stdout and diagnostics
-to stderr, and exits 0, 1 on an error, 2 on a usage error. It gives programs a small, fixed set of
+to stderr, and exits 0, or 1 on an error. It gives programs a small, fixed set of
 host operations: reading stdin as data, writing to stderr, files (as contexts of operations, as
 text or as bytes), loading another file's forms, the command-line arguments and the script's
 path, environment variables, two clocks, the exit status, and running processes.
@@ -141,10 +141,11 @@ representations. When simple and fast disagree, simple wins and the cost is writ
 forms are `vau!` operatives that walk their operands and call `evaluate`; no expansion caching, no
 compile step. A library form may have a native twin, proven equal and justified by a measurement on
 `programs/`: the library's own operative, run in Rust when its operands are the shape the twin
-handles and by its body otherwise, so a program can't tell them apart (`if!`, `sequence!` and
-`string-search`, owner, 2026-11-02). Everything else keeps one evaluation path per kind of form.
+handles and by its body otherwise, so a program can't tell them apart (`if!` and `sequence!`, owner,
+2026-11-02). Everything else keeps one evaluation path per kind of form.
 The primitives are core, what grift can't express, or native, there for speed, each with its grift
-definition as its meaning and a test that no program can tell the two apart.
+definition as its meaning and a test that no program can tell the two apart, but for how each
+prints.
 
 ## Errors
 An error has a kind (a symbol such as `type-error`), the values involved, and a trace: the program
@@ -153,17 +154,23 @@ named text, so the host says `at config.grift:12`. `(error kind value ...)` make
 raises it: `(raise (error (quote! type-error) x))`. `finally!` runs cleanup as an error passes and
 lets it go on, unless the cleanup fails or a limit cuts it (`LANGUAGE.md` has each case).
 `catch!` catches: cleanups run first, then the handler receives the error as a context with no parent, binding `kind`, `values` and `trace`; `(raise e)` passes a caught error on,
-keeping its trace. Errors about the program can be caught; limits set by the host or the machine,
-`interrupted` and `out-of-memory`, never can, and always reach the host. Early exit is `catch!` with
+keeping its trace. What a program raises can be caught; limits the host or the machine began,
+never, and they always reach the host. Early exit is `catch!` with
 an error kind of your own; there is no other escape. (Unlike Common Lisp's `catch`, which is a
 non-error escape, grift's `catch!` catches errors.) Under them are two primitives,
-`call-with-handler` and `evaluate-with-cleanup`.
+`evaluate-with-handler` and `evaluate-with-cleanup`.
 
 ## No continuations
 Generators and backtracking are closures or lazy streams; a language built on grift that wants
 `call/cc` writes its evaluator in continuation-passing style, which proper tail calls make cheap.
 Continuations would cost the meaning of cleanup and of interruption, and the simplicity of the
 machine.
+
+One-shot delimited continuations were built four ways and measured; they removed no ending rule and
+added routing on top (G-171). A host can do one narrower thing (G-169): set a run aside at a call to one of its own functions, and
+take it up once. The language gains no name; no program can capture anything, or come back twice.
+Cleanups keep their meaning because a run left waiting is the host's to resume, with a value or a
+limit that ends it, and a run under a host call can't be set aside at all.
 
 ## Printing
 Every value prints as text that reads back where it can. A combiner prints its source: its

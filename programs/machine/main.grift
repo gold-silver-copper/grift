@@ -42,12 +42,12 @@
 ; machine. Each operand kind takes bytes of the three: a register one, an immediate (signed 16 bits),
 ; an address (unsigned 16 bits) and a memory operand (base register, signed 8-bit offset) two.
 
-(define! instruction-table (context))   ; mnemonic -> (opcode mnemonic shape)
-(define! descriptions (context))        ; opcode -> (opcode mnemonic shape)
-(define! executors (context))           ; opcode -> combiner (next a b c), giving the next pc
-(define! machine (context))             ; pc, count, left, right
-(define! memory (context))              ; address -> byte, bound when first written or read
-(define! registers (context))           ; number -> value, unsigned
+(define! instruction-table (context ()))   ; mnemonic -> (opcode mnemonic shape)
+(define! descriptions (context ()))        ; opcode -> (opcode mnemonic shape)
+(define! executors (context ()))           ; opcode -> combiner (next a b c), giving the next pc
+(define! machine (context ()))             ; pc, count, left, right
+(define! memory (context ()))              ; address -> byte, bound when first written or read
+(define! registers (context ()))           ; number -> value, unsigned
 
 (define! machine-fault
   (lambda! parts (raise (error (quote! machine-fault) (apply string-append parts)))))
@@ -135,7 +135,7 @@
   (lambda! (x) (if! (same? x 0) (machine-fault "division by zero") x)))
 
 ; The output instruction writes its byte to standard output as it is.
-(define! write-output (evaluate-in! write-bytes standard-output))
+(define! write-output (evaluate-in! write standard-output))
 (define! write-output-byte (lambda! (byte) (write-output (list-to-bytes (list byte)))))
 
 (instruction! halt () (#ignore #ignore #ignore #ignore) (raise (error (quote! halted))))
@@ -351,11 +351,11 @@
 ; statement; pass two turns the statements into bytes. An error on a line doesn't stop either pass, so
 ; one run reports them all, and the first on each line.
 
-(define! assembly (context))            ; here: the address now; hint: what's added to an undefined name
-(define! defined-names (context))       ; name -> value
-(define! defined-on (context))          ; name -> the line it was defined on
-(define! line-errors (context))         ; line number -> message
-(define! lines-of (context))            ; address -> (line number, source), for a fault's message
+(define! assembly (context ()))            ; here: the address now; hint: what's added to an undefined name
+(define! defined-names (context ()))       ; name -> value
+(define! defined-on (context ()))          ; name -> the line it was defined on
+(define! line-errors (context ()))         ; line number -> message
+(define! lines-of (context ()))            ; address -> (line number, source), for a fault's message
 
 (define! problem
   (lambda! parts (raise (error (quote! assembly-error) (apply string-append parts)))))

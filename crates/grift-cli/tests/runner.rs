@@ -52,33 +52,104 @@ fn statuses() {
     assert_eq!(failed.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&failed.stderr).contains("type-error"));
 
-    // A program can't pass its own error off as a closed stdout.
+    // A program can't pass its own error off as a closed pipe.
     let spoof = run(
         &[],
-        "(raise (error (quote! stdout-closed) 1))",
+        "(raise (error (quote! broken-pipe) 1))",
         Stdio::piped(),
     );
     assert_eq!(spoof.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&spoof.stderr).contains("broken-pipe"));
 
-    assert_eq!(run(&["--help"], "", Stdio::piped()).status.code(), Some(2));
-    assert_eq!(
-        run(&["no/such/file.grift"], "", Stdio::piped())
-            .status
-            .code(),
-        Some(2)
-    );
+    let unreadable = run(&["no/such/file.grift"], "", Stdio::piped());
+    assert_eq!(unreadable.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&unreadable.stderr).contains("file-error"));
+}
+
+#[test]
+fn the_first_argument_is_the_script_whatever_its_spelling() {
+    let dir = scratch("flag-spelling");
+    std::fs::write(dir.join("-x.grift"), "(display 42)").unwrap();
+    let ran = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg("-x.grift")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert_eq!((ran.status.code(), &ran.stdout[..]), (Some(0), &b"42"[..]));
+    // One that can't be read says why, then how to run grift.
+    let help = run(&["--help"], "", Stdio::piped());
+    let said = String::from_utf8(help.stderr).unwrap();
+    assert!(said.starts_with("grift: file-error \"--help\" "), "{said}");
+    assert!(said.contains("\nusage: grift"), "{said}");
+    assert_eq!(help.status.code(), Some(1));
 }
 
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failed_write_is_an_error() {
-    let full = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/full")
-        .unwrap();
-    let out = run(&[], "(display \"data\")", Stdio::from(full));
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("output-error"));
+    // One failure, one kind, whichever word wrote.
+    for program in [
+        "(display \"data\")",
+        "((evaluate-in! write standard-output) \"data\")",
+    ] {
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .unwrap();
+        let out = run(&[], program, Stdio::from(full));
+        assert_eq!(out.status.code(), Some(1));
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains("file-error \"standard-output\""), "{said}");
+    }
+}
+
+#[test]
+fn a_standard_stream_is_a_file_like_any_other() {
+    let dir = scratch("standard-streams");
+    let program = r#"
+        (display (equal? (names standard-input) (names (open-file "/dev/null")))
+                 (equal? (names standard-output) (names (create-file "/dev/null")))
+                 (evaluate-in! path standard-error))
+        ((evaluate-in! close standard-output))
+        (display-error (catch! (display "lost") e (list (evaluate-in! kind e) (evaluate-in! values e))))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(out, "#true#truestandard-error");
+    assert_eq!(err, "(closed (\"standard-output\"))");
+}
+
+/// Memory refused to a read is the limit `out-of-memory`: its cleanups run and no `catch!` keeps it.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_to_a_read_is_a_limit() {
+    let dir = scratch("read-refused");
+    let path = dir.join("big.grift");
+    for read in [
+        "((evaluate-in! read-bytes (open-file \"/dev/zero\")) 900000000)",
+        "((evaluate-in! read-all (open-file \"/dev/zero\")))",
+        "(read-file \"/dev/zero\")",
+    ] {
+        let src =
+            format!("(catch! (finally! {read} (display \"cleanup\")) e (display \"caught\"))");
+        std::fs::write(&path, src).unwrap();
+        let out = Command::new("bash")
+            .args([
+                "-c",
+                "ulimit -c 0; ulimit -v 400000; exec \"$@\"",
+                "read-test",
+            ])
+            .arg(env!("CARGO_BIN_EXE_grift"))
+            .arg(&path)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            (out.status.code(), &out.stdout[..]),
+            (Some(1), &b"cleanup"[..])
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("out-of-memory"));
+    }
 }
 
 #[test]
@@ -92,13 +163,22 @@ fn standard_input_is_data_for_a_script() {
     let all = "(display ((evaluate-in! read-all standard-input)))";
     let (_, out, _) = script(&dir, all, &[], "x\ny\n");
     assert_eq!(out, "x\ny\n");
-    // A program read from stdin can't read it again.
+    // A program read from stdin has read it to its end, so more reads find nothing.
     let out = run(
         &[],
-        "((evaluate-in! read-line standard-input))",
+        "(display (list ((evaluate-in! read-all standard-input)) ((evaluate-in! read-line standard-input))))",
         Stdio::piped(),
     );
-    assert!(String::from_utf8_lossy(&out.stderr).contains("closed \"standard-input\""));
+    assert_eq!(
+        (out.status.code(), &out.stdout[..]),
+        (Some(0), &b"(\"\" \"\")"[..])
+    );
+}
+
+#[test]
+fn script_path_is_always_bound() {
+    let out = run(&[], "(display (list script-path))", Stdio::piped());
+    assert_eq!(out.stdout, b"(\"\")");
 }
 
 #[test]
@@ -130,12 +210,89 @@ fn files_are_contexts_of_operations() {
     let (status, out, err) = script(&dir, program, &[path], "");
     assert_eq!(status, Some(0), "{err}");
     let want = format!(
-        "#[context close path write write-bytes] {path}\n\
+        "#[context close path write] {path}\n\
          #[context close path read-all read-bytes read-line]\n\
          (\"one\\n\" \"two\\n\" \"\")\n(closed (\"{path}\"))\nclosed\nfile-error\n#false"
     );
     assert_eq!(out, want);
     assert_eq!(std::fs::read(path).unwrap(), b"one\ntwo\n");
+}
+
+/// Each read or load keeps nothing: what 120,000 of them would keep, a 4 KB path each, doesn't fit
+/// the 400 MB of address space given here.
+#[cfg(target_os = "linux")]
+#[test]
+fn reading_and_loading_again_and_again_keep_nothing() {
+    let dir = scratch("repeated-reads");
+    let path = format!("/dev/{}null", "./".repeat(2000));
+    let file = dir.join("reads.grift");
+    let program = format!(
+        "(define! path \"{path}\")
+         (define! again
+           (lambda! (n)
+             (when! (less-than? 0 n) (read-file path) (load path) (again (subtract n 1)))))
+         (again 60000)
+         (display \"done\")"
+    );
+    std::fs::write(&file, program).unwrap();
+    let out = Command::new("prlimit")
+        .args(["--as=400000000", env!("CARGO_BIN_EXE_grift")])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{}", &err[..err.len().min(300)]);
+    assert_eq!(out.stdout, b"done");
+}
+
+/// A file a program closed stays closed whatever is read or opened after it.
+#[test]
+fn a_closed_file_stays_closed_past_later_reads_and_opens() {
+    let dir = scratch("closed-stays");
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    std::fs::write(&a, "from a").unwrap();
+    std::fs::write(&b, "from b").unwrap();
+    let program = r#"
+        (define! (a b) command-line-arguments)
+        (define! one (open-file a))
+        ((evaluate-in! close one))
+        (define! read (read-file b))
+        (define! two (open-file b))
+        (display (list read
+                       ((evaluate-in! read-all two))
+                       (catch! ((evaluate-in! read-all one)) e (evaluate-in! kind e))))
+    "#;
+    let (a, b) = (a.to_str().unwrap(), b.to_str().unwrap());
+    let (status, out, err) = script(&dir, program, &[a, b], "");
+    assert_eq!(status, Some(0), "{err}");
+    assert_eq!(out, "(\"from b\" \"from b\" closed)");
+}
+
+/// The usage is for a script that isn't there. Text that can't be read says only why.
+#[test]
+fn only_a_script_that_is_not_there_prints_the_usage() {
+    let dir = scratch("usage");
+    let file = dir.join("not-text.grift");
+    std::fs::write(&file, b"\xff").unwrap();
+    let as_script = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    let as_stdin = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .stdin(std::fs::File::open(&file).unwrap())
+        .output()
+        .unwrap();
+    for out in [as_script, as_stdin] {
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        assert!(err.contains("encoding-error"), "{err}");
+        assert!(!err.contains("usage:"), "{err}");
+    }
+    let missing = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(dir.join("nothing-here"))
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("usage:"));
 }
 
 #[test]
@@ -187,7 +344,7 @@ fn standard_error_is_written_to_as_a_file_is() {
         (status, out.as_str(), err.as_str()),
         (Some(2), "data", "no rule\n")
     );
-    // Also for a program read from stdin, whose standard input alone is closed.
+    // Also for a program read from stdin.
     let out = run(&[], say, Stdio::piped());
     assert_eq!(out.stderr, b"no rule\n");
     let (status, _, err) = script(&dir, "((evaluate-in! write standard-error) 1)", &[], "");
@@ -226,6 +383,12 @@ fn exit_ends_the_run_with_its_status() {
     let (status, _, err) = script(&dir, "(exit 256)", &[], "");
     assert_eq!(status, Some(1));
     assert!(err.contains("range-error"));
+    // A program's own error of that name is only that: it is caught, and uncaught it is reported.
+    let forged = "(catch! (raise (error (quote! exit) 3)) e (display \"caught\"))";
+    assert_eq!(script(&dir, forged, &[], "").1, "caught");
+    let (status, _, err) = script(&dir, "(raise (error (quote! exit) 3))", &[], "");
+    assert_eq!(status, Some(1));
+    assert!(err.contains("exit 3"), "{err}");
 }
 
 #[test]
@@ -300,7 +463,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     // A file that doesn't read is innermost in the trace, by its path: the line and column are its.
     assert_eq!(
         out,
-        format!("(first 2) 2 1 1 2 (unclosed-list 3 3)\"{lib}/bad.grift\" #true")
+        format!("(first 2) 2 1 1 2 (unclosed-list 3 3){lib}/bad.grift #true")
     );
     // Each combination in the trace says its file and line, the loaded file's and the script's.
     let path = dir.join("script.grift");
@@ -319,10 +482,24 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(
         err,
         format!(
-            "{path}: parse-error unclosed-list 3 3 in \"{lib}/bad.grift\"\n  \
+            "{path}: parse-error unclosed-list 3 3 in {lib}/bad.grift\n  \
              from (load d) at {path}:2\n"
         )
     );
+}
+
+#[test]
+fn a_program_s_own_loader_gets_the_lines_load_gets() {
+    let dir = scratch("own-loader");
+    let program = r#"
+        (define! forms (read-forms "data.txt" "\n(a)\nsym\n(b\n (c))\n5"))
+        (display (map position forms) (position 1))
+        (for-each (lambda! (form) (evaluate form (current-context))) (read-forms "inner.grift" "\n(first 1)"))
+    "#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!(status, Some(1));
+    assert_eq!(out, "((\"data.txt\" 2) () (\"data.txt\" 4) ())()");
+    assert!(err.contains("in (first 1) at inner.grift:2"), "{err}");
 }
 
 #[cfg(target_os = "linux")]
@@ -367,7 +544,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
     let program = r#"
         (define! (copy) command-line-arguments)
         (define! read (evaluate-in! read-bytes standard-input))
-        (define! put (evaluate-in! write-bytes standard-output))
+        (define! put (evaluate-in! write standard-output))
         (define! whole
           (lambda! (chunks)
             (let! ((chunk (read 65536)))
@@ -375,7 +552,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
         (define! all (whole ()))
         (put (bytes-slice all (subtract (bytes-length all) 100) (bytes-length all)))
         (define! out (create-file copy))
-        ((evaluate-in! write-bytes out) all)
+        ((evaluate-in! write out) all)
         ((evaluate-in! close out))
         (define! in (open-file copy))
         (display-error (bytes-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "
@@ -454,19 +631,18 @@ fn a_parse_error_says_where_the_form_opened() {
     let path = path.to_str().unwrap();
     assert_eq!(
         err,
-        format!("parse-error unclosed-list 2 1 in \"{path}\"\n")
+        format!("{path}: parse-error unclosed-list 2 1 in {path}\n")
     );
     let error = run(&[], "(a\n  (b", Stdio::piped());
     assert_eq!(error.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(error.stderr).unwrap(),
-        "parse-error unclosed-list 2 3 in \"stdin\"\n"
+        "stdin: parse-error unclosed-list 2 3 in stdin\n"
     );
 }
 
 #[test]
-fn a_closed_stderr_is_an_error_not_a_quiet_end() {
-    // Only a closed stdout ends the run quietly; a failed message to stderr is a failure.
+fn a_closed_stderr_is_the_same_as_any_closed_pipe() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -481,7 +657,7 @@ fn a_closed_stderr_is_an_error_not_a_quiet_end() {
         .write_all(b"(display-error \"lost\") (display \"after\")")
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert_eq!((out.status.code(), &out.stdout[..]), (Some(1), &b""[..]));
+    assert_eq!((out.status.code(), &out.stdout[..]), (Some(0), &b""[..]));
 }
 
 /// The write end of a pipe whose read end is gone.
@@ -519,15 +695,46 @@ fn a_closed_stdout_ends_the_run_whatever_catches_the_write() {
 }
 
 #[test]
+fn a_closed_pipe_is_a_limit_on_any_file() {
+    let dir = scratch("closed-pipe");
+    let path = dir.join("script.grift");
+    for write in ["display", "(evaluate-in! write standard-output)"] {
+        let run = |src: &str| {
+            std::fs::write(&path, src).unwrap();
+            Command::new(env!("CARGO_BIN_EXE_grift"))
+                .arg(&path)
+                .stdin(Stdio::null())
+                .stdout(closed_pipe())
+                .stderr(Stdio::piped())
+                .output()
+                .unwrap()
+        };
+        let out = run(&format!("({write} \"y\")"));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(0), &b""[..]));
+        // Its cleanups run, and a program's error in one doesn't replace it.
+        let out = run(&format!(
+            "(finally! ({write} \"y\") (display-error \"cleanup\") (first 1))"
+        ));
+        assert_eq!(
+            (out.status.code(), &out.stderr[..]),
+            (Some(0), &b"cleanup"[..])
+        );
+        // An exit in a cleanup is the newer limit, and says the status.
+        let out = run(&format!("(finally! ({write} \"y\") (exit 3))"));
+        assert_eq!(out.status.code(), Some(3));
+    }
+}
+
+#[test]
 fn a_closed_stderr_does_not_panic_the_runner() {
-    for args in [&["--help"][..], &["no/such.grift"][..]] {
+    for script in ["--help", "no/such.grift"] {
         let status = Command::new(env!("CARGO_BIN_EXE_grift"))
-            .args(args)
+            .arg(script)
             .stdin(Stdio::null())
             .stderr(closed_pipe())
             .status()
             .unwrap();
-        assert_eq!(status.code(), Some(2));
+        assert_eq!(status.code(), Some(1));
     }
 }
 
@@ -581,4 +788,93 @@ fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
             .unwrap();
         assert_eq!(loaded, alone, "{text}");
     }
+}
+
+/// Types `input` at grift on a terminal of its own, once it has asked, and gives the exit status
+/// and everything the terminal showed after that first prompt.
+#[cfg(target_os = "linux")]
+fn at_a_terminal(input: &str) -> (Option<i32>, String) {
+    use std::io::Read;
+    let mut child = Command::new("script")
+        .args(["-qec", "stty -echo; exec \"$GRIFT\"", "/dev/null"])
+        .env("GRIFT", env!("CARGO_BIN_EXE_grift"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut asked = [0; 2];
+    stdout.read_exact(&mut asked).unwrap();
+    assert_eq!(&asked, b"> ");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let mut shown = String::new();
+    stdout.read_to_string(&mut shown).unwrap();
+    (child.wait().unwrap().code(), shown.replace("\r\n", "\n"))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
+    let (status, shown) =
+        at_a_terminal("(define! x\n 5)\nx\n(first 1)\n)\n(define! first 2)\n7 x\n\x04");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(shown.contains("  #inert\n"), "{shown}");
+    assert!(
+        shown.contains("stdin: type-error #[primitive first] 1 in (first 1) at stdin:1\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("stdin: parse-error unmatched-parenthesis 1 1 in stdin\n"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("> 5\n> "), "{shown}");
+    // Input that ends inside a form is that form's error, and `exit` gives its status.
+    let (status, shown) = at_a_terminal("(display\n\x04");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(
+        shown.contains("stdin: parse-error unclosed-list 1 1"),
+        "{shown}"
+    );
+    assert_eq!(at_a_terminal("(exit 9)\n").0, Some(9));
+}
+
+/// A session is a grift program, so an error in its own prompting or reading ends it.
+#[cfg(target_os = "linux")]
+#[test]
+fn closing_what_a_session_prompts_on_or_reads_ends_it_with_status_1() {
+    let (status, shown) = at_a_terminal("((evaluate-in! close standard-error))\n1\n\x04");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(shown.contains("#inert\n"), "{shown}");
+    assert!(
+        shown.contains("stdin: closed \"standard-error\""),
+        "{shown}"
+    );
+    assert!(!shown.contains("\n1\n"), "{shown}");
+    let (status, shown) = at_a_terminal("((evaluate-in! close standard-input))\n");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(
+        shown.contains("stdin: closed \"standard-input\""),
+        "{shown}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn input_with_no_forms_prints_nothing_at_a_terminal() {
+    let (_, shown) = at_a_terminal("\n; a comment\n1\n\x04");
+    assert_eq!(shown, "> > 1\n> ");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_at_a_terminal_reads_the_next_line() {
+    let (status, shown) =
+        at_a_terminal("((evaluate-in! read-line standard-input))\nafter\n(exit 0)\n");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(shown.contains("\"after\\n\"\n"), "{shown}");
 }

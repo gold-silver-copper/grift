@@ -27,25 +27,46 @@ pub(crate) enum Value {
     Bytes(Reference),
 }
 
-/// An interned symbol: its index among the names. Indices at or above [`KEPT`] name kept values.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// An interned symbol: its index among the names.
+#[derive(Clone, Copy, Debug, Eq, Hash)]
+#[cfg_attr(not(test), derive(PartialEq))]
+// The `eq` below only counts as well: it agrees with the hash.
+#[cfg_attr(test, allow(clippy::derived_hash_with_manual_eq))]
 pub(crate) struct Symbol(pub u32);
+
+#[cfg(test)]
+thread_local! {
+    /// References and symbols compared on this thread, for tests that something searches nothing:
+    /// a search by value, through a list or a table with a bad hash, comes through their `eq`.
+    pub(crate) static COMPARED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl PartialEq for Symbol {
+    fn eq(&self, other: &Symbol) -> bool {
+        COMPARED.with(|n| n.set(n.get() + 1));
+        self.0 == other.0
+    }
+}
 
 /// A registered host function: its index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Host(pub u32);
 
-/// The first symbol index no text can name: the names of kept values start here.
-pub(crate) const KEPT: u32 = 1 << 31;
-
 /// An error as the machine carries it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Error {
+    /// Whether the host or the machine began this, not a program: whatever its kind is called,
+    /// this alone says a handler may not catch it, and a program can't set it.
+    pub limit: bool,
+    /// Whether memory really was refused to make this: then what the frames it unwinds held is
+    /// worth collecting. A fact about how it began, which no name and no host can claim.
+    pub refused: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Vec<Value>,
     /// The combinations in `trace`, so adding one searches nothing.
-    pub seen: Seen<Reference>,
+    pub seen: Seen,
 }
 
 /// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core
@@ -63,7 +84,7 @@ known_symbols! {
     NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
-    RangeError "range-error"
+    RangeError "range-error" CannotPark "cannot-park"
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
@@ -84,18 +105,49 @@ impl Error {
     pub fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut e = Error::oom();
         if e.values.try_reserve_exact(values.len()).is_ok() {
+            e.limit = false;
+            e.refused = false;
             e.kind = kind.into();
             e.values.extend_from_slice(values);
         }
         e
     }
 
+    /// An error a program describes, from its parts: `seen` follows from `trace`.
+    pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Vec<Value>) -> Result<Error, Error> {
+        let mut seen = Seen::default();
+        seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
+        seen.extend(trace.iter().filter_map(|v| match v {
+            Value::Pair(r) => Some(*r),
+            _ => None,
+        }));
+        Ok(Error {
+            limit: false,
+            refused: false,
+            kind,
+            values,
+            trace,
+            seen,
+        })
+    }
+
+    /// The machine ran out of memory.
     pub fn oom() -> Error {
         Error {
+            limit: true,
+            refused: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Vec::new(),
             seen: Seen::default(),
+        }
+    }
+
+    /// The run was stopped.
+    pub fn interrupted() -> Error {
+        Error {
+            limit: true,
+            ..Error::new(K::Interrupted, &[])
         }
     }
 }

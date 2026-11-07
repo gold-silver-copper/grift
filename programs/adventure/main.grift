@@ -74,15 +74,10 @@
 ; Tables. A table is a context from symbols to values, with no parent; a record is a context
 ; of fields.
 
-(define! table (lambda! () (context)))
+(define! table (lambda! () (context ())))
 (define! in-table? (lambda! (t key) (and!? (symbol? key) (binds? t key))))
 (define! look-up (lambda! (t key) (evaluate key t)))
 (define! enter (lambda! (t key value) (bind t key value)))
-(define! record
-  (lambda! (fields values)
-    (let! ((c (context)))
-      (bind c fields values)
-      c)))
 (define! field! (vau! (name r) caller (evaluate name (evaluate r caller))))
 
 ; ---------------------------------------------------------------------------------------------

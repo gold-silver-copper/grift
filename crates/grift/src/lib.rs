@@ -1,9 +1,14 @@
 #![doc = include_str!("../README.md")]
 
+#[cfg(test)]
+mod ending_tests;
 mod evaluate;
 mod heap;
 mod interrupt;
 mod local;
+mod parked;
+#[cfg(test)]
+mod parked_tests;
 mod print;
 mod read;
 #[cfg(test)]
@@ -11,7 +16,7 @@ mod tests;
 
 use heap::{Bindings, Heap, IdHasher, Object};
 use interrupt::Control;
-use local::{K, KEPT, boxed, push};
+use local::{K, boxed, push};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
@@ -19,6 +24,7 @@ use std::sync::{Arc, Weak};
 
 pub use evaluate::Primitive;
 pub use interrupt::Interrupter;
+pub use parked::{Answer, Parked, ParkingFunction, Ran, ResumeError};
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
@@ -31,7 +37,7 @@ const WALK_CHECK: usize = 4096;
 /// `foreign-value`, never read as one of this one's.
 ///
 /// A value returned to the host stays valid until the next call to [`Grift::evaluate`],
-/// [`Grift::evaluate_in`] or [`Grift::call`]; the collector may then reclaim it, and using it is the error `stale-value`,
+/// [`Grift::evaluate_in`], [`Grift::call`] or [`Grift::resume`], or the like; the collector may then reclaim it, and using it is the error `stale-value`,
 /// never another object. To keep one longer, bind it in a context or [`Grift::keep`] it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -116,26 +122,58 @@ pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, 
 /// [`Grift::describe`] writes it for a person.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Error {
-    /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::is_kind`] asks.
+    /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::symbol_name`]
+    /// reads it.
     pub kind: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
-    /// Where, read with [`Error::trace`].
-    trace: Vec<Value>,
-}
-
-impl Error {
     /// Where: the combinations of the program that were being evaluated, innermost first, each
     /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
     /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
     /// [`Grift::position`] gives each one's source and line. If input to [`Grift::read_in`] or
     /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
-    /// [`Value::String`]; its values remain `(reason line column)`. An outer evaluation can add
+    /// [`Value::Symbol`]; its values remain `(reason line column)`. An outer evaluation can add
     /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
-    /// doesn't read, its trace is empty. The named parse error's source string lives with the
-    /// interpreter, so that error can still be described after later evaluations collect.
-    pub fn trace(&self) -> &[Value] {
-        &self.trace
+    /// doesn't read, its trace is empty. Checked as the values are when the error comes in.
+    pub trace: Vec<Value>,
+    /// Read with [`Error::is_limit`].
+    limit: bool,
+}
+
+impl Error {
+    /// Whether the host (a stop, a force, [`Error::as_limit`]) or the machine (out of memory) began
+    /// this, so that no handler could catch it. Never so for what a program raises or a host
+    /// function makes with [`Grift::error`], whatever its kind is called (unless memory is refused to
+    /// make it: that is the limit `out-of-memory`), and an error passing
+    /// through a nested run or a host function stays what it was. Its kind then says which limit it is, or, if
+    /// the host handed one in after its values were reclaimed, `stale-value`.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let forged = g.evaluate(&mut (), "(raise (error (quote! interrupted)))").unwrap_err();
+    /// assert!(g.symbol_name(&forged.kind)? == "interrupted" && !forged.is_limit());
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn is_limit(&self) -> bool {
+        self.limit
+    }
+
+    /// This error as a limit: a host function that returns it ends the run, past every handler,
+    /// through every cleanup, as a stop does, and it keeps its kind and values for the host to
+    /// read when the run has ended.
+    ///
+    /// ```
+    /// use grift::{Grift, Value};
+    /// let mut g: Grift = Grift::new()?;
+    /// let quit = g.host_function("quit", |g, _, args| Err(g.error("quit", args).as_limit()))?;
+    /// g.define("quit", quit)?;
+    /// let e = g.evaluate(&mut (), "(catch! (quit 3) e 0) (add 1 2)").unwrap_err();
+    /// assert!(g.symbol_name(&e.kind)? == "quit" && e.values == [Value::Integer(3)]);
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn as_limit(mut self) -> Error {
+        self.limit = true;
+        self
     }
 }
 
@@ -149,8 +187,8 @@ pub enum WriteError {
     Output,
 }
 
-/// A value the host keeps across evaluations: a binding in a context the interpreter owns, under a
-/// name no program can make. Read it with [`Grift::kept`]; [`Grift::release`] unbinds it. Neither
+/// A value the host keeps across evaluations: an entry in a table the collector marks and no
+/// program reaches. Read it with [`Grift::kept`]; [`Grift::release`] clears it. Neither
 /// `Copy` nor `Clone`, so it is released at most once and never used after; one dropped without
 /// a release keeps its value until the interpreter is dropped (there are no finalizers).
 ///
@@ -190,29 +228,23 @@ pub struct Grift<T = ()> {
     names: Vec<Box<str>>,
     /// Names to symbol ids, for interning; `names` gives the spelling by id.
     symbols: HashMap<Box<str>, u32>,
-    hosts: Vec<(local::Symbol, HostFunction<T>)>,
+    hosts: Vec<(local::Symbol, parked::Hosted<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
-    /// The kept values' context, a root no program reaches, and the names free for the next.
-    /// Host-kept values use ids at KEPT and above; diagnostic source strings use interned ids.
-    kept: heap::Reference,
+    /// The kept values, a root no program reaches, and the entries free for the next.
+    kept: Vec<Option<local::Value>>,
     kept_free: Vec<u32>,
-    kept_next: u32,
+    /// The kept name of the run that has just parked, for whoever began or resumed it.
+    parked_as: Option<u32>,
     machine: evaluate::Machine,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
     identity: Owner,
-    /// The generation of the outer run in progress, 0 for none, and the last one given out.
-    run: u64,
-    runs: u64,
+    /// Whether the run in progress may park.
+    may_park: bool,
     /// Where each combination read under a name is, by its slot's index.
     positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
-    /// Off in tests: native primitives and library forms then run their grift definitions.
-    #[cfg(test)]
-    pub(crate) natives: bool,
-    #[cfg(test)]
-    pub(crate) definitions: heap::Reference,
 }
 
 impl<T> Grift<T> {
@@ -225,19 +257,14 @@ impl<T> Grift<T> {
             hosts: Vec::new(),
             built_in: heap::Reference::NONE,
             top: heap::Reference::NONE,
-            kept: heap::Reference::NONE,
+            kept: Vec::new(),
             kept_free: Vec::new(),
-            kept_next: 0,
+            parked_as: None,
             machine: evaluate::Machine::default(),
             identity: Owner(Weak::new()),
             control: Arc::new(Control::default()),
-            run: 0,
-            runs: 0,
+            may_park: false,
             positions: HashMap::default(),
-            #[cfg(test)]
-            natives: true,
-            #[cfg(test)]
-            definitions: heap::Reference::NONE,
         };
         g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();
@@ -249,26 +276,18 @@ impl<T> Grift<T> {
             |heap: &mut Heap, parent| heap.alloc(Object::Context(parent, Bindings::default()));
         self.built_in = context(&mut self.heap, None)?;
         self.top = context(&mut self.heap, Some(self.built_in))?;
-        self.kept = context(&mut self.heap, None)?;
         for name in local::K_NAMES {
             self.intern(name)?;
         }
         for &p in Primitive::ALL {
             let s = self.intern(p.name())?;
-            let v = match p {
-                Primitive::Vau => local::Value::Primitive(p),
-                _ => local::Value::Applicative(
-                    self.heap
-                        .alloc(Object::Applicative(local::Value::Primitive(p)))?,
-                ),
-            };
+            let wrapped = Object::Applicative(local::Value::Primitive(p));
+            let v = local::Value::Applicative(self.heap.alloc(wrapped)?);
             self.bind_symbol(self.built_in, s, v)?;
         }
         let forms = self.read_local(LIBRARY, None)?;
-        self.evaluate_forms(None, forms, self.built_in)?;
+        self.evaluate_forms(None, forms, self.built_in, false)?;
         self.install_natives()?;
-        #[cfg(test)]
-        self.load_definitions()?;
         // Everything in the heap now is the library's; errors skip its code.
         self.heap.seal_library();
         Ok(())
@@ -281,7 +300,7 @@ impl<T> Grift<T> {
         let forms = self
             .prepare(std::iter::empty())
             .and_then(|()| self.read_local(src, None));
-        let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top));
+        let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
         self.exported(done)
     }
 
@@ -289,14 +308,13 @@ impl<T> Grift<T> {
     /// in order in `context`, as `evaluate` does at top level. Each combination read keeps its
     /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`]. If `src`
     /// doesn't read, `parse-error` keeps `(reason line column)` in its values and `source` as
-    /// a string at the start of its trace, as [`Grift::read_in`] does. That source string survives
-    /// later collections.
+    /// a symbol at the start of its trace, as [`Grift::read_in`] does.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let keys = g.context(Some(&g.top_level()))?;
     /// let e = g.evaluate_in(&mut (), &keys, "keys.grift", "(define! a 1)\n(first a)").unwrap_err();
-    /// assert_eq!(g.position(&e.trace()[0])?, Some(("keys.grift", 2)));
+    /// assert_eq!(g.position(&e.trace[0])?, Some(("keys.grift", 2)));
     /// let mut text = String::new();
     /// g.describe(&e, &mut text).unwrap();
     /// assert_eq!(text, "type-error #[primitive first] 1 in (first a) at keys.grift:2");
@@ -313,18 +331,18 @@ impl<T> Grift<T> {
             self.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = self.intern(source)?;
             let forms = self.read_local(src, Some(source))?;
-            self.evaluate_forms(Some(state), forms, c)
+            self.evaluate_forms(Some(state), forms, c, false)
         });
         self.exported(done)
     }
 
-    /// Calls combiner `f` with `arguments` as Kernel's `apply` does: an applicative's
-    /// underlying combiner gets the arguments as its operands, in a new empty context; an
-    /// operative gets them as they are. Host functions get `state`.
+    /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
+    /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
+    /// Host functions get `state`.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.prepare_call(f, arguments).and_then(|f| {
             let arguments = self.imported(arguments)?;
-            self.call_local(Some(state), f, &arguments)
+            self.call_local(Some(state), f, &arguments, false)
         });
         self.exported(done)
     }
@@ -332,6 +350,10 @@ impl<T> Grift<T> {
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
     /// hands it to grift code that keeps it private.
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
+        self.hosted(name, parked::Hosted::Plain(f))
+    }
+
+    fn hosted(&mut self, name: &str, f: parked::Hosted<T>) -> Result<Value, Error> {
         let made = self.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
@@ -341,7 +363,7 @@ impl<T> Grift<T> {
         self.exported(made)
     }
 
-    /// A new empty context, `(context)` or `(context parent)`: with no parent, a record, as
+    /// A new empty context, `(context parent)` with `()` for none: with no parent, a record, as
     /// `error` makes; with the top level as its parent, a place for a host's own definitions.
     pub fn context(&mut self, parent: Option<&Value>) -> Result<Value, Error> {
         let made = parent
@@ -427,12 +449,8 @@ impl<T> Grift<T> {
         let names = self
             .context_of(context, Primitive::Names)
             .and_then(|c| self.names_of(c));
-        let names = names.and_then(|names| {
-            collected(names.into_iter().map(|n| match n {
-                local::Value::Symbol(s) => self.export_symbol(s),
-                _ => self.export_symbol(K::Symbol.into()),
-            }))
-        });
+        let names =
+            names.and_then(|names| collected(names.into_iter().map(|s| self.export_symbol(s))));
         self.out(names)
     }
 
@@ -475,16 +493,10 @@ impl<T> Grift<T> {
                 kind: self.export_symbol(kind),
                 values: collected(values.iter().cloned())?,
                 trace: Vec::new(),
+                limit: false,
             })
         });
         made.unwrap_or_else(|e| self.export_error(e))
-    }
-
-    /// Whether `error` is of the kind named `name`.
-    pub fn is_kind(&self, error: &Error, name: &str) -> Result<bool, Error> {
-        // A name never interned is no error's kind.
-        let kind = self.import_symbol(&error.kind);
-        self.out(kind.map(|kind| self.interned(name) == Some(kind)))
     }
 
     /// A new string holding a copy of `s`.
@@ -493,35 +505,24 @@ impl<T> Grift<T> {
         self.exported(made.map(local::Value::String))
     }
 
-    /// The contents of a string value; `None` for anything else.
+    /// The contents of a string value; `None` for anything else. To hold them while it calls
+    /// `&mut self` methods a host copies them, as it does a bytes value's.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let path = g.string("notes.txt")?;
+    /// let path = g.as_str(&path)?.map(str::to_owned); // owned: g is free again
+    /// let e = g.error("file-error", &[]);
+    /// assert_eq!(path.as_deref(), Some("notes.txt"));
+    /// assert_eq!(g.symbol_name(&e.kind)?, "file-error");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
     pub fn as_str(&self, v: &Value) -> Result<Option<&str>, Error> {
         let s = self.import(v).and_then(|v| match v {
             local::Value::String(_) => self.text(Primitive::StringAppend, v).map(Some),
             _ => Ok(None),
         });
         self.out(s)
-    }
-
-    /// A copy of a string value's contents, which the host can hold while it calls `&mut self`
-    /// methods; `None` for anything else.
-    ///
-    /// ```
-    /// let mut g: grift::Grift = grift::Grift::new()?;
-    /// let path = g.string("notes.txt")?;
-    /// let path = g.as_string(&path)?.unwrap(); // owned: g is free again
-    /// let e = g.error("file-error", &[]);
-    /// assert_eq!((path.as_str(), g.is_kind(&e, "file-error")?), ("notes.txt", true));
-    /// # Ok::<(), grift::Error>(())
-    /// ```
-    pub fn as_string(&self, v: &Value) -> Result<Option<String>, Error> {
-        let Some(s) = self.as_str(v)? else {
-            return Ok(None);
-        };
-        let mut copy = String::new();
-        let reserved = copy
-            .try_reserve_exact(s.len())
-            .map_err(|_| local::Error::oom());
-        self.out(reserved).map(|()| Some(copy + s))
     }
 
     /// A new bytes value holding a copy of `b`.
@@ -585,10 +586,11 @@ impl<T> Grift<T> {
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let keys = g.evaluate(&mut (), "(list \"C-b\" \"v\")")?;
-    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_string(k).ok()?).collect();
+    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_str(k).ok()?.map(String::from)).collect();
     /// assert_eq!(keys, ["C-b", "v"]);
     /// let dotted = g.evaluate(&mut (), "(pair 1 2)")?;
-    /// assert!(g.is_kind(&g.list_items(&dotted).unwrap_err(), "type-error")?);
+    /// let e = g.list_items(&dotted).unwrap_err();
+    /// assert_eq!(g.symbol_name(&e.kind)?, "type-error");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
@@ -614,8 +616,8 @@ impl<T> Grift<T> {
     /// evaluation of another named outer form replaces the finished form's trace boundary;
     /// the host's entry boundary stays. No forms gives `()`.
     /// If `text` doesn't read, `parse-error` keeps `(reason line column)` in its values and
-    /// `source` as a string at the start of its trace, as [`Grift::evaluate_in`] does. That source
-    /// string survives later collections. Allocation failure is `out-of-memory`.
+    /// `source` as a symbol at the start of its trace, as [`Grift::evaluate_in`] does. Allocation
+    /// failure is `out-of-memory`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -650,22 +652,13 @@ impl<T> Grift<T> {
         let v = self
             .import(v)
             .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        let mut out = Watched {
-            out,
-            refused: false,
-        };
-        self.print(v, &mut out)
-            .map_err(|_| self.write_failed(out.refused))
+        self.print(v, out).map_err(|why| self.write_failed(why))
     }
 
-    fn write_failed(&self, refused: bool) -> WriteError {
-        match refused {
-            true => WriteError::Output,
-            // The printer stops by itself only for a stop, or when its own stack can't grow.
-            false if self.control.waiting(self.run) => {
-                WriteError::Value(self.export_error(local::Error::new(K::Interrupted, &[])))
-            }
-            false => WriteError::Value(self.export_error(local::Error::oom())),
+    fn write_failed(&self, why: print::Unprinted) -> WriteError {
+        match why {
+            print::Unprinted::Output => WriteError::Output,
+            print::Unprinted::Value(e) => WriteError::Value(self.export_error(e)),
         }
     }
 
@@ -676,15 +669,15 @@ impl<T> Grift<T> {
         let e = self
             .import_error(error)
             .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        let mut out = Watched {
-            out,
-            refused: false,
-        };
-        self.write_error(&e, &mut out)
-            .map_err(|_| self.write_failed(out.refused))
+        self.write_error(&e, out)
+            .map_err(|why| self.write_failed(why))
     }
 
-    fn write_error(&self, e: &local::Error, out: &mut dyn fmt::Write) -> fmt::Result {
+    fn write_error(
+        &self,
+        e: &local::Error,
+        out: &mut dyn fmt::Write,
+    ) -> Result<(), print::Unprinted> {
         self.print(local::Value::Symbol(e.kind), out)?;
         for &v in &e.values {
             out.write_char(' ')?;
@@ -723,19 +716,7 @@ impl<T> Grift<T> {
 
     /// Keeps `v` alive across evaluations, until [`Grift::release`].
     pub fn keep(&mut self, v: Value) -> Result<Kept, Error> {
-        let kept = self.import(&v).and_then(|v| {
-            // A released name first, so keeping on every event never runs out of names.
-            let name = match self.kept_free.last() {
-                Some(&name) => name,
-                None if self.kept_next < KEPT => KEPT | self.kept_next,
-                None => return Err(local::Error::oom()),
-            };
-            self.bind_symbol(self.kept, local::Symbol(name), v)?;
-            if self.kept_free.pop().is_none() {
-                self.kept_next += 1;
-            }
-            Ok(name)
-        });
+        let kept = self.import(&v).and_then(|v| self.keep_local(v));
         match kept {
             Ok(name) => Ok(Kept {
                 owner: self.identity.clone(),
@@ -745,20 +726,45 @@ impl<T> Grift<T> {
         }
     }
 
+    /// Puts `v` in the table: its name is its entry there, a released one first, so keeping on
+    /// every event never runs out of names.
+    pub(crate) fn keep_local(&mut self, v: local::Value) -> Result<u32, local::Error> {
+        if let Some(name) = self.kept_free.pop() {
+            if let Some(entry) = self.kept.get_mut(name as usize) {
+                *entry = Some(v);
+            }
+            return Ok(name);
+        }
+        let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
+        push(&mut self.kept, Some(v))?;
+        Ok(name)
+    }
+
+    /// What the entry `name` holds.
+    pub(crate) fn kept_value(&self, name: u32) -> Option<local::Value> {
+        self.kept.get(name as usize).copied().flatten()
+    }
+
+    /// Clears the entry `name`, for the next value. The caller has made room in `kept_free`.
+    pub(crate) fn clear_kept(&mut self, name: u32) {
+        if let Some(entry) = self.kept.get_mut(name as usize) {
+            *entry = None;
+        }
+        self.kept_free.push(name);
+    }
+
     /// The value `k` keeps.
     pub fn kept(&self, k: &Kept) -> Result<Value, Error> {
         let found = match self.owns(&k.owner) {
-            true => self.find(self.kept, local::Symbol(k.name)),
+            true => self
+                .kept_value(k.name)
+                .ok_or_else(|| local::Error::new(K::StaleValue, &[])),
             false => Err(local::Error::new(K::ForeignValue, &[])),
         };
-        match found {
-            Ok(Some(v)) => Ok(self.export(v)),
-            Ok(None) => Err(self.export_error(local::Error::new(K::StaleValue, &[]))),
-            Err(e) => Err(self.export_error(e)),
-        }
+        self.exported(found)
     }
 
-    /// Unbinds the value `k` keeps, so it can be collected. Another interpreter's `Kept` is the
+    /// Clears the value `k` keeps, so it can be collected. Another interpreter's `Kept` is the
     /// error `foreign-value`, and comes back with it, to be released in its own.
     pub fn release(&mut self, k: Kept) -> Result<(), (Error, Kept)> {
         if !self.owns(&k.owner) {
@@ -770,22 +776,16 @@ impl<T> Grift<T> {
         if self.kept_free.try_reserve(1).is_err() {
             return Err((self.export_error(local::Error::oom()), k));
         }
-        if let Ok(bindings) = self.bindings_mut(self.kept) {
-            bindings.remove(&local::Symbol(k.name));
-        }
-        self.kept_free.push(k.name);
+        self.clear_kept(k.name);
         Ok(())
     }
 
-    /// Interns `name`. The ids from [`KEPT`] up are the kept values' names, so no text gets one.
+    /// Interns `name`.
     pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
         if let Some(symbol) = self.interned(name) {
             return Ok(symbol);
         }
-        let id = u32::try_from(self.names.len())
-            .ok()
-            .filter(|&id| id < KEPT)
-            .ok_or_else(local::Error::oom)?;
+        let id = u32::try_from(self.names.len()).map_err(|_| local::Error::oom())?;
         let (spelling, key) = (boxed(name)?, boxed(name)?);
         self.names.try_reserve(1).map_err(|_| local::Error::oom())?;
         self.symbols
@@ -807,51 +807,30 @@ impl<T> Grift<T> {
         self.names.get(s.0 as usize).map_or("", |n| n)
     }
 
-    /// Whether a stop of the run in progress came since the last one acted on: those waiting
-    /// count as one, and a later one stops it again.
-    #[inline(always)]
-    pub(crate) fn interrupted(&self) -> bool {
-        self.control.stopped(self.run)
-    }
-
     /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
     /// can share, so a few objects can be a tree no walk finishes; the failed step then acts on the
     /// stop. A walk shorter than [`WALK_CHECK`] items never asks, so it can't be cut.
     #[inline(always)]
     pub(crate) fn walk_stopped(&self, walked: &mut usize) -> bool {
         *walked = walked.wrapping_add(1);
-        *walked & (WALK_CHECK - 1) == 0 && self.control.waiting(self.run)
+        *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
     }
 
-    /// Starts an outer run, unless one is in progress: the next generation, published for
-    /// interrupters. Whether it started one, which [`Grift::end_run`] then ends. A run abandoned
-    /// is already gone: every entry goes through [`Grift::prepare`] first.
-    pub(crate) fn begin_run(&mut self) -> Result<bool, local::Error> {
-        if self.run != 0 {
-            return Ok(false);
+    /// Starts an outer run, unless one is in progress; whether it did, which [`Grift::end_run`]
+    /// then ends. What a host function left behind when it panicked or replaced the interpreter is
+    /// over: its machine goes here.
+    pub(crate) fn begin_run(&mut self) -> bool {
+        let outer = self.control.run() == 0;
+        if outer {
+            self.machine.clear();
+            self.control.begin();
         }
-        // Generations never repeat, so a late stop can't match a later run.
-        self.runs = self
-            .runs
-            .checked_add(1)
-            .ok_or_else(|| local::Error::new(K::Overflow, &[]))?;
-        self.run = self.runs;
-        self.control.begin(self.run);
-        Ok(true)
+        outer
     }
 
     pub(crate) fn end_run(&mut self) {
         self.control.end();
-        self.run = 0;
-    }
-
-    /// Gives up the run in progress and the machine's state: what a host function left behind
-    /// when it replaced or restored the interpreter, or panicked.
-    pub(crate) fn abandon(&mut self) {
-        self.machine = evaluate::Machine::default();
-        if self.run != 0 {
-            self.end_run();
-        }
+        self.may_park = false;
     }
 
     /// The context `v` is, or a `type-error` naming `p`.
@@ -909,19 +888,20 @@ impl<T> Grift<T> {
     /// An error a host function returned, as this interpreter's.
     pub(crate) fn import_error(&self, e: &Error) -> Result<local::Error, local::Error> {
         let (values, trace) = (self.imported(&e.values)?, self.imported(&e.trace)?);
-        let mut seen = heap::Seen::default();
-        seen.try_reserve(trace.len())
-            .map_err(|_| local::Error::oom())?;
-        seen.extend(trace.iter().filter_map(|v| match v {
-            local::Value::Pair(r) => Some(*r),
-            _ => None,
-        }));
         let kind = self.import_symbol(&e.kind)?;
+        let imported = local::Error::from_parts(kind, values, trace)?;
         Ok(local::Error {
-            kind,
-            values,
-            trace,
-            seen,
+            limit: e.limit,
+            ..imported
+        })
+    }
+
+    /// An error the host hands in, as the reason a run unwinds. One that can't come in, its values
+    /// reclaimed or another interpreter's, is that error instead, and stays a limit if it was one.
+    pub(crate) fn incoming_error(&self, e: &Error) -> local::Error {
+        self.import_error(e).unwrap_or_else(|mut failed| {
+            failed.limit |= e.limit;
+            failed
         })
     }
 
@@ -994,19 +974,21 @@ impl<T> Grift<T> {
         }
     }
 
+    /// An error as the host's. Memory refused here, not on its way through a run, asks for its
+    /// collection now: the host's next try has that, as a run's cleanups do.
     pub(crate) fn export_error(&self, e: local::Error) -> Error {
-        let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
-        let (kind, values, trace) = match (exported(&e.values), exported(&e.trace)) {
-            (Ok(values), Ok(trace)) => (e.kind, values, trace),
-            _ => (K::OutOfMemory.into(), Vec::new(), Vec::new()),
-        };
-        if kind == K::OutOfMemory.into() {
+        if e.refused {
             self.heap.request_collection();
         }
-        Error {
-            kind: self.export_symbol(kind),
-            values,
-            trace,
+        let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
+        match (exported(&e.values), exported(&e.trace)) {
+            (Ok(values), Ok(trace)) => Error {
+                kind: self.export_symbol(e.kind),
+                values,
+                trace,
+                limit: e.limit,
+            },
+            _ => self.export_error(local::Error::oom()),
         }
     }
 
@@ -1059,16 +1041,4 @@ fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local
         .map_err(|_| local::Error::oom())?;
     v.extend(items);
     Ok(v)
-}
-
-/// A sink that notes whether it refused text, to tell that from the printer's own failure.
-struct Watched<'a> {
-    out: &'a mut dyn fmt::Write,
-    refused: bool,
-}
-
-impl fmt::Write for Watched<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.out.write_str(s).inspect_err(|_| self.refused = true)
-    }
 }

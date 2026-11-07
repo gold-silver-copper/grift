@@ -26,13 +26,6 @@
   (lambda! (x xs)
     (if! (same? xs ()) () (pair (first xs) (if! (equal? x (first xs)) () (up-to x (rest xs)))))))
 
-; A new context binding names to values: a record.
-(define! record
-  (lambda! (names values)
-    (let! ((c (context)))
-      (bind c names values)
-      c)))
-
 ; ---------------------------------------------------------------------------------------------
 ; Errors. The tool's own are of kind build-error; their values are the pieces of the message.
 
@@ -120,7 +113,7 @@
 ; The build file's variables and functions.
 (define! scope (context (current-context)))
 ; Each target, as a symbol, to its rule: a record of target, inputs, commands, scope and line.
-(define! rules (context))
+(define! rules (context ()))
 ; The first rule's target, and the one (default ...) names, or ().
 (define! settings (record (quote! (first-target default)) (list () ())))
 
@@ -222,7 +215,7 @@
 ; Modification times, from stat, each file's at most once a run.
 
 ; Each path, as a symbol, to (seconds nanoseconds), or () when there is no such file.
-(define! times (context))
+(define! times (context ()))
 
 (define! stat
   (lambda! (path)
@@ -298,7 +291,7 @@
 
 ; Each target, as a symbol, to #true if it was remade in this run (or would be, with -n), or
 ; #false if it was up to date.
-(define! made (context))
+(define! made (context ()))
 
 (define! out-of-date?
   (lambda! (target inputs remade)

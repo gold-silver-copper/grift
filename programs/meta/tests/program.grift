@@ -10,7 +10,7 @@
 (display (length primes) " primes below 600, the last " (first (reverse primes))) (display "\n")
 (display "their sum: " (fold add 0 primes)) (display "\n")
 
-(define! counts (context))
+(define! counts (context ()))
 (define! count-word
   (lambda! (word)
     (let! ((name (string-to-symbol word)))

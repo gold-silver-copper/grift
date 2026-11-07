@@ -13,8 +13,7 @@
 ; file and line and goes to standard error with status 1; a usage error has status 2.
 
 ; The engine is one closure, so the data, evaluated in a child of the top-level context, sees
-; only `run-template` there and none of the engine's own names: a program can't make a context
-; that reads the built-in names alone.
+; only `run-template` there and none of the engine's own names.
 (define! run-template
   ((lambda! ()
     ; Errors of a template: the kind template-error with the file, the line and the message.
@@ -359,7 +358,7 @@
         (let! ((text (read-file path)) (data (context top)))
           (bind data (quote! record!)
             (vau! fields caller
-              (let! ((record (context)))
+              (let! ((record (context ())))
                 (for-each (lambda! ((name value)) (bind record name (evaluate value caller))) fields)
                 record)))
           (define! from
