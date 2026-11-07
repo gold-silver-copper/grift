@@ -144,7 +144,8 @@ compile step. A library form may have a native twin, proven equal and justified 
 handles and by its body otherwise, so a program can't tell them apart (`if!` and `sequence!`, owner,
 2026-11-02). Everything else keeps one evaluation path per kind of form.
 The primitives are core, what grift can't express, or native, there for speed, each with its grift
-definition as its meaning and a test that no program can tell the two apart.
+definition as its meaning and a test that no program can tell the two apart, but for how each
+prints.
 
 ## Errors
 An error has a kind (a symbol such as `type-error`), the values involved, and a trace: the program

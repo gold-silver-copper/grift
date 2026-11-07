@@ -2258,6 +2258,7 @@ fn a_bind_that_fails_binds_nothing() {
         &[
             ("(bind c (quote! (a b)) (list 1))", "arity-error"),
             ("(bind c (quote! (a 1)) (list 1 2))", "parameter-error"),
+            ("(bind c (quote! (a 1)) (list 2))", "arity-error"),
             ("(bind c (quote! (a a)) (list 1 2))", "parameter-error"),
         ],
     );

@@ -8,8 +8,8 @@
 //! `exit` does, by a limit of kind `broken-pipe`, quietly and with 0.
 //!
 //! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
-//! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`, `open-file`, `create-file`,
-//! `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
+//! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`,
+//! `open-file`, `create-file`, `run-process` and `load` (made by `runner.grift`), `command-line-arguments`, `script-path`,
 //! `environment-variable`, `wall-clock-nanoseconds`, `elapsed-nanoseconds` and `exit`.
 
 use grift::{Error, Grift, HostFunction, Value, WriteError};
@@ -616,9 +616,12 @@ fn main() -> ExitCode {
                 g.evaluate_in(&mut r, &top, &name, &text)
             }
             Err(e) => {
+                let missing = e.kind() == io::ErrorKind::NotFound;
                 let e = failed(&mut g, "file-error", &name, &e);
                 let status = report(&g, "grift", &e);
-                say(format_args!("{USAGE}\n"));
+                if missing {
+                    say(format_args!("{USAGE}\n"));
+                }
                 return status;
             }
         }

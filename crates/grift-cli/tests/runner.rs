@@ -268,6 +268,33 @@ fn a_closed_file_stays_closed_past_later_reads_and_opens() {
     assert_eq!(out, "(\"from b\" \"from b\" closed)");
 }
 
+/// The usage is for a script that isn't there. Text that can't be read says only why.
+#[test]
+fn only_a_script_that_is_not_there_prints_the_usage() {
+    let dir = scratch("usage");
+    let file = dir.join("not-text.grift");
+    std::fs::write(&file, b"\xff").unwrap();
+    let as_script = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(&file)
+        .output()
+        .unwrap();
+    let as_stdin = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .stdin(std::fs::File::open(&file).unwrap())
+        .output()
+        .unwrap();
+    for out in [as_script, as_stdin] {
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{err}");
+        assert!(err.contains("encoding-error"), "{err}");
+        assert!(!err.contains("usage:"), "{err}");
+    }
+    let missing = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(dir.join("nothing-here"))
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("usage:"));
+}
+
 #[test]
 fn a_program_cannot_reach_the_runner_s_host_functions() {
     let dir = scratch("boundary");

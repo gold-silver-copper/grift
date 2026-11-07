@@ -95,7 +95,7 @@ operations, `integer-to-string`, `string-to-integer`, `integer-to-float`, `float
 `list-to-bytes` and `bytes-to-list` exist only for speed (a bytes value's contents are what the
 printer writes and the reader reads back), and each
 one's meaning is its grift definition in [`natives.grift`](../crates/grift/src/natives.grift),
-which a test shows no program can tell from the Rust.
+which a test shows no program can tell from the Rust, but for how the combiner itself prints.
 
 | Combiner | Meaning |
 |---|---|
