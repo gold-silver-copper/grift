@@ -938,20 +938,11 @@ impl<T> Grift<T> {
     /// An error a host function returned, as this interpreter's.
     pub(crate) fn import_error(&self, e: &Error) -> Result<local::Error, local::Error> {
         let (values, trace) = (self.imported(&e.values)?, self.imported(&e.trace)?);
-        let mut seen = heap::Seen::default();
-        seen.try_reserve(trace.len())
-            .map_err(|_| local::Error::oom())?;
-        seen.extend(trace.iter().filter_map(|v| match v {
-            local::Value::Pair(r) => Some(*r),
-            _ => None,
-        }));
         let kind = self.import_symbol(&e.kind)?;
+        let imported = local::Error::from_parts(kind, values, trace)?;
         Ok(local::Error {
             origin: e.origin,
-            kind,
-            values,
-            trace,
-            seen,
+            ..imported
         })
     }
 

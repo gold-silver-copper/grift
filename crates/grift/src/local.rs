@@ -55,7 +55,7 @@ pub(crate) struct Error {
     pub values: Vec<Value>,
     pub trace: Vec<Value>,
     /// The combinations in `trace`, so adding one searches nothing.
-    pub seen: Seen<Reference>,
+    pub seen: Seen,
 }
 
 /// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core
@@ -99,6 +99,23 @@ impl Error {
             e.values.extend_from_slice(values);
         }
         e
+    }
+
+    /// An error a program describes, from its parts: `seen` follows from `trace`.
+    pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Vec<Value>) -> Result<Error, Error> {
+        let mut seen = Seen::default();
+        seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
+        seen.extend(trace.iter().filter_map(|v| match v {
+            Value::Pair(r) => Some(*r),
+            _ => None,
+        }));
+        Ok(Error {
+            origin: Origin::Program,
+            kind,
+            values,
+            trace,
+            seen,
+        })
     }
 
     /// The machine ran out of memory.

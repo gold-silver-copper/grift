@@ -50,8 +50,8 @@ pub(crate) enum Object {
 /// A context's bindings.
 pub(crate) type Bindings = HashMap<Symbol, Value, BuildHasherDefault<IdHasher>>;
 
-/// A set of symbols or references, for checking in constant time whether one was met before.
-pub(crate) type Seen<T> = HashSet<T, BuildHasherDefault<IdHasher>>;
+/// A set of references, for checking in constant time whether one was met before.
+pub(crate) type Seen = HashSet<Reference, BuildHasherDefault<IdHasher>>;
 
 /// Hashes a symbol or a reference by its id, a small integer: one multiplication spreads it over
 /// the bits the table looks at.

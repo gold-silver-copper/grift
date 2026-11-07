@@ -16,7 +16,7 @@
 //! library's own operatives, flagged, and run in Rust when their operands have the shape the twin
 //! handles; any other shape runs the operative's body, so what a program sees never differs.
 
-use crate::heap::{Bindings, Object, Operative, Reference, Seen};
+use crate::heap::{Bindings, Object, Operative, Reference};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Origin, Symbol, Value, boxed, push};
 use crate::parked::{Answer, Hosted, Parking};
@@ -1350,19 +1350,7 @@ impl<T> Grift<T> {
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
         let (values, trace) = (self.items(values, bad)?, self.items(trace, bad)?);
-        let mut seen = Seen::default();
-        seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
-        seen.extend(trace.iter().filter_map(|&v| match v {
-            Value::Pair(r) => Some(r),
-            _ => None,
-        }));
-        Ok(Error {
-            origin: Origin::Program,
-            kind,
-            values,
-            trace,
-            seen,
-        })
+        Error::from_parts(kind, values, trace)
     }
 
     /// The elements of a proper list; `bad()` for anything else.
