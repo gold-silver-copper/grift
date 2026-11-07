@@ -450,7 +450,7 @@ fn errors_name_the_program_combination() {
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
         assert_eq!(
-            e.trace().first().map(|v| show(&g, v)).as_deref(),
+            e.trace.first().map(|v| show(&g, v)).as_deref(),
             Some(at),
             "{src}"
         );
@@ -467,7 +467,7 @@ fn errors_name_the_program_combination() {
         Err(g.error("mine", &[]))
     });
     let e = g.evaluate(&mut (), "(fail-after-churn)").unwrap_err();
-    assert_eq!(show(&g, &e.trace()[0]), "(fail-after-churn)");
+    assert_eq!(show(&g, &e.trace[0]), "(fail-after-churn)");
 }
 
 #[test]
@@ -651,7 +651,7 @@ fn cleanup_runs_and_the_error_goes_on() {
     assert_eq!(e.values[0], Value::Integer(7));
     assert_eq!(show(&g, &e.values[1]), "(8)");
     assert_eq!(
-        show(&g, &e.trace()[0]),
+        show(&g, &e.trace[0]),
         "(raise (error (quote! mine) 7 (list 8)))"
     );
     let log = g.evaluate(&mut (), "log").unwrap();
@@ -673,7 +673,7 @@ fn cleanup_runs_and_the_error_goes_on() {
         .call(&mut (), &protect, &[missing, here, cleanup])
         .unwrap_err();
     assert_eq!(
-        (kind(&g, &e), e.trace()),
+        (kind(&g, &e), &e.trace[..]),
         (String::from("unbound-symbol"), &[][..])
     );
     // The waiting error's values survive collections in the cleanup.
@@ -814,7 +814,7 @@ fn catch_catches_errors_as_contexts() {
         .evaluate(&mut (), "(catch! (add 1 (check (quote! a))) e (raise e))")
         .unwrap_err();
     assert_eq!(kind(&g, &e), "not-integer");
-    let trace: Vec<String> = e.trace().iter().map(|v| show(&g, v)).collect();
+    let trace: Vec<String> = e.trace.iter().map(|v| show(&g, v)).collect();
     assert_eq!(
         trace,
         [
@@ -952,7 +952,7 @@ fn errors_name_each_program_combination_around_them() {
         ("(first 1)", "(first 1)"),
     ] {
         let e = g.evaluate(&mut (), src).unwrap_err();
-        let at: Vec<String> = e.trace().iter().map(|v| show(&g, v)).collect();
+        let at: Vec<String> = e.trace.iter().map(|v| show(&g, v)).collect();
         assert_eq!(at.join(" "), want, "{src}");
     }
 }
@@ -2041,7 +2041,7 @@ fn a_parse_error_says_why_and_where() {
         // Unnamed entries keep the bare reader error. Both named entries retain the source
         // as the first trace entry, without adding to or rearranging (reason line column).
         assert_eq!(g.evaluate(&mut (), text).unwrap_err(), e);
-        assert!(e.trace().is_empty());
+        assert!(e.trace.is_empty());
         for entry in ["read_in", "evaluate_in"] {
             let named = if entry == "read_in" {
                 g.read_in("broken.grift", text)
@@ -2051,7 +2051,7 @@ fn a_parse_error_says_why_and_where() {
             .unwrap_err();
             assert_eq!((&named.kind, &named.values), (&e.kind, &e.values));
             let trace: Vec<_> = named
-                .trace()
+                .trace
                 .iter()
                 .map(|at| g.as_str(at).unwrap())
                 .collect();
@@ -2107,6 +2107,19 @@ fn a_context_takes_one_operand_its_parent_or_none() {
 }
 
 #[test]
+fn a_trace_from_the_host_is_checked_as_values_are() {
+    let mut g = grift();
+    let mut e = g.error("mine", &[]);
+    e.trace.push(g.string("reclaimed").unwrap());
+    g.heap.request_collection();
+    g.evaluate(&mut (), "#inert").unwrap();
+    let Err(crate::WriteError::Value(why)) = g.describe(&e, &mut String::new()) else {
+        panic!("described a reclaimed value");
+    };
+    assert_eq!(kind(&g, &why), "stale-value");
+}
+
+#[test]
 fn a_bind_that_fails_binds_nothing() {
     let mut g = grift();
     g.evaluate(&mut (), "(define! c (context ()))").unwrap();
@@ -2156,7 +2169,7 @@ fn named_parse_errors_stay_describable_after_collection() {
             for held in [&e, &again] {
                 let mut after = String::new();
                 let described = g.describe(held, &mut after);
-                let position = g.position(&held.trace()[0]);
+                let position = g.position(&held.trace[0]);
                 if described.is_err() || position != Ok(None) {
                     broken.push(format!(
                         "{entry}: describe={described:?}, position={position:?}"
@@ -2721,14 +2734,14 @@ impl Comparison<'_> {
                         b.values
                     ));
                 }
-                if a.trace().len() != b.trace().len() {
+                if a.trace.len() != b.trace.len() {
                     return Err(format!(
                         "trace {} against {}",
-                        a.trace().len(),
-                        b.trace().len()
+                        a.trace.len(),
+                        b.trace.len()
                     ));
                 }
-                for (x, y) in a.trace().iter().zip(b.trace()) {
+                for (x, y) in a.trace.iter().zip(&b.trace) {
                     if l.position(x) != r.position(y) {
                         return Err(format!(
                             "{} placed {:?} against {:?}",
@@ -2841,7 +2854,7 @@ fn natives_are_their_definitions() {
                 result
                     .as_ref()
                     .unwrap_err()
-                    .trace()
+                    .trace
                     .iter()
                     .any(|at| g.position(at).unwrap() == Some(("call.grift", 1)))
             );
@@ -3133,7 +3146,7 @@ fn positions_name_each_combination_s_source_and_line() {
     let top = g.top_level();
     let src = "(define! f\n  (lambda! (x)\n    (first x)))\n\n(f 1)";
     let e = g.evaluate_in(&mut (), &top, "f.grift", src).unwrap_err();
-    let lines: Vec<_> = e.trace().iter().map(|at| g.position(at).unwrap()).collect();
+    let lines: Vec<_> = e.trace.iter().map(|at| g.position(at).unwrap()).collect();
     assert_eq!(lines, [Some(("f.grift", 3)), Some(("f.grift", 5))]);
     // A loader written in grift evaluates named forms later in the same run. Its trace keeps
     // the same program combinations as evaluate_in, including a nested failing combination.
@@ -3148,7 +3161,7 @@ fn positions_name_each_combination_s_source_and_line() {
         .unwrap_err();
     assert_eq!(kind(&g, &later), kind(&g, &e));
     let places: Vec<_> = later
-        .trace()
+        .trace
         .iter()
         .take(2)
         .map(|at| g.position(at).unwrap())
@@ -3162,7 +3175,7 @@ fn positions_name_each_combination_s_source_and_line() {
             "(for-each (lambda! (form) (evaluate form here)) forms)",
         )
         .unwrap_err();
-    assert_eq!(g.position(&later.trace()[0]), Ok(Some(("nested.grift", 3))));
+    assert_eq!(g.position(&later.trace[0]), Ok(Some(("nested.grift", 3))));
     // A named form tail-evaluating another replaces its finished boundary with the new one.
     let target = g.read_in("b.grift", "(f 1)").unwrap();
     let (target, _) = g.as_pair(&target).unwrap().unwrap();
@@ -3176,7 +3189,7 @@ fn positions_name_each_combination_s_source_and_line() {
         )
         .unwrap_err();
     let places: Vec<_> = later
-        .trace()
+        .trace
         .iter()
         .map(|at| g.position(at).unwrap())
         .collect();
@@ -3187,7 +3200,7 @@ fn positions_name_each_combination_s_source_and_line() {
         .evaluate_in(&mut (), &top, "host.grift", "(evaluate target here)")
         .unwrap_err();
     let places: Vec<_> = later
-        .trace()
+        .trace
         .iter()
         .map(|at| g.position(at).unwrap())
         .collect();
@@ -3195,7 +3208,7 @@ fn positions_name_each_combination_s_source_and_line() {
     assert_eq!(places.last(), Some(&Some(("host.grift", 1))));
     // Text evaluated with no name, and pairs a program makes, have none.
     let e = g.evaluate(&mut (), "(f 2)").unwrap_err();
-    assert_eq!(g.position(&e.trace()[1]), Ok(None));
+    assert_eq!(g.position(&e.trace[1]), Ok(None));
     let made = g.evaluate(&mut (), "(list 1 2)").unwrap();
     assert_eq!(g.position(&made), Ok(None));
     // A slot reused by a pair read later answers with its own line, never the old one.
@@ -3203,7 +3216,7 @@ fn positions_name_each_combination_s_source_and_line() {
         let src = format!("{}(f {n})", "\n".repeat(n));
         let e = g.evaluate_in(&mut (), &top, "g.grift", &src).unwrap_err();
         assert_eq!(
-            g.position(&e.trace()[1]),
+            g.position(&e.trace[1]),
             Ok(Some(("g.grift", n as u32 + 1)))
         );
         g.evaluate(&mut (), "(length (map list (range 0 5000)))")

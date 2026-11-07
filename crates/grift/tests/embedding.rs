@@ -469,7 +469,7 @@ fn a_run_its_host_function_left_is_over() {
     let mut g = leaving();
     let r = g.evaluate(&mut s, "(swap-out) (quote! rest)");
     assert_eq!(kind(&g, &r), "foreign-value");
-    assert!(r.unwrap_err().trace().is_empty());
+    assert!(r.unwrap_err().trace.is_empty());
     quiet(&mut g, &mut s);
     // The one swapped out, put back: its run is over, and it runs the next.
     let mut parked = s.saved.take().unwrap();
@@ -479,7 +479,7 @@ fn a_run_its_host_function_left_is_over() {
     let mut g = leaving();
     let r = g.evaluate(&mut s, "(restore)");
     assert_eq!(kind(&g, &r), "foreign-value");
-    assert!(r.unwrap_err().trace().is_empty());
+    assert!(r.unwrap_err().trace.is_empty());
     quiet(&mut g, &mut s);
 }
 

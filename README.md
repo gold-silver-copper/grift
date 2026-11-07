@@ -221,7 +221,7 @@ fn main() -> Result<(), Error> {
   in a `private_context()`, that makes the operations as closures over them, as the runner's
   [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
   after it is closed is the error `closed`.
-- `Error { kind: Symbol, values: Vec<Value>, .. }`, with `Error::trace()`, which lists the
+- `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its trace lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
   not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable

@@ -126,13 +126,6 @@ pub struct Error {
     pub kind: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
-    /// Where, read with [`Error::trace`].
-    trace: Vec<Value>,
-    /// Who began it, read with [`Error::is_limit`].
-    origin: local::Origin,
-}
-
-impl Error {
     /// Where: the combinations of the program that were being evaluated, innermost first, each
     /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
     /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
@@ -142,10 +135,13 @@ impl Error {
     /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
     /// doesn't read, its trace is empty. The named parse error's source string lives with the
     /// interpreter, so that error can still be described after later evaluations collect.
-    pub fn trace(&self) -> &[Value] {
-        &self.trace
-    }
+    /// Checked as the values are when the error comes in.
+    pub trace: Vec<Value>,
+    /// Who began it, read with [`Error::is_limit`].
+    origin: local::Origin,
+}
 
+impl Error {
     /// Whether the host (a stop, a force, an abandon) or the machine (out of memory) began this,
     /// so that no handler could catch it. Never so for what a program raises or a host function
     /// makes with [`Grift::error`], whatever its kind is called, and an error passing through a
@@ -322,7 +318,7 @@ impl<T> Grift<T> {
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let keys = g.context(Some(&g.top_level()))?;
     /// let e = g.evaluate_in(&mut (), &keys, "keys.grift", "(define! a 1)\n(first a)").unwrap_err();
-    /// assert_eq!(g.position(&e.trace()[0])?, Some(("keys.grift", 2)));
+    /// assert_eq!(g.position(&e.trace[0])?, Some(("keys.grift", 2)));
     /// let mut text = String::new();
     /// g.describe(&e, &mut text).unwrap();
     /// assert_eq!(text, "type-error #[primitive first] 1 in (first a) at keys.grift:2");
