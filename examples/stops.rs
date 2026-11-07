@@ -70,7 +70,7 @@ pub fn main() -> Result<(), grift::Error> {
     let top = g.top_level();
     let src = "(catch! (finally! (wait) (close)) #ignore 0)";
     let Ran::Parked(parked) = g.start_in(&mut host, &top, "script", src)? else {
-        panic!("it waits");
+        return Err(g.error("it-did-not-wait", &[]));
     };
     assert_eq!(g.parked(), 1);
     assert_eq!(g.evaluate(&mut host, "(add 2 2)")?, Value::Integer(4));
@@ -80,7 +80,7 @@ pub fn main() -> Result<(), grift::Error> {
         parked: None,
     }) = g.resume(&mut host, parked, Err(ending))
     else {
-        panic!("a limit ends it");
+        return Err(g.error("it-went-on", &[]));
     };
     assert!(error.is_limit() && g.is_kind(&error, "given-up")?);
     assert_eq!(g.evaluate(&mut host, "closed")?, Value::Integer(2));
