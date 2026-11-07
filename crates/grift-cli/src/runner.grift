@@ -30,6 +30,11 @@
     (lambda! (path file)
       (operations (quote! (path write write-bytes close))
                   (append (list path) (writing file) (list (lambda! () (close-host file)))))))
+  ; read-file: a file's whole text, by what any program can do with open-file.
+  (define! whole-text
+    (lambda! (path)
+      (let! ((file (open-host path)))
+        (finally! (read-all-host file) (close-host file)))))
   ; The file whose forms are being loaded, at first the script; a relative path given `load` is
   ; relative to it.
   (define! loading (operations (quote! (file)) (list script)))
@@ -40,15 +45,16 @@
     (lambda! (path c)
       (let! ((outer (evaluate-in! file loading)))
         (bind loading (quote! file) path)
-        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path))
+        (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms-host path (whole-text path)))
                   (bind loading (quote! file) outer)))))
   (bind top (quote! (standard-input standard-output standard-error open-file create-file
-                     run-process load))
+                     read-file run-process load))
     (list (operations (quote! (read-line read-all read-bytes)) (reading 0))
           (operations (quote! (write write-bytes)) (writing 2))
           (operations (quote! (write write-bytes)) (writing 1))
           (lambda! (path) (reader path (open-host path)))
           (lambda! (path) (writer path (create-host path)))
+          whole-text
           ; The record of a finished process: its status, output and error output.
           (lambda! (program . arguments)
             (operations (quote! (status output error-output))

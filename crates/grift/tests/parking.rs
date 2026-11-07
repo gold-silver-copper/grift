@@ -966,9 +966,22 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
 /// and the cleanup around the load run after it.
 #[test]
 fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
-    fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+    // A file is its path here, and reading it the whole of its text.
+    fn open(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+        Ok(args[0].clone())
+    }
+    fn read_all(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         let path = g.as_string(&args[0])?.unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
+        g.string(&std::fs::read_to_string(&path).unwrap())
+    }
+    fn close(_: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
+        Ok(Value::Inert)
+    }
+    fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+        let (path, text) = (
+            g.as_string(&args[0])?.unwrap(),
+            g.as_string(&args[1])?.unwrap(),
+        );
         g.read_in(&path, &text)
     }
     fn resolve(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
@@ -990,7 +1003,10 @@ fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
     let mut args = vec![g.top_level(), g.string("").unwrap()];
     for n in 0..11 {
         let f = match n {
-            9 => read_file as grift::HostFunction<World>,
+            0 => open as grift::HostFunction<World>,
+            3 => read_all,
+            7 => close,
+            9 => read_forms,
             10 => resolve,
             _ => unused,
         };

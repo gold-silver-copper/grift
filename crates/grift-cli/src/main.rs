@@ -115,15 +115,6 @@ fn display_error(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Err
     put(g, args, true, "", &mut io::stderr().lock(), None)
 }
 
-/// `(read-file path)`: the whole text of the file.
-fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let path = one_string(g, args)?;
-    match std::fs::read_to_string(&path) {
-        Ok(text) => g.string(&text),
-        Err(e) => Err(failed(g, "file-error", &path, &e)),
-    }
-}
-
 /// `(resolve-host base path)`: `path`, relative to the directory of the file `base` if it is
 /// relative. The program holds the script's path as text, which may be a lossy copy naming another
 /// file, so the script's directory comes from the real path: `encoding-error` if text can't hold it.
@@ -513,10 +504,9 @@ fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
 }
 
 /// The host functions the program gets by name.
-const PUBLIC: [(&str, HostFunction<Runner>); 7] = [
+const PUBLIC: [(&str, HostFunction<Runner>); 6] = [
     ("display", display),
     ("display-error", display_error),
-    ("read-file", read_file),
     ("environment-variable", environment_variable),
     ("wall-clock-nanoseconds", wall_clock_nanoseconds),
     ("elapsed-nanoseconds", elapsed_nanoseconds),
@@ -538,10 +528,16 @@ const PRIVATE: [(&str, HostFunction<Runner>); 11] = [
     ("resolve-host", resolve_host),
 ];
 
-/// `(read-forms-host path)`: reads the file's forms, each combination with its source and line.
+/// `(read-forms-host path text)`: the forms of `text`, read from `path`, each combination with its
+/// source and line.
 fn read_forms_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let path = one_string(g, args)?;
-    let text = std::fs::read_to_string(&path).map_err(|e| failed(g, "file-error", &path, &e))?;
+    let [path, text] = args else {
+        return Err(g.error("arity-error", args));
+    };
+    let (Some(path), Some(text)) = (g.as_str(path)?, g.as_str(text)?) else {
+        return Err(g.error("type-error", args));
+    };
+    let (path, text) = (path.to_owned(), text.to_owned());
     g.read_in(&path, &text)
 }
 
