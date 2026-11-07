@@ -152,14 +152,16 @@ struct Frame {
 enum What {
     /// Evaluate the remaining forms of one `evaluate` call; with none left, pass the value on.
     Forms { rest: Value },
-    /// The value is the combiner of a combination with these operands.
-    Combine { operands: Value },
+    /// The value is the combiner of a combination with these operands, which the library made
+    /// if `library`.
+    Combine { operands: Value, library: bool },
     /// The value is an argument of `combiner`; arguments so far are on the argument stack from
-    /// `base`.
+    /// `base`; the combination is the library's if `library`.
     Arguments {
         combiner: Value,
         rest: Value,
         base: usize,
+        library: bool,
     },
     /// When the evaluation above ends, by a value or an error, call the combiner `cleanup` with
     /// no arguments; `base` is the argument stack's height to go back to.
@@ -185,7 +187,7 @@ impl Frame {
         let empty = Value::EmptyList;
         let (a, b) = match self.what {
             What::Forms { rest: v }
-            | What::Combine { operands: v }
+            | What::Combine { operands: v, .. }
             | What::Cleanup { cleanup: v, .. }
             | What::Handler { handler: v, .. }
             | What::Body { rest: v } => (v, empty),
@@ -211,6 +213,9 @@ pub(crate) struct Machine {
     /// The innermost combination of the program being evaluated, or [`Reference::NONE`]. A
     /// `Reference`, not a `Value`: this is written and read at every step.
     here: Reference,
+    /// Whether the combination being combined is the library's: the pairs made now are too, so
+    /// the code the library builds is the library's, and the code a program builds the program's.
+    pub(crate) library: bool,
     /// Scratch for matching parameter trees.
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
@@ -244,6 +249,7 @@ impl Machine {
         self.arguments.clear();
         self.waiting.clear();
         self.here = Reference::NONE;
+        self.library = false;
         self.request = Value::Inert;
     }
 
@@ -273,6 +279,7 @@ impl Default for Machine {
             arguments: Vec::new(),
             waiting: Vec::new(),
             here: Reference::NONE,
+            library: false,
             work: Vec::new(),
             request: Value::Inert,
             #[cfg(test)]
@@ -327,7 +334,10 @@ impl<T> Grift<T> {
         let context = self
             .heap
             .alloc(Object::Context(None, Bindings::default()))?;
-        let call = What::Combine { operands };
+        let call = What::Combine {
+            operands,
+            library: false,
+        };
         self.enter(state, &[(call, context)], Mode::Return(f), parks)
     }
 
@@ -347,8 +357,13 @@ impl<T> Grift<T> {
         let outer = self.begin_run();
         let around = std::mem::replace(&mut self.may_park, outer && parks);
         let m = &mut self.machine;
-        let (base, arguments, waiting, here) =
-            (m.frames.len(), m.arguments.len(), m.waiting.len(), m.here);
+        let (base, arguments, waiting, here, library) = (
+            m.frames.len(),
+            m.arguments.len(),
+            m.waiting.len(),
+            m.here,
+            m.library,
+        );
         let held = What::Forms {
             rest: Value::EmptyList,
         };
@@ -361,6 +376,7 @@ impl<T> Grift<T> {
         // A machine that parked or was given up has nothing left to restore: these do nothing.
         let m = &mut self.machine;
         m.here = here;
+        m.library = library;
         m.frames.truncate(base);
         m.arguments.truncate(arguments);
         m.waiting.truncate(waiting);
@@ -480,9 +496,8 @@ impl<T> Grift<T> {
                     (Object::Pair(a, b), library) => (*a, *b, library),
                     _ => return Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
                 };
-                // A combination is the program's unless it is the library's code, or code built
-                // around a combiner value (as the library builds it), not written.
-                if !library && !is_combiner(combiner) {
+                // A combination is the program's unless the library made it.
+                if !library {
                     self.machine.here = r;
                     if self
                         .positions
@@ -492,7 +507,8 @@ impl<T> Grift<T> {
                         self.hold_form(r)?;
                     }
                 }
-                self.frame(What::Combine { operands }, context, self.machine.here)?;
+                let combine = What::Combine { operands, library };
+                self.frame(combine, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
             }
             Mode::Evaluate(x, _) => Mode::Return(x),
@@ -506,7 +522,7 @@ impl<T> Grift<T> {
                     } => {
                         let (form, rest) = self.pair_at(r)?;
                         let at = match form {
-                            Value::Pair(f) => f,
+                            Value::Pair(f) if !self.heap.get_code(f)?.1 => f,
                             _ => Reference::NONE,
                         };
                         self.frame(What::Forms { rest }, context, at)?;
@@ -514,16 +530,19 @@ impl<T> Grift<T> {
                         Mode::Evaluate(form, context)
                     }
                     What::Forms { .. } | What::Form => Mode::Return(v),
-                    What::Combine { operands } => {
+                    What::Combine { operands, library } => {
                         self.machine.here = at;
+                        self.machine.library = library;
                         self.combine(v, operands, context)?
                     }
                     What::Arguments {
                         combiner,
                         rest,
                         base,
+                        library,
                     } => {
                         self.machine.here = at;
+                        self.machine.library = library;
                         push(&mut self.machine.arguments, v)?;
                         self.next_argument(combiner, context, rest, base)?
                     }
@@ -660,8 +679,11 @@ impl<T> Grift<T> {
             context: Reference::NONE,
             at: Reference::NONE,
         });
-        let operands = Value::EmptyList;
-        self.frame(What::Combine { operands }, context, at)?;
+        let call = What::Combine {
+            operands: Value::EmptyList,
+            library: false,
+        };
+        self.frame(call, context, at)?;
         Ok(Mode::Return(cleanup))
     }
 
@@ -801,6 +823,7 @@ impl<T> Grift<T> {
                     combiner,
                     rest,
                     base,
+                    library: self.machine.library,
                 };
                 self.frame(arguments, context, self.machine.here)?;
                 Ok(Mode::Evaluate(x, context))
@@ -1383,8 +1406,12 @@ impl<T> Grift<T> {
             .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l))
     }
 
+    /// A new pair, the library's if the combination being combined is.
     pub(crate) fn pair_local(&mut self, a: Value, b: Value) -> Result<Value, Error> {
-        Ok(Value::Pair(self.heap.alloc(Object::Pair(a, b))?))
+        let pair = Object::Pair(a, b);
+        Ok(Value::Pair(
+            self.heap.alloc_marked(pair, self.machine.library)?,
+        ))
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {

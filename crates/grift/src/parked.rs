@@ -192,7 +192,7 @@ impl<T> Grift<T> {
             let c = g.context_of(context)?;
             g.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = g.intern(source)?;
-            let forms = g.read_local(src, Some(source))?;
+            let forms = g.read_local(src, Some(source), false)?;
             g.evaluate_forms(Some(state), forms, c, true)
         })
     }

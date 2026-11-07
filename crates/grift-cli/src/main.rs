@@ -556,9 +556,7 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Resu
     bind(g, "script-path", script)?;
     let top = g.top_level();
     bind(g, "top", top)?;
-    let session = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
-    g.seal_library();
-    Ok(session)
+    g.evaluate_library_in(r, &private, "runner.grift", RUNNER)
 }
 
 fn main() -> ExitCode {

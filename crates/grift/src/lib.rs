@@ -136,8 +136,9 @@ pub struct Error {
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
     /// Where: the combinations of the program that were being evaluated, innermost first, each
-    /// once, ending with the top-level form. The library's own code is skipped, so `(if! 1 2 3)`
-    /// fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't listed.
+    /// once, ending with the top-level form. The library's code, read or built, is skipped, so
+    /// `(if! 1 2 3)` fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't
+    /// listed.
     /// [`Grift::position`] gives each one's source and line. If input to [`Grift::read_in`] or
     /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
     /// [`Value::Symbol`]; its values remain `(reason line column)`. An outer evaluation can add
@@ -293,12 +294,9 @@ impl<T> Grift<T> {
             let v = local::Value::Applicative(self.heap.alloc(wrapped)?);
             self.bind_symbol(self.built_in, s, v)?;
         }
-        let forms = self.read_local(LIBRARY, None)?;
+        let forms = self.read_local(LIBRARY, None, true)?;
         self.evaluate_forms(None, forms, self.built_in, false)?;
-        self.install_natives()?;
-        // Everything in the heap now is the library's; errors skip its code.
-        self.heap.seal_library();
-        Ok(())
+        self.install_natives()
     }
 
     /// Reads every form in `src`, then evaluates them in order in the top-level context.
@@ -307,7 +305,7 @@ impl<T> Grift<T> {
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
         let forms = self
             .prepare(std::iter::empty())
-            .and_then(|()| self.read_local(src, None));
+            .and_then(|()| self.read_local(src, None, false));
         let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
         self.exported(done)
     }
@@ -335,10 +333,46 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Value, Error> {
+        self.evaluate_text_in(state, context, source, src, false)
+    }
+
+    /// [`Grift::evaluate_in`], for a host's own grift code, such as a prelude: it counts as library
+    /// code, as grift's own library does, so an error's trace skips its combinations and the code
+    /// they build, and lists the program's.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let top = g.top_level();
+    /// g.evaluate_library_in(&mut (), &top, "prelude.grift", "(define! head (lambda! (xs) (first xs)))")?;
+    /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(head 9)").unwrap_err();
+    /// let mut text = String::new();
+    /// g.describe(&e, &mut text).unwrap();
+    /// // The prelude's (first xs) is skipped: the error is the config's line.
+    /// assert_eq!(text, "type-error 9 in (head 9) at config.grift:2");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn evaluate_library_in(
+        &mut self,
+        state: &mut T,
+        context: &Value,
+        source: &str,
+        src: &str,
+    ) -> Result<Value, Error> {
+        self.evaluate_text_in(state, context, source, src, true)
+    }
+
+    fn evaluate_text_in(
+        &mut self,
+        state: &mut T,
+        context: &Value,
+        source: &str,
+        src: &str,
+        library: bool,
+    ) -> Result<Value, Error> {
         let done = self.context_of(context).and_then(|c| {
             self.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = self.intern(source)?;
-            let forms = self.read_local(src, Some(source))?;
+            let forms = self.read_local(src, Some(source), library)?;
             self.evaluate_forms(Some(state), forms, c, false)
         });
         self.exported(done)
@@ -462,27 +496,6 @@ impl<T> Grift<T> {
         self.out(names)
     }
 
-    /// From now on everything in the heap counts as library code, as grift's own library does:
-    /// an error's trace skips its combinations and the code it built. A host calls this after
-    /// evaluating its prelude and before any user code; data live at that moment, if later
-    /// evaluated as code, is skipped too.
-    ///
-    /// ```
-    /// let mut g: grift::Grift = grift::Grift::new()?;
-    /// let top = g.top_level();
-    /// g.evaluate_in(&mut (), &top, "prelude.grift", "(define! head (lambda! (xs) (first xs)))")?;
-    /// g.seal_library();
-    /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(head 9)").unwrap_err();
-    /// let mut text = String::new();
-    /// g.describe(&e, &mut text).unwrap();
-    /// // The prelude's (first xs) is skipped: the error is the config's line.
-    /// assert_eq!(text, "type-error 9 in (head 9) at config.grift:2");
-    /// # Ok::<(), grift::Error>(())
-    /// ```
-    pub fn seal_library(&mut self) {
-        self.heap.seal_library();
-    }
-
     /// Interns `name`.
     pub fn symbol(&mut self, name: &str) -> Result<Symbol, Error> {
         let s = self.intern(name);
@@ -582,7 +595,7 @@ impl<T> Grift<T> {
     /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
     /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let forms = self.read_local(src, None);
+        let forms = self.read_local(src, None, false);
         self.exported(forms)
     }
 
@@ -605,7 +618,7 @@ impl<T> Grift<T> {
     pub fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error> {
         let forms = self
             .intern(source)
-            .and_then(|source| self.read_local(text, Some(source)));
+            .and_then(|source| self.read_local(text, Some(source), false));
         self.exported(forms)
     }
 

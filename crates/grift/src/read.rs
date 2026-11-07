@@ -102,9 +102,21 @@ pub(crate) fn float_name(token: &str) -> Option<f64> {
 }
 
 impl<T> Grift<T> {
-    /// Reads every form in `src` into a list. Under a `source` name, each combination's line goes
-    /// in the positions table.
-    pub(crate) fn read_local(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
+    /// Reads every form in `src` into a list: the library's code if `library`, else the program's.
+    /// Under a `source` name, each combination's line goes in the positions table.
+    pub(crate) fn read_local(
+        &mut self,
+        src: &str,
+        source: Option<Symbol>,
+        library: bool,
+    ) -> Result<Value, Error> {
+        let around = std::mem::replace(&mut self.machine.library, library);
+        let forms = self.read_all(src, source);
+        self.machine.library = around;
+        forms
+    }
+
+    fn read_all(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) =

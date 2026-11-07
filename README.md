@@ -214,8 +214,9 @@ fn main() -> Result<(), Error> {
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
-  `define(name, value)` at top level. `seal_library()` after a host's prelude makes its code
-  count as library code, as grift's own: traces skip it.
+  `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
+  grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
+  as grift's own: traces skip it. Code a program reads or builds is the program's.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `symbol`; read with `as_str`, `as_bytes`,
   `as_pair`, `symbol_name`, each `Result<Option<_>, Error>` or `Result<_, Error>`, so a reclaimed
   value is `stale-value`, never a wrong answer; `write(&v, out)`. A list is built with `pair` from
@@ -233,8 +234,8 @@ fn main() -> Result<(), Error> {
 - `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its values are the values
   involved, never who failed: `(first 1)` gives `type-error 1`. Its trace lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
-  top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
-  not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
+  top-level form; the library's code, read or built, is skipped, so `(if! 1 2 3)` fails at
+  `(if! 1 2 3)`, not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
   input to `read_in` or `evaluate_in`, the trace starts with the supplied source symbol; the
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;

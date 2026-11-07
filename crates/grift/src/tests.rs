@@ -74,7 +74,7 @@ impl<T> Grift<T> {
     pub(crate) fn run_definitions(&mut self) {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here).unwrap();
-        let forms = self.read_local(MEANINGS, None).unwrap();
+        let forms = self.read_local(MEANINGS, None, true).unwrap();
         self.evaluate_forms(None, forms, here, false).unwrap();
         let name = self.intern("meanings").unwrap();
         let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {
@@ -101,7 +101,6 @@ impl<T> Grift<T> {
                 op.native = None;
             }
         }
-        self.heap.seal_library();
     }
 
     /// The combiner under `v` if it is an applicative, else `v`.
@@ -366,6 +365,38 @@ fn strings_and_bytes_share_one_vocabulary() {
             ("(slice \"\\xe9;\" 0 1)", "range-error"),
             ("(byte-length 1)", "type-error"),
         ],
+    );
+}
+
+/// Whether a combination is the program's comes from who made it: the program's reader and the
+/// program's own code make the program's, the library's text and code make the library's, whatever
+/// the head of the combination is and whenever it was made.
+#[test]
+fn a_combination_is_the_program_s_when_the_program_made_it() {
+    let mut g = grift();
+    let first_place = |g: &mut Grift, src: &str| {
+        let e = g.evaluate(&mut (), src).unwrap_err();
+        show(g, &e.trace[0])
+    };
+    // Built by the program around a combiner value: the program's.
+    assert_eq!(
+        first_place(&mut g, "(evaluate (list first 1) (current-context))"),
+        "(#[applicative #[primitive first]] 1)"
+    );
+    // Built by the library around a combiner value, as map's apply builds it: the library's.
+    assert_eq!(
+        first_place(&mut g, "(map first (list 1 2))"),
+        "(map first (list 1 2))"
+    );
+    // Code the program made stays the program's after a host's own library code has run.
+    g.evaluate(&mut (), "(define! kept (list (quote! first) 1))")
+        .unwrap();
+    let top = g.top_level();
+    g.evaluate_library_in(&mut (), &top, "prelude.grift", "(define! helper 1)")
+        .unwrap();
+    assert_eq!(
+        first_place(&mut g, "(evaluate kept (current-context))"),
+        "(first 1)"
     );
 }
 

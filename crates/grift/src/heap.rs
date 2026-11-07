@@ -85,7 +85,7 @@ impl Hasher for IdHasher {
 struct Slot {
     generation: u32,
     marked: bool,
-    /// Live when the library had been loaded: its code, and the code it built.
+    /// Made by the library: read from its text, or made by its code as it ran.
     library: bool,
     obj: Object,
 }
@@ -186,6 +186,12 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
+        self.alloc_marked(obj, false)
+    }
+
+    /// A new object, marked as the library's if `library`: code it read or built.
+    #[inline]
+    pub fn alloc_marked(&mut self, obj: Object, library: bool) -> Result<Reference, Error> {
         let since_gc = self.since_gc.get_mut();
         *since_gc = since_gc.saturating_add(weight(&obj));
         #[cfg(test)]
@@ -209,6 +215,7 @@ impl Heap {
         {
             self.free = next;
             slot.obj = obj;
+            slot.library = library;
             return Ok(Reference {
                 idx,
                 generation: slot.generation,
@@ -225,7 +232,7 @@ impl Heap {
         let slot = Slot {
             generation: 0,
             marked: false,
-            library: false,
+            library,
             obj,
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
@@ -240,16 +247,7 @@ impl Heap {
         Error::oom()
     }
 
-    /// Marks every object now in the heap as the library's. A slot loses the mark when it is
-    /// freed.
-    pub fn seal_library(&mut self) {
-        for s in &mut self.slots {
-            s.library = !matches!(s.obj, Object::Free(_));
-        }
-    }
-
-    /// The object, and whether it is the library's: its code, or code it built while it was
-    /// loaded.
+    /// The object, and whether the library made it: read from its text, or made by its code.
     #[inline]
     pub fn get_code(&self, r: Reference) -> Result<(&Object, bool), Error> {
         self.slot(r)
@@ -330,7 +328,6 @@ impl Heap {
                 self.live = self.live.saturating_add(weight(&s.obj));
             } else if !matches!(s.obj, Object::Free(_)) {
                 s.obj = Object::Free(self.free);
-                s.library = false;
                 // A slot whose generations run out is retired, never reused: its last one, which
                 // no reference has, means free for good.
                 s.generation = s.generation.saturating_add(1);

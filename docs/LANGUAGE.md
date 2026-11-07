@@ -221,8 +221,9 @@ doesn't matter.
 
 Every error stops evaluation and goes to the innermost `catch!` around it, or to the host, as a
 kind, the values involved, and a trace: the combinations of the program being evaluated,
-innermost first, each once, out to the top-level form (the library's own code and code built
-around a combiner value are skipped). A combination in tail position has finished when the next
+innermost first, each once, out to the top-level form. Who made a combination decides: the
+library's own code, and the code it builds as it runs, are skipped; code a program reads or builds
+is listed, whatever its head is. A combination in tail position has finished when the next
 one starts, so it isn't listed. Cleanups (`finally!`) run on the way out. A combination read from
 a named text, such as a file the runner runs or loads, keeps its source and line beside it, not in
 it, so the host reports `in (first x) at lib/table.grift:12`.
