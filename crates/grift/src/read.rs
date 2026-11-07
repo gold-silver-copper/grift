@@ -48,12 +48,7 @@ struct Cursor<'a> {
 
 impl Cursor<'_> {
     fn peek(&self) -> Option<char> {
-        let &byte = self.src.as_bytes().get(self.at)?;
-        if byte.is_ascii() {
-            Some(char::from(byte))
-        } else {
-            self.src.get(self.at..)?.chars().next()
-        }
+        self.src.get(self.at..)?.chars().next()
     }
 
     fn next(&mut self) -> Option<char> {

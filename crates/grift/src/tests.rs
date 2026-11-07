@@ -56,8 +56,8 @@ const CORE: &[&str] = &[
 
 impl<T> Grift<T> {
     /// From now on the natives are their grift definitions: each bound in the built-in context,
-    /// where the library looks it up, and no library form runs a native twin. As the library's
-    /// own code, what this loads is skipped by traces.
+    /// where the library looks it up, wrapped if the native is. As the library's own code, what
+    /// this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here).unwrap();
@@ -69,39 +69,24 @@ impl<T> Grift<T> {
         };
         for name in self.names_of(meanings).unwrap() {
             let meaning = self.find(meanings, name).unwrap().unwrap();
-            let wrapped = self.heap.alloc(Object::Applicative(meaning)).unwrap();
-            self.bind_symbol(self.built_in, name, local::Value::Applicative(wrapped))
-                .unwrap();
-        }
-        for name in ["if!", "sequence!", "string-search"] {
-            let form = self.built_in_operative(name);
-            if let Object::Operative(op) = self.heap.get_mut(form).unwrap() {
-                op.native = None;
-            }
+            let native = self.find(self.built_in, name).unwrap();
+            let bound = match native {
+                Some(local::Value::Applicative(_)) => {
+                    local::Value::Applicative(self.heap.alloc(Object::Applicative(meaning)).unwrap())
+                }
+                _ => meaning,
+            };
+            self.bind_symbol(self.built_in, name, bound).unwrap();
         }
         self.heap.seal_library();
     }
 
-    /// The operative under the combiner the built-in context binds to `name`.
-    fn built_in_operative(&mut self, name: &str) -> crate::heap::Reference {
-        let name = self.intern(name).unwrap();
-        let found = self.find(self.built_in, name).unwrap().unwrap();
-        let inner = match found {
-            local::Value::Applicative(r) => self.unwrapped(r).unwrap(),
-            v => v,
-        };
-        match inner {
-            local::Value::Operative(r) => r,
-            v => panic!("{v:?} is no operative"),
-        }
-    }
-
-    /// The combiner under applicative `v`.
+    /// The combiner under `v` if it is an applicative, else `v`.
     fn underlying(&self, v: &Value) -> Value {
-        let local::Value::Applicative(r) = self.import(v).unwrap() else {
-            panic!("no applicative");
-        };
-        self.export(self.unwrapped(r).unwrap())
+        match self.import(v).unwrap() {
+            local::Value::Applicative(r) => self.export(self.unwrapped(r).unwrap()),
+            _ => v.clone(),
+        }
     }
 
     /// Whether `v` is the definition this interpreter runs for primitive `p`.
@@ -112,10 +97,11 @@ impl<T> Grift<T> {
         else {
             return false;
         };
-        let local::Value::Applicative(r) = found else {
-            return false;
+        let definition = match found {
+            local::Value::Applicative(r) => self.unwrapped(r).unwrap(),
+            other => other,
         };
-        self.unwrapped(r).unwrap() == self.import(v).unwrap()
+        definition == self.import(v).unwrap()
     }
 }
 

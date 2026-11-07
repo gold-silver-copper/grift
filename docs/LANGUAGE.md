@@ -140,8 +140,8 @@ which a test shows no program can tell from the Rust.
 | `(define! parameters expression)` | Evaluates `expression` and matches `parameters` to it in the current context (4.9.1), Kernel's `$define!` and Scheme's internal `define`. Returns `#inert`. Inside a body that context is the call's own, so `define!` there makes a local and never changes an outer binding; see below the table. |
 | `(quote! x)` | `x`, unevaluated. |
 | `(list x ...)` | The list of the arguments (5.2.1). |
-| `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. A native twin runs it (see "What the library forms cost"). |
-| `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). A native twin runs it. |
+| `(if! test consequent alternative)` | Evaluates `test`, which must give a boolean, then `consequent` or `alternative` as a tail call (4.5.2). Any other number of operands is an `arity-error`. A native primitive. |
+| `(sequence! x ...)` | Each in turn; the last one's value, as a tail call; `#inert` for none (5.1.1). A native primitive. |
 | `(lambda! parameters body ...)` | `(wrap (vau! parameters #ignore body))`; several body forms become `(sequence! form ...)`, with the symbol, so the combiner prints its body as written (5.3.2). |
 | `(current-context)` | The context it is called in (6.7.2). |
 | `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
@@ -174,7 +174,7 @@ which a test shows no program can tell from the Rust.
 | `(symbol-to-string s)` | A symbol's name. |
 | `(float-to-string f)` | A float's printed text, which reads back as the same float: `(float-to-string 1.0)` is `"1.0"`. Anything else is a `type-error`. |
 | `(string-search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. A `start` out of range or off a character boundary is a `range-error`. |
-| `(bytes-search b pattern start)` | `string-search` over bytes: the offset of the first place at or after `start` where `pattern`'s bytes are in `b`, or `()`; an empty pattern is at `start`. A `start` out of range is `bytes-slice`'s `range-error`. It has no native twin, as no program searches bytes yet: 9 KB takes about 12 ms. |
+| `(bytes-search b pattern start)` | `string-search` over bytes: the offset of the first place at or after `start` where `pattern`'s bytes are in `b`, or `()`; an empty pattern is at `start`. A `start` out of range is `bytes-slice`'s `range-error`. It isn't native, as no program searches bytes yet: 9 KB takes about 12 ms. |
 | `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)` | Whether `s` starts or ends with those bytes. |
 | `(string-split text separator)`, `(string-join strings separator)` | The parts of `text` between the separators, empty ones too, so `(string-split "a,,b" ",")` is `("a" "" "b")` and `(string-split "" ",")` is `("")`; an empty separator is a `range-error`. The strings with the separator between them. `string-join` undoes `string-split`. |
 | `(string-trim s)` | `s` without the ASCII whitespace at either end (space, tab, newline, form feed, return), as Rust's `trim_ascii`. |
@@ -209,10 +209,8 @@ counter                                                               ; => 1
 `((evaluate (quote! add) operations) x)` or `((lookup operations name default) x)` costs one
 lookup whatever the number of cases, where `conditional!` tests its clauses in order.
 
-**What the library forms cost.** `if!` and `sequence!` are library operatives with a native twin:
-the same operative, run in Rust when its operands are the shape it handles (three for `if!`, a
-proper list for `sequence!`), and by its body otherwise, so what a program sees, its errors and
-traces included, is the library's. `string-search` has one too. The other forms with a body walk
+**What the library forms cost.** `if!` and `sequence!` are native primitives, operatives whose
+meaning is their definition in `natives.grift`. The other forms with a body walk
 their operands in grift, so in a loop run per byte or per node each costs a few calls. Measured with
 the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a
 loop of one `if!` and a call, 0.32 µs a turn: another `if!` 0.05 µs, `sequence!` of two forms
@@ -359,9 +357,9 @@ had died. The README's embedding section gives the host's side.
 
 [VISION "Kernel"](VISION.md#kernel) gives the larger differences. Beyond those:
 
-- **One special primitive.** `if!`, `define!` and `sequence!` are primitive in Kernel; here they
-  are library code over `vau!`, `select`, `bind` and `evaluate`, `if!` and `sequence!` with a
-  native twin.
+- **Three operative primitives.** `if!`, `define!` and `sequence!` are primitive in Kernel; here `define!`
+  is library code over `vau!`, `bind` and `evaluate`, and `if!` and `sequence!` are native, each
+  defined in grift over those and `select`.
 - **`finally!`** is on `evaluate-with-cleanup` (not in Kernel), the exit half of Kernel's guards;
   `binds?` is derived from `lookup`, a primitive Kernel doesn't have, where R-1RK derives `$binds?`
   from its error continuation: a miss raised and caught an error, 5-14 µs a probe.

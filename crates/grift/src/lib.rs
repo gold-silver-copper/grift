@@ -274,7 +274,6 @@ impl<T> Grift<T> {
         }
         let forms = self.read_local(LIBRARY, None)?;
         self.evaluate_forms(None, forms, self.built_in)?;
-        self.install_natives()?;
         // Everything in the heap now is the library's; errors skip its code.
         self.heap.seal_library();
         Ok(())

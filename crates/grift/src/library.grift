@@ -16,21 +16,19 @@
        (bind caller parameters (evaluate expression caller)))))
  define!)
 
+; if! and sequence! take their operands as written, as vau! does.
+(define! if! (unwrap if!))
+(define! sequence! (unwrap sequence!))
+
 ; quote! (given in the rationale of 5.5.1, $quote).
 (define! quote! (vau! (x) #ignore x))
 
 ; list (5.2.1).
 (define! list (wrap (vau! xs #ignore xs)))
 
-; if! (4.5.2, $if; primitive in Kernel). Both branches are required, as in Kernel: select picks
-; the expression and evaluate runs it as a tail call. One branch is when!, below.
-(define! if!
-  (vau! (test consequent alternative) caller
-    (evaluate (select (evaluate test caller) consequent alternative) caller)))
-
 ; lambda! (5.3.2, $lambda). A body of one expression is kept as is; several become
 ; (sequence! ...) with the symbol, as if written so, so printing the combiner shows the body as
-; written. sequence! is defined next, by code that runs no such body while it loads.
+; written.
 (define! lambda!
   (vau! (parameters . body) caller
     (wrap (evaluate (list vau! parameters #ignore
@@ -39,15 +37,14 @@
                         (pair (quote! sequence!) body)))
                     caller))))
 
-; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
-; $cond), let! (6.7.6, $letrec*), finally!, catch! and catch-kind!. Each is an operative that walks its operands
-; and evaluates only them, in the caller's context or one it made; none builds code to evaluate. A
-; loop that evaluates something only for its effect gets its value as an ignored first operand, and
-; a list known not to be empty is taken apart in the parameters. sequence! is defined here, so nothing
-; running now can use it: `list` evaluates the helpers' definitions in order, and the outer define!
-; ignores their values.
+; The forms with a body: when! (not in Kernel), conditional! (5.6.1, $cond), let! (6.7.6, $letrec*),
+; finally!, catch! and catch-kind!. Each is an operative that walks its operands and evaluates only
+; them, in the caller's context or one it made; none builds code to evaluate. A loop that evaluates
+; something only for its effect gets its value as an ignored first operand, and a list known not to
+; be empty is taken apart in the parameters. `list` evaluates the helpers' definitions in order, and
+; the outer define! ignores their values.
 (define! (#ignore #ignore #ignore #ignore #ignore #ignore
-          sequence! when! conditional! let! finally! catch! catch-kind!)
+          when! conditional! let! finally! catch! catch-kind!)
   ((lambda! ()
      (list
        ; The forms of a body in turn, the last as a tail call; called only with a form left.
@@ -79,8 +76,6 @@
            (define! local (context caller))
            (bind local parameter e)
            (run handler local)))
-       ; sequence!: each in turn, the last one's value; #inert for none.
-       (vau! body caller (if! (same? body ()) #inert (forms #inert body caller)))
        ; when!: the body if the test is #true, #inert if it is #false.
        (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
        ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.
@@ -424,7 +419,7 @@
 
 ; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
-(define! (string-search string-starts-with? string-ends-with? string-split)
+(define! (string-starts-with? string-ends-with? string-split)
   ((lambda! ()
      (define! matches?
        (lambda! (text at pattern i size)
@@ -433,31 +428,14 @@
            (if! (same? (string-byte text (add at i)) (string-byte pattern i))
              (matches? text at pattern (add i 1) size)
              #false))))
-     (define! search
-       (lambda! (text pattern start)
-         (let! ((size (string-byte-length pattern))
-                (last (subtract (string-byte-length text) size))
-                (from
-                  (lambda! (at)
-                    (if! (less-than? last at)
-                      ()
-                      (if! (same? (string-byte text at) (string-byte pattern 0))
-                        (if! (matches? text at pattern 1 size) at (from (add at 1)))
-                        (from (add at 1)))))))
-           (if! (same? size 0) start (from start)))))
      (define! pieces
        (lambda! (text separator from at)
          (if! (same? at ())
            (list (byte-substring text from (string-byte-length text)))
            (let! ((next (add at (string-byte-length separator))))
              (pair (byte-substring text from at)
-                   (pieces text separator next (search text separator next)))))))
+                   (pieces text separator next (string-search text separator next)))))))
      (list
-       ; string-search: the offset of the first place at or after start where pattern is, or ().
-       ; The empty substring refuses a start out of range or off a character boundary.
-       (lambda! (text pattern start)
-         (byte-substring text start start)
-         (search text pattern start))
        (lambda! (text prefix)
          (let! ((size (string-byte-length prefix)))
            (and!? (not? (less-than? (string-byte-length text) size))
@@ -471,7 +449,7 @@
        (lambda! (text separator)
          (if! (same? separator "")
            (raise (error (quote! range-error) (quote! string-split) separator))
-           (pieces text separator 0 (search text separator 0))))))))
+           (pieces text separator 0 (string-search text separator 0))))))))
 
 ; string-join: the strings with the separator between them.
 (define! string-join

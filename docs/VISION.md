@@ -139,10 +139,7 @@ The implementation stays small and uniform: one evaluation step for every kind o
 representation for each kind of value. Speed comes from simpler library code and better
 representations. When simple and fast disagree, simple wins and the cost is written down. Library
 forms are `vau!` operatives that walk their operands and call `evaluate`; no expansion caching, no
-compile step. A library form may have a native twin, proven equal and justified by a measurement on
-`programs/`: the library's own operative, run in Rust when its operands are the shape the twin
-handles and by its body otherwise, so a program can't tell them apart (`if!`, `sequence!` and
-`string-search`, owner, 2026-11-02). Everything else keeps one evaluation path per kind of form.
+compile step. Everything keeps one evaluation path per kind of form.
 The primitives are core, what grift can't express, or native, there for speed, each with its grift
 definition as its meaning and a test that no program can tell the two apart.
 
@@ -205,7 +202,7 @@ allocation. It and the value printer share the quoting and escapes the reader un
    that evaluates, the heap that holds values, and the host that embeds grift.
 2. **One source of truth for each fact.** A binding lives only in its context. A combiner's
    meaning is its parameters, the context it was made in and its body; it prints as its source. A
-   library form's meaning is its grift definition, and a native primitive's too: a native twin or
+   library form's meaning is its grift definition, and a native primitive's too: a native
    primitive is proven equal to it. Where a combination was read is the reader's, kept beside the
    code, not in it.
 3. **What is derived.** Every library form, from a few dozen primitives. `names`,
@@ -218,7 +215,7 @@ allocation. It and the value printer share the quoting and escapes the reader un
 5. **What makes a change to grift correct.** No Rust recursion that grows with a program's nesting;
    tail calls in constant space; no limits of grift's own; nothing guessed; every error carries its
    values and its trace; redefinition always takes effect; one evaluation path for each kind of
-   form but a native twin, proven equal; a new primitive only when the library version can't exist
+   form; a new primitive only when the library version can't exist
    or can't be used.
 
 ## What complete means
