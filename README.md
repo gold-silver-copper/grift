@@ -244,14 +244,17 @@ fn main() -> Result<(), Error> {
   level, and the run ends with `interrupted`, whatever else fails on the way. A handle forces the run
   it last reached, by a stop or a force, and that one only, so a late force never reaches a later
   run; a handle that has reached none (a clone starts as its source is) forces the run in progress.
-  `examples/stops.rs` shows all of this: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  `examples/stops.rs` shows stop, force, `is_limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.
 - **Limits.** `e.is_limit()` says the host or the machine began an error, not a program: handlers
   pass it, a program's error in a cleanup doesn't replace it, and it stays one through nested runs.
   A host function makes its own with `g.error(kind, values).as_limit()`, and reads `e.kind` and
-  `e.values` when the run has ended: the runner's `exit` carries its status this way.
+  `e.values` when the run has ended: the runner's `exit` carries its status this way. It says the host
+  began the ending, not that your stop did: a newer limit in a cleanup replaces it, so a host that gives
+  scripts a function making limits trusts its own record of what it asked for. A host function that
+  swallows a nested run's stop and returns lets the outer run go on; it can't hide a force.
 - **Waiting.** A host function can answer "not yet", so a script waits for an event in a call that
   looks like any other while the host's loop goes on, with no thread held. See below.
 - **A returned `Value` stays valid until the next `evaluate`, `call`, `start` or `resume`**, which may collect it.
@@ -337,13 +340,21 @@ fn main() -> Result<(), Error> {
   waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
   goes on, or with a limit and it ends there. One that never ends is yours to stop or force; each
   `resume` being a run of its own, a handle that reached the run before it waited needs a `stop()`
-  first, or its `force()` does nothing and says `false`.
+  first, or its `force()` does nothing and says `false`. A cleanup that installs a new cleanup that
+  waits comes back each time, and neither reaches it while it waits: have your parking function call
+  `force()` before it answers `Later`, which ends the run there.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
   cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
-  `forgotten()` gives a new handle. **Dropping the interpreter** with runs parked runs none of their
+  `forgotten()` gives a new handle, not saying which run it is: put what identifies a job in its
+  request. **Dropping the interpreter** with runs parked runs none of their
   cleanups, the same as a process dying.
 - **Stops and limits.** A stop reaches the run in progress. A parked run isn't: `stop()` then does
-  nothing and says `false`. Each `resume` is a run of its own for stops. A stop that reaches a run
+  nothing and says `false`. Each `resume` is a run of its own for stops. One thread runs one run at a
+  time, so your loop goes on only while runs are parked, and a handle belongs to the interpreter, not
+  to a job. A watchdog over several jobs takes a lock around each `stop` or `force`, the loop clearing
+  "this job is running" under that lock as the run returns, or a late stop reaches the next job. It
+  stops again in each `resume` before a force can reach it, and the loop keeps the deadlines of parked
+  jobs, answering them with a limit. A stop that reaches a run
   as it would park stops it instead, so no stop is lost at a park. The run's cleanups then run, and
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
   Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;
@@ -353,7 +364,8 @@ fn main() -> Result<(), Error> {
   and `can_park()` lets a host function do something else instead.
   `start` inside a host call is such a run. `resume` there is refused (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue it for your loop. Another
-  interpreter's handle comes back the same way, with `foreign-value`.
+  interpreter's handle comes back the same way, with `foreign-value`, an error of the interpreter you
+  called.
 - **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
   things reach every host. Memory refused makes one collection due, before the nearest cleanup's first
   step, and a cleanup refused memory all the same is passed over for the next, which that new refusal

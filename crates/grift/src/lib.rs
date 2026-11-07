@@ -148,7 +148,8 @@ impl Error {
 
     /// Whether the host (a stop, a force, [`Error::as_limit`]) or the machine (out of memory) began
     /// this, so that no handler could catch it. Never so for what a program raises or a host
-    /// function makes with [`Grift::error`], whatever its kind is called, and an error passing
+    /// function makes with [`Grift::error`], whatever its kind is called (unless memory is refused to
+    /// make it: that is the limit `out-of-memory`), and an error passing
     /// through a nested run or a host function stays what it was. Its kind then says which limit it is, or, if
     /// the host handed one in after its values were reclaimed, `stale-value`.
     ///

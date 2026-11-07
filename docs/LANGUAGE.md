@@ -340,7 +340,7 @@ is no new form or name, and nothing marks it.
 
 The program reads top to bottom. Every `catch!` and `finally!` around the call is still there when it
 returns, the trace of a later error shows the whole path, and the call can be inside `map`,
-`for-each`, `let!`, `load`, or a cleanup. It returns a value, or raises an error, once.
+`for-each`, `let!`, a `load` written in grift, or a cleanup. It returns a value, or raises an error, once.
 
 What a program may see change across such a call: **other runs went on meanwhile.** They share the
 bindings, so `(bind here (quote! n) ...)` by another run is seen after the wait, and a value read

@@ -1663,11 +1663,11 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     and replacing it means hand-written pipes and threads. Stale limits don't keep their kind, so a
     stale `exit` is status 1.
   - **What this is by the count the owner asked for** (hand recount on both censuses' manifests, against
-    `ce508a4`, master plus #206 plus force, the same features): Opus count ending decisions 43 to 23,
-    reason replacements 14 to 8; Codex count 48 to 31 and 9 to 9. The rule set before the work says a
+    `ce508a4`, master plus #206 plus force, the same features): Opus count ending decisions 43 to 25,
+    reason replacements 14 to 8; Codex count 48 to 32 and 9 to 9. The rule set before the work says a
     real removal halves both, so this is **only renames by that rule, nearly there on one census and not on the other**.
     What did go: the mailbox protocol, force's own path, the left-the-run checks, the `Parking`
-    enum, `abandon`. Non-test Rust 3348 to 3219 lines; public items 90 to 91; exception sentences 6 to 5.
+    enum, `abandon`. Non-test Rust 3348 to 3215 lines; public items 90 to 91; exception sentences 6 to 5.
 
 - **G-171. The continuations spike: "no continuations" stands, on this evidence and not because it was
   recorded** (the owner: "use all our agentic skills to spike continuations"; tests G-35's and G-53's "no
