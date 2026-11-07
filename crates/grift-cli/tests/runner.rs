@@ -645,3 +645,72 @@ fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
         assert_eq!(loaded, alone, "{text}");
     }
 }
+
+/// Types `input` at grift on a terminal of its own, once it has asked, and gives the exit status
+/// and everything the terminal showed after that first prompt.
+#[cfg(target_os = "linux")]
+fn at_a_terminal(input: &str) -> (Option<i32>, String) {
+    use std::io::Read;
+    let mut child = Command::new("script")
+        .args(["-qec", "stty -echo; exec \"$GRIFT\"", "/dev/null"])
+        .env("GRIFT", env!("CARGO_BIN_EXE_grift"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut asked = [0; 2];
+    stdout.read_exact(&mut asked).unwrap();
+    assert_eq!(&asked, b"> ");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let mut shown = String::new();
+    stdout.read_to_string(&mut shown).unwrap();
+    (child.wait().unwrap().code(), shown.replace("\r\n", "\n"))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
+    let (status, shown) =
+        at_a_terminal("(define! x\n 5)\nx\n(first 1)\n)\n(define! first 2)\n7 x\n\x04");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(shown.contains("  #inert\n"), "{shown}");
+    assert!(
+        shown.contains("stdin: type-error #[primitive first] 1 in (first 1) at stdin:1\n"),
+        "{shown}"
+    );
+    assert!(
+        shown.contains("stdin: parse-error unmatched-parenthesis 1 1 in \"stdin\"\n"),
+        "{shown}"
+    );
+    assert!(shown.ends_with("> 5\n> "), "{shown}");
+    // Input that ends inside a form is that form's error, and `exit` gives its status.
+    let (status, shown) = at_a_terminal("(display\n\x04");
+    assert_eq!(status, Some(1), "{shown}");
+    assert!(
+        shown.contains("stdin: parse-error unclosed-list 1 1"),
+        "{shown}"
+    );
+    assert_eq!(at_a_terminal("(exit 9)\n").0, Some(9));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn input_with_no_forms_prints_nothing_at_a_terminal() {
+    let (_, shown) = at_a_terminal("\n; a comment\n1\n\x04");
+    assert_eq!(shown, "> > 1\n> ");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_program_at_a_terminal_reads_the_next_line() {
+    let (status, shown) =
+        at_a_terminal("((evaluate-in! read-line standard-input))\nafter\n(exit 0)\n");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(shown.contains("\"after\\n\"\n"), "{shown}");
+}

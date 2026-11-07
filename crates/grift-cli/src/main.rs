@@ -1,6 +1,6 @@
 //! The grift runner. `grift SCRIPT ARGUMENT...` runs the script, which gets the arguments. With no
-//! script it reads the program from stdin; when stdin is a terminal it evaluates each complete
-//! input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
+//! script it reads the program from stdin; when stdin is a terminal `runner.grift` evaluates each
+//! complete input and prints the result. Data goes to stdout, diagnostics to stderr. Exit status: 0, 1 on a grift error or
 //! failed output, 2 on a usage error or unreadable input, or what the program gave `exit`. A
 //! closed stdout (a broken pipe) ends the run quietly.
 //!
@@ -78,29 +78,18 @@ fn stdout_closed(r: &mut Runner) -> Value {
 const STANDARD_ERROR: i64 = 1;
 const STANDARD_OUTPUT: i64 = 2;
 
-/// Writes the values to file `id`, strings without quotes when `raw`, then `end`, and flushes.
-fn put(
-    g: &mut G,
-    r: &mut Runner,
-    id: i64,
-    values: &[Value],
-    raw: bool,
-    end: &str,
-) -> Result<Value, Error> {
+/// Writes the values to file `id`, strings without quotes and everything else as written, and
+/// flushes.
+fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
     let id = Value::Integer(id);
     let (path, Stream::Writing(w)) = file(g, r, &id)? else {
         return Err(g.error("type-error", values));
     };
     let mut out = Sink { w, error: None };
-    let printed = values
-        .iter()
-        .try_for_each(|v| match g.as_str(v) {
-            Ok(Some(s)) if raw => {
-                fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output)
-            }
-            _ => g.write(v, &mut out),
-        })
-        .and_then(|()| fmt::Write::write_str(&mut out, end).map_err(|_| WriteError::Output));
+    let printed = values.iter().try_for_each(|v| match g.as_str(v) {
+        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
+        _ => g.write(v, &mut out),
+    });
     let wrote = match (printed, out.error) {
         (Err(WriteError::Value(e)), _) => return Err(e),
         (_, Some(e)) => Err(e),
@@ -112,12 +101,12 @@ fn put(
 
 /// `(display v ...)`: strings without quotes, everything else as written.
 fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, r, STANDARD_OUTPUT, args, true, "")
+    put(g, r, STANDARD_OUTPUT, args)
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
 fn display_error(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, r, STANDARD_ERROR, args, true, "")
+    put(g, r, STANDARD_ERROR, args)
 }
 
 /// `(read-file path)`: the whole text of the file.
@@ -444,67 +433,24 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// Whether `e` is a parse error for a list or string left open: the input isn't finished yet.
-fn unfinished(g: &mut G, e: &Error) -> bool {
-    let reason = match e.values.first() {
-        Some(Value::Symbol(s)) => g.symbol_name(s).unwrap_or_default(),
-        _ => "",
+/// `(report-host thunk)`: calls `thunk` as a run of its own. An error that ends it is reported as
+/// any run's is, even one no `catch!` could stop, and the session goes on; `exit` ends it.
+fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [thunk] = args else {
+        return Err(g.error("arity-error", args));
     };
-    g.is_kind(e, "parse-error").unwrap_or(false)
-        && ["unclosed-list", "unclosed-string"].contains(&reason)
-}
-
-fn interactive(g: &mut G, r: &mut Runner, top: &Value) -> ExitCode {
-    let mut status = ExitCode::SUCCESS;
-    let mut src = String::new();
-    let mut pending = None;
-    say(format_args!("> "));
-    for line in io::stdin().lock().lines() {
-        let line = match line {
-            Ok(line) => line,
-            Err(e) => {
-                say(format_args!("grift: stdin: {e}\n"));
-                return ExitCode::from(2);
-            }
-        };
-        src.push_str(&line);
-        src.push('\n');
-        if src.trim().is_empty() {
-            src.clear();
-            say(format_args!("> "));
-            continue;
+    match g.call(r, thunk, &[]) {
+        Err(e) if r.exit.is_none() => {
+            report(g, "stdin", &e);
+            Ok(Value::Inert)
         }
-        // Read first: a `parse-error` from running the input (`read-form`'s) doesn't mean there is
-        // more of it to come.
-        pending = g.read(&src).err().filter(|e| unfinished(g, e));
-        if pending.is_some() {
-            say(format_args!("  "));
-            continue;
-        }
-        let done = match g.evaluate_in(r, top, "stdin", &src) {
-            Ok(v) => put(g, r, STANDARD_OUTPUT, &[v], false, "\n"),
-            Err(e) => Err(e),
-        };
-        if let Some(status) = r.exit {
-            return ExitCode::from(status);
-        }
-        status = match done {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => report(g, "stdin", &e),
-        };
-        src.clear();
-        say(format_args!("> "));
-    }
-    // End of input in the middle of a form: that form is an error.
-    match pending {
-        Some(e) => report(g, "stdin", &e),
-        None => status,
+        done => done,
     }
 }
 
 /// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
 /// those it should have.
-const HOSTS: [(&str, HostFunction<Runner>); 18] = [
+const HOSTS: [(&str, HostFunction<Runner>); 19] = [
     ("display", display),
     ("display-error", display_error),
     ("read-file", read_file),
@@ -520,6 +466,7 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
     ("write-host", write_host),
     ("close-host", close_host),
     ("run-host", run_host),
+    ("report-host", report_host),
     ("read-forms", read_forms),
     ("position", position),
     ("resolve-host", resolve_host),
@@ -552,8 +499,9 @@ fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 
 /// Evaluates `runner.grift` in a private context holding what it needs, so the operations it
 /// makes look names up there, never where the program could redefine them. It counts as library
-/// code from then on, so an error's trace has only the program's combinations.
-fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Result<(), Error> {
+/// code from then on, so an error's trace has only the program's combinations. Gives what runs a
+/// session at a terminal.
+fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Result<Value, Error> {
     let private = g.private_context()?;
     let bind = |g: &mut G, name: &str, value: Value| {
         let name = Value::Symbol(g.symbol(name)?);
@@ -573,9 +521,9 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Resu
     bind(g, "script-path", script)?;
     let top = g.top_level();
     bind(g, "top", top)?;
-    g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
+    let session = g.evaluate_in(r, &private, "runner.grift", RUNNER)?;
     g.seal_library();
-    Ok(())
+    Ok(session)
 }
 
 fn main() -> ExitCode {
@@ -613,31 +561,35 @@ fn main() -> ExitCode {
         script: script.as_ref().map(PathBuf::from),
     };
     let script_path = script.as_ref().map(|s| s.to_string_lossy().into_owned());
-    if let Err(e) = set_up(
+    let set = set_up(
         &mut g,
         &mut r,
         &arguments,
         script_path.as_deref().unwrap_or_default(),
-    ) {
-        return report(&g, "grift", &e);
-    }
-    let top = g.top_level();
-    let (name, text) = match script {
-        None if io::stdin().is_terminal() => return interactive(&mut g, &mut r, &top),
-        None => (String::from("stdin"), io::read_to_string(io::stdin())),
-        Some(path) => (
-            path.to_string_lossy().into_owned(),
-            std::fs::read_to_string(&path),
-        ),
+    );
+    let session = match set {
+        Ok(session) => session,
+        Err(e) => return report(&g, "grift", &e),
     };
-    let text = match text {
-        Ok(text) => text,
-        Err(e) => {
-            say(format_args!("grift: {name}: {e}\n{USAGE}\n"));
-            return ExitCode::from(2);
+    let name = script_path.unwrap_or_else(|| String::from("stdin"));
+    let done = if script.is_none() && io::stdin().is_terminal() {
+        g.call(&mut r, &session, &[])
+    } else {
+        let text = match &script {
+            Some(path) => std::fs::read_to_string(path),
+            None => io::read_to_string(io::stdin()),
+        };
+        match text {
+            Ok(text) => {
+                let top = g.top_level();
+                g.evaluate_in(&mut r, &top, &name, &text)
+            }
+            Err(e) => {
+                say(format_args!("grift: {name}: {e}\n{USAGE}\n"));
+                return ExitCode::from(2);
+            }
         }
     };
-    let done = g.evaluate_in(&mut r, &top, &name, &text);
     match (r.exit, done) {
         (Some(status), _) => ExitCode::from(status),
         (None, Ok(_)) => ExitCode::SUCCESS,
