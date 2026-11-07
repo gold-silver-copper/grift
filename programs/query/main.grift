@@ -202,17 +202,6 @@
 (define! number? (lambda! (x) (if! (integer? x) #true (float? x))))
 (define! to-float (lambda! (x) (if! (float? x) x (integer-to-float x))))
 
-(define! string-less-than?
-  (lambda! (a b)
-    (let! ((a-end (string-byte-length a))
-           (b-end (string-byte-length b))
-           (from (lambda! (i)
-                   (if! (same? i b-end)
-                     #false
-                     (if! (same? i a-end) #true (bytes i (string-byte a i) (string-byte b i))))))
-           (bytes (lambda! (i x y) (if! (same? x y) (from (add i 1)) (less-than? x y)))))
-      (from 0))))
-
 (define! value-less-than?
   (lambda! (a b)
     (if! (same? (type-of a) (type-of b))

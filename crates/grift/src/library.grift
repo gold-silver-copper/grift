@@ -313,8 +313,7 @@
       (value-to-string f)
       (raise (error (quote! type-error) (quote! float-to-string) f)))))
 
-; filter (6.3.5), and, not in Kernel, each asked for by three or more programs: fold, range, sort
-; and the list access below.
+; filter (6.3.5), and, not in Kernel, fold, range, sort and the list access below.
 (define! filter
   (lambda! (f xs)
     (if! (same? xs ())
@@ -400,7 +399,7 @@
        (lambda! (xs n) (taken xs (counted (quote! take) xs n) n))
        (lambda! (xs n) (after (quote! drop) xs (counted (quote! drop) xs n) n))))))
 
-; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
+; The string helpers, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
 (define! (string-search string-starts-with? string-ends-with? string-split)
   ((lambda! ()
