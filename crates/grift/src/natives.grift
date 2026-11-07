@@ -4,7 +4,7 @@
 ; naming it by its value, which it never calls. Every combiner here is made as this file loads, so
 ; none is made through a definition that is running.
 
-; Branching under select, which if!'s meaning stands on: a boolean names one of two bindings by its printed
+; Branching under select, which if! stands on: a boolean names one of two bindings by its printed
 ; text, so nothing up to `select`'s meaning branches by select.
 (define! second-of (lambda! (#ignore x) x))
 (define! truths (list (string-to-symbol "#true") (string-to-symbol "#false")))
@@ -36,21 +36,6 @@
 (define! picked
   (lambda! (primitive (b consequent alternative))
     (choose (typed primitive b (quote! boolean)) consequent alternative)))
-; if! and sequence! get their operands as written, so they check the shape a primitive's arguments
-; always have: a list, else the primitive's type-error. select picks if!'s expression and evaluate
-; runs it as a tail call. sequence! runs each in turn, the last one's value; #inert for none.
-(define! proper? (lambda! (xs) ((choose (same? (type-of xs) (quote! pair)) proper-rest ended?) xs)))
-(define! proper-rest (lambda! ((#ignore . more)) (proper? more)))
-(define! ended? (lambda! (xs) (same? xs ())))
-(define! listed
-  (lambda! (primitive operands)
-    ((choose (proper? operands) second-of type-failed) primitive operands)))
-(define! branched
-  (lambda! (primitive (test consequent alternative) caller)
-    (evaluate (select (evaluate test caller) consequent alternative) caller)))
-(define! forms
-  (lambda! (#ignore (form . more) c)
-    (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
 ; lookup: the symbol evaluated there, or otherwise where that is unbound.
 (define! looked-up
   (lambda! (primitive (c s otherwise))
@@ -273,13 +258,11 @@
 
 (define! meanings
   (record
-    (quote! (if! sequence! select first rest lookup integer-to-string integer-to-float float-to-integer
+    (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
              string-to-integer string-byte-length code-point-to-string byte-substring string-search bitwise-and
              bitwise-or bitwise-exclusive-or shift-left shift-right bytes-length bytes-byte
              bytes-slice bytes-append string-to-bytes bytes-to-string list-to-bytes bytes-to-list))
-    (list (vau! arguments caller (branched if! (arity if! (listed if! arguments) 3) caller))
-          (vau! body caller (if! (same? (listed sequence! body) ()) #inert (forms #inert body caller)))
-          (several (unwrap select) 3 picked)
+    (list (several (unwrap select) 3 picked)
           (one (unwrap first) (quote! pair) (lambda! (#ignore x) (head x)))
           (one (unwrap rest) (quote! pair) (lambda! (#ignore x) (tail x)))
           (several (unwrap lookup) 3 looked-up)

@@ -55,8 +55,8 @@ const CORE: &[&str] = &[
 
 impl<T> Grift<T> {
     /// From now on the natives are their grift definitions: each bound in the built-in context,
-    /// where the library looks it up, wrapped if the native is. As the library's own code, what
-    /// this loads is skipped by traces.
+    /// where the library looks it up, wrapped if the native is, and no library form runs a native
+    /// twin. As the library's own code, what this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here).unwrap();
@@ -76,6 +76,16 @@ impl<T> Grift<T> {
                 _ => meaning,
             };
             self.bind_symbol(self.built_in, name, bound).unwrap();
+        }
+        for name in ["if!", "sequence!"] {
+            let name = self.intern(name).unwrap();
+            let Some(local::Value::Operative(form)) = self.find(self.built_in, name).unwrap()
+            else {
+                panic!("the library defines if! and sequence! as operatives");
+            };
+            if let Object::Operative(op) = self.heap.get_mut(form).unwrap() {
+                op.native = None;
+            }
         }
         self.heap.seal_library();
     }
@@ -767,6 +777,30 @@ fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
 }
 
 #[test]
+fn a_running_program_reads_if_and_sequence_as_their_library_definitions() {
+    let mut g = grift();
+    for (name, definition) in [("if!", "select"), ("sequence!", "body")] {
+        let v = g.evaluate(&mut (), name).unwrap();
+        assert!(
+            show(&g, &v).contains(definition),
+            "{name}: {}",
+            show(&g, &v)
+        );
+        let operative = format!("(same? (type-of {name}) (quote! operative))");
+        let v = g.evaluate(&mut (), &operative).unwrap();
+        assert_eq!(v, Value::Boolean(true), "{name}");
+        let e = g
+            .evaluate(&mut (), &format!("(unwrap {name})"))
+            .unwrap_err();
+        assert_eq!(kind(&g, &e), "type-error", "{name}");
+    }
+    // What a wrong shape raises is the operative's own parameter tree failing to match.
+    let e = g.evaluate(&mut (), "(if! #true 1)").unwrap_err();
+    assert_eq!(kind(&g, &e), "arity-error");
+    assert_eq!(show(&g, &e.values[0]), "(test consequent alternative)");
+}
+
+#[test]
 fn library_forms_build_no_code() {
     // Each form against the same thing written by hand: a use makes no operative and takes at
     // most six times the steps. They used to build new code each time: let! made two
@@ -778,12 +812,9 @@ fn library_forms_build_no_code() {
             "(let! ((x (add n 1)) (y x)) y)",
             "((lambda! (x) ((lambda! (y) y) x)) (add n 1))",
         ),
-        (
-            "(sequence! 1 2 n)",
-            "((lambda! (#ignore #ignore x) x) 1 2 n)",
-        ),
     ];
     let by_if = [
+        ("(sequence! 1 2 n)", "(if! #true (if! #true n n) n)"),
         (
             "(conditional! ((same? n 1) 1) ((same? n 2) 2) (#true 3))",
             "(if! (same? n 1) 1 (if! (same? n 2) 2 3))",
@@ -3049,10 +3080,10 @@ fn natives_are_their_definitions() {
                 vec![Value::Boolean(true), f.clone(), Value::Integer(0)],
             ),
             (
-                "if!",
+                "(wrap if!)",
                 vec![Value::Boolean(false), Value::Integer(0), f.clone()],
             ),
-            ("sequence!", vec![Value::Integer(0), f.clone()]),
+            ("(wrap sequence!)", vec![Value::Integer(0), f.clone()]),
             ("integer-to-float", vec![f.clone()]),
         ] {
             let (fa, fb) = (

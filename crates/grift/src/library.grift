@@ -16,29 +16,31 @@
        (bind caller parameters (evaluate expression caller)))))
  define!)
 
-; if! and sequence! take their operands as written, as vau! does.
-(define! if! (unwrap if!))
-(define! sequence! (unwrap sequence!))
-
 ; quote! (given in the rationale of 5.5.1, $quote).
 (define! quote! (vau! (x) #ignore x))
 
 ; list (5.2.1).
 (define! list (wrap (vau! xs #ignore xs)))
 
+; if! (4.5.2, $if; primitive in Kernel). Both branches are required, as in Kernel: select picks
+; the expression and evaluate runs it as a tail call. One branch is when!, below.
+(define! if!
+  (vau! (test consequent alternative) caller
+    (evaluate (select (evaluate test caller) consequent alternative) caller)))
+
 ; lambda! (5.3.2, $lambda).
 (define! lambda!
   (vau! (parameters . body) caller
     (wrap (evaluate (pair vau! (pair parameters (pair #ignore body))) caller))))
 
-; The forms with a body: when! (not in Kernel), conditional! (5.6.1, $cond), let! (6.7.6, $letrec*),
-; finally!, catch! and catch-kind!; and record, which shares a helper with them. Each form is an
+; The forms with a body: sequence! (5.1.1, $sequence), when! (not in Kernel), conditional! (5.6.1,
+; $cond), let! (6.7.6, $letrec*), finally!, catch! and catch-kind!; and record, which shares a helper with them. Each form is an
 ; operative that walks its operands and evaluates only them, in the caller's context or one it made;
 ; none builds code to evaluate. A loop that evaluates something only for its effect gets its value as
 ; an ignored first operand, and a list known not to be empty is taken apart in the parameters. `list`
 ; evaluates the helpers' definitions in order, and the outer define! ignores their values.
 (define! (#ignore #ignore #ignore #ignore #ignore #ignore #ignore
-          when! conditional! let! finally! catch! catch-kind! record)
+          sequence! when! conditional! let! finally! catch! catch-kind! record)
   ((lambda! ()
      (list
        ; The forms of a body in turn, the last as a tail call; called only with a form left.
@@ -69,6 +71,8 @@
        ; caller's context.
        (define! handle
          (lambda! (e parameter handler local) (run handler (filled local parameter e))))
+       ; sequence!: each in turn, the last one's value; #inert for none.
+       (vau! body caller (run body caller))
        ; when!: the body if the test is #true, #inert if it is #false.
        (vau! (test . body) caller (if! (evaluate test caller) (run body caller) #inert))
        ; conditional!: the body of the first true test; #inert if none is true, as in Kernel.

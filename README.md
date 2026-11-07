@@ -64,7 +64,7 @@ The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup evaluat
 context bind unbind lookup names pair first rest same? select type-of add subtract multiply divide
 remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
 square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
-integer-to-float float-to-integer string-byte-length string-byte byte-substring string-append
+integer-to-float float-to-integer string-byte-length string-byte byte-substring string-search string-append
 code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
 value-to-string bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
 list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
@@ -73,7 +73,7 @@ float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? 
 for-each record error length append reverse equal? greater-than? less-than-or-equal?
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
-string-search string-starts-with? string-ends-with? string-split string-join string-trim
+string-starts-with? string-ends-with? string-split string-join string-trim
 string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bytes-search
 bindings standard-context built-in-names`.
 
@@ -400,8 +400,8 @@ that unwinds a run. Reads and constructors do not collect: more reads may be ref
 evaluation or call provides that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
-`if!` and `sequence!` are native primitives that take their operands unevaluated, each defined in
-grift.
+`if!` and `sequence!` are library code with a native twin: the library's own
+operative, run in Rust when its operands have the shape the twin handles.
 
 `jshutt.pdf` is Shutt's thesis, *Fexprs as the basis of Lisp function application*.
 
