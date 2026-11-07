@@ -113,6 +113,18 @@ def hangs_up(binary, work):
            f"child_alive={alive(child)} exited={ed.exited} status={ed.status}")
 
 
+def hangs_up_on_a_runaway(binary, work):
+    """The terminal closes while a command never returns: no C-g can come, and the editor still ends."""
+    ed = fresh(binary, work)
+    ed.send("\x1b:")
+    ed.run_for(0.2)
+    ed.keys("(sequence! (define! spin (lambda! () (spin))) (spin))\r")
+    ed.run_for(0.5)
+    ed.close()
+    report("closed terminal during a runaway: editor gone", ed.exited,
+           f"exited={ed.exited} status={ed.status}")
+
+
 def scrolled_back(binary, work):
     """Typing in the output buffer itself, point away from its end, while output arrives."""
     ed = fresh(binary, work)
@@ -325,7 +337,7 @@ def editor_broken(binary, work):
 def main():
     binary, work = sys.argv[1], sys.argv[2]
     os.makedirs(work, exist_ok=True)
-    tests = (ends, cancelled, fails, quits, hangs_up, scrolled_back, two_independent,
+    tests = (ends, cancelled, fails, quits, hangs_up, hangs_up_on_a_runaway, scrolled_back, two_independent,
              prompt_holds_nothing, chosen, runaway, waiting_command, under_a_prompt, run_asks,
              editor_broken, spawned_chain)
     for test in tests:

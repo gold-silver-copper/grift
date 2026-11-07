@@ -15,8 +15,8 @@
 ; The loop is the host's. It starts the editor with (editor-main file message), then whenever no
 ; run waits for a key starts a (command-step): every command is a run of its own, so a command that
 ; waits holds up nothing else. It draws with (redisplay) before each wait, gives what a job did to
-; (job-event event) and an error that ended a run to (editor-report message), or (editor-recover
-; message) when no other run is reading keys. C-g while a command
+; (job-event event) and an error that ended a run to (editor-report text kind), or (editor-recover
+; text kind) when no other run is reading keys. C-g while a command
 ; is busy interrupts it. Everything else is here: the buffer, redisplay, keys and keymaps, the minibuffer, the
 ; commands. It is evaluated at top level, so every name here can be redefined while the editor
 ; runs, with M-: or an init file.
@@ -471,18 +471,22 @@
     ; An empty text keeps what the init file put in the echo area.
     (when! (not? (same? text "")) (message text))))
 
+; What the echo area says of an error, from its text and its kind.
+(define! error-message
+  (lambda! (text kind) (if! (same? kind (quote! quit)) "Quit" text)))
+
 ; After an error ended a run: the error in the echo area. What it set for a while (the minibuffer)
 ; its finally! has put back.
-(define! editor-report message)
+(define! editor-report (lambda! (text kind) (message (error-message text kind))))
 
 ; After an error ended the run that was reading keys, so that none is. A run that ended has no
 ; minibuffer open, and a stop can leave one behind, before its finally! is installed or while that
 ; finally! restores: start again from the window's buffer.
 (define! editor-recover
-  (lambda! (text)
+  (lambda! (text kind)
     (bind editor-context (quote! (current-buffer minibuffer exit-flag))
       (list window-buffer () #false))
-    (message text)))
+    (message (error-message text kind))))
 
 ; --- Commands -----------------------------------------------------------------------------------
 

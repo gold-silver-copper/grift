@@ -23,7 +23,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const EDITOR: &str = include_str!("editor.grift");
 const USAGE: &str = "usage: grift-emacs [--init INIT.grift] [FILE]";
@@ -31,7 +31,7 @@ const USAGE: &str = "usage: grift-emacs [--init INIT.grift] [FILE]";
 /// The longest error text shown: an error may carry a whole buffer.
 const ERROR_TEXT_MAX: usize = 400;
 
-/// How long a cleanup may run once the terminal has closed and nobody can type C-g.
+/// How long a cleanup may run once nobody can type C-g: the terminal has closed, or the editor leaves.
 const CLEANUP_MAX: Duration = Duration::from_secs(2);
 
 /// What the host functions work on.
@@ -294,8 +294,7 @@ impl Runs {
                 }
                 None
             }
-            // That it was given up is no news.
-            Err(e) if e.is_limit() && g.is_kind(&e, "abandoned").unwrap_or(false) => None,
+            Err(e) if given_up(g, &e) => None,
             // With no run left reading keys, what the run left set for a while is the editor's to
             // put back. With one, the minibuffer may be that run's.
             Err(e) if self.keys.is_empty() => Some(report(g, h, "editor-recover", &e)),
@@ -340,6 +339,11 @@ impl Runs {
     }
 }
 
+/// Whether a run ended with this host's own limit for giving it up.
+fn given_up(g: &G, e: &Error) -> bool {
+    e.is_limit() && g.is_kind(e, "abandoned").unwrap_or(false)
+}
+
 /// Gives a parked run up: its waiting call answers a limit, which nothing catches, so its cleanups
 /// run. That it was abandoned is no news; anything else that cut a cleanup is. A cleanup that waits
 /// comes back, waiting.
@@ -350,16 +354,18 @@ fn abandon(g: &mut G, h: &mut Host, parked: Parked) -> Option<Parked> {
         Ok(Ran::Finished(_)) => return None,
         Err(e) => e,
     };
-    if !g.is_kind(&error, "abandoned").unwrap_or(false) {
+    if !given_up(g, &error) {
         report(g, h, "editor-report", &error);
     }
     parked
 }
 
 /// The editor is leaving, so nothing will answer what a cleanup waits for: each wait gets the same
-/// limit, up to a point past which the run goes with the process, as an endless cleanup would.
+/// limit, for as long as a cleanup may take; past that the run goes with the process, as an endless
+/// cleanup would.
 fn leave(g: &mut G, h: &mut Host, mut parked: Parked) {
-    for _ in 0..64 {
+    let began = Instant::now();
+    while began.elapsed() < CLEANUP_MAX {
         match abandon(g, h, parked) {
             Some(again) => parked = again,
             None => return,
@@ -367,14 +373,15 @@ fn leave(g: &mut G, h: &mut Host, mut parked: Parked) {
     }
 }
 
-/// Puts an error in the echo area, through the editor's own function `through`; its text.
+/// Puts an error in the echo area, through the editor's own function `through`, which is given its
+/// text and its kind and words it; its text.
 fn report(g: &mut G, h: &mut Host, through: &str, e: &Error) -> String {
-    let text = match g.is_kind(e, "quit") {
-        Ok(true) => "Quit".to_string(),
-        _ => describe(g, e),
-    };
+    let text = describe(g, e);
     // If that fails too, the next frame or command says so.
-    let _ = enter(g, h, through, &[Some(&text)]);
+    let _ = g.string(&text).and_then(|shown| {
+        let f = g.evaluate(h, through)?;
+        g.call(h, &f, &[shown, Value::Symbol(e.kind.clone())])
+    });
     text
 }
 
@@ -388,17 +395,6 @@ fn job_event(g: &mut G, h: &mut Host, id: u64, event: &JobEvent) -> Result<(), E
     let what = g.symbol(what)?;
     let event = g.list(&[Value::Symbol(what), job_value(id), value])?;
     g.call(h, &f, &[event]).map(drop)
-}
-
-/// Keeps stopping what runs: for a closed terminal, where no C-g will.
-fn stop_cleanups(g: &G) {
-    let mut stop = g.interrupter();
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(CLEANUP_MAX);
-            stop.stop();
-        }
-    });
 }
 
 /// Runs the editor until it quits or input ends. An error before the first key (the file can't
@@ -457,10 +453,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
                     runs.settle(g, h, ran);
                 }
             }
-            Some(Event::Closed) => {
-                stop_cleanups(g);
-                break;
-            }
+            Some(Event::Closed) => break,
             Some(Event::Job(id, event)) => {
                 if let Err(e) = job_event(g, h, id, &event) {
                     report(g, h, "editor-report", &e);
@@ -567,13 +560,18 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     // The input thread: every byte typed goes to the host's loop, or stops what grift is busy with.
-    // It ends with the input, and when the program exits.
+    // Once the input ends no C-g can come, so it keeps stopping what runs, which may be a command
+    // that never returns to that loop or a cleanup on the way out. It ends when the program exits.
     std::thread::spawn(move || {
         let mut b = [0u8];
         while let Ok(1) = io::stdin().lock().read(&mut b) {
             inbox.typed(b[0], &mut stop);
         }
         inbox.input_closed();
+        loop {
+            std::thread::sleep(CLEANUP_MAX);
+            stop.stop();
+        }
     });
     // The alternate screen, with lines clipped at the right edge instead of wrapped.
     print!("\x1b[?1049h\x1b[?7l");
