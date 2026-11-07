@@ -3435,3 +3435,20 @@ fn standard_context_is_a_new_child_of_the_built_in_context() {
         ],
     );
 }
+
+#[test]
+fn every_type_has_a_predicate_named_for_it() {
+    holds(
+        &mut grift(),
+        &[
+            "(all? (lambda! (v)
+                     ((evaluate (string-to-symbol (string-append (symbol-to-string (type-of v)) \"?\"))
+                                (current-context))
+                      v))
+                   (list () #true #inert #ignore 1 1.0 (quote! a) (pair 1 2) \"s\" #bytes() (context)
+                         vau! first))",
+            "(not? (inert? ()))",
+            "(not? (ignore? #inert))",
+        ],
+    );
+}

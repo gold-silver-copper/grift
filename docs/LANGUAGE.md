@@ -146,7 +146,7 @@ which a test shows no program can tell from the Rust.
 | `(current-context)` | The context it is called in (6.7.2). |
 | `(evaluate-in! o c)` | Evaluates `o`, as a tail call, in the context `c` evaluates to (6.7.9); `(evaluate-in! kind e)` reads a field of a record such as an error, `((evaluate-in! write f) line)` calls an operation a context holds, with `line` evaluated where you are. |
 | `(not? b)`, `(and!? x ...)`, `(or!? x ...)` | Booleans (6.1). `and!?` and `or!?` evaluate left to right and stop early; every operand they evaluate must give a boolean, the last one included, so it isn't a tail call. |
-| `(empty-list? x)` `(boolean? x)` `(integer? x)` `(float? x)` `(symbol? x)` `(pair? x)` `(string? x)` `(bytes? x)` `(context? x)` `(operative? x)` `(applicative? x)` | A predicate for each type `type-of` gives (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), but `#inert` and `#ignore`, each the only value of its type: `(same? x #inert)`. |
+| `(empty-list? x)` `(inert? x)` `(ignore? x)` `(boolean? x)` `(integer? x)` `(float? x)` `(symbol? x)` `(pair? x)` `(string? x)` `(bytes? x)` `(context? x)` `(operative? x)` `(applicative? x)` | A predicate for each type `type-of` gives (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1). |
 | `(apply a arguments)` | Calls applicative `a`'s combiner on the list `arguments`, in a new empty context (5.5.1). |
 | `(map a list ...)`, `(for-each a list)` | The list of `a` applied to each element, or with several lists to the elements at each place, the lists being of one length (a `type-error` otherwise); `a` on each element in turn, giving `#inert` (5.9.1, 6.9.1). |
 | `(any? a list)`, `(all? a list)` | Whether `a` gives `#true` for some element, for every element, from the left, stopping at the answer. `a` must give booleans. |

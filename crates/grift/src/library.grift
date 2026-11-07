@@ -123,9 +123,11 @@
 ; not? (6.1.1).
 (define! not? (lambda! (x) (select x #false #true)))
 
-; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value. #inert and #ignore, each the
-; only value of its type, are (same? x #inert) and (same? x #ignore).
+; Type predicates (4.4.1, 4.6.1, 4.6.2, 4.8.1, 12.5.1), of one value: one for each type type-of
+; gives.
 (define! empty-list? (lambda! (x) (same? x ())))
+(define! inert? (lambda! (x) (same? x #inert)))
+(define! ignore? (lambda! (x) (same? x #ignore)))
 (define! boolean? (lambda! (x) (same? (type-of x) (quote! boolean))))
 (define! integer? (lambda! (x) (same? (type-of x) (quote! integer))))
 (define! float? (lambda! (x) (same? (type-of x) (quote! float))))

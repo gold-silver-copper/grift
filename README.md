@@ -68,7 +68,7 @@ integer-to-float float-to-integer string-byte-length string-byte byte-substring 
 code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
 value-to-string bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
 list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
-let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? boolean? integer?
+let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? inert? ignore? boolean? integer?
 float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? apply any? all? map
 for-each record error length append reverse equal? greater-than? less-than-or-equal?
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
