@@ -1718,8 +1718,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     Evidence: `a_terminal_session_goes_on_past_an_error_and_ends_with_its_input`, `a_program_at_a_terminal_reads_the_next_line`, which hung before.
   - **Replaces in G-70, G-82, G-100, G-106, G-146:** standard streams are files like any other, with
     `path` and `close`; a program on stdin finds it at its end, not `closed`; `write` takes a string or
-    bytes and `write-bytes` goes; `display` fails with `file-error` and the stream's path and
-    `output-error` goes, so `broken-pipe` (G-170) comes from the one path. Evidence: `a_standard_stream_is_a_file_like_any_other`, `standard_input_is_data_for_a_script`, `a_failed_write_is_an_error`.
+    bytes and `write-bytes` goes; `display` writes through the file table as `write` does, so G-170's
+    `file-error` and its `broken-pipe` limit come from the one path. Evidence: `a_standard_stream_is_a_file_like_any_other`, `standard_input_is_data_for_a_script`, `a_failed_write_is_an_error`.
   - **Replaces in G-170 and G-69:** "2 is usage only". The first argument is always the script, so
     no usage error is left and nothing gives status 2. One that can't be read is G-170's `file-error`,
     status 1, then the usage. Evidence: `the_first_argument_is_the_script_whatever_its_spelling`.
@@ -1747,7 +1747,7 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     the 3,129-case comparison passes. **In G-110, G-117, G-126, G-148, G-81:** twins. `if!`, `sequence!` and
     `string-search` are native primitives with definitions in `natives.grift`, `string-split` calls the search
     (split -91.9%), and `bytes-search` is the one search walker. **G-128, G-141 and G-150** stay as records of what
-    was measured then; G-150's meta test went from 19.3 s to 7.5 s against master on this head.
+    was measured then; G-150's meta test went from 19.3 s to 7.5 s against master at `073f0a3`.
   - **G-33, G-31 and `vau!`:** `vau!` takes any number of body forms, so `lambda!`'s branch, G-33's complaint,
     is gone. The rule it replaces wasn't in a decision: G-31 says nothing about it, whatever a routing reader
     wrote; it was the `(vau! parameters context-parameter body)` line of `LANGUAGE.md`. Evidence: `an_operative_takes_any_number_of_body_forms_and_prints_them_as_written`.
@@ -1757,7 +1757,7 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   - **Two speed reversals inside the audit:** `names` has its own function (U78 cost fib about 5 points)
     and a call reserves its bindings ahead again (U61 cost life about 2 points); one walker stays.
   - **A band revised (CLAUDE.md's rule).** Original target: within +2% of one-model's head per step. Desk, 7
-    interleaved rounds, fat LTO: fib **+5.97%** against `a1bd80f`, **-1.21%** against master `56713e7`; life -0.51%,
+    interleaved rounds, fat LTO, measured at `073f0a3` and not again after merging one-model's `b7e73a1`: fib **+5.97%** against `a1bd80f`, **-1.21%** against master `56713e7`; life -0.51%,
     -3.44%; programs total -31.68%, -36.46% (without meta -5.28%, +1.00%). Fib is what misses. Head runs 0.8% fewer
     instructions on fib than `a1bd80f`, and pinning code alignment still leaves +4.7%. Without U50 (a timing-only build)
     fib is +3.15%, its branch misses fall from 769k to 474k, and `finally!` goes from +4.87% to +1.32%. Other
