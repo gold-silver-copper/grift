@@ -12,8 +12,7 @@
 //! error meets one waiting, the rule in [`Grift::unwind`] decides. A stop is such an error. A force
 //! is a stop that stays asked, so every cleanup it meets is cut before its first form.
 //!
-//! Three library forms have a native twin: `if!`, `sequence!` and `string-search` are the
-//! library's own operatives, flagged, and run in Rust when their operands have the shape the twin
+//! Two library forms have a native twin: `if!` and `sequence!` are the library's own operatives, flagged, and run in Rust when their operands have the shape the twin
 //! handles; any other shape runs the operative's body, so what a program sees never differs.
 
 use crate::heap::{Bindings, Object, Operative, Reference, Seen};
@@ -116,6 +115,7 @@ native {
     StringByteLength "string-byte-length" 1 1;
     ByteSubstring "byte-substring" 3 3;
     CodePointToString "code-point-to-string" 1 1;
+    StringSearch "string-search" 3 3;
     IntegerToString "integer-to-string" 1 1;
     StringToInteger "string-to-integer" 1 1;
     // A bytes value's contents: the printer writes them and the reader reads them back.
@@ -135,7 +135,6 @@ native {
 pub(crate) enum Native {
     If,
     Sequence,
-    StringSearch,
 }
 
 /// What the machine does next.
@@ -918,25 +917,6 @@ impl<T> Grift<T> {
                 }
                 self.next_form(operands, context, at)?
             }
-            Native::StringSearch => {
-                let Some([Value::String(t), Value::String(p), Value::Integer(i)]) =
-                    self.three(operands)?
-                else {
-                    return Ok(None);
-                };
-                let (Object::String(t), Object::String(p)) = (self.heap.get(t)?, self.heap.get(p)?)
-                else {
-                    return Ok(None);
-                };
-                // A start out of range or off a character boundary is the body's range-error.
-                let Some((start, after)) =
-                    usize::try_from(i).ok().and_then(|i| Some((i, t.get(i..)?)))
-                else {
-                    return Ok(None);
-                };
-                let found = after.find(&**p).map(|at| integer(start + at));
-                Mode::Return(found.unwrap_or(Value::EmptyList))
-            }
         };
         Ok(Some(mode))
     }
@@ -987,7 +967,6 @@ impl<T> Grift<T> {
         let twins = [
             ("if!", Native::If),
             ("sequence!", Native::Sequence),
-            ("string-search", Native::StringSearch),
         ];
         for (name, native) in twins {
             let found = self
@@ -1187,6 +1166,17 @@ impl<T> Grift<T> {
             | P::BytesToString
             | P::ListToBytes
             | P::BytesToList => self.bytes_primitive(p, [x, y, z], base)?,
+            P::StringSearch => {
+                let (t, pattern) = (self.text(p, x)?, self.text(p, y)?);
+                let start = integer_of(p, z)?;
+                let after = usize::try_from(start)
+                    .ok()
+                    .and_then(|i| Some((i, t.get(i..)?)));
+                let (start, after) =
+                    after.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, z]))?;
+                let found = after.find(pattern).map(|at| integer(start + at));
+                found.unwrap_or(Value::EmptyList)
+            }
             P::CodePointToString => {
                 let c = u32::try_from(integer_of(p, x)?)
                     .ok()

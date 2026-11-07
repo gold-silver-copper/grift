@@ -420,7 +420,7 @@
 
 ; The string helpers, likewise asked for, over string-byte. Offsets and widths count bytes, as
 ; everywhere; a valid pattern only matches on character boundaries.
-(define! (string-search string-starts-with? string-ends-with? string-split)
+(define! (string-starts-with? string-ends-with? string-split)
   ((lambda! ()
      (define! matches?
        (lambda! (text at pattern i size)
@@ -429,31 +429,14 @@
            (if! (same? (string-byte text (add at i)) (string-byte pattern i))
              (matches? text at pattern (add i 1) size)
              #false))))
-     (define! search
-       (lambda! (text pattern start)
-         (let! ((size (string-byte-length pattern))
-                (last (subtract (string-byte-length text) size))
-                (from
-                  (lambda! (at)
-                    (if! (less-than? last at)
-                      ()
-                      (if! (same? (string-byte text at) (string-byte pattern 0))
-                        (if! (matches? text at pattern 1 size) at (from (add at 1)))
-                        (from (add at 1)))))))
-           (if! (same? size 0) start (from start)))))
      (define! pieces
        (lambda! (text separator from at)
          (if! (same? at ())
            (list (byte-substring text from (string-byte-length text)))
            (let! ((next (add at (string-byte-length separator))))
              (pair (byte-substring text from at)
-                   (pieces text separator next (search text separator next)))))))
+                   (pieces text separator next (string-search text separator next)))))))
      (list
-       ; string-search: the offset of the first place at or after start where pattern is, or ().
-       ; The empty substring refuses a start out of range or off a character boundary.
-       (lambda! (text pattern start)
-         (byte-substring text start start)
-         (search text pattern start))
        (lambda! (text prefix)
          (let! ((size (string-byte-length prefix)))
            (and!? (not? (less-than? (string-byte-length text) size))
@@ -467,7 +450,7 @@
        (lambda! (text separator)
          (if! (same? separator "")
            (raise (error (quote! range-error) (quote! string-split) separator))
-           (pieces text separator 0 (search text separator 0))))))))
+           (pieces text separator 0 (string-search text separator 0))))))))
 
 ; string-join: the strings with the separator between them.
 (define! string-join

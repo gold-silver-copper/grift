@@ -212,7 +212,7 @@ lookup whatever the number of cases, where `conditional!` tests its clauses in o
 **What the library forms cost.** `if!` and `sequence!` are library operatives with a native twin:
 the same operative, run in Rust when its operands are the shape it handles (three for `if!`, a
 proper list for `sequence!`), and by its body otherwise, so what a program sees, its errors and
-traces included, is the library's. `string-search` has one too. The other forms with a body walk
+traces included, is the library's. The other forms with a body walk
 their operands in grift, so in a loop run per byte or per node each costs a few calls. Measured with
 the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a
 loop of one `if!` and a call, 0.32 µs a turn: another `if!` 0.05 µs, `sequence!` of two forms

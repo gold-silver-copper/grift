@@ -128,6 +128,36 @@
   (lambda! (text at)
     (or!? (same? at (string-byte-length text))
           (let! ((byte (string-byte text at))) (or!? (less-than? byte 128) (less-than? 191 byte))))))
+; string-search: the first offset from start where the pattern's bytes are; a valid pattern only
+; matches on character boundaries.
+(define! searched
+  (lambda! (primitive (text pattern start))
+    (sequence!
+      (typed primitive text (quote! string))
+      (typed primitive pattern (quote! string))
+      (typed primitive start (quote! integer))
+      (if! (and!? (not? (less-than? start 0)) (not? (less-than? (string-byte-length text) start)) (boundary? text start))
+        (search text pattern start)
+        (fail (quote! range-error) (list primitive text start))))))
+(define! search
+  (lambda! (text pattern start)
+    (let! ((size (string-byte-length pattern))
+           (last (subtract (string-byte-length text) size))
+           (from
+             (lambda! (at)
+               (if! (less-than? last at)
+                 ()
+                 (if! (same? (string-byte text at) (string-byte pattern 0))
+                   (if! (matches? text at pattern 1 size) at (from (add at 1)))
+                   (from (add at 1)))))))
+      (if! (same? size 0) start (from start)))))
+(define! matches?
+  (lambda! (text at pattern i size)
+    (if! (same? i size)
+      #true
+      (if! (same? (string-byte text (add at i)) (string-byte pattern i))
+        (matches? text at pattern (add i 1) size)
+        #false))))
 (define! characters
   (lambda! (text at end done)
     (if! (same? at end)
@@ -250,7 +280,7 @@
 (define! meanings
   (record
     (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
-             string-to-integer string-byte-length code-point-to-string byte-substring bitwise-and
+             string-to-integer string-byte-length code-point-to-string byte-substring string-search bitwise-and
              bitwise-or bitwise-exclusive-or shift-left shift-right bytes-length bytes-byte
              bytes-slice bytes-append string-to-bytes bytes-to-string list-to-bytes bytes-to-list))
     (list (several (unwrap select) 3 picked)
@@ -265,6 +295,7 @@
           (one (unwrap string-byte-length) (quote! string) byte-count)
           (one (unwrap code-point-to-string) (quote! integer) character)
           (several (unwrap byte-substring) 3 part)
+          (several (unwrap string-search) 3 searched)
           (several (unwrap bitwise-and) 2 (bitwise (lambda! (x y) (multiply x y))))
           (several (unwrap bitwise-or) 2 (bitwise (lambda! (x y) (subtract (add x y) (multiply x y)))))
           (several (unwrap bitwise-exclusive-or) 2 (bitwise (lambda! (x y) (remainder (add x y) 2))))

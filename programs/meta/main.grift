@@ -211,7 +211,7 @@
                    bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
                    square-root sine cosine tangent exponential natural-logarithm floor ceiling round
                    truncate absolute-value power integer-to-float float-to-integer
-                   string-byte-length string-byte byte-substring string-append code-point-to-string
+                   string-byte-length string-byte byte-substring string-search string-append code-point-to-string
                    string-to-symbol integer-to-string string-to-integer string-to-float read-form
                    bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
                    list-to-bytes bytes-to-list)))
