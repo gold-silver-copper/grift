@@ -1006,16 +1006,9 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
 /// and the cleanup around the load run after it.
 #[test]
 fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
-    // A file is its path here, and reading it the whole of its text.
-    fn open(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
-        Ok(args[0].clone())
-    }
-    fn read_all(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         let path = g.as_str(&args[0])?.unwrap().to_owned();
         g.string(&std::fs::read_to_string(&path).unwrap())
-    }
-    fn close(_: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
-        Ok(Value::Inert)
     }
     fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         let (source, text) = (
@@ -1024,21 +1017,14 @@ fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
         );
         g.read_in(&source, &text)
     }
-    fn resolve(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
-        Ok(args[1].clone())
-    }
     fn unused(g: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
         Err(g.error("unused", &[]))
     }
     let (mut g, mut w) = (grift(), World::default());
     let private = g.private_context().unwrap();
-    let hosts: [(&str, grift::HostFunction<World>); 13] = [
-        ("open-host", open),
-        ("read-all-host", read_all),
-        ("close-host", close),
-        ("forget-host", close),
+    let hosts: [(&str, grift::HostFunction<World>); 9] = [
+        ("read-file", read_file),
         ("read-forms", read_forms),
-        ("resolve-host", resolve),
         ("display", unused),
         ("display-error", unused),
         ("position", unused),

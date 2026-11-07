@@ -129,7 +129,8 @@ from an id. Closing is explicit (no finalizers), and using it after that is the 
 
 ## The runner
 The `grift` runner is a Unix tool: it runs a script or stdin, prints data to stdout and diagnostics
-to stderr, and exits 0, or 1 on an error. It gives programs a small, fixed set of
+to stderr, and exits 0, 1 on an error, 141 on a write to a pipe no one reads, or the status the
+program gave `exit`. It gives programs a small, fixed set of
 host operations: reading stdin as data, writing to stderr, files (as contexts of operations, as
 text or as bytes), loading another file's forms, the command-line arguments and the script's
 path, environment variables, two clocks, the exit status, and running processes.

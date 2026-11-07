@@ -29,12 +29,23 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Runs `program` as a script file with `args`, `stdin` as its input.
+/// Runs `program` as a script file in `dir` with `args`, `stdin` as its input, from `dir`.
 fn script(dir: &Path, program: &str, args: &[&str], stdin: &str) -> (Option<i32>, String, String) {
     let path = dir.join("script.grift");
     std::fs::write(&path, program).unwrap();
-    let path = path.to_str().unwrap();
-    let out = run(&[&[path], args].concat(), stdin, Stdio::piped());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg(&path)
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    input.write_all(stdin.as_bytes()).unwrap();
+    drop(input);
+    let out = child.wait_with_output().unwrap();
     let text = |b: Vec<u8>| String::from_utf8(b).unwrap();
     (out.status.code(), text(out.stdout), text(out.stderr))
 }
@@ -218,13 +229,16 @@ fn files_are_contexts_of_operations() {
     assert_eq!(std::fs::read(path).unwrap(), b"one\ntwo\n");
 }
 
-/// Each read or load keeps nothing: what 120,000 of them would keep, a 4 KB path each, doesn't fit
-/// the 400 MB of address space given here.
+/// Each read or load keeps nothing, one that fails included: what 120,000 of them would keep, a 4
+/// KB path each, doesn't fit the 400 MB of address space given here, nor 400 files left open the 64
+/// descriptors.
 #[cfg(target_os = "linux")]
 #[test]
 fn reading_and_loading_again_and_again_keep_nothing() {
     let dir = scratch("repeated-reads");
     let path = format!("/dev/{}null", "./".repeat(2000));
+    let bad = dir.join("not-text");
+    std::fs::write(&bad, b"\xff").unwrap();
     let file = dir.join("reads.grift");
     let program = format!(
         "(define! path \"{path}\")
@@ -232,11 +246,18 @@ fn reading_and_loading_again_and_again_keep_nothing() {
            (lambda! (n)
              (when! (less-than? 0 n) (read-file path) (load path) (again (subtract n 1)))))
          (again 60000)
+         (define! fail
+           (lambda! (n)
+             (when! (less-than? 0 n)
+               (catch-kind! (read-file {bad:?}) encoding-error e #inert)
+               (catch-kind! (load {bad:?}) encoding-error e #inert)
+               (fail (subtract n 1)))))
+         (fail 200)
          (display \"done\")"
     );
     std::fs::write(&file, program).unwrap();
     let out = Command::new("prlimit")
-        .args(["--as=400000000", env!("CARGO_BIN_EXE_grift")])
+        .args(["--as=400000000", "--nofile=64", env!("CARGO_BIN_EXE_grift")])
         .arg(&file)
         .output()
         .unwrap();
@@ -314,6 +335,59 @@ fn a_program_cannot_reach_the_runner_s_host_functions() {
         out,
         "#true #[context close path read-all read-bytes read-line] "
     );
+}
+
+/// The names the README's table of operations gives a program, sorted.
+fn documented_operations() -> Vec<String> {
+    let readme = include_str!("../README.md");
+    let (_, table) = readme.split_once("| Operation | Meaning |").unwrap();
+    let rows = table
+        .lines()
+        .skip(2)
+        .take_while(|line| line.starts_with('|'));
+    let mut names: Vec<String> = rows
+        .flat_map(|row| row.split('|').nth(1).unwrap().split('`').skip(1).step_by(2))
+        .map(|code| {
+            code.trim_start_matches('(')
+                .split([' ', ')'])
+                .next()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// A program, as a script or at a terminal, gets exactly the operations the README lists, and none
+/// of the names `runner.grift` uses for itself: no host function behind them, no helper.
+#[test]
+fn a_program_reaches_exactly_the_documented_operations() {
+    let runner = concat!(env!("CARGO_MANIFEST_DIR"), "/src/runner.grift");
+    let probe = format!(
+        "((lambda! (here top-names)
+            (define! symbols
+              (lambda! (form)
+                (conditional!
+                  ((symbol? form) (list form))
+                  ((pair? form) (append (symbols (first form)) (symbols (rest form))))
+                  (#true ()))))
+            (define! private
+              (filter (lambda! (s) (not? (or!? (member? s built-in-names) (member? s top-names))))
+                      (symbols (read-forms \"runner\" (read-file {runner:?})))))
+            (display top-names \" \" (filter (lambda! (s) (binds? here s)) private) \"\\n\"))
+          (current-context) (names (current-context)))\n"
+    );
+    let want = format!("({}) ()\n", documented_operations().join(" "));
+    let dir = scratch("reach");
+    let (status, out, err) = script(&dir, &probe, &[], "");
+    assert_eq!((status, out.as_str()), (Some(0), want.as_str()), "{err}");
+    #[cfg(target_os = "linux")]
+    {
+        let (status, shown) = at_a_terminal(&format!("{probe}\x04"));
+        assert_eq!(status, Some(0), "{shown}");
+        assert!(shown.contains(&want), "{shown}");
+    }
 }
 
 #[test]
@@ -426,10 +500,9 @@ fn a_script_counts_its_input() {
 fn load_runs_a_file_s_forms_where_it_is_called() {
     let dir = scratch("load");
     std::fs::create_dir_all(dir.join("lib")).unwrap();
-    // A relative path is relative to the file being loaded: lib/a.grift loads lib/b.grift.
     std::fs::write(
         dir.join("lib/a.grift"),
-        "(define! a 1)\n(load \"b.grift\")\n",
+        "(define! a 1)\n(load \"lib/b.grift\")\n",
     )
     .unwrap();
     std::fs::write(
@@ -457,13 +530,11 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
         (load "lib/b.grift")
     "#;
     let (status, out, err) = script(&dir, program, &[], "");
-    let lib = dir.join("lib");
-    let lib = lib.to_str().unwrap();
     assert_eq!(status, Some(1));
     // A file that doesn't read is innermost in the trace, by its path: the line and column are its.
     assert_eq!(
         out,
-        format!("(first 2) 2 1 1 2 (unclosed-list 3 3){lib}/bad.grift #true")
+        "(first 2) 2 1 1 2 (unclosed-list 3 3)lib/bad.grift #true"
     );
     // Each combination in the trace says its file and line, the loaded file's and the script's.
     let path = dir.join("script.grift");
@@ -471,8 +542,8 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(
         err,
         format!(
-            "{path}: type-error #[primitive first] 2 in (first 2) at {lib}/b.grift:4\n  \
-             from (define! c (first 2)) at {lib}/b.grift:4\n  \
+            "{path}: type-error #[primitive first] 2 in (first 2) at lib/b.grift:4\n  \
+             from (define! c (first 2)) at lib/b.grift:4\n  \
              from (load \"lib/b.grift\") at {path}:13\n"
         )
     );
@@ -482,9 +553,40 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(
         err,
         format!(
-            "{path}: parse-error unclosed-list 3 3 in {lib}/bad.grift\n  \
+            "{path}: parse-error unclosed-list 3 3 in lib/bad.grift\n  \
              from (load d) at {path}:2\n"
         )
+    );
+}
+
+/// A relative path means the same to `load` as to every file operation: relative to the working
+/// directory. A file beside the script is named through `script-path`, by the docs' helper.
+#[test]
+fn load_reads_a_relative_path_from_the_working_directory() {
+    let dir = scratch("load-relative");
+    std::fs::create_dir_all(dir.join("sub")).unwrap();
+    std::fs::write(dir.join("lib.grift"), "(define! where \"working\")").unwrap();
+    std::fs::write(dir.join("sub/lib.grift"), "(define! where \"beside\")").unwrap();
+    std::fs::write(dir.join("data"), "!").unwrap();
+    let program = r#"
+        (load "lib.grift")
+        (display where (read-file "data"))
+        (define! beside-script
+          (lambda! (path) (string-join (reverse (pair path (rest (reverse (string-split script-path "/"))))) "/")))
+        (load (beside-script "lib.grift"))
+        (display " " where)
+    "#;
+    std::fs::write(dir.join("sub/main.grift"), program).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_grift"))
+        .arg("sub/main.grift")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        (out.status.code(), &out.stdout[..]),
+        (Some(0), &b"working! beside"[..]),
+        "{err}"
     );
 }
 
@@ -520,6 +622,7 @@ fn nested_loads_need_no_rust_stack() {
         .args(["-c", "ulimit -c 0; ulimit -s 512; exec \"$@\"", "load-test"])
         .arg(env!("CARGO_BIN_EXE_grift"))
         .arg(path)
+        .current_dir(&dir)
         .output()
         .unwrap();
     assert!(
@@ -657,7 +760,7 @@ fn a_closed_stderr_is_the_same_as_any_closed_pipe() {
         .write_all(b"(display-error \"lost\") (display \"after\")")
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert_eq!((out.status.code(), &out.stdout[..]), (Some(0), &b""[..]));
+    assert_eq!((out.status.code(), &out.stdout[..]), (Some(141), &b""[..]));
 }
 
 /// The write end of a pipe whose read end is gone.
@@ -690,10 +793,12 @@ fn a_closed_stdout_ends_the_run_whatever_catches_the_write() {
         }
         let _ = child.kill();
         let out = child.wait_with_output().unwrap();
-        assert_eq!((out.status.code(), &out.stderr[..]), (Some(0), &b""[..]));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
     }
 }
 
+/// A pipe no one reads ends the run quietly, with 141 as a shell says of a program SIGPIPE ended,
+/// so `grift script | head` is quiet and a run never reports a success it didn't have.
 #[test]
 fn a_closed_pipe_is_a_limit_on_any_file() {
     let dir = scratch("closed-pipe");
@@ -710,15 +815,18 @@ fn a_closed_pipe_is_a_limit_on_any_file() {
                 .unwrap()
         };
         let out = run(&format!("({write} \"y\")"));
-        assert_eq!((out.status.code(), &out.stderr[..]), (Some(0), &b""[..]));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
         // Its cleanups run, and a program's error in one doesn't replace it.
         let out = run(&format!(
             "(finally! ({write} \"y\") (display-error \"cleanup\") (first 1))"
         ));
         assert_eq!(
             (out.status.code(), &out.stderr[..]),
-            (Some(0), &b"cleanup"[..])
+            (Some(141), &b"cleanup"[..])
         );
+        // A closed pipe in the cleanup of an exit is the newer limit, and isn't a success.
+        let out = run(&format!("(finally! (exit 3) ({write} \"y\"))"));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
         // An exit in a cleanup is the newer limit, and says the status.
         let out = run(&format!("(finally! ({write} \"y\") (exit 3))"));
         assert_eq!(out.status.code(), Some(3));
@@ -738,22 +846,37 @@ fn a_closed_stderr_does_not_panic_the_runner() {
     }
 }
 
-/// Text can't hold such a path, so `load` says that, where a lossy copy would name another file.
+/// Text can't hold a path or an argument that isn't UTF-8, so the runner refuses it, with its bytes,
+/// before anything runs: a lossy copy would name another file.
 #[cfg(unix)]
 #[test]
-fn load_from_a_script_whose_path_is_not_text_is_an_encoding_error() {
+fn a_path_or_argument_that_is_not_text_is_refused_at_entry() {
     use std::os::unix::ffi::OsStrExt;
-    let dir = scratch("not-text").join(std::ffi::OsStr::from_bytes(b"dir\xff"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("script.grift");
-    std::fs::write(&path, "(load \"sibling.grift\")").unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_grift"))
-        .arg(&path)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("encoding-error"));
+    let dir = scratch("not-text");
+    let named = |bytes: &[u8]| dir.join(std::ffi::OsStr::from_bytes(bytes));
+    std::fs::write(named(b"f\xff"), "(display \"the script given\")").unwrap();
+    std::fs::write(named(b"f\xef\xbf\xbd"), "(display \"another file\")").unwrap();
+    let good = dir.join("good.grift");
+    std::fs::write(&good, "(display \"ran\")").unwrap();
+    let not_text = std::ffi::OsStr::from_bytes(b"x\xff");
+    for args in [
+        vec![named(b"f\xff").into_os_string()],
+        vec![good.into_os_string(), not_text.into()],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_grift"))
+            .args(&args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            (out.status.code(), &out.stdout[..]),
+            (Some(1), &b""[..]),
+            "{err}"
+        );
+        assert!(err.starts_with("grift: encoding-error #bytes("), "{err}");
+        assert!(err.ends_with(" 255)\n"), "{err}");
+    }
 }
 
 #[test]
@@ -768,7 +891,8 @@ fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
     ] {
         std::fs::write(&path, text).unwrap();
         let alone = run(&[path.to_str().unwrap()], "", Stdio::piped());
-        let (status, _, loaded) = script(&dir, "(load \"tail.grift\")", &[], "");
+        let load = format!("(load {:?})", path.to_str().unwrap());
+        let (status, _, loaded) = script(&dir, &load, &[], "");
         assert_eq!(alone.status.code(), Some(1));
         assert_eq!(status, Some(1));
         let alone = String::from_utf8(alone.stderr).unwrap();
@@ -781,10 +905,7 @@ fn loading_keeps_the_file_s_top_level_form_through_tail_calls() {
             .strip_prefix(&format!("{}: ", wrapper.display()))
             .unwrap();
         let loaded = loaded
-            .strip_suffix(&format!(
-                "\n  from (load \"tail.grift\") at {}:1\n",
-                wrapper.display()
-            ))
+            .strip_suffix(&format!("\n  from {load} at {}:1\n", wrapper.display()))
             .unwrap();
         assert_eq!(loaded, alone, "{text}");
     }

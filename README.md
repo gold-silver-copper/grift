@@ -93,8 +93,10 @@ ended by `exit` ends with status 0, or 1 if its input ends inside a form or stan
 fails or is closed. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
 file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
-failed write (`file-error`) or a script it can't read, or the status the program gave `exit`. At a
-terminal, errors are shown and the session goes on. A pipe closing ends it with 0; otherwise it ends 0
+failed write (`file-error`) or a script it can't read, 141 on a write to a pipe no one reads, or the
+status the program gave `exit`. A script path or argument that isn't UTF-8 is refused before anything
+runs, as `grift: encoding-error` with its bytes: text can't hold it, and a lossy copy would name another
+file. At a terminal, errors are shown and the session goes on. A pipe closing ends it with 141; otherwise it ends 0
 unless the program calls `exit`, input ends inside a form, or standard input or error fails or is
 closed, which ends it with 1. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
@@ -112,7 +114,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(read-file path)` | The file's whole text. |
 | `(read-forms source text)` | The list of the text's forms, nothing evaluated; each combination keeps `source` and its line, so an error's trace says `at source:12`. A text that doesn't read is the `parse-error` naming `source`. |
 | `(position form)` | A combination's source and line, `("lib.grift" 12)`, if it was read with one; `()` for anything else. |
-| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. A script whose path isn't UTF-8 gets `encoding-error` for a relative path. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
+| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the working directory, as for every other file operation; a file beside the script is `(load (beside-script "lib.grift"))` with `(define! beside-script (lambda! (path) (string-join (reverse (pair path (rest (reverse (string-split script-path "/"))))) "/")))`. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
 | `script-path` | The script's path, as given; `""` when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
@@ -128,8 +130,9 @@ system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the pat
 `unset-variable` (the name), `process-error` (the program and the message). `display` and
 `display-error` fail as a write on their file does. A write to a pipe no one reads, on any file,
 ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can keep it going, each
-`finally!` runs its cleanup forms, and the run ends quietly with status 0, so `grift script | head`
-is quiet. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
+`finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
+program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
+success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
 aborts the runner, since `std` buffers its output without asking.
 
 ```lisp
