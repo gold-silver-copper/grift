@@ -84,7 +84,7 @@ impl<T> Grift<T> {
                     out.write_str("#[context")?;
                     for name in names {
                         out.write_char(' ')?;
-                        self.print(name, out)?;
+                        out.write_str(self.name(name))?;
                     }
                     out.write_char(']')?;
                 }

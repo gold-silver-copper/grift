@@ -1076,7 +1076,9 @@ impl<T> Grift<T> {
             P::Names => match x {
                 Value::Context(c) => {
                     let names = self.names_of(c)?;
-                    self.list_local(&names)?
+                    names.iter().rev().try_fold(Value::EmptyList, |list, &s| {
+                        self.pair_local(Value::Symbol(s), list)
+                    })?
                 }
                 _ => return Err(type_error(p, x)),
             },
@@ -1580,17 +1582,10 @@ impl<T> Grift<T> {
     }
 
     /// The symbols bound in `context` itself, sorted by name.
-    pub(crate) fn names_of(&self, context: Reference) -> Result<Vec<Value>, Error> {
+    pub(crate) fn names_of(&self, context: Reference) -> Result<Vec<Symbol>, Error> {
         let (_, bindings) = self.context_at(context)?;
-        let mut names = Vec::new();
-        names
-            .try_reserve_exact(bindings.len())
-            .map_err(|_| Error::oom())?;
-        names.extend(bindings.keys().map(|&s| Value::Symbol(s)));
-        names.sort_unstable_by(|a, b| match (a, b) {
-            (Value::Symbol(a), Value::Symbol(b)) => self.name(*a).cmp(self.name(*b)),
-            _ => std::cmp::Ordering::Equal,
-        });
+        let mut names = collected(bindings.keys().copied())?;
+        names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));
         Ok(names)
     }
 

@@ -462,12 +462,8 @@ impl<T> Grift<T> {
         let names = self
             .context_of(context, Primitive::Names)
             .and_then(|c| self.names_of(c));
-        let names = names.and_then(|names| {
-            collected(names.into_iter().map(|n| match n {
-                local::Value::Symbol(s) => self.export_symbol(s),
-                _ => self.export_symbol(K::Symbol.into()),
-            }))
-        });
+        let names =
+            names.and_then(|names| collected(names.into_iter().map(|s| self.export_symbol(s))));
         self.out(names)
     }
 
