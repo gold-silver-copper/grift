@@ -339,7 +339,8 @@ fn main() -> Result<(), Error> {
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
   Cleanups after out of memory have what a collection frees; `resume` itself needs none.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
-  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function.
+  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function,
+  and `can_park()` lets a host function do something else instead.
   `start` and `resume` inside a host call are refused too (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue them for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`.
