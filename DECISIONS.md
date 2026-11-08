@@ -1781,3 +1781,35 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     read +0.30% against master, and every arm but `5cc9239` read 115 to 116 ms. Whether `5cc9239`'s 112 ms is real speed
     or code layout wasn't separated. U50's arm read fib
     +2.85%, life -2.27%, programs total -32.88%, meta's suite 7.6 s against 11.8 s, `Grift::new` 0.64 ms against 0.63 ms.
+- **G-173. The owner's answers to the one-model run's open questions** (owner, 2026-11-07, after #209 merged as
+  `51bd740`; recorded in the run's `owner-decisions.md`, and the owner's own yes, not a panel's).
+  - **Kept as they are, no code change:** `if!` and `sequence!` stay grift definitions with their twins (1a); a real
+    broken pipe stays a limit (2a); `Grift::abandon` stays removed (4a); #209's fib reading is accepted (6a);
+    `can_park` stays (9).
+  - **A closed pipe ends with status 141** (3b; replaces "ends quietly with 0" in G-170 and G-172): still quiet and still
+    a limit, but "newest limit wins" can no longer turn an `exit 3` or an out-of-memory into a success when a cleanup
+    prints to a closed pipe. Evidence: `a_closed_pipe_is_a_limit_on_any_file`.
+  - **A path or argument that isn't UTF-8 is refused at entry** with `encoding-error` carrying its bytes (5a, U7;
+    replaces G-98's lossy path and `load`'s recovery of it). Lost: running a script in a non-UTF-8 directory.
+    Evidence: `a_path_or_argument_that_is_not_text_is_refused_at_entry`.
+  - **`read-file` is Rust again** (7, U5; replaces G-172's grift `read-file` and `forget-host`).
+  - **As advised for every row of the audit's owner list (8):** removed `Grift::list`, `list_items` (U82) and
+    `bytes-search` (U111); `write_string` is private (U90); `Primitive` is opaque (U28); one vocabulary for strings
+    and bytes, `byte-length`, `byte-at`, `slice`, `join`, `search`, the first argument's kind is the answer's (U33);
+    list words keep `range-error` through one shared walk (U103; U104 stays out); `string-repeat` checks nothing of
+    its own, pad keeps its one-byte fill (U109); an error's values are the values involved, never who failed (U38);
+    whether code is the program's is a mark set when a pair is made, and `seal_library` becomes `evaluate_library_in`
+    (U42); `load` resolves a relative path as every file word does, against the working directory, with a
+    `script-path` helper in the README (U25; replaces G-98's and G-151's load-relative rule); `conditional!` with no
+    true clause giving `#inert` (U94) and bare symbol printing (U116) are documented. Kept: U18, U83, U102, U77,
+    U34 and U43.
+  - **Speed, desk, two passes against master `84770fc`:** fib -2.7% and -2.7%, life +1.6% and +0.6%, programs total
+    -0.4%; bands +2%, +2%, +5%. U33 alone cost nothing measurable. Before the last two commits the branch was about
+    +21%: U42's frame field narrowed to `u32` beside a `bool` brought back the store-forwarding stall #210 removed. One
+    8-byte word holding the argument base and the mark fixed it, and a frame stays 56 bytes, asserted at compile time.
+  - **A target revised, under CLAUDE.md's rule.** Target: non-test Rust lines fall. Measured, against `84770fc`, by the
+    census lexer: Rust +59 (core +78, runner -19), embedded grift -78, net -19. All of the Rust growth is U42: +48 for
+    the mark itself, +9 and +32 for keeping frames fast, +10 for the bug below. Without U42 the branch is -40 Rust.
+    The owner chose explicit provenance, and its cost in lines is what it takes to carry the mark without a speed loss.
+  - **A bug found and fixed:** code a host built with `pair` right after catching a panic from library code (or after
+    swapping interpreters) was marked as the library's until the next run. Evidence: `a_run_its_host_function_left_is_over`.
