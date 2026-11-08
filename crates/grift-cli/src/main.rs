@@ -92,8 +92,7 @@ fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Er
         (_, Some(e)) => Err(e),
         (_, None) => out.w.flush(),
     };
-    let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, wrote)
+    written(g, path, wrote)
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
@@ -180,18 +179,6 @@ fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
     }
     match g.string(&e.to_string()) {
         Ok(message) => g.error(kind, &[what, message]),
-        Err(e) => e,
-    }
-}
-
-/// A failed write to the file `path`: a pipe no one reads is the limit that ends the run quietly, as
-/// [`exit_status`] says, and only a real write makes it.
-fn write_failed(g: &mut G, path: &str, e: &io::Error) -> Error {
-    if e.kind() != io::ErrorKind::BrokenPipe {
-        return failed(g, "file-error", path, e);
-    }
-    match g.string(path) {
-        Ok(path) => g.error("broken-pipe", &[path]).as_limit(),
         Err(e) => e,
     }
 }
@@ -322,15 +309,19 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
         return Err(g.error("type-error", std::slice::from_ref(data)));
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
-    let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, wrote)
+    written(g, path, wrote)
 }
 
-/// After a write: `#inert`, or the error with the file's path.
-fn written(g: &mut G, wrote: Result<(), (io::Error, String)>) -> Result<Value, Error> {
+/// After a write to the file `path`: `#inert`, or a `file-error`, except that a pipe no one reads
+/// is the limit that ends the run quietly, as [`exit_status`] says, and only a real write makes it.
+fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
-        Err((e, path)) => Err(write_failed(g, &path, &e)),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+            let path = g.string(path)?;
+            Err(g.error("broken-pipe", &[path]).as_limit())
+        }
+        Err(e) => Err(failed(g, "file-error", path, &e)),
     }
 }
 
