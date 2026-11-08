@@ -173,11 +173,7 @@ impl<T> Grift<T> {
     /// and a wait in it is `cannot-park`, since that call's Rust frames can't be set aside: a host
     /// function queues work that waits for its host's loop.
     pub fn start(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Ran, Error> {
-        self.parkable(|g| {
-            let f = g.prepare_call(f, arguments)?;
-            let arguments = g.imported(arguments)?;
-            g.call_local(Some(state), f, &arguments, true)
-        })
+        self.parkable(|g| g.run_call(state, f, arguments, true))
     }
 
     /// [`Grift::evaluate_in`], in a run that may park, as [`Grift::start`] is.
@@ -188,13 +184,7 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Ran, Error> {
-        self.parkable(|g| {
-            let c = g.context_of(context)?;
-            g.prepare(std::iter::once(local::Value::Context(c)))?;
-            let source = g.intern(source)?;
-            let forms = g.read_local(src, Some(source), false)?;
-            g.evaluate_forms(Some(state), forms, c, true)
-        })
+        self.parkable(|g| g.run_text(state, context, source, src, false, true))
     }
 
     fn parkable(

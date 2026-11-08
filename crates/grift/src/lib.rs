@@ -321,7 +321,8 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Value, Error> {
-        self.evaluate_text_in(state, context, source, src, false)
+        let done = self.run_text(state, context, source, src, false, false);
+        self.exported(done)
     }
 
     /// [`Grift::evaluate_in`], for a host's own grift code, such as a prelude: it counts as library
@@ -346,35 +347,47 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Value, Error> {
-        self.evaluate_text_in(state, context, source, src, true)
+        let done = self.run_text(state, context, source, src, true, false);
+        self.exported(done)
     }
 
-    fn evaluate_text_in(
+    /// Reads `src` and evaluates its forms in `context`; `library` marks it as a host's own grift
+    /// code, and `parks` says whether the run may park.
+    fn run_text(
         &mut self,
         state: &mut T,
         context: &Value,
         source: &str,
         src: &str,
         library: bool,
-    ) -> Result<Value, Error> {
-        let done = self.context_of(context).and_then(|c| {
-            self.prepare(std::iter::once(local::Value::Context(c)))?;
-            let source = self.intern(source)?;
-            let forms = self.read_local(src, Some(source), library)?;
-            self.evaluate_forms(Some(state), forms, c, false)
-        });
-        self.exported(done)
+        parks: bool,
+    ) -> Result<local::Value, local::Error> {
+        let c = self.context_of(context)?;
+        self.prepare(std::iter::once(local::Value::Context(c)))?;
+        let source = self.intern(source)?;
+        let forms = self.read_local(src, Some(source), library)?;
+        self.evaluate_forms(Some(state), forms, c, parks)
     }
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
     /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
     /// Host functions get `state`.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
-        let done = self.prepare_call(f, arguments).and_then(|f| {
-            let arguments = self.imported(arguments)?;
-            self.call_local(Some(state), f, &arguments, false)
-        });
+        let done = self.run_call(state, f, arguments, false);
         self.exported(done)
+    }
+
+    /// Calls `f` as [`Grift::call`] does; `parks` says whether the run may park.
+    fn run_call(
+        &mut self,
+        state: &mut T,
+        f: &Value,
+        arguments: &[Value],
+        parks: bool,
+    ) -> Result<local::Value, local::Error> {
+        let f = self.prepare_call(f, arguments)?;
+        let arguments = self.imported(arguments)?;
+        self.call_local(Some(state), f, &arguments, parks)
     }
 
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
