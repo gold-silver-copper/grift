@@ -1,7 +1,7 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
 //! sweep.
 
-use crate::evaluate::{Machine, Native};
+use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -52,10 +52,6 @@ pub(crate) enum Object {
     Operative(Operative),
     Applicative(Value),
     Bytes(Vec<u8>),
-    /// A parked run's machine, none once it is taken up again: a vector, not a box, so that making
-    /// room for it can report failure. Only a kept entry refers to one, under a pair's reference
-    /// (marking follows a reference whatever its kind says): no program or host value ever holds it.
-    Fiber(Vec<Machine>),
 }
 
 /// A context's bindings.
@@ -104,7 +100,6 @@ fn weight(obj: &Object) -> usize {
     match obj {
         Object::String(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
-        Object::Fiber(room) => 1 + room.iter().map(Machine::weight).sum::<usize>(),
         _ => 1,
     }
 }
@@ -128,6 +123,9 @@ pub(crate) struct Heap {
     /// Refuse the mark stack room past this length, to test a collection with no memory to spare.
     #[cfg(test)]
     pub mark_limit: usize,
+    /// Refuse the kept table room past this length, to test a park with no memory to spare.
+    #[cfg(test)]
+    pub kept_limit: usize,
     /// Collect at every safe point, to test what a collection could lose.
     #[cfg(test)]
     pub stress: bool,
@@ -159,6 +157,8 @@ impl Default for Heap {
             slot_limit: usize::MAX,
             #[cfg(test)]
             mark_limit: usize::MAX,
+            #[cfg(test)]
+            kept_limit: usize::MAX,
             #[cfg(test)]
             stress: false,
             #[cfg(test)]
@@ -325,8 +325,9 @@ impl Heap {
     /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
     /// reference the mark stack has no room for is left, and passes over the heap find it again
     /// as an unmarked child of a marked object. Each pass marks at least one more, the stack
-    /// being empty as each object's unmarked children go on it.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>) {
+    /// being empty as each object's unmarked children go on it. `parked` is the weight of what
+    /// outside the heap the next collection walks too, counted as live.
+    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, parked: usize) {
         #[cfg(test)]
         {
             self.collections += 1;
@@ -356,7 +357,7 @@ impl Heap {
             }
         }
         self.marks = marks;
-        let mut live = 0usize;
+        let mut live = parked;
         for (idx, s) in (0..).zip(self.slots.iter_mut()) {
             if s.marked {
                 s.marked = false;
@@ -443,6 +444,5 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
             f(Value::Context(op.context));
         }
         Object::Applicative(c) => f(*c),
-        Object::Fiber(room) => room.iter().flat_map(Machine::roots).for_each(f),
     }
 }

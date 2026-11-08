@@ -1,16 +1,14 @@
 //! Runs that wait. A host function answers "not yet", the run is set aside, and the host's loop goes
 //! on until it resumes the run once, with a value or an error.
 //!
-//! An interpreter has one machine. Parking moves that whole machine into a heap object, which a
-//! kept entry holds, so the collector sees a parked run's frames and arguments as it sees any
-//! kept value; the interpreter's machine is then empty, for whatever runs next. Taking a run up
-//! moves the machine back. The [`Parked`] handle says which: it is linear, so a run goes on at most
+//! An interpreter has one machine. Parking moves that whole machine into a kept entry, so the
+//! collector sees a parked run's frames and arguments as it sees any kept value; the interpreter's
+//! machine is then empty, for whatever runs next. Taking a run up moves the machine back. The [`Parked`] handle says which: it is linear, so a run goes on at most
 //! once by the type, and it carries its interpreter's identity as every value does.
 
 use crate::evaluate::Machine;
-use crate::heap::Object;
 use crate::local::{self, K};
-use crate::{Error, Grift, Owner, Value};
+use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::Weak;
 
 /// A host function that may answer later: [`Grift::parking_function`] makes one.
@@ -205,11 +203,8 @@ impl<T> Grift<T> {
 
     /// A handle to the run parked under kept name `name`.
     fn parked_handle(&self, name: u32) -> Parked {
-        let request = match self.kept_value(name) {
-            Some(local::Value::Pair(fiber)) => match self.heap.get(fiber) {
-                Ok(Object::Fiber(room)) => room.first().map(|m| m.request),
-                _ => None,
-            },
+        let request = match self.kept.get(name as usize) {
+            Some(Entry::Run(room)) => room.first().map(|m| m.request),
             _ => None,
         };
         Parked {
@@ -278,7 +273,7 @@ impl<T> Grift<T> {
         })
     }
 
-    /// The parked run's machine, its fiber let go, and a new run begun, once nothing can refuse.
+    /// The parked run's machine, its entry freed, and a new run begun, once nothing can refuse.
     fn claim(
         &mut self,
         parked: &Parked,
@@ -295,22 +290,14 @@ impl<T> Grift<T> {
             Err(e) => (&[][..], e.values.as_slice(), e.trace.as_slice()),
         };
         self.prepare(value.iter().chain(error).chain(trace).copied())?;
-        self.kept_free
-            .try_reserve(1)
-            .map_err(|_| local::Error::oom())?;
-        let Some(local::Value::Pair(fiber)) = self.kept_value(parked.name) else {
+        // A handle is linear and of this interpreter, so its name is still that run.
+        let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));
         };
+        let machine = room
+            .pop()
+            .ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
         self.begin_run();
-        let machine = match self.heap.get_mut(fiber)? {
-            Object::Fiber(room) => room.pop(),
-            _ => None,
-        };
-        let Some(machine) = machine else {
-            self.end_run();
-            return Err(local::Error::new(K::StaleValue, &[]));
-        };
-        self.clear_kept(parked.name);
         Ok(machine)
     }
 
@@ -321,20 +308,18 @@ impl<T> Grift<T> {
     }
 
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
-    /// about to park too: no more runs are parked than there are kept names.
+    /// about to park too, whose entry is already made: no more runs are parked than there are kept
+    /// names.
     pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
         self.control
-            .room_to_forget(self.kept.len() + 1)
+            .room_to_forget(self.kept.len())
             .map_err(|_| local::Error::oom())
     }
 
     /// How many runs are parked. Each holds what it refers to until it ends, so a host that sees this grow has forgotten some: [`Grift::forgotten`].
     pub fn parked(&self) -> usize {
-        let fiber = |v: &&local::Value| match v {
-            local::Value::Pair(r) => matches!(self.heap.get(*r), Ok(Object::Fiber(_))),
-            _ => false,
-        };
-        self.kept.iter().flatten().filter(fiber).count()
+        let run = |e: &&Entry| matches!(e, Entry::Run(_));
+        self.kept.iter().filter(run).count()
     }
 
     /// A new handle for a parked run whose handle was dropped, one at a time: the only way to its

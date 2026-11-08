@@ -425,14 +425,17 @@ fn values_across_a_wait() {
     let done = resume(&mut g, &mut w, p, answer);
     assert_eq!(finished(&g, done), "(1 2 3)");
     g.release(kept).map_err(|(e, _)| e).unwrap();
-    // Another interpreter's value is refused the same way.
+    // Another interpreter's value is refused the same way. The table's freed entries go to a
+    // value and a run alike, and each keeps its own.
     let mut other = grift();
     let foreign = other.string("x").unwrap();
+    let k = g.keep(Value::Integer(7)).unwrap();
     let p = parked(run(
         &mut g,
         &mut w,
         "(catch! (wait) e (evaluate-in! kind e))",
     ));
+    assert_eq!((g.kept(&k).unwrap(), g.parked()), (Value::Integer(7), 1));
     let done = resume(&mut g, &mut w, p, foreign);
     assert_eq!(finished(&g, done), "foreign-value");
 }

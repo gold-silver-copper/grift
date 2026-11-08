@@ -54,11 +54,9 @@ pub(crate) fn start<T>(g: &mut Grift<T>, state: &mut T, src: &str) -> Result<Ran
 fn dropping_a_handle_asks_for_no_memory() {
     let (mut g, mut log) = (grift(), Log::new());
     let mut handles = Vec::new();
+    let src = "(finally! (wait) (note 1))";
     for _ in 0..5 {
-        match start(&mut g, &mut log, "(finally! (wait) (note 1))") {
-            Ok(Ran::Parked(p)) => handles.push(p),
-            other => panic!("{other:?}"),
-        }
+        handles.push(parked(start(&mut g, &mut log, src)));
     }
     let room = |g: &Grift<Log>| {
         let queue = g.control.forgotten();
@@ -68,12 +66,9 @@ fn dropping_a_handle_asks_for_no_memory() {
     assert!(before.0 >= 5, "room for {}", before.0);
     drop(handles);
     assert_eq!(room(&g), before);
-    let mut found = 0;
     while let Some(p) = g.forgotten() {
-        found += 1;
         give_up(&mut g, &mut log, p);
     }
-    assert_eq!(found, 5);
     assert_eq!(log, ["1"; 5]);
 }
 
@@ -154,6 +149,7 @@ fn parking_inside_a_native_twin_cannot_be_told_from_its_definition() {
 #[test]
 fn a_run_with_no_memory_to_park_fails_there_and_its_cleanups_run() {
     let (mut g, mut log) = (grift(), Vec::new());
+    g.heap.kept_limit = 0;
     let e = start(&mut g, &mut log, "(finally! (full-wait) (note 1))").unwrap_err();
     assert_eq!(kind(&g, &e), "out-of-memory");
     assert_eq!(log, ["1"]);
@@ -161,16 +157,16 @@ fn a_run_with_no_memory_to_park_fails_there_and_its_cleanups_run() {
     assert_eq!(g.evaluate(&mut log, "(add 1 2)"), Ok(Value::Integer(3)));
 }
 
+/// A park goes into the kept table, so a full heap doesn't stop it, and a resume out of it.
 #[test]
-fn resuming_needs_no_memory() {
+fn parking_and_resuming_need_no_heap_slot() {
     let (mut g, mut log) = (grift(), Vec::new());
-    let p = parked(start(&mut g, &mut log, "(add 1 (wait))"));
+    let p = parked(start(&mut g, &mut log, "(add 1 (full-wait))"));
     g.heap.refuse_in = Some(0);
     let Ok(Ran::Finished(v)) = resumed(&mut g, &mut log, p, Value::Integer(1)) else {
         panic!("a resume needs no slot");
     };
-    assert_eq!(v, Value::Integer(2));
-    assert_eq!(g.heap.refused, 0);
+    assert_eq!((v, g.heap.refused), (Value::Integer(2), 0));
 }
 
 /// Out of memory, with only garbage in the heap: the unwinding collects first, so each cleanup has

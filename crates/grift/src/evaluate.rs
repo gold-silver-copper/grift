@@ -21,7 +21,7 @@ use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::parked::{Answer, Hosted};
 use crate::read::float_name;
-use crate::{Grift, collected};
+use crate::{Entry, Grift, collected};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -282,8 +282,9 @@ impl Frame {
     }
 }
 
-/// A run's state, all of it: a run that parks moves this into the heap, and what belongs to a run
-/// but lives anywhere else stays behind when it does. An interpreter has one, empty between runs.
+/// A run's state, all of it: a run that parks moves this into the kept table, and what belongs to
+/// a run but lives anywhere else stays behind when it does. An interpreter has one, empty between
+/// runs.
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     arguments: Vec<Value>,
@@ -335,7 +336,7 @@ impl Machine {
 
     /// How many objects a parked machine counts as, for when to collect: every collection walks it.
     pub(crate) fn weight(&self) -> usize {
-        self.frames.len() + self.arguments.len() + self.waiting.len()
+        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
     }
 }
 
@@ -488,29 +489,25 @@ impl<T> Grift<T> {
         result
     }
 
-    /// Sets the run in progress aside: its whole machine moves into a new heap object, which a
-    /// kept entry holds, and this interpreter's machine is empty again. Everything that can fail
-    /// comes first, so a run that can't park goes on where it was, with the error, and that it
-    /// was asked to stop is the last of those. Its kept name is left for [`Grift::ran`].
+    /// Sets the run in progress aside: its whole machine moves into a kept entry, and this
+    /// interpreter's machine is empty again. Everything that can fail comes first, so a run that
+    /// can't park goes on where it was, with the error, and that it was asked to stop is the last
+    /// of those; filling the entry comes after them all, so there is nothing to undo. Its kept
+    /// name is left for [`Grift::ran`].
     fn park(&mut self, request: Value) -> Result<(), Error> {
         if !self.may_park {
             return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
         room.try_reserve_exact(1).map_err(|_| Error::oom())?;
-        self.kept_free.try_reserve(1).map_err(|_| Error::oom())?;
+        let name = self.free_name()?;
         self.room_to_forget()?;
-        let fiber = self.heap.alloc(Object::Fiber(room))?;
-        let name = self.keep_local(Value::Pair(fiber))?;
         if !self.control.parks() {
-            self.clear_kept(name);
             return Err(Error::interrupted());
         }
         self.machine.request = request;
-        let machine = std::mem::take(&mut self.machine);
-        if let Object::Fiber(room) = self.heap.get_mut(fiber)? {
-            room.push(machine);
-        }
+        room.push(std::mem::take(&mut self.machine));
+        self.fill_kept(name, Entry::Run(room));
         self.parked_as = Some(name);
         Ok(())
     }
@@ -795,14 +792,15 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection, never suspended runs.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) {
-        let kept = self.kept.iter().flatten().copied();
+        let parked = self.kept.iter().map(Entry::weight).sum();
+        let kept = self.kept.iter().flat_map(Entry::roots);
         let roots = self
             .machine
             .roots()
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
-        self.heap.collect(roots)
+        self.heap.collect(roots, parked)
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping

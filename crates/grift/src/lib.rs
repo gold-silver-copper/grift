@@ -194,6 +194,40 @@ pub struct Kept {
     name: u32,
 }
 
+/// An entry of the kept table, the collector's roots no program reaches, named by its place.
+pub(crate) enum Entry {
+    /// Nothing, and the next free entry.
+    Free(Option<u32>),
+    /// A value a [`Kept`] names.
+    Value(local::Value),
+    /// A parked run, which a [`Parked`] names: one machine, in a vector so that making room for it
+    /// can report failure and the table stays small.
+    Run(Vec<evaluate::Machine>),
+}
+
+const _: () = assert!(size_of::<Entry>() == 24);
+
+impl Entry {
+    /// What this entry holds for the collector.
+    pub(crate) fn roots(&self) -> impl Iterator<Item = local::Value> {
+        let (value, runs) = match self {
+            Entry::Free(_) => (None, &[][..]),
+            Entry::Value(v) => (Some(*v), &[][..]),
+            Entry::Run(room) => (None, room.as_slice()),
+        };
+        let machines = runs.iter().flat_map(evaluate::Machine::roots);
+        value.into_iter().chain(machines)
+    }
+
+    /// How much of the next collection's walk this entry is, beyond its value's heap objects.
+    pub(crate) fn weight(&self) -> usize {
+        match self {
+            Entry::Run(room) => room.iter().map(evaluate::Machine::weight).sum(),
+            _ => 0,
+        }
+    }
+}
+
 /// Where a combination was read, and whether it is one of the source's outer forms.
 struct Position {
     generation: u32,
@@ -214,9 +248,9 @@ pub struct Grift<T = ()> {
     hosts: Vec<(local::Symbol, parked::Hosted<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
-    /// The kept values, a root no program reaches, and the entries free for the next.
-    kept: Vec<Option<local::Value>>,
-    kept_free: Vec<u32>,
+    /// The kept values and parked runs, and the first free entry.
+    kept: Vec<Entry>,
+    kept_free: Option<u32>,
     /// The kept name of the run that has just parked, for whoever began or resumed it.
     parked_as: Option<u32>,
     machine: evaluate::Machine,
@@ -240,7 +274,7 @@ impl<T> Grift<T> {
             built_in: heap::Reference::NONE,
             top: heap::Reference::NONE,
             kept: Vec::new(),
-            kept_free: Vec::new(),
+            kept_free: None,
             parked_as: None,
             machine: evaluate::Machine::default(),
             control: Arc::new(Control::default()),
@@ -713,7 +747,11 @@ impl<T> Grift<T> {
 
     /// Keeps `v` alive across evaluations, until [`Grift::release`].
     pub fn keep(&mut self, v: Value) -> Result<Kept, Error> {
-        let kept = self.import(&v).and_then(|v| self.keep_local(v));
+        let kept = self.import(&v).and_then(|v| {
+            let name = self.free_name()?;
+            self.fill_kept(name, Entry::Value(v));
+            Ok(name)
+        });
         match kept {
             Ok(name) => Ok(Kept {
                 owner: self.owner(),
@@ -723,39 +761,48 @@ impl<T> Grift<T> {
         }
     }
 
-    /// Puts `v` in the table: its name is its entry there, a released one first, so keeping on
-    /// every event never runs out of names.
-    pub(crate) fn keep_local(&mut self, v: local::Value) -> Result<u32, local::Error> {
-        if let Some(name) = self.kept_free.pop() {
-            if let Some(entry) = self.kept.get_mut(name as usize) {
-                *entry = Some(v);
-            }
+    /// The first free entry's name, a released one first so keeping on every event never runs out
+    /// of names, one made if there is none. Filling it can't fail, so a caller that may yet turn
+    /// back has nothing to undo.
+    pub(crate) fn free_name(&mut self) -> Result<u32, local::Error> {
+        if let Some(name) = self.kept_free {
             return Ok(name);
         }
+        #[cfg(test)]
+        if self.kept.len() >= self.heap.kept_limit {
+            return Err(local::Error::oom());
+        }
         let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
-        push(&mut self.kept, Some(v))?;
+        push(&mut self.kept, Entry::Free(None))?;
+        self.kept_free = Some(name);
         Ok(name)
     }
 
-    /// What the entry `name` holds.
-    pub(crate) fn kept_value(&self, name: u32) -> Option<local::Value> {
-        self.kept.get(name as usize).copied().flatten()
+    /// Fills the entry [`Grift::free_name`] gave.
+    pub(crate) fn fill_kept(&mut self, name: u32, filled: Entry) {
+        if let Some(entry) = self.kept.get_mut(name as usize) {
+            if let Entry::Free(next) = *entry {
+                self.kept_free = next;
+            }
+            *entry = filled;
+        }
     }
 
-    /// Clears the entry `name`, for the next value. The caller has made room in `kept_free`.
-    pub(crate) fn clear_kept(&mut self, name: u32) {
-        if let Some(entry) = self.kept.get_mut(name as usize) {
-            *entry = None;
-        }
-        self.kept_free.push(name);
+    /// Frees the entry `name`, for the next, and says what it held.
+    pub(crate) fn clear_kept(&mut self, name: u32) -> Option<Entry> {
+        let entry = self.kept.get_mut(name as usize)?;
+        let held = std::mem::replace(entry, Entry::Free(self.kept_free));
+        self.kept_free = Some(name);
+        Some(held)
     }
 
     /// The value `k` keeps.
     pub fn kept(&self, k: &Kept) -> Result<Value, Error> {
         let found = match self.owns(&k.owner) {
-            true => self
-                .kept_value(k.name)
-                .ok_or_else(|| local::Error::new(K::StaleValue, &[])),
+            true => match self.kept.get(k.name as usize) {
+                Some(Entry::Value(v)) => Ok(*v),
+                _ => Err(local::Error::new(K::StaleValue, &[])),
+            },
             false => Err(local::Error::new(K::ForeignValue, &[])),
         };
         self.exported(found)
@@ -769,9 +816,6 @@ impl<T> Grift<T> {
                 self.export_error(local::Error::new(K::ForeignValue, &[])),
                 k,
             ));
-        }
-        if self.kept_free.try_reserve(1).is_err() {
-            return Err((self.export_error(local::Error::oom()), k));
         }
         self.clear_kept(k.name);
         Ok(())
