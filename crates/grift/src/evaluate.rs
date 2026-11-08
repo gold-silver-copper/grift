@@ -18,7 +18,7 @@
 //! flagged, and run in Rust when their operands have the shape the twin handles; any other shape
 //! runs the operative's body, so what a program sees never differs.
 
-use crate::heap::{Bindings, Object, Operative, Reference};
+use crate::heap::{Bindings, Object, Operative, Origin, Reference};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::parked::{Answer, Hosted};
@@ -555,24 +555,19 @@ impl<T> Grift<T> {
         Ok(match mode {
             Mode::Evaluate(Value::Symbol(s), context) => Mode::Return(self.value_of(context, s)?),
             Mode::Evaluate(Value::Pair(r), context) => {
-                let (combiner, operands, library) = match self.heap.get_code(r)? {
-                    (Object::Pair(a, b), library) => (*a, *b, library),
-                    _ => return Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
+                let Object::Pair(combiner, operands, origin) = *self.heap.get(r)? else {
+                    return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
                 };
                 // A combination is the program's unless the library made it.
-                if !library {
+                if !origin.library {
                     self.machine.here = r;
-                    if self
-                        .positions
-                        .get(&r.idx)
-                        .is_some_and(|p| p.generation == r.generation && p.outer)
-                    {
+                    if origin.outer {
                         self.hold_form(r)?;
                     }
                 }
                 let combine = What::Combine {
                     operands,
-                    base: Base::new(self.machine.arguments.len(), library),
+                    base: Base::new(self.machine.arguments.len(), origin.library),
                 };
                 self.frame(combine, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
@@ -588,7 +583,7 @@ impl<T> Grift<T> {
                     } => {
                         let (form, rest) = self.pair_at(r)?;
                         let at = match form {
-                            Value::Pair(f) if !self.heap.get_code(f)?.1 => f,
+                            Value::Pair(f) if !self.origin_at(f)?.library => f,
                             _ => Reference::NONE,
                         };
                         self.frame(What::Forms { rest }, context, at)?;
@@ -1518,10 +1513,12 @@ impl<T> Grift<T> {
 
     /// A new pair, the library's if the combination being combined is.
     pub(crate) fn pair_local(&mut self, a: Value, b: Value) -> Result<Value, Error> {
-        let pair = Object::Pair(a, b);
-        Ok(Value::Pair(
-            self.heap.alloc_marked(pair, self.machine.library)?,
-        ))
+        let origin = Origin {
+            place: None,
+            library: self.machine.library,
+            outer: false,
+        };
+        Ok(Value::Pair(self.heap.alloc(Object::Pair(a, b, origin))?))
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
@@ -1661,7 +1658,14 @@ impl<T> Grift<T> {
 
     pub(crate) fn pair_at(&self, r: Reference) -> Result<(Value, Value), Error> {
         match self.heap.get(r)? {
-            Object::Pair(a, b) => Ok((*a, *b)),
+            Object::Pair(a, b, _) => Ok((*a, *b)),
+            _ => Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
+        }
+    }
+
+    pub(crate) fn origin_at(&self, r: Reference) -> Result<Origin, Error> {
+        match self.heap.get(r)? {
+            Object::Pair(_, _, origin) => Ok(*origin),
             _ => Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
         }
     }

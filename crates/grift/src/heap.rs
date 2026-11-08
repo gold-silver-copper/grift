@@ -46,7 +46,7 @@ pub(crate) struct Operative {
 pub(crate) enum Object {
     /// A free slot and the next free one.
     Free(u32),
-    Pair(Value, Value),
+    Pair(Value, Value, Origin),
     String(Box<str>),
     /// An optional parent and the bindings.
     Context(Option<Reference>, Bindings),
@@ -83,9 +83,20 @@ struct Slot {
     generation: u32,
     /// Set as a collection first reaches the slot, so it goes on the mark stack once at most.
     marked: Cell<bool>,
-    /// Made by the library: read from its text, or made by its code as it ran.
-    library: bool,
     obj: Object,
+}
+
+// A pair's origin fits in the room an operative already needs.
+const _: () = assert!(size_of::<Slot>() == 72);
+
+/// Where a pair came from: the source and line it was read at, if under a name; whether the
+/// library made it, by reading its text or by running its code; and whether it is one of its
+/// source's outer forms.
+#[derive(Clone, Copy)]
+pub(crate) struct Origin {
+    pub place: Option<(Symbol, u32)>,
+    pub library: bool,
+    pub outer: bool,
 }
 
 const NONE: u32 = u32::MAX;
@@ -195,12 +206,6 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
-        self.alloc_marked(obj, false)
-    }
-
-    /// A new object, marked as the library's if `library`: code it read or built.
-    #[inline]
-    pub fn alloc_marked(&mut self, obj: Object, library: bool) -> Result<Reference, Error> {
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
@@ -224,7 +229,6 @@ impl Heap {
         {
             self.free = next;
             slot.obj = obj;
-            slot.library = library;
             return Ok(Reference {
                 idx,
                 generation: slot.generation,
@@ -244,7 +248,6 @@ impl Heap {
         let slot = Slot {
             generation: 0,
             marked: Cell::new(false),
-            library,
             obj,
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
@@ -257,14 +260,6 @@ impl Heap {
     fn refused(&self) -> Error {
         self.request_collection();
         Error::oom()
-    }
-
-    /// The object, and whether the library made it: read from its text, or made by its code.
-    #[inline]
-    pub fn get_code(&self, r: Reference) -> Result<(&Object, bool), Error> {
-        self.slot(r)
-            .map(|s| (&s.obj, s.library))
-            .ok_or_else(|| Error::new(K::StaleValue, &[]))
     }
 
     /// The slot `r` refers to, if it still holds that object: a slot freed since has another
@@ -383,7 +378,7 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
 fn children(obj: &Object, mut f: impl FnMut(Value)) {
     match obj {
         Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
-        Object::Pair(a, d) => {
+        Object::Pair(a, d, _) => {
             f(*a);
             f(*d);
         }

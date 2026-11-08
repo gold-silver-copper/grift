@@ -14,12 +14,12 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-use heap::{Bindings, Heap, IdHasher, Object};
+use heap::{Bindings, Heap, Object};
 use interrupt::Control;
 use local::{K, boxed, push};
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 
 pub use interrupt::Interrupter;
@@ -228,14 +228,6 @@ impl Entry {
     }
 }
 
-/// Where a combination was read, and whether it is one of the source's outer forms.
-struct Position {
-    generation: u32,
-    source: local::Symbol,
-    line: u32,
-    outer: bool,
-}
-
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
 /// top-level context, a child of the built-in one, where programs define things. `T` is the
 /// host's state, which the host lends to each [`Grift::evaluate`] and [`Grift::call`] and which
@@ -259,8 +251,6 @@ pub struct Grift<T = ()> {
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
-    /// Where each combination read under a name is, by its slot's index.
-    positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
 }
 
 impl<T> Grift<T> {
@@ -279,7 +269,6 @@ impl<T> Grift<T> {
             machine: evaluate::Machine::default(),
             suspended: Vec::new(),
             control: Arc::new(Control::default()),
-            positions: HashMap::default(),
         };
         let loaded = g.load();
         g.out(loaded).map(|()| g)
@@ -734,8 +723,8 @@ impl<T> Grift<T> {
         let local::Value::Pair(r) = combination else {
             return None;
         };
-        let position = self.positions.get(&r.idx)?;
-        (position.generation == r.generation).then(|| (self.name(position.source), position.line))
+        let (source, line) = self.origin_at(r).ok()?.place?;
+        Some((self.name(source), line))
     }
 
     /// A handle that stops one run of this interpreter from another thread: the run in progress,

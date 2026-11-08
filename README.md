@@ -490,8 +490,8 @@ machine loop over a frame stack, so no Rust recursion grows with a program's nes
 loop and before a host's evaluation or call needs its first heap slot. Allocation never collects,
 and a collection needs no memory: every new heap slot first reserves its entry on the mark stack,
 or is refused, so a heap full of garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
-work needs: heap slots, which that frees, and a little besides (a new name, a source's line
-numbers, a host function's copy of its arguments). An object the heap has no room for makes a collection due, before
+work needs: heap slots, which that frees, and a little besides (a new name, a host function's
+copy of its arguments). An object the heap has no room for makes a collection due, before
 the next run needs room to read its input or build its call context, as does any memory refused
 that unwinds a run. Reads and constructors do not collect: more reads may be refused until an
 evaluation or call provides that recovery point.

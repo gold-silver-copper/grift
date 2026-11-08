@@ -1,9 +1,9 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
+use crate::Grift;
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
 use crate::local::{Error, K, Symbol, Value, push};
-use crate::{Grift, Position};
 use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
@@ -103,7 +103,7 @@ pub(crate) fn float_name(token: &str) -> Option<f64> {
 
 impl<T> Grift<T> {
     /// Reads every form in `src` into a list: the library's code if `library`, else the program's.
-    /// Under a `source` name, each combination's line goes in the positions table.
+    /// Under a `source` name, each combination's first pair says its source and line.
     pub(crate) fn read_local(
         &mut self,
         src: &str,
@@ -131,9 +131,9 @@ impl<T> Grift<T> {
             })?
         {
             if let (Some(_), Value::Pair(r)) = (source, form)
-                && let Some(position) = self.positions.get_mut(&r.idx)
+                && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
             {
-                position.outer = true;
+                origin.outer = true;
             }
             self.add(&mut forms, form)?;
             (at, line) = (place.end, after);
@@ -178,8 +178,10 @@ impl<T> Grift<T> {
                         bytes: Some(bytes), ..
                     }) => self.bytes_local(bytes)?,
                     Some(list) if list.dot != Dot::Tail => {
-                        if let (Some(source), Value::Pair(r)) = (source, list.head) {
-                            self.place(r, source, list.line)?;
+                        if let (Some(source), Value::Pair(r)) = (source, list.head)
+                            && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
+                        {
+                            origin.place = Some((source, list.line));
                         }
                         list.head
                     }
@@ -255,25 +257,9 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    /// Records that combination `r` was read from `source` at `line`; a reused slot's entry is
-    /// replaced, so the table stays within the heap's size.
-    fn place(&mut self, r: Reference, source: Symbol, line: u32) -> Result<(), Error> {
-        self.positions.try_reserve(1).map_err(|_| Error::oom())?;
-        self.positions.insert(
-            r.idx,
-            Position {
-                generation: r.generation,
-                source,
-                line,
-                outer: false,
-            },
-        );
-        Ok(())
-    }
-
     /// Sets the rest of a pair the reader made and nobody else has seen yet.
     fn set_rest(&mut self, r: Reference, v: Value) -> Result<(), Error> {
-        if let Object::Pair(_, d) = self.heap.get_mut(r)? {
+        if let Object::Pair(_, d, _) = self.heap.get_mut(r)? {
             *d = v;
         }
         Ok(())

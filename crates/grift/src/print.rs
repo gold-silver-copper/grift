@@ -49,7 +49,7 @@ impl<T> Grift<T> {
                     continue;
                 }
                 Item::Tail(Value::Pair(r), closer) => {
-                    let Ok(Object::Pair(element, rest)) = self.heap.get(r) else {
+                    let Ok(Object::Pair(element, rest, _)) = self.heap.get(r) else {
                         return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
                     };
                     out.write_char(' ')?;
@@ -100,7 +100,7 @@ impl<T> Grift<T> {
                 | Value::Operative(r)
                 | Value::Applicative(r) => {
                     match self.heap.get(r) {
-                        Ok(Object::Pair(a, b)) => {
+                        Ok(Object::Pair(a, b, _)) => {
                             out.write_char('(')?;
                             push(&mut todo, Item::Tail(*b, ")"))?;
                             push(&mut todo, Item::Value(*a))?;
