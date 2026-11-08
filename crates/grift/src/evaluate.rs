@@ -1376,16 +1376,12 @@ impl<T> Grift<T> {
             return Err(bad());
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
-        let (values, trace) = (self.items(values, bad)?, self.items(trace, bad)?);
+        let (values, trace) = (self.items(values, e)?, self.items(trace, e)?);
         Error::from_parts(kind, values, trace)
     }
 
-    /// The elements of a proper list; `bad()` for anything else.
-    pub(crate) fn items(
-        &self,
-        mut list: Value,
-        bad: impl Fn() -> Error,
-    ) -> Result<Vec<Value>, Error> {
+    /// The elements of a proper list; anything else is a `type-error` naming `culprit`.
+    pub(crate) fn items(&self, mut list: Value, culprit: Value) -> Result<Vec<Value>, Error> {
         let mut v = Vec::new();
         while let Value::Pair(r) = list {
             let (x, rest) = self.pair_at(r)?;
@@ -1395,7 +1391,7 @@ impl<T> Grift<T> {
         if list == Value::EmptyList {
             Ok(v)
         } else {
-            Err(bad())
+            Err(type_error(culprit))
         }
     }
 

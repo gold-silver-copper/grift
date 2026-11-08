@@ -627,9 +627,7 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
-        let items = self
-            .import(list)
-            .and_then(|l| self.items(l, || local::Error::new(K::TypeError, &[l])));
+        let items = self.import(list).and_then(|l| self.items(l, l));
         let items = items.and_then(|items| collected(items.into_iter().map(|v| self.export(v))));
         self.out(items)
     }
