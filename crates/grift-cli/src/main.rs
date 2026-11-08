@@ -4,8 +4,9 @@
 //! `encoding-error` before anything runs. Data goes to stdout, diagnostics to stderr. Exit status:
 //! 0, 1 on a grift error (a script that can't be read, or failed output, is one), or what the
 //! program gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program
-//! calls `exit`, input ends inside a form, or standard input or error fails or is closed, which is
-//! the session's own error and ends it with 1. A write to a pipe no one reads, on any file, ends
+//! calls `exit`, input ends inside a form, or standard input or error fails or a program closes it,
+//! which is the session's own error and ends it with 1. One the shell closed is `/dev/null` by
+//! then: Rust's runtime opens it there before `main`. A write to a pipe no one reads, on any file, ends
 //! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 141, the status a
 //! shell gives a program that SIGPIPE ended.
 //!
@@ -19,7 +20,8 @@ use grift::{Error, Grift, HostFunction, Value, WriteError};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, ExitStatus, Stdio};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, reads the program \
@@ -398,6 +400,55 @@ fn exit_status(g: &G, e: &Error) -> Option<u8> {
     }
 }
 
+/// Runs `program` to its end with no input: its exit status, then what it wrote to stderr and to
+/// stdout, each `None` if memory was refused for it. A thread reads stderr while this one reads
+/// stdout, so neither pipe fills and blocks the program.
+fn ran(program: &str, arguments: &[String]) -> io::Result<(ExitStatus, [Option<Vec<u8>>; 2])> {
+    let mut child = Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err(io::Error::other("no pipe"));
+    };
+    let read_stderr = match thread::Builder::new().spawn(move || drain(stderr)) {
+        Ok(thread) => thread,
+        Err(e) => {
+            let _ = child.kill();
+            child.wait()?;
+            return Err(e);
+        }
+    };
+    let stdout = drain(stdout);
+    let stderr = read_stderr
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("panic")));
+    let status = child.wait()?;
+    Ok((status, [stderr?, stdout?]))
+}
+
+/// Reads `pipe` to its end: all of it, or `None` if memory was refused, the rest read and dropped.
+fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
+    let mut kept = Some(Vec::new());
+    let mut chunk = [0; 8192];
+    loop {
+        let n = match pipe.read(&mut chunk) {
+            Ok(0) => return Ok(kept),
+            Ok(n) => n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if let Some(bytes) = &mut kept {
+            match (bytes.try_reserve(n), chunk.get(..n)) {
+                (Ok(()), Some(read)) => bytes.extend_from_slice(read),
+                _ => kept = None,
+            }
+        }
+    }
+}
+
 /// `(run-host program argument ...)`: runs it to its end, with no input, and gives its exit code
 /// (`#inert` if a signal ended it) and what it wrote to stdout and stderr, as a list.
 fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
@@ -411,16 +462,18 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let Some((program, arguments)) = words.split_first() else {
         return Err(g.error("arity-error", args));
     };
-    let ran = match Command::new(program).args(arguments).output() {
+    let (status, outputs) = match ran(program, arguments) {
         Ok(ran) => ran,
         Err(e) => return Err(failed(g, "process-error", program, &e)),
     };
-    let status = ran
-        .status
+    let status = status
         .code()
         .map_or(Value::Inert, |n| Value::Integer(i64::from(n)));
     let mut list = Value::EmptyList;
-    for bytes in [ran.stderr, ran.stdout] {
+    for bytes in outputs {
+        let Some(bytes) = bytes else {
+            return Err(no_memory(g));
+        };
         let Ok(text) = String::from_utf8(bytes) else {
             return Err(g.error("encoding-error", args));
         };
@@ -432,15 +485,52 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 
 /// Prints an error to stderr as its source, then its kind followed by its values and where it happened, the
 /// innermost combination on the error's line and each one around it on a line of its own.
+/// A report up to 4 KiB is one write, so output sharing its pipe can't land inside it.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
-        w: io::stderr().lock(),
+        w: Gathered {
+            out: io::stderr().lock(),
+            text: [0; 4096],
+            len: 0,
+        },
         error: None,
     };
     let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     let _ = g.describe(e, &mut err);
     let _ = fmt::Write::write_str(&mut err, "\n");
+    let _ = err.w.flush();
     ExitCode::FAILURE
+}
+
+/// Writes gathered on the stack and passed on when it is full or flushed: no memory to be refused.
+struct Gathered<W: Write> {
+    out: W,
+    text: [u8; 4096],
+    len: usize,
+}
+
+impl<W: Write> Write for Gathered<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.len + data.len() > self.text.len() {
+            self.flush()?;
+            if data.len() > self.text.len() {
+                return self.out.write(data);
+            }
+        }
+        let end = self.len + data.len();
+        if let Some(room) = self.text.get_mut(self.len..end) {
+            room.copy_from_slice(data);
+            self.len = end;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let gathered = self.text.get(..self.len).unwrap_or_default();
+        self.len = 0;
+        self.out.write_all(gathered)?;
+        self.out.flush()
+    }
 }
 
 /// `(report-host thunk)`: calls `thunk` as a run of its own. An error that ends it is reported as
