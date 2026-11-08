@@ -386,6 +386,12 @@ impl Heap {
     pub fn len(&self) -> usize {
         self.slots.len()
     }
+
+    /// The mark stack's room, for a test that it is made before any collection needs it.
+    #[cfg(test)]
+    pub fn mark_room(&self) -> usize {
+        self.marks.capacity()
+    }
 }
 
 /// The room [`Heap::make_room`] makes: any is enough, more makes fewer passes.

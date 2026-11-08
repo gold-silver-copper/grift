@@ -3877,3 +3877,12 @@ fn a_collection_needs_no_memory_of_its_own() {
         [40000, 20000, 19999, 1999].map(Value::Integer)
     );
 }
+
+/// The mark stack's room is made with the interpreter: `mark_limit` can't tell it from room grown
+/// later, but with memory refused and no room, no root could be marked and a collection would free
+/// live data.
+#[test]
+fn the_mark_stack_has_room_before_any_collection() {
+    let g: Grift = Grift::new().unwrap();
+    assert!(g.heap.mark_room() > 0);
+}

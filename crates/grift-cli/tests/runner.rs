@@ -164,13 +164,14 @@ fn memory_refused_to_a_read_is_a_limit() {
 }
 
 /// Memory refused to a process's output is the same limit: the runner reads both of its pipes to
-/// their ends, so the process isn't left blocked on a full one, and waits for it to end.
+/// their ends, so the process isn't left blocked on a full one or killed by a closed one, and waits
+/// for it to end.
 #[cfg(target_os = "linux")]
 #[test]
 fn memory_refused_to_a_process_s_output_is_a_limit() {
     let dir = scratch("process-refused");
     let path = dir.join("big.grift");
-    let flood = "head -c 900000000 /dev/zero; echo err >&2; echo done > finished";
+    let flood = "head -c 900000000 /dev/zero; echo $? > finished; echo err >&2";
     let src = format!(
         "(catch! (finally! (run-process \"sh\" \"-c\" {flood:?}) (display \"cleanup\")) e (display \"caught\"))"
     );
@@ -196,7 +197,7 @@ fn memory_refused_to_a_process_s_output_is_a_limit() {
     assert!(err.contains("out-of-memory"), "{err}");
     assert_eq!(
         std::fs::read_to_string(dir.join("finished")).unwrap(),
-        "done\n"
+        "0\n"
     );
 }
 
@@ -509,12 +510,18 @@ fn run_process_gives_a_record() {
         (define! ran (run-process "sh" "-c" "echo out; echo err >&2; exit 4"))
         (display ran (list (evaluate-in! status ran) (evaluate-in! output ran) (evaluate-in! error-output ran)))
         (display (catch! (run-process "no-such-program-here") e (evaluate-in! kind e)))
+        (display (evaluate-in! status (run-process "sh" "-c" "exec >&- 2>&-; sleep 0.2; echo done > finished")))
     "#;
     let (status, out, err) = script(&dir, program, &[], "");
     assert_eq!(status, Some(0), "{err}");
     assert_eq!(
         out,
-        "#[context error-output output status](4 \"out\\n\" \"err\\n\")process-error"
+        "#[context error-output output status](4 \"out\\n\" \"err\\n\")process-error0"
+    );
+    // A process that closes its output and goes on is waited for, not killed.
+    assert_eq!(
+        std::fs::read_to_string(dir.join("finished")).unwrap(),
+        "done\n"
     );
 }
 
@@ -779,6 +786,21 @@ fn a_parse_error_says_where_the_form_opened() {
         String::from_utf8(error.stderr).unwrap(),
         "stdin: parse-error unclosed-list 2 3 in stdin\n"
     );
+}
+
+/// A report too long for one write is written once all the same, a piece at a time.
+#[test]
+fn a_report_over_4_kib_is_written_once() {
+    let dir = scratch("long-report");
+    let (status, _, err) = script(&dir, "(first (string-repeat \"a\" 5000))", &[], "");
+    assert_eq!(status, Some(1));
+    let path = dir.join("script.grift");
+    let path = path.to_str().unwrap();
+    let a = "a".repeat(5000);
+    let want =
+        format!("{path}: type-error \"{a}\" in (first (string-repeat \"a\" 5000)) at {path}:1\n");
+    // Not the text itself on failure: a report written again and again is megabytes.
+    assert!(err == want, "{} bytes, not {}", err.len(), want.len());
 }
 
 #[test]
@@ -1054,6 +1076,12 @@ fn a_session_numbers_its_lines_from_its_start() {
     let (_, shown) = at_a_terminal("1\n2\n)\n\x04");
     assert!(
         shown.contains("stdin: parse-error unmatched-parenthesis 3 1 in stdin\n"),
+        "{shown}"
+    );
+    // So is input ending inside a form.
+    let (_, shown) = at_a_terminal("1\n(add 1\n\x04");
+    assert!(
+        shown.contains("stdin: parse-error unclosed-list 2 1 in stdin\n"),
         "{shown}"
     );
 }
