@@ -10,7 +10,6 @@
 (define! truths (list (string-to-symbol "#true") (string-to-symbol "#false")))
 (define! choose
   (lambda! (b yes no) (evaluate (string-to-symbol (value-to-string b)) (record truths (list yes no)))))
-(define! fail (lambda! (kind values) (raise (record (quote! (kind values trace)) (list kind values ())))))
 (define! head (lambda! ((x . #ignore)) x))
 (define! tail (lambda! ((#ignore . x)) x))
 (define! counts
@@ -21,9 +20,9 @@
 (define! arity
   (lambda! (arguments n) ((choose (same? (count arguments 0) n) itself arity-failed) arguments)))
 ; The operands, in a new list, as the primitive makes them.
-(define! arity-failed (lambda! (xs) (fail (quote! arity-error) (list (append xs ())))))
+(define! arity-failed (lambda! (xs) (raise (error (quote! arity-error) (append xs ())))))
 (define! typed (lambda! (x type) ((choose (same? (type-of x) type) itself type-failed) x)))
-(define! type-failed (lambda! (x) (fail (quote! type-error) (list x))))
+(define! type-failed (lambda! (x) (raise (error (quote! type-error) x))))
 ; A meaning: an operative checking how many arguments there are, and for one the type, then
 ; giving f the argument or the arguments.
 (define! one (lambda! (type f) (vau! arguments #ignore (f (typed (head (arity arguments 1)) type)))))
@@ -71,9 +70,9 @@
            (sign (if! (same? size 0) 0 (byte-at text 0)))
            (from (if! (or!? (same? sign 43) (same? sign 45)) 1 0)))
       (if! (same? from size)
-        (fail (quote! parse-error) (list text))
+        (raise (error (quote! parse-error) text))
         (catch-kind! (signed sign (negated text from size 0))
-                     overflow #ignore (fail (quote! parse-error) (list text)))))))
+                     overflow #ignore (raise (error (quote! parse-error) text)))))))
 (define! negated
   (lambda! (text at size n)
     (if! (same? at size)
@@ -81,7 +80,7 @@
       (let! ((digit (subtract (byte-at text at) 48)))
         (if! (and!? (not? (less-than? digit 0)) (less-than? digit 10))
           (negated text (add at 1) size (subtract (multiply n 10) digit))
-          (fail (quote! parse-error) (list text)))))))
+          (raise (error (quote! parse-error) text)))))))
 (define! signed (lambda! (sign n) (if! (same? sign 45) n (subtract 0 n))))
 
 ; Strings and bytes, by byte-at. The length is the first offset with no byte: past one with none
@@ -102,7 +101,7 @@
   (lambda! (n)
     (if! (and!? (not? (less-than? n 0)) (less-than? n 1114112) (or!? (less-than? n 55296) (less-than? 57343 n)))
       (head (read-form (join "\"\\x" (hexadecimal n ()) ";\"") 0))
-      (fail (quote! range-error) (list n)))))
+      (raise (error (quote! range-error) n)))))
 (define! hexadecimal
   (lambda! (n done)
     (let! ((done (pair (element-at (quote! ("0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "a" "b" "c" "d" "e" "f")) (remainder n 16)) done))
@@ -119,7 +118,7 @@
       (if! (and!? (not? (less-than? start 0)) (not? (less-than? end start))
                   (not? (less-than? (byte-length s) end)) (boundary? s start) (boundary? s end))
         (remade s (packed (bytes-from s start end ())))
-        (fail (quote! range-error) (list s start end))))))
+        (raise (error (quote! range-error) s start end))))))
 (define! bytes-from
   (lambda! (s at end done)
     (if! (same? at end) (reverse done) (bytes-from s (add at 1) end (pair (byte-at s at) done)))))
@@ -139,7 +138,7 @@
       (typed start (quote! integer))
       (if! (and!? (not? (less-than? start 0)) (not? (less-than? (byte-length text) start)) (boundary? text start))
         (found text pattern start (subtract (byte-length text) (byte-length pattern)) (byte-length pattern) 0)
-        (fail (quote! range-error) (list text pattern start))))))
+        (raise (error (quote! range-error) text pattern start))))))
 ; The first place from at, up to last, where pattern is, its first i bytes matched at at; past a
 ; partial match, the next place is at plus one.
 (define! found
@@ -182,7 +181,7 @@
         (typed n (quote! integer))
         (if! (and!? (not? (less-than? n 0)) (less-than? n 64))
           (repeated step a n)
-          (fail (quote! overflow) (list a n)))))))
+          (raise (error (quote! overflow) a n)))))))
 (define! repeated (lambda! (f x n) (if! (same? n 0) x (repeated f (f x) (subtract n 1)))))
 
 ; Bytes, by the printer and the reader: a bytes value prints as #bytes(...), and the list of its
@@ -197,10 +196,10 @@
   (lambda! (xs at done)
     (conditional!
       ((same? xs ()) (reverse done))
-      ((not? (pair? xs)) (fail (quote! type-error) (list xs at)))
-      ((not? (integer? (head xs))) (fail (quote! type-error) (list (head xs) at)))
+      ((not? (pair? xs)) (raise (error (quote! type-error) xs at)))
+      ((not? (integer? (head xs))) (raise (error (quote! type-error) (head xs) at)))
       ((or!? (less-than? (head xs) 0) (less-than? 255 (head xs)))
-       (fail (quote! range-error) (list (head xs) at)))
+       (raise (error (quote! range-error) (head xs) at)))
       (#true (byte-texts (tail xs) (add at 1) (pair " " (pair (integer-to-string (head xs)) done)))))))
 (define! packed (lambda! (xs) (literal (byte-texts xs 0 ()))))
 ; UTF-8, decoded a character at a time, as Rust's str::from_utf8 checks it: a sequence that is
@@ -214,11 +213,11 @@
         (conditional!
           ((less-than? byte 128)
            (characters-of b (tail xs) (add at 1) (pair (code-point-to-string byte) done)))
-          ((less-than? byte 194) (fail (quote! encoding-error) (list b at)))
+          ((less-than? byte 194) (raise (error (quote! encoding-error) b at)))
           ((less-than? byte 224) (continued-by b (tail xs) (add at 1) at 1 (subtract byte 192) 128 done))
           ((less-than? byte 240) (continued-by b (tail xs) (add at 1) at 2 (subtract byte 224) 2048 done))
           ((less-than? byte 245) (continued-by b (tail xs) (add at 1) at 3 (subtract byte 240) 65536 done))
-          (#true (fail (quote! encoding-error) (list b at))))))))
+          (#true (raise (error (quote! encoding-error) b at))))))))
 ; The rest of a character from offset start: `left` more bytes to add to `scalar`, which must then
 ; be at least `smallest` and a Unicode scalar value.
 (define! continued-by
@@ -228,7 +227,7 @@
               (or!? (less-than? scalar 55296) (less-than? 57343 scalar)))
        (characters-of b xs at (pair (code-point-to-string scalar) done)))
       ((or!? (same? left 0) (same? xs ()) (less-than? (head xs) 128) (less-than? 191 (head xs)))
-       (fail (quote! encoding-error) (list b start)))
+       (raise (error (quote! encoding-error) b start)))
       (#true
        (continued-by b (tail xs) (add at 1) start (subtract left 1)
                      (add (multiply scalar 64) (subtract (head xs) 128)) smallest done)))))
