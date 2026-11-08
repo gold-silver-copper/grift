@@ -243,17 +243,18 @@ fn main() -> Result<(), Error> {
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
-- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable; `stop()` from
-  any thread stops the run in progress at its next step, inside a long walk of a tree, or as its
-  last host call returns, with the error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
-  run about to end can still return its value. `interrupted` runs cleanups on its way out as any
-  error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
-  form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
-  waiting together count as one; a later stop stops the run again, even in a cleanup that doesn't
-  end. `force()` ends a run however its cleanups behave: each is cut before its first form, at every
-  level, and the run ends with `interrupted`, whatever else fails on the way. A handle forces the run
-  it last reached, by a stop or a force, and that one only, so a late force never reaches a later
-  run; a handle that has reached none (a clone starts as its source is) forces the run in progress.
+- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one
+  run: the run in progress when it is taken, or, taken between runs, the next to begin; a clone is
+  for the same run. `stop()` from any thread stops that run at its next step, inside a long walk of a
+  tree, or as its last host call returns, with the error `interrupted`, and says whether it was in
+  progress. `true` doesn't say the stop acted: a run about to end can still return its value.
+  `interrupted` runs cleanups on its way out as any error does, but a stop can also land in a cleanup
+  that has begun, and cut it, even before its first form. Before its run begins, after it ends, and
+  in any other run, a stop does nothing and says `false`, so no handle, however late, reaches a run it
+  wasn't taken for: a watchdog takes one as its job begins and needs no lock. Stops waiting together
+  count as one; a later stop stops the run again, even in a cleanup that doesn't end. `force()` ends
+  the handle's run however its cleanups behave, with no stop needed first: each is cut before its first
+  form, at every level, and the run ends with `interrupted`, whatever else fails on the way.
   `examples/stops.rs` shows stop, force, `is_limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
@@ -349,8 +350,8 @@ fn main() -> Result<(), Error> {
   that replaced it. A cleanup that errors ends there, and the next one out runs. A cleanup that
   waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
   goes on, or with a limit and it ends there. One that never ends is yours to stop or force; each
-  `resume` being a run of its own, a handle that reached the run before it waited needs a `stop()`
-  first, or its `force()` does nothing and says `false`. A cleanup that installs a new cleanup that
+  `resume` being a run of its own, take a handle for it just before the `resume`: one taken before it
+  waited does nothing and says `false`. A cleanup that installs a new cleanup that
   waits comes back each time, and neither reaches it while it waits: have your parking function call
   `force()` before it answers `Later`, which ends the run there.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
@@ -358,13 +359,11 @@ fn main() -> Result<(), Error> {
   `forgotten()` gives a new handle, not saying which run it is: put what identifies a job in its
   request. **Dropping the interpreter** with runs parked runs none of their
   cleanups, the same as a process dying.
-- **Stops and limits.** A stop reaches the run in progress. A parked run isn't: `stop()` then does
-  nothing and says `false`. Each `resume` is a run of its own for stops. One thread runs one run at a
-  time, so your loop goes on only while runs are parked, and a handle belongs to the interpreter, not
-  to a job. A watchdog over several jobs takes a lock around each `stop` or `force`, the loop clearing
-  "this job is running" under that lock as the run returns, or a late stop reaches the next job. It
-  stops again in each `resume` before a force can reach it, and the loop keeps the deadlines of parked
-  jobs, answering them with a limit. A stop that reaches a run
+- **Stops and limits.** A stop reaches its handle's run while it is in progress. A parked run isn't:
+  `stop()` then does nothing and says `false`. Each `resume` is a run of its own for stops. One thread
+  runs one run at a time, so your loop goes on only while runs are parked. A watchdog over several jobs
+  takes a handle as each job begins or resumes, and the loop keeps the deadlines of parked jobs,
+  answering them with a limit. A stop that reaches a run
   as it would park stops it instead, so no stop is lost at a park. The run's cleanups then run, and
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
   Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;

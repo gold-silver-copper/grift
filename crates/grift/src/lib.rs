@@ -701,7 +701,8 @@ impl<T> Grift<T> {
         (position.generation == r.generation).then(|| (self.name(position.source), position.line))
     }
 
-    /// A handle that stops this interpreter's run in progress, from another thread.
+    /// A handle that stops one run of this interpreter from another thread: the run in progress,
+    /// or, if none is, the next to begin. It never reaches another.
     pub fn interrupter(&self) -> Interrupter {
         Interrupter::new(&self.control)
     }

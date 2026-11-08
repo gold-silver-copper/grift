@@ -293,7 +293,7 @@ its cleanups do.
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
-| `interrupted` | the host stopped the run in progress; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
+| `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
 | any symbol | a program raised an error it made | the values given |
 

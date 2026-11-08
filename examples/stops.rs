@@ -12,17 +12,17 @@ const PROGRAM: &str = "
     (define! close (lambda! () (bind here (quote! closed) (add closed 1))))
     (define! spin (lambda! () (spin)))";
 
-/// What the host functions see: a handle to this interpreter's runs.
+/// What the host functions see: whether the watchdog forces.
 struct Host {
-    handle: Interrupter,
     force: bool,
 }
 
 /// `(watch)`: from here on, another thread is watching this run, and has run out of patience. A
 /// real watchdog starts with its run; this one starts inside it, so that the stop can't come before
-/// the program's cleanups are in place. Nothing joins it: it ends by itself.
-fn watch(_: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Value, grift::Error> {
-    let mut handle = host.handle.clone();
+/// the program's cleanups are in place. Its handle is for this run and no other, so it can't stop
+/// the next even late. Nothing joins it: it ends by itself.
+fn watch(g: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Value, grift::Error> {
+    let mut handle: Interrupter = g.interrupter();
     let force = host.force;
     thread::spawn(move || {
         handle.stop();
@@ -36,10 +36,7 @@ fn watch(_: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Value, gri
 
 pub fn main() -> Result<(), grift::Error> {
     let mut g: Grift<Host> = Grift::new()?;
-    let mut host = Host {
-        handle: g.interrupter(),
-        force: false,
-    };
+    let mut host = Host { force: false };
     let f = g.host_function("watch", watch)?;
     g.define("watch", f)?;
     let wait = g.parking_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;

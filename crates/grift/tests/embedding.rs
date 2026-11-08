@@ -2,7 +2,7 @@
 //! - a reclaimed value is `stale-value` and another interpreter's value is `foreign-value`, at
 //!   every way in: each primitive's every argument, every reader and writer, every operation on
 //!   contexts, and what a host function returns;
-//! - a stop reaches only the run in progress when it is asked for, never a later one;
+//! - a stop reaches only the run its handle was taken for, never a later one;
 //! - a kept value lives until it is released, and only its own interpreter takes it.
 
 #![allow(
@@ -55,8 +55,8 @@ fn give(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
 }
 
 /// `(stop)`: stops the run it is part of, and returns.
-fn stop(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
-    assert!(h.stop.as_mut().unwrap().stop(), "a run to stop");
+fn stop(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Value, Error> {
+    assert!(g.interrupter().stop(), "a run to stop");
     Ok(Value::Inert)
 }
 
@@ -67,8 +67,8 @@ fn started(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
 }
 
 /// `(stop-and-fail)`: stops the run it is part of, and fails.
-fn stop_and_fail(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
-    h.stop.as_mut().unwrap().stop();
+fn stop_and_fail(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+    g.interrupter().stop();
     let kind = match args.first() {
         Some(Value::Symbol(s)) => g.symbol_name(s)?.to_string(),
         _ => "failed".to_string(),
@@ -305,10 +305,7 @@ fn another_interpreters_value_is_foreign_value_everywhere() {
     }
     // A host function of theirs never runs ours, whatever its number.
     let host = evaluate(&mut theirs, "(unwrap stop)");
-    let mut h = Host {
-        stop: Some(ours.interrupter()),
-        ..Host::default()
-    };
+    let mut h = Host { ..Host::default() };
     let r = ours.call(&mut h, &host, &[]);
     if outcome(&ours, r) != "foreign-value" {
         broken.push("calling their host function".into());
@@ -774,4 +771,57 @@ mod stops;
 #[test]
 fn the_stops_example_runs() {
     stops::main().unwrap();
+}
+
+/// One watchdog over jobs run one after another, with no lock: each job's handle is taken as the
+/// job is about to begin, and the watchdog asks until its job is over. A stop from the job before,
+/// asked again while the next runs, reaches nothing: a handle reaches only its own job.
+#[test]
+fn a_watchdog_over_many_jobs_needs_no_lock() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut g: Grift = Grift::new().unwrap();
+    g.evaluate(
+        &mut (),
+        "(define! spin (lambda! () (spin)))
+         (define! count (lambda! (n) (if! (same? n 0) 3 (count (subtract n 1)))))",
+    )
+    .unwrap();
+    // Each job, as it is about to begin: a handle if it has a deadline, and whether it is over.
+    let (jobs, due) = mpsc::channel::<(Option<Interrupter>, Arc<AtomicBool>)>();
+    let watchdog = std::thread::spawn(move || {
+        let mut last: Option<Interrupter> = None;
+        for (handle, over) in due {
+            std::thread::sleep(Duration::from_millis(2));
+            // Late, while this job runs: the last job's handle.
+            if let Some(mut late) = last.take() {
+                late.stop();
+            }
+            if let Some(mut handle) = handle {
+                while !over.load(Ordering::Relaxed) && !handle.stop() {
+                    std::thread::yield_now(); // not begun yet: ask again
+                }
+                last = Some(handle);
+            }
+        }
+    });
+    let mut ended = Vec::new();
+    for job in 0..10 {
+        let runaway = job % 2 == 0;
+        let over = Arc::new(AtomicBool::new(false));
+        let handle = runaway.then(|| g.interrupter());
+        jobs.send((handle, Arc::clone(&over))).unwrap();
+        let src = if runaway { "(spin)" } else { "(count 300000)" };
+        let result = g.evaluate(&mut (), src);
+        over.store(true, Ordering::Relaxed);
+        ended.push(result.map_err(|e| e.is_limit()));
+    }
+    drop(jobs);
+    watchdog.join().unwrap();
+    for (job, result) in ended.iter().enumerate() {
+        match job % 2 {
+            0 => assert_eq!(*result, Err(true), "runaway {job}"),
+            _ => assert_eq!(*result, Ok(Value::Integer(3)), "the job after it, {job}"),
+        }
+    }
 }

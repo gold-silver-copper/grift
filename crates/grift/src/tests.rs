@@ -1105,8 +1105,8 @@ fn catch_catches_errors_as_contexts() {
     );
 }
 
-fn stop(_: &mut Grift<Interrupter>, s: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
-    s.stop();
+fn stop(g: &mut Grift<Interrupter>, _: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
+    g.interrupter().stop();
     Ok(Value::Inert)
 }
 

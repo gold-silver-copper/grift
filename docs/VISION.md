@@ -220,7 +220,7 @@ host writes its own text as a string literal by making a string and writing it.
 4. **What changes, and who may change it.** Only bindings change: programs through `define!` and
    `bind`, on contexts they hold; the host through `define` and its own state.
    Errors unwind the machine; `finally!` and `catch!` meet them on the way. Collection happens only
-   at safe points; a stop the host asks for ends the run in progress there, and never a later one.
+   at safe points; a stop the host asks for ends there the one run its handle was taken for, and never another.
 5. **What makes a change to grift correct.** No Rust recursion that grows with a program's nesting;
    tail calls in constant space; no limits of grift's own; nothing guessed; every error carries its
    values and its trace; redefinition always takes effect; one evaluation path for each kind of
