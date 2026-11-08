@@ -7,11 +7,9 @@ use crate::local::{Error, Growing, K, Value};
 use std::fmt::{self, Write};
 
 enum Item {
-    /// What's left of an operative's body: its forms, then the closing bracket.
-    Body(Value),
     Value(Value),
-    /// The rest of a list after its first element.
-    Tail(Value),
+    /// The rest of a sequence after its first element, and the bracket that closes it.
+    Tail(Value, &'static str),
     Text(&'static str),
 }
 
@@ -62,37 +60,28 @@ impl<T> Grift<T> {
             if self.walk_stopped(&mut walked) {
                 return Err(Error::interrupted().into());
             }
-            let opens = matches!(item, Item::Value(Value::Pair(_)));
             let v = match item {
                 Item::Text(s) => {
                     out.write_str(s)?;
                     continue;
                 }
-                Item::Tail(Value::EmptyList) => {
-                    out.write_char(')')?;
+                Item::Tail(Value::EmptyList, closer) => {
+                    out.write_str(closer)?;
                     continue;
                 }
-                Item::Tail(Value::Pair(r)) => {
-                    out.write_char(' ')?;
-                    Value::Pair(r)
-                }
-                Item::Tail(v) => {
-                    out.write_str(" . ")?;
-                    push(&mut todo, Item::Text(")"))?;
-                    v
-                }
-                Item::Body(Value::Pair(r)) => {
-                    let Ok(Object::Pair(form, rest)) = self.heap.get(r) else {
-                        return Err(fmt::Error.into());
+                Item::Tail(Value::Pair(r), closer) => {
+                    let Ok(Object::Pair(element, rest)) = self.heap.get(r) else {
+                        return Err(Error::new(K::StaleValue, &[Value::Pair(r)]).into());
                     };
                     out.write_char(' ')?;
-                    push(&mut todo, Item::Body(*rest))?;
-                    push(&mut todo, Item::Value(*form))?;
+                    push(&mut todo, Item::Tail(*rest, closer))?;
+                    push(&mut todo, Item::Value(*element))?;
                     continue;
                 }
-                Item::Body(_) => {
-                    out.write_char(']')?;
-                    continue;
+                Item::Tail(v, closer) => {
+                    out.write_str(" . ")?;
+                    push(&mut todo, Item::Text(closer))?;
+                    v
                 }
                 Item::Value(v) => v,
             };
@@ -133,10 +122,8 @@ impl<T> Grift<T> {
                 | Value::Applicative(r) => {
                     match self.heap.get(r) {
                         Ok(Object::Pair(a, b)) => {
-                            if opens {
-                                out.write_char('(')?;
-                            }
-                            push(&mut todo, Item::Tail(*b))?;
+                            out.write_char('(')?;
+                            push(&mut todo, Item::Tail(*b, ")"))?;
                             push(&mut todo, Item::Value(*a))?;
                         }
                         Ok(Object::String(s)) => write_string(s, out)?,
@@ -153,7 +140,7 @@ impl<T> Grift<T> {
                         }
                         Ok(Object::Operative(op)) => {
                             out.write_str("#[operative ")?;
-                            push(&mut todo, Item::Body(op.body))?;
+                            push(&mut todo, Item::Tail(op.body, "]"))?;
                             push(&mut todo, Item::Value(op.context_parameter))?;
                             push(&mut todo, Item::Text(" "))?;
                             push(&mut todo, Item::Value(op.parameters))?;
