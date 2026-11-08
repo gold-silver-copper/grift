@@ -86,19 +86,29 @@ rlwrap cargo run --release                        # interactive: prints each res
 ```
 
 `grift SCRIPT ARGUMENT...` runs the script; `#!/usr/bin/env grift` makes it a command, since the
-reader takes `#!` as starting a comment, as `;` does. With no script it reads the program from stdin,
-and when stdin is a terminal it evaluates each complete input and prints its result: a session that
-goes on past an error, where a program's `read-line` takes the next line typed, and a session that isn't
-ended by `exit` ends with status 0, or 1 if its input ends inside a form or standard input or error
-fails or is closed. Data goes
-to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
-file and line: `stdin: type-error 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
-failed write (`file-error`) or a script it can't read, 141 on a write to a pipe no one reads, or the
-status the program gave `exit`. A script path or argument that isn't UTF-8 is refused before anything
-runs, as `grift: encoding-error` with its bytes: text can't hold it, and a lossy copy would name another
-file. At a terminal, errors are shown and the session goes on. A pipe closing ends it with 141; otherwise it ends 0
-unless the program calls `exit`, input ends inside a form, or standard input or error fails or is
-closed, which ends it with 1. It has no line editor: `rlwrap grift` gives
+reader takes `#!` as starting a comment, as `;` does. The first argument is always the script,
+whatever its spelling: `grift --help`, `grift --version` and `grift -` look for files of those names,
+and one that isn't there is a `file-error` followed by the usage, status 1. With no script it reads
+the program from stdin. Data goes to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the
+combinations it happened in, each with its file and line: `stdin: type-error 1 in (if! 1 2 3) at
+stdin:1`. It exits with 0, 1 on a grift error, a failed write (`file-error`) or a script it can't
+read, 141 on a write to a pipe no one reads, or the status the program gave `exit`. A script path or
+argument that isn't UTF-8 is refused before anything runs, as `grift: encoding-error` with its bytes:
+text can't hold it, and a lossy copy would name another file. A standard stream the shell closed
+(`grift script >&-`) is open on `/dev/null` by the time grift starts, as Rust's runtime makes it, so
+it is `/dev/null`: what is written to it is lost, reading it ends at once, and nothing fails.
+
+When stdin is a terminal, grift is a session. It prompts `> ` on stderr, and `  ` while a form is
+still open, reads lines until the input holds only whole forms, evaluates them in turn and prints
+the last one's value on stdout: `1 2 3` prints `3`. An input that doesn't read runs none of its forms;
+an error stops the rest of its input. Lines are numbered from the session's first, so `at stdin:12` is
+the session's twelfth line, not counting lines a program read. A program's `read-line` takes the next
+line typed, and `read-bytes` what it asks for of it, the rest of the line staying for the next read:
+`(read-bytes 3)` then `abcdef` gives `#bytes(97 98 99)`, and `def` is the next input. Errors are shown
+and the session goes on. A pipe closing ends it with 141; otherwise it ends 0 unless the program calls
+`exit`, input ends inside a form, or standard input or error fails or is closed by `close`, which ends
+it with 1. C-c ends it as it ends any program, its definitions with it: the runner handles no
+signal. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:

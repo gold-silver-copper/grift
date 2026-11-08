@@ -983,11 +983,11 @@ fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
     assert_eq!(status, Some(0), "{shown}");
     assert!(shown.contains("  #inert\n"), "{shown}");
     assert!(
-        shown.contains("stdin: type-error 1 in (first 1) at stdin:1\n"),
+        shown.contains("stdin: type-error 1 in (first 1) at stdin:4\n"),
         "{shown}"
     );
     assert!(
-        shown.contains("stdin: parse-error unmatched-parenthesis 1 1 in stdin\n"),
+        shown.contains("stdin: parse-error unmatched-parenthesis 5 1 in stdin\n"),
         "{shown}"
     );
     assert!(shown.ends_with("> 5\n> "), "{shown}");
@@ -1035,4 +1035,25 @@ fn a_program_at_a_terminal_reads_the_next_line() {
         at_a_terminal("((evaluate-in! read-line standard-input))\nafter\n(exit 0)\n");
     assert_eq!(status, Some(0), "{shown}");
     assert!(shown.contains("\"after\\n\"\n"), "{shown}");
+}
+
+/// A session's lines are numbered as one file's are, from its first line typed, so `stdin:N` in a
+/// trace is the Nth line of the session whichever input it was in.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_session_numbers_its_lines_from_its_start() {
+    let (status, shown) =
+        at_a_terminal("1\n(define! f\n  (lambda! () (first 1)))\n\n(add 1\n (f))\n\x04");
+    assert_eq!(status, Some(0), "{shown}");
+    assert!(
+        shown.contains(
+            "stdin: type-error 1 in (first 1) at stdin:3\n  from (add 1 (f)) at stdin:5\n"
+        ),
+        "{shown}"
+    );
+    let (_, shown) = at_a_terminal("1\n2\n)\n\x04");
+    assert!(
+        shown.contains("stdin: parse-error unmatched-parenthesis 3 1 in stdin\n"),
+        "{shown}"
+    );
 }
