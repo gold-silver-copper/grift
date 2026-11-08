@@ -85,8 +85,7 @@
 
 ; Strings and bytes, by byte-at. The length is the first offset with no byte: past one with none
 ; found by doubling, then by halving between.
-(define! sequence? (lambda! (x) (or!? (string? x) (bytes? x))))
-(define! sequence (lambda! (x) (if! (sequence? x) x (type-failed x))))
+(define! sequence (lambda! (x) (if! (or!? (string? x) (bytes? x)) x (type-failed x))))
 (define! byte-at? (lambda! (s i) (catch-kind! (integer? (byte-at s i)) range-error #ignore #false)))
 (define! byte-count (lambda! ((s)) (missing (sequence s) 0 (beyond s 1))))
 (define! beyond (lambda! (s n) (if! (not? (byte-at? s n)) n (beyond s (multiply n 2)))))
@@ -188,8 +187,6 @@
 ; integers reads from after #bytes; a list of integers 0 to 255 is the literal's text, read.
 (define! byte-list
   (lambda! (b) (head (read-form (value-to-string (typed b (quote! bytes))) 6))))
-(define! literal
-  (lambda! (texts) (head (read-form (join "#bytes(" (apply join texts) ")") 0))))
 ; The list's elements as a literal's texts, each an integer 0 to 255, or the error at the first that
 ; isn't, or at an improper tail: the value and its position.
 (define! byte-texts
@@ -201,7 +198,8 @@
       ((or!? (less-than? (head xs) 0) (less-than? 255 (head xs)))
        (raise (error (quote! range-error) (head xs) at)))
       (#true (byte-texts (tail xs) (add at 1) (pair " " (pair (integer-to-string (head xs)) done)))))))
-(define! packed (lambda! (xs) (literal (byte-texts xs 0 ()))))
+(define! packed
+  (lambda! (xs) (head (read-form (join "#bytes(" (apply join (byte-texts xs 0 ())) ")") 0))))
 ; UTF-8, decoded a character at a time, as Rust's str::from_utf8 checks it: a sequence that is
 ; cut short, overlong, a surrogate or past U+10FFFF fails at its first byte, Rust's valid_up_to.
 (define! decoded (lambda! (b) (characters-of b (byte-list b) 0 ())))
