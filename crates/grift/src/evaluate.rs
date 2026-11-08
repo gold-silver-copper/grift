@@ -1300,24 +1300,19 @@ impl<T> Grift<T> {
                 Self::sequence_of(bytes, self.heap.alloc(made)?)
             }
             P::Search => {
-                self.octets(x)?;
-                self.octets(y)?;
+                let (text, pattern) = (self.octets(x)?, self.octets(y)?);
                 if std::mem::discriminant(&x) != std::mem::discriminant(&y) {
                     return Err(type_error(y));
                 }
-                let start = usize::try_from(integer_of(z)?).ok();
-                // A valid pattern in valid text matches only on character boundaries.
-                let found = match x {
-                    Value::String(_) => {
-                        let (t, pattern) = (self.text(x)?, self.text(y)?);
-                        start.and_then(|i| Some((i, t.get(i..)?.find(pattern))))
-                    }
-                    _ => {
-                        let (t, pattern) = (self.bytes_of(x)?, self.bytes_of(y)?);
-                        start.and_then(|i| Some((i, find(t.get(i..)?, pattern))))
-                    }
+                let bad = || Error::new(K::RangeError, &[x, y, z]);
+                let start = usize::try_from(integer_of(z)?).map_err(|_| bad())?;
+                // A string starts on a character boundary; then a valid pattern in valid text
+                // matches only on character boundaries.
+                let rest = match x {
+                    Value::String(_) => self.text(x)?.get(start..).map(str::as_bytes),
+                    _ => text.get(start..),
                 };
-                let (start, at) = found.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
+                let at = self.search(rest.ok_or_else(bad)?, pattern)?;
                 at.map_or(Value::EmptyList, |at| integer(start + at))
             }
             P::StringToBytes => {
@@ -1687,11 +1682,113 @@ fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
         .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
 }
 
-/// Where `pattern` first is in `b`; an empty one is at 0.
-fn find(b: &[u8], pattern: &[u8]) -> Option<usize> {
-    match pattern.len() {
-        0 => Some(0),
-        n => b.windows(n).position(|w| w == pattern),
+/// The Two-Way search (Crochemore and Perrin, 1991), as in Rust's `str::find`, CPython and glibc:
+/// linear time in the text and the pattern, no memory. Every byte it reads is an item of a walk, so
+/// a stop reaches it in every phase through [`Grift::walk_stopped`]. Strings search through it too.
+impl<T> Grift<T> {
+    /// Where `p` first is in `text`; an empty pattern is at 0.
+    pub(crate) fn search(&self, text: &[u8], p: &[u8]) -> Result<Option<usize>, Error> {
+        let n = p.len();
+        if n == 0 {
+            return Ok(Some(0));
+        }
+        let mut walked = 0;
+        // The later of the two maximal suffixes splits the pattern at a critical position.
+        let (split, period) = self
+            .maximal_suffix(p, false, &mut walked)?
+            .max(self.maximal_suffix(p, true, &mut walked)?);
+        // A left part that repeats in the right: the bytes a shift keeps needn't be read again.
+        let shifted = p.get(period..).unwrap_or_default();
+        let (shift, kept) = if self
+            .difference(0..split, p, shifted, &mut walked)?
+            .is_none()
+        {
+            (period, n - period)
+        } else {
+            (split.max(n - split) + 1, 0)
+        };
+        // Which bytes, by their low six bits, the pattern holds: a window ending in another one
+        // can't overlap a match.
+        let mut held = 0u64;
+        for &b in p {
+            if self.walk_stopped(&mut walked) {
+                return Err(Error::interrupted());
+            }
+            held |= 1 << (b & 63);
+        }
+        let (mut at, mut memory) = (0, 0);
+        while let Some(window) = text.get(at..at + n) {
+            if window.last().is_some_and(|b| held >> (b & 63) & 1 == 0) {
+                if self.walk_stopped(&mut walked) {
+                    return Err(Error::interrupted());
+                }
+                (at, memory) = (at + n, 0);
+            } else if let Some(i) = self.difference(split.max(memory)..n, p, window, &mut walked)? {
+                (at, memory) = (at + i + 1 - split, 0);
+            } else if self
+                .difference((memory..split).rev(), p, window, &mut walked)?
+                .is_some()
+            {
+                (at, memory) = (at + shift, kept);
+            } else {
+                return Ok(Some(at));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The first place, in the order of `places`, where `a` and `b` differ.
+    fn difference(
+        &self,
+        places: impl Iterator<Item = usize>,
+        a: &[u8],
+        b: &[u8],
+        walked: &mut usize,
+    ) -> Result<Option<usize>, Error> {
+        for i in places {
+            if self.walk_stopped(walked) {
+                return Err(Error::interrupted());
+            }
+            if a.get(i) != b.get(i) {
+                return Ok(Some(i));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Where the maximal suffix of `p` begins, and its period; `reversed` flips the byte order.
+    fn maximal_suffix(
+        &self,
+        p: &[u8],
+        reversed: bool,
+        walked: &mut usize,
+    ) -> Result<(usize, usize), Error> {
+        let (mut left, mut right, mut offset, mut period) = (0, 1, 0, 1);
+        while let (Some(&a), Some(&b)) = (p.get(right + offset), p.get(left + offset)) {
+            if self.walk_stopped(walked) {
+                return Err(Error::interrupted());
+            }
+            if a == b {
+                offset += 1;
+                if offset == period {
+                    (right, offset) = (right + period, 0);
+                }
+            } else if (a < b) != reversed {
+                (right, offset) = (right + offset + 1, 0);
+                period = right - left;
+            } else {
+                (left, right, offset, period) = (right, right + 1, 0, 1);
+            }
+        }
+        Ok((left, period))
+    }
+}
+
+#[cfg(test)]
+impl<T> Grift<T> {
+    /// The primitive `search` from the start of `text`, with no step of the machine around it.
+    pub(crate) fn search_directly(&mut self, text: Value, pattern: Value) -> Result<Value, Error> {
+        self.sequence_primitive(Primitive::Search, [text, pattern, Value::Integer(0)], 0)
     }
 }
 

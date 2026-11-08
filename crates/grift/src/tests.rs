@@ -3897,3 +3897,98 @@ fn the_mark_stack_has_room_for_every_slot() {
     g.evaluate(&mut (), "(length (range 0 50000))").unwrap();
     assert!(g.heap.mark_room() >= g.heap.len());
 }
+
+/// Asks for a stop of the run in progress, then searches `(search text pattern 0)` with no step of
+/// the machine around it: a long search must find the stop itself, in whichever phase it is.
+fn searches_with_a_stop_waiting(
+    g: &mut Grift<Interrupter>,
+    stop: &mut Interrupter,
+    args: &[Value],
+) -> Result<Value, Error> {
+    assert!(stop.stop(), "a run to stop");
+    let (text, pattern) = (g.import(&args[0]).unwrap(), g.import(&args[1]).unwrap());
+    match g.search_directly(text, pattern) {
+        Err(e) => assert_eq!(kind(g, &g.export_error(e)), "interrupted"),
+        Ok(v) => panic!("the search went on past a stop and answered {v:?}"),
+    }
+    Ok(Value::Inert)
+}
+
+/// Bytes and strings, a text the pattern nearly matches everywhere, and an empty text, where only
+/// the preparation of the search reads the pattern.
+#[test]
+fn a_long_search_finds_a_stop_by_itself() {
+    let mut pattern = "a".repeat((1 << 15) - 1);
+    pattern.push('b');
+    for text in ["a".repeat(1 << 16), String::new()] {
+        for bytes in [true, false] {
+            let mut g: Grift<Interrupter> = Grift::new().unwrap();
+            define(&mut g, "walk", searches_with_a_stop_waiting);
+            let (hay, wanted) = if bytes {
+                (g.bytes(text.as_bytes()), g.bytes(pattern.as_bytes()))
+            } else {
+                (g.string(&text), g.string(&pattern))
+            };
+            g.define("hay", hay.unwrap()).unwrap();
+            g.define("pattern", wanted.unwrap()).unwrap();
+            let mut stop = g.interrupter();
+            let r = g.evaluate(&mut stop, "(walk hay pattern)");
+            assert_eq!(kind(&g, &r.unwrap_err()), "interrupted");
+        }
+    }
+}
+
+/// The search against the plain definition: every text and pattern of two letters up to a length,
+/// which holds every shape of periodic pattern that short, then long periodic ones.
+#[test]
+fn searching_finds_what_the_plain_definition_finds() {
+    let g: Grift = Grift::new().unwrap();
+    let check = |text: &[u8], pattern: &[u8]| {
+        let plain = match pattern.len() {
+            0 => Some(0),
+            n => text.windows(n).position(|w| w == pattern),
+        };
+        assert_eq!(
+            g.search(text, pattern).unwrap(),
+            plain,
+            "{text:?} {pattern:?}"
+        );
+    };
+    let word = |bits: usize, len: usize| -> Vec<u8> {
+        (0..len).map(|i| b'a' + (bits >> i & 1) as u8).collect()
+    };
+    for len in 0..=8 {
+        for pattern in (0..1 << len).map(|bits| word(bits, len)) {
+            for text_len in 0..=12 {
+                for text in (0..1 << text_len).map(|bits| word(bits, text_len)) {
+                    check(&text, &pattern);
+                }
+            }
+        }
+    }
+    let mut x: u32 = 1;
+    let mut next = move |below: u32| {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+        (x >> 16) % below
+    };
+    for _ in 0..3000 {
+        let period: Vec<u8> = (0..1 + next(5)).map(|_| b'a' + next(3) as u8).collect();
+        let pattern: Vec<u8> = period
+            .iter()
+            .cycle()
+            .take(1 + next(40) as usize)
+            .copied()
+            .collect();
+        let mut text: Vec<u8> = period
+            .iter()
+            .cycle()
+            .take(next(300) as usize)
+            .copied()
+            .collect();
+        if !text.is_empty() {
+            let at = next(text.len() as u32) as usize;
+            text[at] = b'a' + next(3) as u8;
+        }
+        check(&text, &pattern);
+    }
+}
