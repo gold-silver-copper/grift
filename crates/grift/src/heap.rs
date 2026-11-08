@@ -254,6 +254,12 @@ impl Heap {
         Ok(Reference { idx, generation: 0 })
     }
 
+    /// A new empty context.
+    #[inline]
+    pub fn context(&mut self, parent: Option<Reference>) -> Result<Reference, Error> {
+        self.alloc(Object::Context(parent, Bindings::default()))
+    }
+
     /// No room for an object: collection comes next, at the machine's next safe point or as a
     /// host's next run begins.
     #[cold]

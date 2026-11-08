@@ -420,9 +420,7 @@ impl<T> Grift<T> {
         };
         self.settled();
         let operands = self.list_local(arguments)?;
-        let context = self
-            .heap
-            .alloc(Object::Context(None, Bindings::default()))?;
+        let context = self.heap.context(None)?;
         // The run's own machine, whose argument stack starts empty.
         let call = What::Combine {
             operands,
@@ -1076,10 +1074,7 @@ impl<T> Grift<T> {
                     Value::EmptyList => None,
                     _ => return Err(type_error(x)),
                 };
-                Value::Context(
-                    self.heap
-                        .alloc(Object::Context(parent, Bindings::default()))?,
-                )
+                Value::Context(self.heap.context(parent)?)
             }
             P::Bind => {
                 self.bind_tree(context_kind(x)?, y, z)?;

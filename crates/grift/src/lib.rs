@@ -14,7 +14,7 @@ mod read;
 #[cfg(test)]
 mod tests;
 
-use heap::{Bindings, Heap, Object};
+use heap::{Heap, Object};
 use interrupt::Control;
 use local::{K, boxed, push};
 use std::collections::HashMap;
@@ -275,10 +275,8 @@ impl<T> Grift<T> {
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
-        let context =
-            |heap: &mut Heap, parent| heap.alloc(Object::Context(parent, Bindings::default()));
-        self.built_in = context(&mut self.heap, None)?;
-        self.top = context(&mut self.heap, Some(self.built_in))?;
+        self.built_in = self.heap.context(None)?;
+        self.top = self.heap.context(Some(self.built_in))?;
         for name in local::K_NAMES {
             self.intern(name)?;
         }
@@ -418,10 +416,7 @@ impl<T> Grift<T> {
         let made = parent
             .map(|p| self.context_of(p))
             .transpose()
-            .and_then(|parent| {
-                self.heap
-                    .alloc(Object::Context(parent, Bindings::default()))
-            });
+            .and_then(|parent| self.heap.context(parent));
         self.exported(made.map(local::Value::Context))
     }
 
@@ -437,8 +432,10 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn private_context(&mut self) -> Result<Value, Error> {
-        let c = Object::Context(Some(self.built_in), Bindings::default());
-        let made = self.heap.alloc(c).map(local::Value::Context);
+        let made = self
+            .heap
+            .context(Some(self.built_in))
+            .map(local::Value::Context);
         self.exported(made)
     }
 
