@@ -58,6 +58,8 @@ struct State {
     /// A key's run is going on: a C-g stops it. Otherwise grift is idle, drawing or cleaning up,
     /// and a C-g is a key, for what it stops must not be a cleanup or the drawing of a frame.
     stoppable: bool,
+    /// A handle for the run in progress or the next, which is all a C-g can reach.
+    stopper: Option<Interrupter>,
     events: VecDeque<(u64, JobEvent)>,
     queued: usize,
     running: BTreeMap<u64, Running>,
@@ -80,14 +82,27 @@ impl Inbox {
     /// A byte from the terminal. A C-g stops a command that is busy, which is all it should do.
     /// Any other is a key like any other, unless the last one is still unread: then what grift is
     /// doing isn't ending, and is stopped, which settles both.
-    pub fn typed(&self, b: u8, stop: &mut Interrupter) {
+    pub fn typed(&self, b: u8) {
         let mut s = self.state();
-        if b == QUIT && (s.stoppable || s.keys.contains(&QUIT)) && stop.stop() {
+        let stop = s.stoppable || s.keys.contains(&QUIT);
+        if b == QUIT && stop && s.stopper.as_mut().is_some_and(Interrupter::stop) {
             s.keys.retain(|k| *k != QUIT);
             return;
         }
         s.keys.push_back(b);
         self.wake.notify_all();
+    }
+
+    /// The handle for the run about to begin, taken just before it.
+    pub fn arm(&self, stopper: Interrupter) {
+        self.state().stopper = Some(stopper);
+    }
+
+    /// Stops the run in progress, if it is the last one armed.
+    pub fn stop(&self) {
+        if let Some(stopper) = self.state().stopper.as_mut() {
+            stopper.stop();
+        }
     }
 
     /// Whether a C-g stops what grift does next; `next` sets it back.

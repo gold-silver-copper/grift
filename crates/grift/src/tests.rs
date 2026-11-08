@@ -55,19 +55,6 @@ const CORE: &[&str] = &[
 ];
 
 impl<T> Grift<T> {
-    /// The elements of a proper list, by `as_pair`, as a host reads one.
-    pub(crate) fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
-        let (mut items, mut rest) = (Vec::new(), list.clone());
-        while let Some((x, more)) = self.as_pair(&rest)? {
-            items.push(x);
-            rest = more;
-        }
-        match rest {
-            Value::EmptyList => Ok(items),
-            _ => Err(self.export_error(local::Error::new(local::K::TypeError, &[]))),
-        }
-    }
-
     /// From now on the natives are their grift definitions: each bound in the built-in context,
     /// where the library looks it up, wrapped if the native is, and no library form runs a native
     /// twin. As the library's own code, what this loads is skipped by traces.
@@ -1105,8 +1092,8 @@ fn catch_catches_errors_as_contexts() {
     );
 }
 
-fn stop(_: &mut Grift<Interrupter>, s: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
-    s.stop();
+fn stop(g: &mut Grift<Interrupter>, _: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
+    g.interrupter().stop();
     Ok(Value::Inert)
 }
 
@@ -3847,4 +3834,55 @@ fn every_type_has_a_predicate_named_for_it() {
             "(not? (ignore? #inert))",
         ],
     );
+}
+
+/// `local::Value`'s tag is a whole word, so a copy loads it at once and never waits on a one-byte
+/// write just before (#210: about 16% of every program on x86-64). Its size can't show this: a
+/// one-byte tag pads to the same 16 bytes. So: the payload starts a word in.
+#[test]
+fn a_values_tag_is_a_whole_word() {
+    let v = local::Value::Boolean(true);
+    let local::Value::Boolean(b) = &v else {
+        panic!("a boolean")
+    };
+    let offset = std::ptr::from_ref(b).addr() - std::ptr::from_ref(&v).addr();
+    assert_eq!(offset, size_of::<u64>());
+}
+
+/// A collection needs no memory of its own (208's P33): with its mark stack refused room past a
+/// few entries, it still keeps everything live, however deep, and frees the garbage, so a run that
+/// needs that memory gets it.
+#[test]
+fn a_collection_needs_no_memory_of_its_own() {
+    let mut g: Grift = Grift::new().unwrap();
+    g.evaluate(
+        &mut (),
+        "(define! keep (range 0 20000))
+         (define! tree (map (lambda! (n) (list n (list n))) (range 0 2000)))
+         (length (range 0 50000))",
+    )
+    .unwrap();
+    g.heap.slot_limit = g.heap.len();
+    g.heap.mark_limit = 8;
+    g.heap.request_collection();
+    let v = g
+        .evaluate(
+            &mut (),
+            "(list (length (range 0 40000)) (length keep) (first (reverse keep))
+                   (first (second (first (reverse tree)))))",
+        )
+        .unwrap();
+    assert_eq!(
+        g.list_items(&v).unwrap(),
+        [40000, 20000, 19999, 1999].map(Value::Integer)
+    );
+}
+
+/// The mark stack's room is made with the interpreter: `mark_limit` can't tell it from room grown
+/// later, but with memory refused and no room, no root could be marked and a collection would free
+/// live data.
+#[test]
+fn the_mark_stack_has_room_before_any_collection() {
+    let g: Grift = Grift::new().unwrap();
+    assert!(g.heap.mark_room() > 0);
 }

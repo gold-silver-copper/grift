@@ -121,6 +121,9 @@ pub(crate) struct Heap {
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
+    /// Refuse the mark stack room past this length, to test a collection with no memory to spare.
+    #[cfg(test)]
+    pub mark_limit: usize,
     /// Collect at every safe point, to test what a collection could lose.
     #[cfg(test)]
     pub stress: bool,
@@ -149,6 +152,8 @@ impl Default for Heap {
             operatives: 0,
             #[cfg(test)]
             slot_limit: usize::MAX,
+            #[cfg(test)]
+            mark_limit: usize::MAX,
             #[cfg(test)]
             stress: false,
             #[cfg(test)]
@@ -306,21 +311,46 @@ impl Heap {
         self.since_gc.set(usize::MAX);
     }
 
-    /// Marks everything reachable from `roots` and frees the rest. If the mark stack can't grow,
-    /// nothing is freed and the error is `out-of-memory`.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>) -> Result<(), Error> {
+    /// The mark stack's room, made with the interpreter and never given back, so a collection
+    /// needs no memory.
+    pub fn make_room(&mut self) -> Result<(), Error> {
+        self.marks.try_reserve(MARK_ROOM).map_err(|_| Error::oom())
+    }
+
+    /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
+    /// reference the mark stack has no room for is left, and passes over the heap find it again
+    /// as an unmarked child of a marked object. Each pass marks at least one more, the stack
+    /// being empty as each object's unmarked children go on it.
+    pub fn collect(&mut self, roots: impl Iterator<Item = Value>) {
         #[cfg(test)]
         {
             self.collections += 1;
         }
+        #[cfg(test)]
+        let limit = self.mark_limit;
+        #[cfg(not(test))]
+        let limit = usize::MAX;
         let mut marks = std::mem::take(&mut self.marks);
         marks.clear();
-        let marked = self.mark(roots, &mut marks);
-        self.marks = marks;
-        if let Err(e) = marked {
-            self.slots.iter_mut().for_each(|s| s.marked = false);
-            return Err(e);
+        let mut left = false;
+        for root in roots {
+            mark(&mut marks, root, &mut left, limit);
+            self.drain(&mut marks, &mut left, limit);
         }
+        while std::mem::take(&mut left) {
+            for idx in 0..self.slots.len() {
+                if let Some(s) = self.slots.get(idx).filter(|s| s.marked) {
+                    let slots = &self.slots;
+                    children(&s.obj, |v| {
+                        if reference(v).is_some_and(|r| unmarked(slots, r)) {
+                            mark(&mut marks, v, &mut left, limit);
+                        }
+                    });
+                    self.drain(&mut marks, &mut left, limit);
+                }
+            }
+        }
+        self.marks = marks;
         self.live = 0;
         for (idx, s) in (0..).zip(self.slots.iter_mut()) {
             if s.marked {
@@ -337,62 +367,73 @@ impl Heap {
             }
         }
         *self.since_gc.get_mut() = 0;
-        Ok(())
     }
 
-    fn mark(
-        &mut self,
-        roots: impl Iterator<Item = Value>,
-        marks: &mut Vec<Reference>,
-    ) -> Result<(), Error> {
-        for root in roots {
-            let Some(r) = reference(root) else { continue };
-            push(marks, r)?;
-            while let Some(r) = marks.pop() {
-                let Some(s) = self.slots.get_mut(r.idx as usize) else {
-                    continue;
-                };
-                if s.generation != r.generation || s.marked {
-                    continue;
-                }
-                s.marked = true;
-                let mut child = |v: Value| match reference(v) {
-                    Some(r) => push(marks, r),
-                    None => Ok(()),
-                };
-                match &s.obj {
-                    Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
-                    Object::Pair(a, d) => {
-                        child(*a)?;
-                        child(*d)?;
-                    }
-                    Object::Context(parent, bindings) => {
-                        if let Some(p) = parent {
-                            child(Value::Context(*p))?;
-                        }
-                        for v in bindings.values() {
-                            child(*v)?;
-                        }
-                    }
-                    Object::Operative(op) => {
-                        child(op.parameters)?;
-                        child(op.body)?;
-                        child(Value::Context(op.context))?;
-                    }
-                    Object::Applicative(c) => child(*c)?,
-                    Object::Fiber(room) => {
-                        for v in room.iter().flat_map(Machine::roots) {
-                            child(v)?;
-                        }
-                    }
-                }
+    /// Marks what is on the stack and everything reachable from it.
+    fn drain(&mut self, marks: &mut Vec<Reference>, left: &mut bool, limit: usize) {
+        while let Some(r) = marks.pop() {
+            match self.slots.get_mut(r.idx as usize) {
+                Some(s) if s.generation == r.generation && !s.marked => s.marked = true,
+                _ => continue,
+            }
+            if let Some(s) = self.slots.get(r.idx as usize) {
+                children(&s.obj, |v| mark(marks, v, left, limit));
             }
         }
-        Ok(())
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    /// The mark stack's room, for a test that it is made before any collection needs it.
+    #[cfg(test)]
+    pub fn mark_room(&self) -> usize {
+        self.marks.capacity()
+    }
+}
+
+/// The room [`Heap::make_room`] makes: any is enough, more makes fewer passes.
+const MARK_ROOM: usize = 256;
+
+/// Whether `r`'s object is live and not yet marked.
+fn unmarked(slots: &[Slot], r: Reference) -> bool {
+    slots
+        .get(r.idx as usize)
+        .is_some_and(|s| s.generation == r.generation && !s.marked)
+}
+
+/// Puts `v`'s object on the mark stack; with no room, says one was `left`.
+fn mark(marks: &mut Vec<Reference>, v: Value, left: &mut bool, limit: usize) {
+    let Some(r) = reference(v) else { return };
+    if marks.len() < limit && marks.try_reserve(1).is_ok() {
+        marks.push(r);
+    } else {
+        *left = true;
+    }
+}
+
+/// What `obj` refers to.
+fn children(obj: &Object, mut f: impl FnMut(Value)) {
+    match obj {
+        Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
+        Object::Pair(a, d) => {
+            f(*a);
+            f(*d);
+        }
+        Object::Context(parent, bindings) => {
+            if let Some(p) = parent {
+                f(Value::Context(*p));
+            }
+            bindings.values().copied().for_each(f);
+        }
+        Object::Operative(op) => {
+            f(op.parameters);
+            f(op.body);
+            f(Value::Context(op.context));
+        }
+        Object::Applicative(c) => f(*c),
+        Object::Fiber(room) => room.iter().flat_map(Machine::roots).for_each(f),
     }
 }

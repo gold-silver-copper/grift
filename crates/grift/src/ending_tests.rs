@@ -12,11 +12,14 @@ fn kind<T>(g: &Grift<T>, e: &Error) -> String {
 fn host() -> (Grift<Interrupter>, Interrupter) {
     let mut g: Grift<Interrupter> = Grift::new().unwrap();
     let functions: [(&str, crate::HostFunction<Interrupter>); 6] = [
-        ("stop", |_, s, _| {
-            s.stop();
+        // Each stops or forces the run it is called in, with a handle for that run.
+        ("stop", |g, _, _| {
+            g.interrupter().stop();
             Ok(Value::Inert)
         }),
-        ("force", |_, s, _| Ok(Value::Boolean(s.force()))),
+        ("force", |g, _, _| {
+            Ok(Value::Boolean(g.interrupter().force()))
+        }),
         ("nested", |g, s, args| {
             let src = g.as_str(&args[0])?.unwrap().to_owned();
             g.evaluate(s, &src)
@@ -202,12 +205,12 @@ fn a_program_in_a_cleanup_cannot_replace_what_the_host_began() {
 
 /// A force ends `src`, whose cleanups would otherwise take far longer, and no cleanup past it runs.
 /// `src`'s `(watch)` stops the run there, so the stop can't land before the cleanups are installed,
-/// and leaves a clone of the handle to force it a little later.
+/// and leaves a handle for the run to force it a little later.
 fn forced(g: &mut Grift<Interrupter>, s: &mut Interrupter, src: &str) {
     let watch = g
-        .host_function("watch", |_, s, _| {
-            assert!(s.stop());
-            let mut watchdog = s.clone();
+        .host_function("watch", |g, _, _| {
+            let mut watchdog = g.interrupter();
+            assert!(watchdog.stop());
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(30));
                 watchdog.force();
@@ -248,21 +251,18 @@ fn a_force_cuts_a_cleanup_that_never_ends_in_a_nested_run() {
 #[test]
 fn a_force_never_reaches_a_later_run() {
     let (mut g, mut s) = host();
-    assert!(
-        !s.force(),
-        "this handle stopped nothing, and no run is in progress"
-    );
-    // One this handle stopped is over: it reaches neither the gap nor the next run.
-    let e = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
-    assert_eq!(kind(&g, &e), "interrupted");
-    assert!(!s.force(), "that run is over");
-    let v = g.evaluate(&mut s, "(list (force) (add 1 2))").unwrap();
-    assert_eq!(
-        g.list_items(&v).unwrap(),
-        [Value::Boolean(false), Value::Integer(3)]
-    );
-    // One that acted, and stays asked to the end of its run, is over with it.
-    let e = g.evaluate(&mut s, "(stop) (force)").unwrap_err();
+    let take = g
+        .host_function("take", |g, s, _| {
+            *s = g.interrupter();
+            Ok(Value::Inert)
+        })
+        .unwrap();
+    g.define("take", take).unwrap();
+    assert!(!s.force(), "its run has not begun");
+    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
+    assert!(!s.force(), "its run is over");
+    // A force that acted, and stays asked to the end of its run, is over with it.
+    let e = g.evaluate(&mut s, "(take) (force) (add 1 2)").unwrap_err();
     assert_eq!(kind(&g, &e), "interrupted");
     assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
     assert!(!s.force());
@@ -347,9 +347,8 @@ fn a_force_before_a_run_parks_ends_it() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
     let wait = g
-        .parking_function("force-and-wait", |_, s, _| {
-            s.stop();
-            assert!(s.force());
+        .parking_function("force-and-wait", |g, _, _| {
+            assert!(g.interrupter().force());
             Ok(Answer::Later(Value::Inert))
         })
         .unwrap();
@@ -361,9 +360,9 @@ fn a_force_before_a_run_parks_ends_it() {
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
-/// A force needs no earlier stop: from a handle tied to no run it ends the run in progress.
+/// A force needs no earlier stop: it ends its handle's run.
 #[test]
-fn a_force_from_a_handle_that_stopped_nothing_ends_the_run_in_progress() {
+fn a_force_needs_no_stop_before_it() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
     let e = g
@@ -371,17 +370,11 @@ fn a_force_from_a_handle_that_stopped_nothing_ends_the_run_in_progress() {
         .unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
-    // That force tied the handle to that run: it reaches no later one.
-    let v = g.evaluate(&mut s, "(list (force) (add 1 2))").unwrap();
-    assert_eq!(
-        g.list_items(&v).unwrap(),
-        [Value::Boolean(false), Value::Integer(3)]
-    );
 }
 
-/// A clone starts tied to what its source was tied to: a clone of a fresh handle is fresh.
+/// A clone is for its source's run: of an old handle, it reaches nothing.
 #[test]
-fn a_clone_is_tied_to_what_its_source_was() {
+fn a_clone_is_for_its_sources_run() {
     let (mut g, mut s) = host();
     let functions: [(&str, crate::HostFunction<Interrupter>); 2] = [
         ("force-clone", |_, s, _| {
@@ -543,4 +536,58 @@ fn what_a_host_keeps_comes_back_what_it_was() {
     g.write(&v, &mut text).unwrap();
     assert_eq!(text, "(ordinary (123))");
     assert_eq!(log(&mut g, &mut s), "()");
+}
+
+/// A handle reaches the one run it was taken for: the run in progress, or, taken between runs,
+/// the next to begin. So no handle, fresh or old, stop or force, reaches a run its host didn't
+/// mean, and a force needs no stop before it.
+#[test]
+fn a_handle_reaches_only_the_run_it_was_taken_for() {
+    let mut g: Grift<Vec<Interrupter>> = Grift::new().unwrap();
+    let functions: [(&str, crate::HostFunction<Vec<Interrupter>>); 3] = [
+        ("take", |g, s, _| {
+            s.push(g.interrupter());
+            Ok(Value::Inert)
+        }),
+        ("stop-each", |_, s, _| {
+            let said = s.iter_mut().map(|h| h.stop()).filter(|&b| b).count();
+            Ok(Value::Integer(said as i64))
+        }),
+        ("force-each", |_, s, _| {
+            let said = s.iter_mut().map(|h| h.force()).filter(|&b| b).count();
+            Ok(Value::Integer(said as i64))
+        }),
+    ];
+    for (name, f) in functions {
+        let f = g.host_function(name, f).unwrap();
+        g.define(name, f).unwrap();
+    }
+    let mut s = vec![g.interrupter()];
+    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
+    assert_eq!(g.evaluate(&mut s, "(take)"), Ok(Value::Inert));
+    // One was taken for the first run, one inside the second: both are over.
+    let v = g
+        .evaluate(&mut s, "(list (stop-each) (force-each) (add 1 2))")
+        .unwrap();
+    assert_eq!(
+        g.list_items(&v).unwrap(),
+        [Value::Integer(0), Value::Integer(0), Value::Integer(3)]
+    );
+    assert!(s.iter_mut().all(|h| !h.stop() && !h.force()));
+    // One taken between runs reaches the next, and a force alone ends it, cleanups and all.
+    g.evaluate(&mut s, "(define! cleaned 0)").unwrap();
+    s.push(g.interrupter());
+    let e = g
+        .evaluate(
+            &mut s,
+            "(finally! (force-each) (bind (current-context) (quote! cleaned) 1))",
+        )
+        .unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!(g.evaluate(&mut s, "cleaned"), Ok(Value::Integer(0)));
+    // One taken inside a run reaches that run.
+    let e = g
+        .evaluate(&mut s, "(take) (stop-each) (add 1 2)")
+        .unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
 }

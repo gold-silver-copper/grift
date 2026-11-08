@@ -152,7 +152,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the operands, the list and the index or count: `(element-at (list 1) 3)` gives `range-error (1) 3`, `(second (list 1))` `range-error (1) 1`, and `(last ())` `range-error ()`. An index that isn't an integer is a `type-error`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
-| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if there are no clauses, or if its body is empty (5.6.1), as `when!` and an empty body give `#inert`: `conditional!` may choose nothing, where `if!` must have both branches. A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
+| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if there are no clauses, or if its body is empty (5.6.1), as `when!` and an empty body give `#inert`: `conditional!` may choose nothing, where `if!` must have both branches. A clause that isn't a pair `(test . body)` is an `arity-error` carrying, as for any parameter tree that doesn't fit, the whole of what was matched: here the list of the clauses and the caller's context, which prints with all its names, so `(conditional! 1)` gives `arity-error ((1) #[context ...])`. A body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.6). A binding that isn't `(parameters expression)` is an `arity-error`. |
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on by the one rule (see Errors). A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. A force cuts every cleanup. Memory refused collects once, before the nearest cleanup's first step; a cleanup stops at its first allocation that still fails, so it may do nothing, and that refusal collects again for the next. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. A limit (see Errors) is never caught. |
@@ -223,8 +223,15 @@ Every error stops evaluation and goes to the innermost `catch!` around it, or to
 kind, the values involved, and a trace: the combinations of the program being evaluated,
 innermost first, each once, out to the top-level form. Who made a combination decides: the
 library's own code, and the code it builds as it runs, are skipped; code a program reads or builds
-is listed, whatever its head is. A combination in tail position has finished when the next
-one starts, so it isn't listed. Cleanups (`finally!`) run on the way out. A combination read from
+is listed, whatever its head is. Listed are the combination evaluated when the error came, and
+each one with work left to do around it: an operand still to evaluate, or its value awaited. A
+combination in tail position has finished when the next one starts, so it isn't listed, and nor is
+a call once its combiner's body is running, for the body takes the call's place: below, `(check x)`
+is gone once `check`'s body runs, and the trace has the body's `raise` and the `(add 1 (check x))`
+that awaits it. An error outside every combination, such as a bare symbol at top level (`nope`
+alone on a line), has no combination to list, so its trace is empty and it has no line. A place is
+added only if there is memory to spare for it, so an `out-of-memory` error's trace can miss some.
+Cleanups (`finally!`) run on the way out. A combination read from
 a named text, such as a file the runner runs or loads, keeps its source and line beside it, not in
 it, so the host reports `in (first x) at lib/table.grift:12`.
 Rust hosts can read such forms without evaluating them with `Grift::read_in(source, text)`, which
@@ -282,7 +289,7 @@ its cleanups do.
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
 | `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative; an element or a tail given `list-to-bytes` that isn't an integer or `()` | the value; for `list-to-bytes`, the value and its position in the list |
-| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the operands, as one list: `(add 1)` gives `arity-error (1)`, `(if! #true 1)` `arity-error (#true 1)` |
+| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the operands, as one list: `(add 1)` gives `arity-error (1)`, `(if! #true 1)` `arity-error (#true 1)`; for a parameter tree, the whole of what it was matched against, which for a library form's helper can hold the caller's context |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
 | `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included, where the arithmetic inside them reports it; a shift by an amount outside 0 to 63 | the operands of the arithmetic that overflowed |
@@ -293,7 +300,7 @@ its cleanups do.
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
-| `interrupted` | the host stopped the run in progress; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
+| `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
 | any symbol | a program raised an error it made | the values given |
 

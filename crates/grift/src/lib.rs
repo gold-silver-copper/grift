@@ -24,6 +24,7 @@ use std::sync::{Arc, Weak};
 
 pub use interrupt::Interrupter;
 pub use parked::{Answer, Parked, ParkingFunction, Ran, ResumeError};
+pub use print::write_string;
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
@@ -281,6 +282,7 @@ impl<T> Grift<T> {
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
+        self.heap.make_room()?;
         let context =
             |heap: &mut Heap, parent| heap.alloc(Object::Context(parent, Bindings::default()));
         self.built_in = context(&mut self.heap, None)?;
@@ -426,8 +428,7 @@ impl<T> Grift<T> {
     /// g.evaluate(&mut (), "(define! list 0)")?; // a program redefines list
     /// let private = g.private_context()?;
     /// let made = g.evaluate_in(&mut (), &private, "prelude.grift", "(list 1 2)")?;
-    /// let (one, _) = g.as_pair(&made)?.unwrap();
-    /// assert_eq!(one, grift::Value::Integer(1));
+    /// assert_eq!(g.list_items(&made)?, [grift::Value::Integer(1), grift::Value::Integer(2)]);
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn private_context(&mut self) -> Result<Value, Error> {
@@ -459,8 +460,7 @@ impl<T> Grift<T> {
     /// let fields = g.read("(id title)")?; // a list of one form
     /// let (fields, _) = g.as_pair(&fields)?.unwrap();
     /// let title = g.string("sh")?;
-    /// let values = g.pair(title, grift::Value::EmptyList)?;
-    /// let values = g.pair(grift::Value::Integer(3), values)?;
+    /// let values = g.list(&[grift::Value::Integer(3), title])?;
     /// g.bind(&record, &fields, values)?;
     /// let id = g.symbol("id")?;
     /// assert_eq!(g.lookup(&record, &id)?, Some(grift::Value::Integer(3)));
@@ -575,12 +575,8 @@ impl<T> Grift<T> {
     /// The new pair `(a . b)`.
     pub fn pair(&mut self, a: Value, b: Value) -> Result<Value, Error> {
         let made = self
-            .import(&a)
-            .and_then(|a| Ok((a, self.import(&b)?)))
-            .and_then(|(a, b)| {
-                self.settled();
-                self.pair_local(a, b)
-            });
+            .import(&b)
+            .and_then(|b| self.pairs(std::slice::from_ref(&a), b));
         self.exported(made)
     }
 
@@ -591,6 +587,42 @@ impl<T> Grift<T> {
             _ => Ok(None),
         });
         self.out(p.map(|p| p.map(|(a, b)| (self.export(a), self.export(b)))))
+    }
+
+    /// A new list of `values`, as `pair` builds one from its end.
+    pub fn list(&mut self, values: &[Value]) -> Result<Value, Error> {
+        let made = self.pairs(values, local::Value::EmptyList);
+        self.exported(made)
+    }
+
+    /// `heads` in front of `tail`, built by the host: what a run a host function left behind
+    /// marked is over first, so the pairs are the program's.
+    fn pairs(&mut self, heads: &[Value], tail: local::Value) -> Result<local::Value, local::Error> {
+        self.settled();
+        heads.iter().rev().try_fold(tail, |rest, v| {
+            let v = self.import(v)?;
+            self.pair_local(v, rest)
+        })
+    }
+
+    /// The elements of a proper list, as `as_pair` reads them; a `type-error` carrying anything else.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let keys = g.evaluate(&mut (), "(list \"C-b\" \"v\")")?;
+    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_str(k).ok()?.map(String::from)).collect();
+    /// assert_eq!(keys, ["C-b", "v"]);
+    /// let dotted = g.evaluate(&mut (), "(pair 1 2)")?;
+    /// let e = g.list_items(&dotted).unwrap_err();
+    /// assert_eq!(g.symbol_name(&e.kind)?, "type-error");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
+        let items = self
+            .import(list)
+            .and_then(|l| self.items(l, || local::Error::new(K::TypeError, &[l])));
+        let items = items.and_then(|items| collected(items.into_iter().map(|v| self.export(v))));
+        self.out(items)
     }
 
     /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
@@ -701,7 +733,8 @@ impl<T> Grift<T> {
         (position.generation == r.generation).then(|| (self.name(position.source), position.line))
     }
 
-    /// A handle that stops this interpreter's run in progress, from another thread.
+    /// A handle that stops one run of this interpreter from another thread: the run in progress,
+    /// or, if none is, the next to begin. It never reaches another.
     pub fn interrupter(&self) -> Interrupter {
         Interrupter::new(&self.control)
     }

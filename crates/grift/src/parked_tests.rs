@@ -513,9 +513,8 @@ mod generated {
         /// Host calls so far, and at which to stop.
         calls: u64,
         stop_at: Option<(u64, bool)>,
-        stopper: Option<Interrupter>,
-        /// A handle that has reached no run, cloned for each force.
-        fresh: Option<Interrupter>,
+        /// A handle taken for the first run, long over: it reaches none of these.
+        old: Option<Interrupter>,
         /// How many stops reached each run, and how long its log was at the first.
         stops: Vec<u64>,
         stopped_at: Vec<Option<usize>>,
@@ -525,7 +524,7 @@ mod generated {
 
     impl World {
         /// A host call, after it has logged: what is armed lands as it returns.
-        fn call(&mut self) {
+        fn call(&mut self, g: &Grift<World>) {
             self.calls += 1;
             let Some((at, force)) = self.stop_at else {
                 return;
@@ -539,11 +538,11 @@ mod generated {
             self.stop_at = None;
             let len = run.len();
             let current = self.current;
+            // Each with a handle taken for the run in progress.
             if force {
-                let mut fresh = self.fresh.clone().unwrap();
-                assert!(fresh.force(), "a run is in progress");
+                assert!(g.interrupter().force(), "a run is in progress");
                 self.forced_at[current].get_or_insert(len);
-            } else if self.stopper.as_mut().is_some_and(Interrupter::stop) {
+            } else if g.interrupter().stop() {
                 self.stops[current] += 1;
                 self.stopped_at[current].get_or_insert(len);
             }
@@ -560,15 +559,15 @@ mod generated {
         for v in args {
             w.log(show(g, v));
         }
-        w.call();
+        w.call(g);
         Ok(Value::Inert)
     }
 
-    fn g_enter(_: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn g_enter(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
         if let [Value::Integer(id)] = args {
             w.log(format!("+{id}"));
         }
-        w.call();
+        w.call(g);
         Ok(Value::Inert)
     }
 
@@ -588,7 +587,7 @@ mod generated {
             "a handler saw {name}"
         );
         w.log(id.to_string());
-        w.call();
+        w.call(g);
         Ok(Value::Inert)
     }
 
@@ -596,12 +595,12 @@ mod generated {
         if let [Value::Integer(id)] = args {
             w.log(format!("${id}"));
         }
-        w.call();
+        w.call(g);
         Err(g.error("host-limit", args).as_limit())
     }
 
     fn g_wait(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
-        w.call();
+        w.call(g);
         if w.at_once && g.can_park() {
             let id = request_id(g, &args[0]);
             return answer(g, id).map(Answer::Now);
@@ -610,7 +609,7 @@ mod generated {
     }
 
     fn g_nest(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
-        w.call();
+        w.call(g);
         let text = show(g, &args[0]);
         g.evaluate(w, &text)
     }
@@ -893,8 +892,7 @@ mod generated {
             forced_at: vec![None; runs],
             ..World::default()
         };
-        w.stopper = Some(g.interrupter());
-        w.fresh = Some(g.interrupter());
+        w.old = Some(g.interrupter());
         g.evaluate(
             &mut w,
             "(define! churn (lambda! (n) (length (map list (range 0 n)))))",
@@ -1022,9 +1020,10 @@ mod generated {
                     w.current = usize::MAX;
                     g.heap.request_collection();
                     let _ = g.evaluate(&mut w, "#inert");
-                    // No run is in progress: these find nothing, now or later.
-                    assert!(!w.stopper.as_mut().unwrap().stop(), "{context}");
-                    assert!(!w.fresh.clone().unwrap().force(), "{context}");
+                    // No run is in progress, and a handle for another finds nothing.
+                    assert!(!g.interrupter().stop(), "{context}");
+                    assert!(!w.old.as_mut().unwrap().stop(), "{context}");
+                    assert!(!w.old.as_mut().unwrap().force(), "{context}");
                 }
                 // Arm a stop, a force or a refusal, for what comes next.
                 6 if may_stop => w.stop_at = Some((w.calls + r.below(6), false)),

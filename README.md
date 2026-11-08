@@ -44,7 +44,7 @@ here                                        ; prints its own names: #[context ..
 (evaluate (quote! (add 1 2)) here)          ; evaluate needs a context
 (define! n 0)
 ((lambda! () (bind here (quote! n) (add n 1)))) ; bind binds in a given context
-(names here)                                ; the names defined at top level, sorted
+(names here)                                ; the names bound at top level, sorted (the runner's operations too)
 built-in-names                              ; every primitive and library name
 (finally! (first 1) (bind here (quote! n) 0)) ; the cleanup runs, then the error goes on
 (catch! (first 1) e (evaluate-in! kind e))  ; => type-error; e binds kind, values, trace
@@ -86,19 +86,29 @@ rlwrap cargo run --release                        # interactive: prints each res
 ```
 
 `grift SCRIPT ARGUMENT...` runs the script; `#!/usr/bin/env grift` makes it a command, since the
-reader takes `#!` as starting a comment, as `;` does. With no script it reads the program from stdin,
-and when stdin is a terminal it evaluates each complete input and prints its result: a session that
-goes on past an error, where a program's `read-line` takes the next line typed, and a session that isn't
-ended by `exit` ends with status 0, or 1 if its input ends inside a form or standard input or error
-fails or is closed. Data goes
-to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
-file and line: `stdin: type-error 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
-failed write (`file-error`) or a script it can't read, 141 on a write to a pipe no one reads, or the
-status the program gave `exit`. A script path or argument that isn't UTF-8 is refused before anything
-runs, as `grift: encoding-error` with its bytes: text can't hold it, and a lossy copy would name another
-file. At a terminal, errors are shown and the session goes on. A pipe closing ends it with 141; otherwise it ends 0
-unless the program calls `exit`, input ends inside a form, or standard input or error fails or is
-closed, which ends it with 1. It has no line editor: `rlwrap grift` gives
+reader takes `#!` as starting a comment, as `;` does. The first argument is always the script,
+whatever its spelling: `grift --help`, `grift --version` and `grift -` look for files of those names,
+and one that isn't there is a `file-error` followed by the usage, status 1. With no script it reads
+the program from stdin. Data goes to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the
+combinations it happened in, each with its file and line: `stdin: type-error 1 in (if! 1 2 3) at
+stdin:1`. It exits with 0, 1 on a grift error, a failed write (`file-error`) or a script it can't
+read, 141 on a write to a pipe no one reads, or the status the program gave `exit`. A script path or
+argument that isn't UTF-8 is refused before anything runs, as `grift: encoding-error` with its bytes:
+text can't hold it, and a lossy copy would name another file. A standard stream the shell closed
+(`grift script >&-`) is open on `/dev/null` by the time grift starts, as Rust's runtime makes it, so
+it is `/dev/null`: what is written to it is lost, reading it ends at once, and nothing fails.
+
+When stdin is a terminal, grift is a session. It prompts `> ` on stderr, and `  ` while a form is
+still open, reads lines until the input holds only whole forms, evaluates them in turn and prints
+the last one's value on stdout: `1 2 3` prints `3`. An input that doesn't read runs none of its forms;
+an error stops the rest of its input. Lines are numbered from the session's first, so `at stdin:12` is
+the session's twelfth line, not counting lines a program read. A program's `read-line` takes the next
+line typed, and `read-bytes` what it asks for of it, the rest of the line staying for the next read:
+`(read-bytes 3)` then `abcdef` gives `#bytes(97 98 99)`, and `def` is the next input. Errors are shown
+and the session goes on. A pipe closing ends it with 141; otherwise it ends 0 unless the program calls
+`exit`, input ends inside a form, or standard input or error fails or is closed by `close`, which ends
+it with 1. C-c ends it as it ends any program, its definitions with it: the runner handles no
+signal. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:
@@ -107,14 +117,14 @@ For scripting, the program gets a small fixed set of operations, and the core do
 |---|---|
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
-| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. |
+| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. A line or rest that isn't UTF-8 is `encoding-error` and is read all the same: the next read starts after it, so text that may not be UTF-8 is read with `read-bytes`. |
 | `standard-output`, `standard-error` | Contexts of operations, as `create-file`'s: `(write data)`, a string or a bytes value, to stdout or stderr, and `path` and `close`. After `close`, `display` or `display-error` is the error `closed` too; the descriptor stays open, and the runner's own report of an error still prints. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write data)`, a string's or a bytes value's bytes as they are, `close`, and `path`. |
 | `(read-file path)` | The file's whole text. |
 | `(read-forms source text)` | The list of the text's forms, nothing evaluated; each combination keeps `source` and its line, so an error's trace says `at source:12`. A text that doesn't read is the `parse-error` naming `source`. |
 | `(position form)` | A combination's source and line, `("lib.grift" 12)`, if it was read with one; `()` for anything else. |
-| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the working directory, as for every other file operation; a file beside the script is `(load (beside-script "lib.grift"))` with `(define! beside-script (lambda! (path) (string-join (reverse (pair path (rest (reverse (string-split script-path "/"))))) "/")))`. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
+| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. Inside a `lambda!` that is the body's own context, gone when it returns; a wrapper that loads where it is called is a `vau!`: `(define! use (vau! (path) caller (evaluate (list load path) caller)))`. A relative path is relative to the working directory, as for every other file operation; a file beside the script is `(load (beside-script "lib.grift"))` with `(define! beside-script (lambda! (path) (string-join (reverse (pair path (rest (reverse (string-split script-path "/"))))) "/")))`. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
 | `script-path` | The script's path, as given; `""` when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
@@ -132,8 +142,8 @@ system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the pat
 ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can keep it going, each
 `finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
 program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
-success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
-aborts the runner, since `std` buffers its output without asking.
+success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading, a process's output included, is the limit `out-of-memory`;
+`run-process` still reads both of the process's pipes to their ends and waits for it to end.
 
 ```lisp
 #!/usr/bin/env grift
@@ -185,8 +195,8 @@ fn main() -> Result<(), Error> {
     assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.pair(hi.clone(), Value::EmptyList)?; // a list is pairs, built from its end
-    assert_eq!(g.as_pair(&list)?, Some((hi, Value::EmptyList)));
+    let list = g.list(&[hi.clone(), Value::Integer(1)])?; // or pair by pair, from its end
+    assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]); // or as_pair, from its start
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = String::new();
     g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
@@ -215,24 +225,29 @@ fn main() -> Result<(), Error> {
   trace for unreadable text.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
-  `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
+  `bind(&context, &parameters, value)`, as the primitive: `symbol(name)` gives a `Symbol`, and one
+  name is `Value::Symbol(g.symbol("x")?)`;
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
   grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
   as grift's own: traces skip it. Code a program reads or builds is the program's.
-- **Values:** `string`, `bytes(&[u8])`, `pair`, `symbol`; read with `as_str`, `as_bytes`,
-  `as_pair`, `symbol_name`, each `Result<Option<_>, Error>` or `Result<_, Error>`, so a reclaimed
-  value is `stale-value`, never a wrong answer; `write(&v, out)`. A list is built with `pair` from
-  its end and read with `as_pair` from its start. Host text is written as a string literal the
-  same way: `string`, then `write`. A `Value::Primitive` is opaque: a host compares and writes it,
+- **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
+  `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
+  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
+  A list is built whole with `list` or with `pair` from its end, and read whole with `list_items` or
+  with `as_pair` from its start. Host text is written as a string literal either with `string`
+  then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an
+  interpreter or allocation; it returns `std::fmt::Result`. A `Value::Primitive` is opaque: a host compares and writes it,
   and can't name or make one.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
   context of operations on it, never as a number a program could forge. Keep the host functions
   that take a resource's number private: don't `define` them; hand them to grift code, evaluated
-  in a `private_context()`, that makes the operations as closures over them, as the runner's
-  [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
+  in a `private_context()`, that makes the operations as closures over them, and bind only what
+  that code makes where programs look: `(define! open (lambda! (path) (let! ((n (open-host path)))
+  (record (quote! (read close)) (list (lambda! () (read-host n)) (lambda! () (close-host n)))))))`.
+  The runner's [`runner.grift`](crates/grift-cli/src/runner.grift) does this for its files. Closing is explicit; using a resource
   after it is closed is the error `closed`.
 - `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its values are the values
   involved, never who failed: `(first 1)` gives `type-error 1`. Its trace lists the
@@ -243,17 +258,18 @@ fn main() -> Result<(), Error> {
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
-- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable; `stop()` from
-  any thread stops the run in progress at its next step, inside a long walk of a tree, or as its
-  last host call returns, with the error `interrupted`, and says whether there was a run to stop. `true` doesn't say the stop acted: a
-  run about to end can still return its value. `interrupted` runs cleanups on its way out as any
-  error does, but a stop can also land in a cleanup that has begun, and cut it, even before its first
-  form. A stop when no run is in progress does nothing, and one never reaches a later run. Stops
-  waiting together count as one; a later stop stops the run again, even in a cleanup that doesn't
-  end. `force()` ends a run however its cleanups behave: each is cut before its first form, at every
-  level, and the run ends with `interrupted`, whatever else fails on the way. A handle forces the run
-  it last reached, by a stop or a force, and that one only, so a late force never reaches a later
-  run; a handle that has reached none (a clone starts as its source is) forces the run in progress.
+- **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one
+  run: the run in progress when it is taken, or, taken between runs, the next to begin; a clone is
+  for the same run. `stop()` from any thread stops that run at its next step, inside a long walk of a
+  tree, or as its last host call returns, with the error `interrupted`, and says whether it was in
+  progress. `true` doesn't say the stop acted: a run about to end can still return its value.
+  `interrupted` runs cleanups on its way out as any error does, but a stop can also land in a cleanup
+  that has begun, and cut it, even before its first form. Before its run begins, after it ends, and
+  in any other run, a stop does nothing and says `false`, so no handle, however late, reaches a run it
+  wasn't taken for: a watchdog takes one as its job begins and needs no lock. Stops waiting together
+  count as one; a later stop stops the run again, even in a cleanup that doesn't end. `force()` ends
+  the handle's run however its cleanups behave, with no stop needed first: each is cut before its first
+  form, at every level, and the run ends with `interrupted`, whatever else fails on the way.
   `examples/stops.rs` shows stop, force, `is_limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
@@ -275,10 +291,56 @@ fn main() -> Result<(), Error> {
   read as some other object. A value a host function makes stays valid until it returns
   or starts a nested `evaluate`, `evaluate_in` or `call`: allocation never collects, a nested run may.
 
+### A watchdog
+
+A deadline per job is a thread holding the job's interrupter, taken just before the job begins.
+`stop()` says `false` until the job begins and after it ends, so the watchdog asks until it is
+stopped or the loop says it is over, and needs no lock: a late stop reaches nothing.
+
+```rust
+use grift::{Error, Grift, Interrupter};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::thread;
+use std::time::Duration;
+
+fn main() -> Result<(), Error> {
+    let mut g: Grift = Grift::new()?;
+    // Each job's handle, taken as the job is about to begin, its deadline, and whether it is over.
+    let (deadlines, due) = mpsc::channel::<(Interrupter, Duration, Arc<AtomicBool>)>();
+    let watchdog = thread::spawn(move || {
+        for (mut handle, after, over) in due {
+            thread::sleep(after);
+            while !over.load(Ordering::Relaxed) && !handle.stop() {
+                thread::yield_now(); // not begun yet: ask again
+            }
+        }
+    });
+    let jobs = ["(define! spin (lambda! () (spin)))", "(spin)", "(add 1 2)"];
+    let mut ended = Vec::new();
+    for src in jobs {
+        let over = Arc::new(AtomicBool::new(false));
+        let deadline = Duration::from_millis(20);
+        deadlines.send((g.interrupter(), deadline, Arc::clone(&over))).unwrap();
+        let result = g.evaluate(&mut (), src);
+        over.store(true, Ordering::Relaxed); // a stop after this reaches nothing
+        ended.push(result.map_err(|e| e.is_limit()));
+    }
+    drop(deadlines);
+    watchdog.join().unwrap();
+    assert!(matches!(ended[..], [Ok(_), Err(true), Ok(grift::Value::Integer(3))]));
+    Ok(())
+}
+```
+
+A force after a grace period goes in the same place: the watchdog sleeps again and calls `force()`
+with the same handle.
+
 ### Waiting: pausable runs
 
 Register the function with `parking_function`, and have it answer `Answer::Later(request)`.
-`start` calls a combiner and `start_in` runs source text, each in a run that can wait; if it comes to such a call, the run is set aside, and you get a
+`start` calls a combiner and `start_in` runs source text, each in a run that can wait. A run that
+ends gives `Ran::Finished(value)`; one that comes to such a call is set aside, and you get a
 `Ran::Parked(parked)`. Your loop goes on: other runs start, finish and park over the same heap,
 sharing bindings. When the event comes, `resume(state, parked, Ok(value))` makes that call return
 `value` (or `Err(error)` raise `error`), and the script carries on from there, with every `catch!`
@@ -338,6 +400,15 @@ fn main() -> Result<(), Error> {
         wake_at(now, g.resume(&mut said, parked, Ok(Value::Inert))?, &mut timers);
     }
     assert_eq!(said, ["b", "c", "b closed", "a", "c closed", "a closed"]);
+
+    // A run whose handle was dropped is found again and given up, its cleanups run. A cleanup
+    // that waits comes back as `Ran::Parked`; dropped, it is found again in the next turn.
+    drop(g.start_in(&mut said, &top, "job", "(job \"d\" 10)")?);
+    while let Some(parked) = g.forgotten() {
+        let given_up = g.error("given-up", &[]).as_limit();
+        let _ = g.resume(&mut said, parked, Err(given_up));
+    }
+    assert_eq!((said.last().map(String::as_str), g.parked()), (Some("d closed"), 0));
     Ok(())
 }
 ```
@@ -349,22 +420,20 @@ fn main() -> Result<(), Error> {
   that replaced it. A cleanup that errors ends there, and the next one out runs. A cleanup that
   waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
   goes on, or with a limit and it ends there. One that never ends is yours to stop or force; each
-  `resume` being a run of its own, a handle that reached the run before it waited needs a `stop()`
-  first, or its `force()` does nothing and says `false`. A cleanup that installs a new cleanup that
+  `resume` being a run of its own, take a handle for it just before the `resume`: one taken before it
+  waited does nothing and says `false`. A cleanup that installs a new cleanup that
   waits comes back each time, and neither reaches it while it waits: have your parking function call
-  `force()` before it answers `Later`, which ends the run there.
+  `force()` before it answers `Later`, which ends the run there, as in the example below.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
   cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
   `forgotten()` gives a new handle, not saying which run it is: put what identifies a job in its
   request. **Dropping the interpreter** with runs parked runs none of their
   cleanups, the same as a process dying.
-- **Stops and limits.** A stop reaches the run in progress. A parked run isn't: `stop()` then does
-  nothing and says `false`. Each `resume` is a run of its own for stops. One thread runs one run at a
-  time, so your loop goes on only while runs are parked, and a handle belongs to the interpreter, not
-  to a job. A watchdog over several jobs takes a lock around each `stop` or `force`, the loop clearing
-  "this job is running" under that lock as the run returns, or a late stop reaches the next job. It
-  stops again in each `resume` before a force can reach it, and the loop keeps the deadlines of parked
-  jobs, answering them with a limit. A stop that reaches a run
+- **Stops and limits.** A stop reaches its handle's run while it is in progress. A parked run isn't:
+  `stop()` then does nothing and says `false`. Each `resume` is a run of its own for stops. One thread
+  runs one run at a time, so your loop goes on only while runs are parked. A watchdog over several jobs
+  takes a handle as each job begins or resumes, and the loop keeps the deadlines of parked jobs,
+  answering them with a limit. A stop that reaches a run
   as it would park stops it instead, so no stop is lost at a park. The run's cleanups then run, and
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
   Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;
@@ -386,6 +455,36 @@ fn main() -> Result<(), Error> {
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.
 
+Ending a run whose every cleanup waits again: the host's state says the host is ending it, and the
+parking function forces the run before it answers.
+
+```rust
+use grift::{Answer, Grift, Ran, Value};
+
+fn main() -> Result<(), grift::Error> {
+    let mut g: Grift<bool> = Grift::new()?; // the state: whether the host is ending this run
+    let wait = g.parking_function("wait", |g, ending, _| {
+        if *ending {
+            g.interrupter().force();
+        }
+        Ok(Answer::Later(Value::Inert))
+    })?;
+    g.define("wait", wait)?;
+    g.evaluate(&mut false, "(define! chain (lambda! () (finally! (wait) (chain))))")?;
+    let top = g.top_level();
+    let Ran::Parked(p) = g.start_in(&mut false, &top, "job", "(chain)")? else { unreachable!() };
+    let given_up = g.error("given-up", &[]).as_limit();
+    let Ok(Ran::Parked(p)) = g.resume(&mut false, p, Err(given_up)) else { unreachable!() };
+    // Given up, its cleanup waits again, and would each time. Forced at the wait, it ends.
+    let given_up = g.error("given-up", &[]).as_limit();
+    let Err(ended) = g.resume(&mut true, p, Err(given_up)) else { unreachable!() };
+    assert!(ended.parked.is_none() && ended.error.is_limit());
+    assert_eq!(g.symbol_name(&ended.error.kind)?, "interrupted");
+    assert_eq!(g.parked(), 0);
+    Ok(())
+}
+```
+
 `examples/emacs` is an Emacs-style editor whose editor is grift code: the host moves bytes and
 files, and C-g interrupts a runaway command. It runs real shell commands (`M-!`) by waiting: each is
 a run with a `finally!` around its wait, and the editor stays responsive. `programs/` holds whole programs on the runner, each
@@ -401,7 +500,11 @@ machine loop over a frame stack, so no Rust recursion grows with a program's nes
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
 loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
 argument stack, endings waiting for a cleanup, current expression and checked call inputs are its
-roots. Allocation never collects. An object the heap has no room for makes a collection due, before
+roots. Allocation never collects, and a collection needs no memory: its mark stack's room is made
+with the interpreter, and what doesn't fit there is found by passes over the heap, so a heap full of
+garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
+work needs: heap slots, which that frees, and a little besides (a new name, a source's line
+numbers, a host function's copy of its arguments). An object the heap has no room for makes a collection due, before
 the next run needs room to read its input or build its call context, as does any memory refused
 that unwinds a run. Reads and constructors do not collect: more reads may be refused until an
 evaluation or call provides that recovery point.

@@ -174,7 +174,14 @@ impl<T> Grift<T> {
 
 /// Writes `text` as one quoted grift string literal, with the same escapes as [`Grift::write`]
 /// and the reader. Needs no interpreter and allocates nothing; an output failure is `fmt::Error`.
-pub(crate) fn write_string(text: &str, out: &mut dyn fmt::Write) -> fmt::Result {
+///
+/// ```
+/// let mut out = String::new();
+/// grift::write_string("a\n\"b", &mut out)?;
+/// assert_eq!(out, "\"a\\n\\\"b\"");
+/// # Ok::<(), std::fmt::Error>(())
+/// ```
+pub fn write_string(text: &str, out: &mut dyn fmt::Write) -> fmt::Result {
     out.write_char('"')?;
     for c in text.chars() {
         match c {

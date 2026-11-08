@@ -30,6 +30,11 @@ pub(crate) enum Value {
     Bytes(Reference),
 }
 
+// Two words, and aligned to one: every step copies values, so a bigger one costs every program.
+// The size can't show the tag's width (a one-byte tag pads to the same 16 bytes):
+// `a_values_tag_is_a_whole_word` checks that.
+const _: () = assert!(size_of::<Value>() == 16 && align_of::<Value>() == 8);
+
 /// An interned symbol: its index among the names.
 #[derive(Clone, Copy, Debug, Eq, Hash)]
 #[cfg_attr(not(test), derive(PartialEq))]

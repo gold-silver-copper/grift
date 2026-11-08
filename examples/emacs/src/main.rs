@@ -8,8 +8,9 @@
 //! the run waiting for it, draws, and when nothing is waiting for a key starts the next
 //! `command-step`. So every command is a run of its own, and one that waits holds up nothing.
 //!
-//! A thread reads the terminal while grift runs, so C-g stops a command that never returns: it
-//! holds an `Interrupter`, and the command ends with the error `interrupted`.
+//! A thread reads the terminal while grift runs, so C-g stops a command that never returns: before
+//! each run the loop hands it an `Interrupter` for that run, and the command ends with the error
+//! `interrupted`. A handle reaches only its own run, so a late C-g can't stop the next.
 //!
 //! `grift-emacs [--init INIT.grift] [FILE]`
 
@@ -255,6 +256,7 @@ fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<V
             None => Value::EmptyList,
         });
     }
+    h.inbox.arm(g.interrupter());
     g.call(h, &f, &values)
 }
 
@@ -352,6 +354,7 @@ fn given_up(g: &G, e: &Error) -> bool {
 /// comes back, waiting.
 fn abandon(g: &mut G, h: &mut Host, parked: Parked) -> Option<Parked> {
     let ending = g.error("abandoned", &[]).as_limit();
+    h.inbox.arm(g.interrupter());
     let ResumeError { error, parked } = match g.resume(h, parked, Err(ending)) {
         Ok(Ran::Parked(again)) => return Some(again),
         Ok(Ran::Finished(_)) => return None,
@@ -383,6 +386,7 @@ fn report(g: &mut G, h: &mut Host, through: &str, e: &Error) -> String {
     // If that fails too, the next frame or command says so.
     let _ = g.evaluate(h, through).and_then(|f| {
         let shown = g.string(&text)?;
+        h.inbox.arm(g.interrupter());
         g.call(h, &f, &[shown, Value::Symbol(e.kind.clone())])
     });
     text
@@ -399,6 +403,7 @@ fn job_event(g: &mut G, h: &mut Host, id: u64, event: &JobEvent) -> Result<(), E
     let event = [Value::Symbol(what), job_value(id), value]
         .into_iter()
         .try_rfold(Value::EmptyList, |rest, v| g.pair(v, rest))?;
+    h.inbox.arm(g.interrupter());
     g.call(h, &f, &[event]).map(drop)
 }
 
@@ -412,6 +417,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
     let mut runs = Runs::default();
     while !h.quitting {
         for kept in std::mem::take(&mut h.spawned) {
+            h.inbox.arm(g.interrupter());
             let ran = g.kept(&kept).and_then(|f| g.start(h, &f, &[]));
             runs.settle(g, h, ran);
             let _ = g.release(kept);
@@ -453,6 +459,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
             Some(Event::Key(b)) => {
                 if let Some(parked) = runs.keys.pop() {
                     h.inbox.set_stoppable(true);
+                    h.inbox.arm(g.interrupter());
                     let answer = Ok(Value::Integer(i64::from(b)));
                     let ran = g.resume(h, parked, answer).map_err(Error::from);
                     runs.settle(g, h, ran);
@@ -466,6 +473,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
                 if let JobEvent::Ended(status) = event {
                     let id = i64::try_from(id).unwrap_or(i64::MAX);
                     for parked in runs.take_job(id) {
+                        h.inbox.arm(g.interrupter());
                         let ran = g.resume(h, parked, Ok(Value::Integer(status)));
                         let ran = ran.map_err(Error::from);
                         runs.settle(g, h, ran);
@@ -481,6 +489,7 @@ fn run(g: &mut G, h: &mut Host, file: Option<&str>, init: Option<&str>) -> Resul
 /// Starts the editor's function `name`, with no arguments, as a run that may park.
 fn enter_parking(g: &mut G, h: &mut Host, name: &str) -> Result<Ran, Error> {
     let f = g.evaluate(h, name)?;
+    h.inbox.arm(g.interrupter());
     g.start(h, &f, &[])
 }
 
@@ -526,7 +535,6 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut stop = g.interrupter();
     for (name, f) in HOST {
         if g.host_function(name, f)
             .and_then(|f| g.define(name, f))
@@ -570,12 +578,12 @@ fn main() -> ExitCode {
     std::thread::spawn(move || {
         let mut b = [0u8];
         while let Ok(1) = io::stdin().lock().read(&mut b) {
-            inbox.typed(b[0], &mut stop);
+            inbox.typed(b[0]);
         }
         inbox.input_closed();
         loop {
             std::thread::sleep(CLEANUP_MAX);
-            stop.stop();
+            inbox.stop();
         }
     });
     // The alternate screen, with lines clipped at the right edge instead of wrapped.
