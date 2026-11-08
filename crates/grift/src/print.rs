@@ -13,39 +13,23 @@ enum Item {
     Text(&'static str),
 }
 
-/// Why printing stopped.
-pub(crate) enum Unprinted {
-    /// The output refused the text.
-    Output,
-    /// A stop, or no memory for the printer's own stack.
-    Value(Error),
-}
-
-impl From<fmt::Error> for Unprinted {
-    fn from(_: fmt::Error) -> Unprinted {
-        Unprinted::Output
-    }
-}
-
-impl From<Error> for Unprinted {
-    fn from(e: Error) -> Unprinted {
-        Unprinted::Value(e)
-    }
-}
-
 impl<T> Grift<T> {
     /// A new string of the text [`Grift::write`] writes for `v`.
     pub(crate) fn printed(&mut self, v: Value) -> Result<Value, Error> {
         let mut s = Growing::default();
-        self.print(v, &mut s).map_err(|why| match why {
-            Unprinted::Output => Error::oom(),
-            Unprinted::Value(e) => e,
+        // All this output can refuse for is memory to grow.
+        self.print(v, &mut s).map_err(|e| {
+            if e.kind == K::OutputError.into() {
+                Error::oom()
+            } else {
+                e
+            }
         })?;
         self.string_local(&s.0)
     }
 
     /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in.
-    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Unprinted> {
+    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Error> {
         let mut todo = Vec::new();
         // The first item is held outside the stack, so writing an atom allocates nothing and an
         // `out-of-memory` error can still be printed.
@@ -53,7 +37,7 @@ impl<T> Grift<T> {
         let mut walked = 0;
         while let Some(item) = first.take().or_else(|| todo.pop()) {
             if self.walk_stopped(&mut walked) {
-                return Err(Error::interrupted().into());
+                return Err(Error::interrupted());
             }
             let v = match item {
                 Item::Text(s) => {
@@ -66,7 +50,7 @@ impl<T> Grift<T> {
                 }
                 Item::Tail(Value::Pair(r), closer) => {
                     let Ok(Object::Pair(element, rest)) = self.heap.get(r) else {
-                        return Err(Error::new(K::StaleValue, &[Value::Pair(r)]).into());
+                        return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
                     };
                     out.write_char(' ')?;
                     push(&mut todo, Item::Tail(*rest, closer))?;
@@ -145,7 +129,7 @@ impl<T> Grift<T> {
                             push(&mut todo, Item::Text("]"))?;
                             push(&mut todo, Item::Value(*c))?;
                         }
-                        _ => return Err(Error::new(K::StaleValue, &[v]).into()),
+                        _ => return Err(Error::new(K::StaleValue, &[v])),
                     }
                 }
             }

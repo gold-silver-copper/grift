@@ -218,7 +218,9 @@ fn main() -> Result<(), Error> {
   as grift's own: traces skip it. Code a program reads or builds is the program's.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
-  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
+  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out)`,
+  which fail with an `Error` too: an `out` that refuses the text is kind `output-error`, and a host
+  that wants to know why keeps the reason in its `out`.
   A list is built whole with `list` or with `pair` from its end, and read whole with `list_items` or
   with `as_pair` from its start. Host text is written as a string literal either with `string`
   then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an

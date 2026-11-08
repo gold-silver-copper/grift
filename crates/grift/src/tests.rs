@@ -2372,7 +2372,7 @@ fn a_trace_from_the_host_is_checked_as_values_are() {
     e.trace.push(g.string("reclaimed").unwrap());
     g.heap.request_collection();
     g.evaluate(&mut (), "#inert").unwrap();
-    let Err(crate::WriteError::Value(why)) = g.describe(&e, &mut String::new()) else {
+    let Err(why) = g.describe(&e, &mut String::new()) else {
         panic!("described a reclaimed value");
     };
     assert_eq!(kind(&g, &why), "stale-value");
@@ -3571,7 +3571,7 @@ fn walks_with_a_stop_waiting(
     let mut bindings = Bindings::default();
     let matched = g.match_tree(&mut bindings, tree, tree);
     interrupted(g, matched.unwrap_err());
-    let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
+    let Err(e) = g.write(&args[0], &mut String::new()) else {
         panic!("printing went on past a stop");
     };
     assert_eq!(kind(g, &e), "interrupted");
@@ -3610,7 +3610,7 @@ fn walks_with_a_force_waiting(
     );
     let mut bindings = Bindings::default();
     assert!(g.match_tree(&mut bindings, tree, tree).unwrap_err().limit);
-    let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
+    let Err(e) = g.write(&args[0], &mut String::new()) else {
         panic!("printing went on past a force");
     };
     assert!(e.limit);

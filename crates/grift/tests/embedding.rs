@@ -12,7 +12,7 @@
     clippy::indexing_slicing
 )]
 
-use grift::{Error, Grift, Interrupter, Value, WriteError};
+use grift::{Error, Grift, Interrupter, Value};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -80,6 +80,26 @@ fn kind(g: &G, e: &Error) -> String {
     g.symbol_name(&e.kind)
         .unwrap_or("<foreign kind>")
         .to_string()
+}
+
+/// An output that takes nothing.
+struct Refusing;
+
+impl std::fmt::Write for Refusing {
+    fn write_str(&mut self, _: &str) -> std::fmt::Result {
+        Err(std::fmt::Error)
+    }
+}
+
+#[test]
+fn an_output_that_refuses_is_an_output_error() {
+    let mut g = grift();
+    let e = g.error("mine", &[]);
+    let written = g.write(&Value::Integer(1), &mut Refusing).unwrap_err();
+    let described = g.describe(&e, &mut Refusing).unwrap_err();
+    for e in [written, described] {
+        assert_eq!((kind(&g, &e), e.limit), ("output-error".into(), false));
+    }
 }
 
 fn outcome(g: &G, r: Result<Value, Error>) -> String {
@@ -201,7 +221,7 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
     let described = g.describe(&e, &mut String::new());
     for (entry, r) in [("write", written), ("describe", described)] {
         let got = match r {
-            Err(WriteError::Value(e)) => kind(g, &e),
+            Err(e) => kind(g, &e),
             r => format!("{r:?}"),
         };
         check(entry.into(), got);

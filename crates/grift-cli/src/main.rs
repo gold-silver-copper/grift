@@ -16,7 +16,7 @@
 //! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
 //! `elapsed-nanoseconds` and `exit`.
 
-use grift::{Error, Grift, HostFunction, Value, WriteError};
+use grift::{Error, Grift, HostFunction, Value};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -86,13 +86,15 @@ fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Er
     };
     let mut out = Sink { w, error: None };
     let printed = values.iter().try_for_each(|v| match g.as_str(v) {
-        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
+        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| g.error("output-error", &[])),
         _ => g.write(v, &mut out),
     });
-    let wrote = match (printed, out.error) {
-        (Err(WriteError::Value(e)), _) => return Err(e),
-        (_, Some(e)) => Err(e),
-        (_, None) => out.w.flush(),
+    // The sink's own error first: it says what really failed, and `written` turns it into the
+    // runner's kinds.
+    let wrote = match (out.error, printed) {
+        (Some(e), _) => Err(e),
+        (None, Err(e)) => return Err(e),
+        (None, Ok(())) => out.w.flush(),
     };
     written(g, path, wrote)
 }

@@ -170,16 +170,6 @@ pub struct Error {
     pub limit: bool,
 }
 
-/// Why [`Grift::write`] or [`Grift::describe`] stopped.
-#[derive(Clone, Debug, PartialEq)]
-pub enum WriteError {
-    /// A value can't be written: `stale-value`, `foreign-value`, `interrupted` when a stop reached
-    /// a long print, or `out-of-memory` when the printer's own stack can't grow.
-    Value(Error),
-    /// The output refused the text.
-    Output,
-}
-
 /// A value the host keeps across evaluations: an entry in a table the collector marks and no
 /// program reaches. Read it with [`Grift::kept`]; [`Grift::release`] clears it. Neither
 /// `Copy` nor `Clone`, so it is released at most once and never used after; one dropped without
@@ -652,7 +642,9 @@ impl<T> Grift<T> {
     /// Writes `v` as grift would read it back, where it can be read back. Combiners show their
     /// parameters and body: `#[operative (x) #ignore x]`, `#[applicative #[primitive first]]`;
     /// a context shows its own names, sorted: `#[context a b]`. A reclaimed value is
-    /// [`WriteError::Value`] with `stale-value`, never text.
+    /// `stale-value`, never text; another interpreter's is `foreign-value`. A stop that reaches a
+    /// long print is `interrupted`, no memory for the printer's own stack `out-of-memory`, and an
+    /// `out` that refuses the text `output-error`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -661,39 +653,27 @@ impl<T> Grift<T> {
     /// g.write(&v, &mut text).unwrap();
     /// assert_eq!(text, "(1.0 \"a\\rb\" x)");
     /// g.evaluate(&mut (), "(length (map list (range 0 100000)))")?; // collects v
-    /// assert!(matches!(g.write(&v, &mut text), Err(grift::WriteError::Value(_))));
+    /// let e = g.write(&v, &mut text).unwrap_err();
+    /// assert_eq!(g.symbol_name(&e.kind)?, "stale-value");
     /// # Ok::<(), grift::Error>(())
     /// ```
-    pub fn write(&self, v: &Value, out: &mut dyn fmt::Write) -> Result<(), WriteError> {
-        let v = self
-            .import(v)
-            .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        self.print(v, out).map_err(|why| self.write_failed(why))
-    }
-
-    fn write_failed(&self, why: print::Unprinted) -> WriteError {
-        match why {
-            print::Unprinted::Output => WriteError::Output,
-            print::Unprinted::Value(e) => WriteError::Value(self.export_error(e)),
-        }
+    pub fn write(&self, v: &Value, out: &mut dyn fmt::Write) -> Result<(), Error> {
+        let written = self.import(v).and_then(|v| self.print(v, out));
+        self.out(written)
     }
 
     /// Writes an error for a person: its kind and values, then each combination of its trace,
     /// with its source and line where it has one: `type-error 1 in (first a)
-    /// at keys.grift:2`, then `\n  from (f) at keys.grift:3` for each one around it.
-    pub fn describe(&self, error: &Error, out: &mut dyn fmt::Write) -> Result<(), WriteError> {
-        let e = self
+    /// at keys.grift:2`, then `\n  from (f) at keys.grift:3` for each one around it. It fails as
+    /// [`Grift::write`] does.
+    pub fn describe(&self, error: &Error, out: &mut dyn fmt::Write) -> Result<(), Error> {
+        let written = self
             .import_error(error)
-            .map_err(|e| WriteError::Value(self.export_error(e)))?;
-        self.write_error(&e, out)
-            .map_err(|why| self.write_failed(why))
+            .and_then(|e| self.write_error(&e, out));
+        self.out(written)
     }
 
-    fn write_error(
-        &self,
-        e: &local::Error,
-        out: &mut dyn fmt::Write,
-    ) -> Result<(), print::Unprinted> {
+    fn write_error(&self, e: &local::Error, out: &mut dyn fmt::Write) -> Result<(), local::Error> {
         self.print(local::Value::Symbol(e.kind), out)?;
         for &v in &e.values {
             out.write_char(' ')?;
