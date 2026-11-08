@@ -8,9 +8,8 @@ use std::fmt::{self, Write};
 
 enum Item {
     Value(Value),
-    /// The rest of a sequence after its first element, and the bracket that closes it.
+    /// The rest of a sequence after its first element, and the text written after it.
     Tail(Value, &'static str),
-    Text(&'static str),
 }
 
 impl<T> Grift<T> {
@@ -40,26 +39,22 @@ impl<T> Grift<T> {
                 return Err(Error::interrupted());
             }
             let v = match item {
-                Item::Text(s) => {
-                    out.write_str(s)?;
+                Item::Tail(Value::EmptyList, text) => {
+                    out.write_str(text)?;
                     continue;
                 }
-                Item::Tail(Value::EmptyList, closer) => {
-                    out.write_str(closer)?;
-                    continue;
-                }
-                Item::Tail(Value::Pair(r), closer) => {
+                Item::Tail(Value::Pair(r), text) => {
                     let Ok(Object::Pair(element, rest, _)) = self.heap.get(r) else {
                         return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
                     };
                     out.write_char(' ')?;
-                    push(&mut todo, Item::Tail(*rest, closer))?;
+                    push(&mut todo, Item::Tail(*rest, text))?;
                     push(&mut todo, Item::Value(*element))?;
                     continue;
                 }
-                Item::Tail(v, closer) => {
+                Item::Tail(v, text) => {
                     out.write_str(" . ")?;
-                    push(&mut todo, Item::Text(closer))?;
+                    push(&mut todo, Item::Tail(Value::EmptyList, text))?;
                     v
                 }
                 Item::Value(v) => v,
@@ -121,12 +116,12 @@ impl<T> Grift<T> {
                             out.write_str("#[operative ")?;
                             push(&mut todo, Item::Tail(op.body, "]"))?;
                             push(&mut todo, Item::Value(op.context_parameter))?;
-                            push(&mut todo, Item::Text(" "))?;
+                            push(&mut todo, Item::Tail(Value::EmptyList, " "))?;
                             push(&mut todo, Item::Value(op.parameters))?;
                         }
                         Ok(Object::Applicative(c)) => {
                             out.write_str("#[applicative ")?;
-                            push(&mut todo, Item::Text("]"))?;
+                            push(&mut todo, Item::Tail(Value::EmptyList, "]"))?;
                             push(&mut todo, Item::Value(*c))?;
                         }
                         _ => return Err(Error::new(K::StaleValue, &[v])),
