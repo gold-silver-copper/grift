@@ -737,13 +737,10 @@ impl<T> Grift<T> {
             self.fill_kept(name, Entry::Value(v));
             Ok(name)
         });
-        match kept {
-            Ok(name) => Ok(Kept {
-                owner: self.owner(),
-                name,
-            }),
-            Err(e) => Err(self.export_error(e)),
-        }
+        self.out(kept.map(|name| Kept {
+            owner: self.owner(),
+            name,
+        }))
     }
 
     /// The first free entry's name, a released one first so keeping on every event never runs out
