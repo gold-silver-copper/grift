@@ -565,8 +565,7 @@ fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     };
     let source = source.to_owned();
     let source = g.string(&source)?;
-    let line = g.pair(Value::Integer(i64::from(line)), Value::EmptyList)?;
-    g.pair(source, line)
+    g.list(&[source, Value::Integer(i64::from(line))])
 }
 
 /// Evaluates `runner.grift` in a private context holding what it needs, so the operations it
