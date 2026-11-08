@@ -308,9 +308,9 @@ impl<T> Grift<T> {
     /// about to park too, whose entry is already made: no more runs are parked than there are kept
     /// names.
     pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
-        self.control
-            .room_to_forget(self.kept.len())
-            .map_err(|_| local::Error::oom())
+        let mut forgotten = self.control.forgotten();
+        let more = self.kept.len().saturating_sub(forgotten.len());
+        forgotten.try_reserve(more).map_err(|_| local::Error::oom())
     }
 
     /// How many runs are parked. Each holds what it refers to until it ends, so a host that sees this grow has forgotten some: [`Grift::forgotten`].
