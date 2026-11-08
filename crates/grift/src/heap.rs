@@ -256,20 +256,12 @@ impl Heap {
         Error::oom()
     }
 
-    /// The slot `r` refers to, if it still holds that object: a slot freed since has another
-    /// generation.
-    #[inline]
-    fn slot(&self, r: Reference) -> Option<&Slot> {
-        self.slots
-            .get(r.idx as usize)
-            .filter(|s| s.generation == r.generation)
-    }
-
     #[inline]
     pub fn get(&self, r: Reference) -> Result<&Object, Error> {
-        self.slot(r)
-            .map(|s| &s.obj)
-            .ok_or_else(|| Error::new(K::StaleValue, &[]))
+        match self.slots.get(r.idx as usize) {
+            Some(s) if s.generation == r.generation => Ok(&s.obj),
+            _ => Err(Error::new(K::StaleValue, &[])),
+        }
     }
 
     #[inline]
