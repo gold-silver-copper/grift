@@ -429,8 +429,10 @@ fn values_across_a_wait() {
     let q = parked(run(&mut g, &mut w, "(wait-with (list 4 5 6))"));
     let unkept = w.saved.pop().unwrap();
     collect(&mut g, &mut w);
-    assert_eq!(g.list_items(&argument).unwrap().len(), 3);
-    assert!(kind(&g, &g.list_items(&unkept).unwrap_err()) == "stale-value");
+    let mut text = String::new();
+    g.write(&argument, &mut text).unwrap();
+    assert_eq!(text, "(1 2 3)");
+    assert!(kind(&g, &g.as_pair(&unkept).unwrap_err()) == "stale-value");
 
     // A stale answer is that call's error, as a host function's return is, and it can be caught.
     let done = resume(&mut g, &mut w, q, unkept);
@@ -598,7 +600,7 @@ fn a_trace_after_a_resume_shows_the_whole_path_through_a_load() {
     assert_eq!(w.log, ["loaded", "closed"]);
     assert_eq!(
         described(&g, &e),
-        "type-error #[primitive first] 1 in (first from-file) at inner.grift:3
+        "type-error 1 in (first from-file) at inner.grift:3
   from (for-each (lambda! (form) (evaluate form caller)) (read-forms-host path))
   from (finally! (for-each (lambda! (form) (evaluate form caller)) (read-forms-host path)) (note (quote! closed)))
   from (load \"inner.grift\") at script.grift:2"
@@ -626,7 +628,7 @@ fn parking_inside_a_host_call_is_refused_by_name() {
     assert_eq!(kind(&g, &e), "cannot-park");
     assert_eq!(
         described(&g, &e).lines().next().unwrap(),
-        "cannot-park #[host wait] in (wait)"
+        "cannot-park in (wait)"
     );
     // The outer run can still park after the nested one failed.
     let p = parked(run(&mut g, &mut w, "(catch! (nest \"(wait)\") e (wait))"));
@@ -638,7 +640,7 @@ fn parking_inside_a_host_call_is_refused_by_name() {
 fn a_run_that_cannot_park_says_so() {
     let (mut g, mut w) = (grift(), World::default());
     let e = g.evaluate(&mut w, "(wait)").unwrap_err();
-    assert_eq!(described(&g, &e), "cannot-park #[host wait] in (wait)");
+    assert_eq!(described(&g, &e), "cannot-park in (wait)");
     let f = g.evaluate(&mut w, "(lambda! () (wait))").unwrap();
     let e = g.call(&mut w, &f, &[]).unwrap_err();
     assert_eq!(kind(&g, &e), "cannot-park");
@@ -709,7 +711,7 @@ fn an_event_loop_runs_three_waiting_scripts() {
          (define! job (lambda! (name ms)
            (finally!
              (sequence! (sleep ms) (say name) (sleep ms) (bind here (quote! done) (add done 1)))
-             (say (string-append name \" closed\")))))",
+             (say (join name \" closed\")))))",
     )
     .unwrap();
 
@@ -774,7 +776,7 @@ fn the_request_stays_good_for_as_long_as_the_run_waits() {
     let done = resume(&mut g, &mut w, p, Value::Inert);
     assert_eq!(finished(&g, done), "#inert");
     collect(&mut g, &mut w);
-    assert_eq!(kind(&g, &g.list_items(&asked).unwrap_err()), "stale-value");
+    assert_eq!(kind(&g, &g.as_pair(&asked).unwrap_err()), "stale-value");
     // A request that isn't this interpreter's is that call's error: nothing parks.
     let mut other = grift();
     w.saved = vec![other.string("elsewhere").unwrap()];
@@ -1006,16 +1008,9 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
 /// and the cleanup around the load run after it.
 #[test]
 fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
-    // A file is its path here, and reading it the whole of its text.
-    fn open(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
-        Ok(args[0].clone())
-    }
-    fn read_all(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         let path = g.as_str(&args[0])?.unwrap().to_owned();
         g.string(&std::fs::read_to_string(&path).unwrap())
-    }
-    fn close(_: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
-        Ok(Value::Inert)
     }
     fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
         let (source, text) = (
@@ -1024,21 +1019,14 @@ fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
         );
         g.read_in(&source, &text)
     }
-    fn resolve(_: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
-        Ok(args[1].clone())
-    }
     fn unused(g: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
         Err(g.error("unused", &[]))
     }
     let (mut g, mut w) = (grift(), World::default());
     let private = g.private_context().unwrap();
-    let hosts: [(&str, grift::HostFunction<World>); 13] = [
-        ("open-host", open),
-        ("read-all-host", read_all),
-        ("close-host", close),
-        ("forget-host", close),
+    let hosts: [(&str, grift::HostFunction<World>); 9] = [
+        ("read-file", read_file),
         ("read-forms", read_forms),
-        ("resolve-host", resolve),
         ("display", unused),
         ("display-error", unused),
         ("position", unused),

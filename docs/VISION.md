@@ -48,7 +48,9 @@ grift has few kinds of value, and each earns its place:
 
 There is no truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and `or!?` must be
 booleans, and anything else is a type error. Nothing is guessed for a missing branch either: `if!`
-needs both, and `when!`, which has one and a body, gives `#inert` when its test is false. Integers
+needs both, and `when!`, which has one and a body, gives `#inert` when its test is false, as
+`conditional!` does when no clause's test is true: both choose whether to do something, so doing
+nothing is their answer, and `#inert` is the value of a form with nothing useful to return. Integers
 and floats never mix implicitly: `(add 1 1.5)` is a type error, and conversions are explicit. There is one integer type (no `usize` or other widths)
 and no vector type. Strings stay UTF-8 text and bytes are never a string: converting bytes to a
 string refuses any that aren't UTF-8, and says where. Host types are not grift values: the host converts at the boundary (checked;
@@ -129,7 +131,8 @@ from an id. Closing is explicit (no finalizers), and using it after that is the 
 
 ## The runner
 The `grift` runner is a Unix tool: it runs a script or stdin, prints data to stdout and diagnostics
-to stderr, and exits 0, or 1 on an error. It gives programs a small, fixed set of
+to stderr, and exits 0, 1 on an error, 141 on a write to a pipe no one reads, or the status the
+program gave `exit`. It gives programs a small, fixed set of
 host operations: reading stdin as data, writing to stderr, files (as contexts of operations, as
 text or as bytes), loading another file's forms, the command-line arguments and the script's
 path, environment variables, two clocks, the exit status, and running processes.
@@ -178,8 +181,9 @@ parameters, its context parameter and its body (not the context it was made in, 
 can print alike and differ). A context prints as its own names, sorted
 (`#[context close path read-all read-line]`), never its values, which may reach the context
 again. An error, a context, prints its names; the host reports its kind, its values and its trace.
-`write_string` writes the same string literal spelling for host text, without an interpreter or
-allocation. It and the value printer share the quoting and escapes the reader understands.
+A symbol prints as its spelling, whatever it is, so one made by `string-to-symbol` may not read
+back as itself: `"a b"` prints as two symbols, `"#true"` as a boolean, `"1"` as an integer. A
+host writes its own text as a string literal by making a string and writing it.
 
 ## Terms
 - **Symbol:** a value that is a name; a symbol names a value in a context.

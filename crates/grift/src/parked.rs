@@ -10,7 +10,7 @@
 use crate::evaluate::Machine;
 use crate::heap::Object;
 use crate::local::{self, K};
-use crate::{Error, Grift, Owner, Primitive, Value};
+use crate::{Error, Grift, Owner, Value};
 use std::sync::Weak;
 
 /// A host function that may answer later: [`Grift::parking_function`] makes one.
@@ -189,10 +189,10 @@ impl<T> Grift<T> {
         src: &str,
     ) -> Result<Ran, Error> {
         self.parkable(|g| {
-            let c = g.context_of(context, Primitive::Evaluate)?;
+            let c = g.context_of(context)?;
             g.prepare(std::iter::once(local::Value::Context(c)))?;
             let source = g.intern(source)?;
-            let forms = g.read_local(src, Some(source))?;
+            let forms = g.read_local(src, Some(source), false)?;
             g.evaluate_forms(Some(state), forms, c, true)
         })
     }

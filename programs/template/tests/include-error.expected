@@ -1,2 +1,2 @@
-filter-raises.html:2: filter broken on "Corner": type-error #[primitive add] "Corner" in (add s 1)
+filter-raises.html:2: filter broken on "Corner": type-error "Corner" in (add s 1)
 [exit 1]

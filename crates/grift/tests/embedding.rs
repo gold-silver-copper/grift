@@ -122,7 +122,9 @@ fn objects(g: &mut G) -> Vec<(&'static str, Value)> {
 fn primitives(g: &mut G) -> Vec<(String, Value)> {
     let names = evaluate(g, "built-in-names");
     let mut found = Vec::new();
-    for name in g.list_items(&names).unwrap() {
+    let mut rest = names;
+    while let Some((name, more)) = g.as_pair(&rest).unwrap() {
+        rest = more;
         let Value::Symbol(s) = &name else { panic!() };
         let text = g.symbol_name(s).unwrap().to_string();
         let v = evaluate(g, &format!("(catch! (unwrap {text}) #ignore #inert)"));
@@ -165,7 +167,6 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
             "pair, rest",
             g.pair(Value::EmptyList, bad.clone()).map(drop),
         ),
-        ("list", g.list(std::slice::from_ref(bad)).map(drop)),
         ("bind, the value", g.bind(&top, &x, bad.clone())),
         ("bind, the context", g.bind(bad, &x, Value::Inert)),
         ("bind, the parameters", g.bind(&top, bad, Value::Inert)),
@@ -186,7 +187,6 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
         ("as_pair", g.as_pair(bad).map(drop)),
         ("as_str", g.as_str(bad).map(drop)),
         ("as_bytes", g.as_bytes(bad).map(drop)),
-        ("list_items", g.list_items(bad).map(drop)),
     ];
     for (entry, r) in results {
         check(entry.into(), r.err().map_or("ok".into(), |e| kind(g, &e)));
@@ -481,6 +481,21 @@ fn a_run_its_host_function_left_is_over() {
         let r = g.evaluate(s, "(add 1 2)");
         assert_eq!(r, Ok(Value::Integer(3)), "{}", kind(g, &r));
     };
+    // `(first 1)` built by the host with pair is the program's: an error in it names it.
+    let program_s = |g: &mut Grift<Leaving>, s: &mut Leaving, when: &str| {
+        let top = g.top_level();
+        let name = g.symbol("first").unwrap();
+        let first = g.lookup(&top, &name).unwrap().unwrap();
+        let one = g.pair(Value::Integer(1), Value::EmptyList).unwrap();
+        let form = g.pair(first, one).unwrap();
+        g.define("form", form).unwrap();
+        let e = g
+            .evaluate(s, "(evaluate form (current-context))")
+            .unwrap_err();
+        let mut place = String::new();
+        g.write(&e.trace[0], &mut place).unwrap();
+        assert_eq!(place, "(#[applicative #[primitive first]] 1)", "{when}");
+    };
     let mut s = Leaving::default();
     // A panic the host catches ends the run.
     let mut g = leaving();
@@ -489,6 +504,42 @@ fn a_run_its_host_function_left_is_over() {
     }));
     assert!(caught.is_err());
     quiet(&mut g, &mut s);
+    // A panic inside library code leaves no mark on what the host builds, before the next run
+    // or after it.
+    let mut g = leaving();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.evaluate(&mut s, "(map panics (list 1))")
+    }));
+    assert!(caught.is_err());
+    program_s(&mut g, &mut s, "right after the panic");
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.evaluate(&mut s, "(map panics (list 1))")
+    }));
+    assert!(caught.is_err());
+    quiet(&mut g, &mut s);
+    program_s(&mut g, &mut s, "after the next run");
+    // Nor does library code that swapped the interpreter out, on the one swapped out.
+    let mut g = leaving();
+    let r = g.evaluate(&mut s, "(map swap-out (list 1))");
+    assert_eq!(kind(&g, &r), "foreign-value");
+    let mut parked = s.saved.take().unwrap();
+    program_s(&mut parked, &mut s, "swapped out by library code");
+    // The arguments call lists are the program's too: here they are evaluated as a combination.
+    let mut g = leaving();
+    let f = g
+        .evaluate(&mut s, "(lambda! args (evaluate args (current-context)))")
+        .unwrap();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        g.evaluate(&mut s, "(map panics (list 1))")
+    }));
+    assert!(caught.is_err());
+    let top = g.top_level();
+    let name = g.symbol("first").unwrap();
+    let first = g.lookup(&top, &name).unwrap().unwrap();
+    let e = g.call(&mut s, &f, &[first, Value::Integer(1)]).unwrap_err();
+    let mut place = String::new();
+    g.write(&e.trace[0], &mut place).unwrap();
+    assert_eq!(place, "(#[applicative #[primitive first]] 1)", "called");
     // Replaced: the run ends with foreign-value, and the rest of the program doesn't run.
     let mut g = leaving();
     let r = g.evaluate(&mut s, "(swap-out) (quote! rest)");

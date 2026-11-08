@@ -44,20 +44,20 @@
        (lambda! (text)
          (if! (same? text "")
            #false
-           (if! (digit? (string-byte text 0)) #true (signed? text (string-byte text 0))))))
+           (if! (digit? (byte-at text 0)) #true (signed? text (byte-at text 0))))))
      (define! signed?
        (lambda! (text byte)
          (if! (if! (same? byte 45) #true (if! (same? byte 43) #true (same? byte 46)))
-           (if! (less-than? 1 (string-byte-length text)) (digit? (string-byte text 1)) #false)
+           (if! (less-than? 1 (byte-length text)) (digit? (byte-at text 1)) #false)
            #false)))
      ; A caught parse-error costs ~8 microseconds, so the text picks the one parse to try
      ; (friction F13).
-     (define! float-text? (lambda! (text) (float-from? text 0 (string-byte-length text))))
+     (define! float-text? (lambda! (text) (float-from? text 0 (byte-length text))))
      (define! float-from?
        (lambda! (text at end)
          (if! (same? at end)
            #false
-           (if! (point-or-exponent? (string-byte text at)) #true (float-from? text (add at 1) end)))))
+           (if! (point-or-exponent? (byte-at text at)) #true (float-from? text (add at 1) end)))))
      (define! point-or-exponent?
        (lambda! (byte) (if! (same? byte 46) #true (if! (same? byte 101) #true (same? byte 69)))))
      (lambda! (text)
@@ -68,12 +68,12 @@
 ; The line of byte offset at in text, counting from 1.
 (define! line-at
   (lambda! (text at)
-    (fold (lambda! (line i) (if! (same? (string-byte text i) 10) (add line 1) line)) 1 (range 0 at))))
+    (fold (lambda! (line i) (if! (same? (byte-at text i) 10) (add line 1) line)) 1 (range 0 at))))
 
 ; csv-records: the records of text, in order, each a list of field values.
 (define! csv-records
   (lambda! (text)
-    (let! ((end (string-byte-length text))
+    (let! ((end (byte-length text))
            (end-of-line? (lambda! (byte) (if! (same? byte 10) #true (same? byte 13))))
            (field-end? (lambda! (byte) (if! (same? byte 44) #true (end-of-line? byte))))
            ; A new field at offset at; fields is the record so far, newest first, and () at the
@@ -83,17 +83,17 @@
                (if! (same? fields ())
                  (if! (same? at end)
                    (reverse records)
-                   (if! (end-of-line? (string-byte text at))
+                   (if! (end-of-line? (byte-at text at))
                      (field (add at 1) () records)
                      (field-text at fields records)))
                  (if! (same? at end)
                    (after-field at "" fields records)
-                   (if! (end-of-line? (string-byte text at))
+                   (if! (end-of-line? (byte-at text at))
                      (after-field at "" fields records)
                      (field-text at fields records))))))
            (field-text
              (lambda! (at fields records)
-               (if! (same? (string-byte text at) 34)
+               (if! (same? (byte-at text at) 34)
                  (quoted (add at 1) (add at 1) () fields records)
                  (plain at at fields records))))
            ; The loops over bytes use if! and calls only: or!?, let! and conditional! cost
@@ -101,30 +101,30 @@
            (plain
              (lambda! (start at fields records)
                (if! (same? at end)
-                 (after-field at (field-value (byte-substring text start at)) fields records)
-                 (if! (field-end? (string-byte text at))
-                   (after-field at (field-value (byte-substring text start at)) fields records)
+                 (after-field at (field-value (slice text start at)) fields records)
+                 (if! (field-end? (byte-at text at))
+                   (after-field at (field-value (slice text start at)) fields records)
                    (plain start (add at 1) fields records)))))
            ; Inside quotes from start; pieces are the parts before each "" seen, newest first.
            (quoted
              (lambda! (start at pieces fields records)
                (if! (same? at end)
                  (fail (quote! csv-error) "a quoted field has no closing quote" (line-at text start))
-                 (if! (same? (string-byte text at) 34)
-                   (if! (if! (less-than? (add at 1) end) (same? (string-byte text (add at 1)) 34) #false)
-                     (quoted (add at 2) (add at 2) (pair (byte-substring text start (add at 1)) pieces)
+                 (if! (same? (byte-at text at) 34)
+                   (if! (if! (less-than? (add at 1) end) (same? (byte-at text (add at 1)) 34) #false)
+                     (quoted (add at 2) (add at 2) (pair (slice text start (add at 1)) pieces)
                              fields records)
                      (after-field (add at 1)
                                   (field-value
-                                    (apply string-append
-                                           (reverse (pair (byte-substring text start at) pieces))))
+                                    (apply join
+                                           (reverse (pair (slice text start at) pieces))))
                                   fields records))
                    (quoted start (add at 1) pieces fields records)))))
            (after-field
              (lambda! (at value fields records)
                (if! (same? at end)
                  (reverse (pair (reverse (pair value fields)) records))
-                 (after-byte at (string-byte text at) (pair value fields) records))))
+                 (after-byte at (byte-at text at) (pair value fields) records))))
            (after-byte
              (lambda! (at byte fields records)
                (if! (same? byte 44)
@@ -183,7 +183,7 @@
                       (when! (pair? records)
                         (when! (not? (same? (length (first records)) width))
                           (fail (quote! csv-error)
-                                (string-append "record " (integer-to-string n) " has "
+                                (join "record " (integer-to-string n) " has "
                                                (integer-to-string (length (first records)))
                                                " fields and the header "
                                                (integer-to-string width))
@@ -287,7 +287,7 @@
         (pair (conditional!
                 ((same? (rest form) ()) (first form))
                 ((symbol? (second form))
-                 (string-to-symbol (string-append (symbol-to-string (first form)) "-"
+                 (string-to-symbol (join (symbol-to-string (first form)) "-"
                                                   (symbol-to-string (second form)))))
                 (#true (fail (quote! bad-clause) "an aggregate of an expression needs a name: (as name aggregate)" form)))
               form)
@@ -418,21 +418,21 @@
 ; display-width: the characters of s, counting each UTF-8 byte that doesn't continue one.
 (define! display-width
   (lambda! (s)
-    (let! ((end (string-byte-length s))
+    (let! ((end (byte-length s))
            (from (lambda! (at n)
-                   (if! (same? at end) n (from (add at 1) (if! (continues? (string-byte s at)) n (add n 1))))))
+                   (if! (same? at end) n (from (add at 1) (if! (continues? (byte-at s at)) n (add n 1))))))
            (continues? (lambda! (byte) (if! (less-than? 127 byte) (less-than? byte 192) #false))))
       (from 0 0))))
 
 ; has-byte?: whether the byte is in s.
 (define! has-byte?
   (lambda! (s byte)
-    (let! ((end (string-byte-length s))
-           (from (lambda! (at) (if! (same? at end) #false (if! (same? (string-byte s at) byte) #true (from (add at 1)))))))
+    (let! ((end (byte-length s))
+           (from (lambda! (at) (if! (same? at end) #false (if! (same? (byte-at s at) byte) #true (from (add at 1)))))))
       (from 0))))
 
 (define! blanks (string-repeat " " 100))
-(define! spaces (lambda! (n) (if! (less-than? n 100) (byte-substring blanks 0 n) (string-repeat " " n))))
+(define! spaces (lambda! (n) (if! (less-than? n 100) (slice blanks 0 n) (string-repeat " " n))))
 
 ; cell-text: a value as aligned text shows it, a line end as \n and floats rounded to four places.
 (define! cell-text
@@ -472,7 +472,7 @@
                   (if! (if! (same? more ()) #true (if! (same? (rest more) ()) (same? (first (first more)) "") #false))
                     ()
                     (pair "  " (pieces more (rest widths) (rest right))))))
-           (line (lambda! (cells) (display (apply string-append (pieces cells widths right))) (display "\n"))))
+           (line (lambda! (cells) (display (apply join (pieces cells widths right))) (display "\n"))))
       (line header)
       (display (string-join (map (lambda! (width) (string-repeat "-" width)) widths) "  "))
       (display "\n")
@@ -484,7 +484,7 @@
   (lambda! (x)
     (if! (string? x)
       (if! (any? (lambda! (byte) (has-byte? x byte)) (quote! (44 34 10 13)))
-        (string-append "\"" (string-join (string-split x "\"") "\"\"") "\"")
+        (join "\"" (string-join (string-split x "\"") "\"\"") "\"")
         x)
       (value-to-string x))))
 
@@ -501,21 +501,21 @@
       (conditional!
         ((same? kind (quote! unknown-column))
          (let! (((name columns) values))
-           (string-append "no column named " (symbol-to-string name) "; the columns are "
+           (join "no column named " (symbol-to-string name) "; the columns are "
                           (string-join (map symbol-to-string columns) ", "))))
         ((same? kind (quote! csv-error))
          (let! (((message line) values))
-           (string-append (if! (same? line ()) "" (string-append "line " (integer-to-string line) ": "))
+           (join (if! (same? line ()) "" (join "line " (integer-to-string line) ": "))
                           message)))
         ((same? kind (quote! bad-clause))
          (let! (((message form . gave) values))
-           (string-append message ": " (value-to-string form)
-                          (if! (same? gave ()) "" (string-append ", not " (value-to-string (first gave)))))))
+           (join message ": " (value-to-string form)
+                          (if! (same? gave ()) "" (join ", not " (value-to-string (first gave)))))))
         ((same? kind (quote! not-a-number))
-         (string-append "not a number: " (value-to-string (first values))))
+         (join "not a number: " (value-to-string (first values))))
         ((same? kind (quote! in-clause))
          (let! (((form inner) values))
-           (string-append "in " (value-to-string form) ": " (error-text inner))))
+           (join "in " (value-to-string form) ": " (error-text inner))))
         (#true (string-join (map value-to-string (pair kind values)) " "))))))
 
 ; The program.
@@ -532,19 +532,19 @@
           e
           (report (if! (same? (evaluate-in! kind e) (quote! parse-error))
                     (let! (((reason line column) (evaluate-in! values e)))
-                      (string-append "the query doesn't read: " (symbol-to-string reason) " at line "
+                      (join "the query doesn't read: " (symbol-to-string reason) " at line "
                                      (integer-to-string line) ", column " (integer-to-string column)))
                     (error-text e)))
           (exit 1)))
 (define! text
   (catch! (read-file path)
           e
-          (report (string-append path ": " (error-text e)))
+          (report (join path ": " (error-text e)))
           (exit 2)))
 (catch! (let! ((table (run-query clauses (csv-table text))))
           (if! csv-output? (print-csv table) (print-text table)))
         e
         (report (if! (same? (evaluate-in! kind e) (quote! csv-error))
-                  (string-append path ": " (error-text e))
+                  (join path ": " (error-text e))
                   (error-text e)))
         (exit 1))

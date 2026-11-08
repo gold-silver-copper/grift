@@ -8,13 +8,13 @@
 ; Filters: any applicative bound here; the value comes first.
 (define! upper
   (lambda! (s)
-    (apply string-append
+    (apply join
            (map (lambda! (i)
-                  (let! ((b (string-byte s i)))
+                  (let! ((b (byte-at s i)))
                     (code-point-to-string (if! (and!? (less-than? 96 b) (less-than? b 123)) (subtract b 32) b))))
-                (range 0 (string-byte-length s))))))
+                (range 0 (byte-length s))))))
 (define! money
   (lambda! (cents)
-    (string-append "$" (integer-to-string (divide cents 100)) "."
+    (join "$" (integer-to-string (divide cents 100)) "."
                    (if! (less-than? (remainder cents 100) 10) "0" "")
                    (integer-to-string (remainder cents 100)))))

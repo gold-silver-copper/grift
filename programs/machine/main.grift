@@ -18,9 +18,9 @@
 (define! name-of (lambda! (n) (string-to-symbol (integer-to-string n))))
 
 ; The byte of text at offset `at`, or 0 past its end, so that a scanner needs no bounds checks.
-(define! byte-at
-  (lambda! (text at) (if! (less-than? at (string-byte-length text)) (string-byte text at) 0)))
-(define! text-from (lambda! (text at) (byte-substring text at (string-byte-length text))))
+(define! peek-byte
+  (lambda! (text at) (if! (less-than? at (byte-length text)) (byte-at text at) 0)))
+(define! text-from (lambda! (text at) (slice text at (byte-length text))))
 
 ; n in lowercase hexadecimal, at least `width` digits.
 (define! hexadecimal
@@ -32,7 +32,7 @@
                  (let! ((digit (remainder n 16)))
                    (digits (divide n 16)
                            (subtract width 1)
-                           (string-append (byte-substring "0123456789abcdef" digit (add digit 1)) done)))))))
+                           (join (slice "0123456789abcdef" digit (add digit 1)) done)))))))
       (digits n width ""))))
 
 
@@ -50,7 +50,7 @@
 (define! registers (context ()))           ; number -> value, unsigned
 
 (define! machine-fault
-  (lambda! parts (raise (error (quote! machine-fault) (apply string-append parts)))))
+  (lambda! parts (raise (error (quote! machine-fault) (apply join parts)))))
 
 ; An opcode nobody defined: every byte has an executor, so fetching any byte is an instruction.
 (for-each
@@ -270,16 +270,16 @@
         (bind machine (quote! traced) count)
         (display-error line)))))
 (define! register-name
-  (lambda! (n) (if! (same? n 7) "sp" (string-append "r" (integer-to-string n)))))
+  (lambda! (n) (if! (same? n 7) "sp" (join "r" (integer-to-string n)))))
 (define! trace-line
   (lambda! (pc)
-    (string-append
+    (join
       (hexadecimal pc 4) "  "
       (string-pad-right
         (disassemble (read-byte pc) (read-byte (add pc 1)) (read-byte (add pc 2)) (read-byte (add pc 3)))
         24 " ")
       (string-join
-        (map (lambda! (n) (string-append (register-name n) "=" (integer-to-string (register n))))
+        (map (lambda! (n) (join (register-name n) "=" (integer-to-string (register n))))
              (range 0 8))
         " ")
       "  cmp=" (integer-to-string (evaluate-in! left machine))
@@ -311,11 +311,11 @@
            (pair (integer-to-string (signed (immediate x (first more))))
                  (operand-texts (rest shape) (rest more))))
           ((same? kind (quote! address))
-           (pair (string-append "0x" (hexadecimal (sixteen-bits x (first more)) 4))
+           (pair (join "0x" (hexadecimal (sixteen-bits x (first more)) 4))
                  (operand-texts (rest shape) (rest more))))
           (#true
            (let! ((offset (first more)))
-             (pair (string-append "[" (register-name x)
+             (pair (join "[" (register-name x)
                                   (if! (less-than? offset 128) "+" "")
                                   (integer-to-string (if! (less-than? offset 128) offset (subtract offset 256)))
                                   "]")
@@ -339,7 +339,7 @@
 (define! zero-memory
   (lambda! (name e)
     (let! ((text (symbol-to-string name)))
-      (when! (not? (digit? (string-byte text 0))) (raise e))
+      (when! (not? (digit? (byte-at text 0))) (raise e))
       (when! (binds? memory name) (machine-fault "no such register: " text))
       (when! (not? (less-than? (string-to-integer text) memory-size)) (outside-memory (string-to-integer text)))
       (bind memory name 0))))
@@ -358,7 +358,7 @@
 (define! lines-of (context ()))            ; address -> (line number, source), for a fault's message
 
 (define! problem
-  (lambda! parts (raise (error (quote! assembly-error) (apply string-append parts)))))
+  (lambda! parts (raise (error (quote! assembly-error) (apply join parts)))))
 (define! here (lambda! () (evaluate-in! here assembly)))
 
 ; Runs the thunk for the line; an assembly-error becomes that line's error, and the value `otherwise`.
@@ -382,17 +382,17 @@
 ; The offset after the letters and digits at `at`.
 (define! name-end
   (lambda! (text at)
-    (let! ((byte (byte-at text at)))
+    (let! ((byte (peek-byte text at)))
       (if! (or!? (letter? byte) (digit? byte)) (name-end text (add at 1)) at))))
 (define! skip-blanks
-  (lambda! (text at) (if! (blank? (byte-at text at)) (skip-blanks text (add at 1)) at)))
+  (lambda! (text at) (if! (blank? (peek-byte text at)) (skip-blanks text (add at 1)) at)))
 
 ; The offset after a string or character literal, from just after its opening quote.
 (define! literal-end
   (lambda! (text at closing)
-    (let! ((byte (byte-at text at)))
+    (let! ((byte (peek-byte text at)))
       (conditional!
-        ((not? (less-than? at (string-byte-length text))) (string-byte-length text))
+        ((not? (less-than? at (byte-length text))) (byte-length text))
         ((same? byte 92) (literal-end text (add at 2) closing))
         ((same? byte closing) (add at 1))
         (#true (literal-end text (add at 1) closing))))))
@@ -400,9 +400,9 @@
 ; The offset of the first `target` byte at or after `at` outside any literal, or the end of the text.
 (define! find-outside-literals
   (lambda! (text at target)
-    (let! ((byte (byte-at text at)))
+    (let! ((byte (peek-byte text at)))
       (conditional!
-        ((not? (less-than? at (string-byte-length text))) (string-byte-length text))
+        ((not? (less-than? at (byte-length text))) (byte-length text))
         ((same? byte target) at)
         ((or!? (same? byte 34) (same? byte 39))
          (find-outside-literals text (literal-end text (add at 1) byte) target))
@@ -417,9 +417,9 @@
   (lambda! (text comma)
     (conditional!
       ((same? text "") ())
-      ((same? comma (string-byte-length text)) (list (string-trim text)))
+      ((same? comma (byte-length text)) (list (string-trim text)))
       (#true
-       (pair (string-trim (byte-substring text 0 comma))
+       (pair (string-trim (slice text 0 comma))
              (split-operands (text-from text (add comma 1))))))))
 
 ; ---- Expressions: sums of products of numbers, characters, names and `.`, the address here.
@@ -427,7 +427,7 @@
 (define! read-expression
   (lambda! (text)
     (let! (((value end) (read-sum text 0)) (rest-at (skip-blanks text end)))
-      (if! (same? rest-at (string-byte-length text))
+      (if! (same? rest-at (byte-length text))
         value
         (problem "unexpected '" (text-from text rest-at) "' in the expression '" text "'")))))
 (define! read-sum
@@ -435,7 +435,7 @@
     (let! (((value end) (read-product text at))) (read-more-sum text end value))))
 (define! read-more-sum
   (lambda! (text at value)
-    (let! ((at (skip-blanks text at)) (byte (byte-at text at)))
+    (let! ((at (skip-blanks text at)) (byte (peek-byte text at)))
       (if! (or!? (same? byte 43) (same? byte 45))
         (let! (((term end) (read-product text (add at 1))))
           (read-more-sum text end (if! (same? byte 43) (add value term) (subtract value term))))
@@ -446,13 +446,13 @@
 (define! read-more-product
   (lambda! (text at value)
     (let! ((at (skip-blanks text at)))
-      (if! (same? (byte-at text at) 42)
+      (if! (same? (peek-byte text at) 42)
         (let! (((factor end) (read-factor text (add at 1))))
           (read-more-product text end (multiply value factor)))
         (list value at)))))
 (define! read-factor
   (lambda! (text at)
-    (let! ((at (skip-blanks text at)) (byte (byte-at text at)))
+    (let! ((at (skip-blanks text at)) (byte (peek-byte text at)))
       (conditional!
         ((same? byte 45)
          (let! (((value end) (read-factor text (add at 1)))) (list (subtract 0 value) end)))
@@ -464,7 +464,7 @@
         (#true (problem "expected a number or a name in '" text "'"))))))
 (define! read-number
   (lambda! (text at)
-    (let! ((end (name-end text at)) (word (byte-substring text at end)))
+    (let! ((end (name-end text at)) (word (slice text at end)))
       (list
         (if! (string-starts-with? word "0x")
           (hexadecimal-value word)
@@ -489,18 +489,18 @@
 (define! read-character
   (lambda! (text at)
     (let! ((end (literal-end text (add at 1) 39))
-           (inner (byte-substring text (add at 1) (subtract end 1))))
-      (when! (not? (same? (byte-at text (subtract end 1)) 39))
-        (problem "unfinished character " (byte-substring text at end)))
+           (inner (slice text (add at 1) (subtract end 1))))
+      (when! (not? (same? (peek-byte text (subtract end 1)) 39))
+        (problem "unfinished character " (slice text at end)))
       (let! ((bytes (string-to-bytes
-                      (if! (same? inner "\"") inner (read-string (string-append "\"" inner "\""))))))
-        (if! (same? (bytes-length bytes) 1)
-          (list (bytes-byte bytes 0) end)
+                      (if! (same? inner "\"") inner (read-string (join "\"" inner "\""))))))
+        (if! (same? (byte-length bytes) 1)
+          (list (byte-at bytes 0) end)
           (problem "'" inner "' isn't one byte"))))))
 (define! read-name
   (lambda! (text at)
     (let! ((end (name-end text at))
-           (word (byte-substring text at end))
+           (word (slice text at end))
            (name (string-to-symbol word)))
       (if! (binds? defined-names name)
         (list (evaluate name defined-names) end)
@@ -511,7 +511,7 @@
   (lambda! (text)
     (let! (((value #ignore end)
             (catch-kind! (read-form text 0) parse-error #ignore (problem "bad string " text))))
-      (if! (and!? (string? value) (same? end (string-byte-length text)))
+      (if! (and!? (string? value) (same? end (byte-length text)))
         value
         (problem "expected a string in double quotes, got " text)))))
 
@@ -526,17 +526,17 @@
 ; The line without its comment.
 (define! code-of
   (lambda! (line)
-    (string-trim (byte-substring line 0 (find-outside-literals line 0 59)))))
+    (string-trim (slice line 0 (find-outside-literals line 0 59)))))
 
 ; (labels . rest): the labels at the start of the text, and what follows them.
 (define! split-labels
   (lambda! (text labels)
     (let! ((end (name-end text 0)))
       (if! (and!? (less-than? 0 end)
-                  (not? (digit? (string-byte text 0)))
-                  (same? (byte-at text end) 58))
+                  (not? (digit? (byte-at text 0)))
+                  (same? (peek-byte text end) 58))
         (split-labels (string-trim (text-from text (add end 1)))
-                      (pair (byte-substring text 0 end) labels))
+                      (pair (slice text 0 end) labels))
         (pair (reverse labels) text)))))
 
 (define! define-name
@@ -553,7 +553,7 @@
 ; The offset after the first word of a statement: up to a blank.
 (define! word-end
   (lambda! (text at)
-    (if! (or!? (same? at (string-byte-length text)) (blank? (string-byte text at)))
+    (if! (or!? (same? at (byte-length text)) (blank? (byte-at text at)))
       at
       (word-end text (add at 1)))))
 
@@ -567,7 +567,7 @@
       ((same? word ".byte") (length operands))
       ((same? word ".word") (multiply 4 (length operands)))
       ((same? word ".string")
-       (total (lambda! (text) (string-byte-length (read-string text))) operands))
+       (total (lambda! (text) (byte-length (read-string text))) operands))
       ((same? word ".space")
        (let! ((size (space-size word operands)))
          (if! (less-than? size 0) (problem ".space can't be negative: " (integer-to-string size)) size)))
@@ -588,10 +588,10 @@
       (for-each (lambda! (label) (define-name label (here) number)) labels)
       (when! (not? (same? text ""))
         (let! ((name-stop (name-end text 0)) (after-name (skip-blanks text name-stop)))
-          (if! (same? (byte-at text after-name) 61)
-            (read-constant (byte-substring text 0 name-stop) (text-from text (add after-name 1)) number)
+          (if! (same? (peek-byte text after-name) 61)
+            (read-constant (slice text 0 name-stop) (text-from text (add after-name 1)) number)
             (let! ((end (word-end text 0))
-                   (word (byte-substring text 0 end))
+                   (word (slice text 0 end))
                    (operands (split-operands (string-trim (text-from text end))))
                    (size (statement-size word operands))
                    (address (here)))
@@ -603,7 +603,7 @@
 ; still defined, so the lines that use it aren't errors too.
 (define! read-constant
   (lambda! (word expression number)
-    (when! (or!? (same? word "") (digit? (string-byte word 0)))
+    (when! (or!? (same? word "") (digit? (byte-at word 0)))
       (problem "'" word "' can't be a name"))
     (define-name word 0 number)
     (bind defined-names (string-to-symbol word) (read-expression (string-trim expression)))
@@ -630,7 +630,7 @@
   (lambda! (value low high what text)
     (if! (or!? (less-than? value low) (less-than? high value))
       (problem what " " text
-               (if! (same? text (integer-to-string value)) "" (string-append " = " (integer-to-string value)))
+               (if! (same? text (integer-to-string value)) "" (join " = " (integer-to-string value)))
                " doesn't fit: it must be from " (integer-to-string low) " to " (integer-to-string high))
       value)))
 ; A value as `count` bytes, negative ones as two's complement.
@@ -647,16 +647,16 @@
 ; [base], [base+offset] or [base-offset]; the offset is an expression.
 (define! encode-memory
   (lambda! (text)
-    (let! ((size (string-byte-length text))
+    (let! ((size (byte-length text))
            (inside (if! (and!? (string-starts-with? text "[") (string-ends-with? text "]"))
-                     (string-trim (byte-substring text 1 (subtract size 1)))
+                     (string-trim (slice text 1 (subtract size 1)))
                      (problem "expected a memory operand like [r1+4], got '" text "'")))
            (end (name-end inside 0))
            (offset (string-trim (text-from inside end))))
       (when! (not? (same? offset ""))
         (when! (not? (or!? (string-starts-with? offset "+") (string-starts-with? offset "-")))
           (problem "expected + or - after the register in '" text "'")))
-      (pair (encode-register (byte-substring inside 0 end))
+      (pair (encode-register (slice inside 0 end))
             (if! (same? offset "")
               (list 0)
               (encode-value offset 1 -128 127 "the offset"))))))
@@ -787,7 +787,7 @@
     (let! ((pc (evaluate-in! pc machine)) (name (name-of pc)))
       (display-error path
                      (if! (binds? lines-of name)
-                       (string-append ":" (integer-to-string (first (evaluate name lines-of))))
+                       (join ":" (integer-to-string (first (evaluate name lines-of))))
                        "")
                      ": machine fault at " (hexadecimal pc 4) ": " message "\n")
       (exit 1))))

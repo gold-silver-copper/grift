@@ -139,8 +139,8 @@ impl<T> Grift<T> {
                             push(&mut todo, Item::Tail(*b))?;
                             push(&mut todo, Item::Value(*a))?;
                         }
-                        Ok(Object::String(s)) => crate::write_string(s, out)?,
-                        // The literal: each byte as the integer `bytes-byte` gives for it.
+                        Ok(Object::String(s)) => write_string(s, out)?,
+                        // The literal: each byte as the integer `byte-at` gives for it.
                         Ok(Object::Bytes(b)) => {
                             out.write_str("#bytes(")?;
                             for (i, byte) in b.iter().enumerate() {
@@ -170,4 +170,22 @@ impl<T> Grift<T> {
         }
         Ok(())
     }
+}
+
+/// Writes `text` as one quoted grift string literal, with the same escapes as [`Grift::write`]
+/// and the reader. Needs no interpreter and allocates nothing; an output failure is `fmt::Error`.
+pub(crate) fn write_string(text: &str, out: &mut dyn fmt::Write) -> fmt::Result {
+    out.write_char('"')?;
+    for c in text.chars() {
+        match c {
+            '"' => out.write_str("\\\"")?,
+            '\\' => out.write_str("\\\\")?,
+            '\n' => out.write_str("\\n")?,
+            '\r' => out.write_str("\\r")?,
+            '\t' => out.write_str("\\t")?,
+            c if c.is_control() => write!(out, "\\x{:x};", u32::from(c))?,
+            c => out.write_char(c)?,
+        }
+    }
+    out.write_char('"')
 }

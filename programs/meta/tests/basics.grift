@@ -24,9 +24,9 @@
 ; Bytes remain self-evaluating in the guest, and native operations have the host's meaning.
 (when! (not? (and!?
                 (bytes? #bytes(0 255))
-                (same? (bytes-length #bytes(0 255)) 2)
-                (same? (bytes-byte #bytes(0 255) 1) 255)
-                (same? (bytes-append (bytes-slice #bytes(0 255) 0 1) #bytes(255)) #bytes(0 255))
+                (same? (byte-length #bytes(0 255)) 2)
+                (same? (byte-at #bytes(0 255) 1) 255)
+                (same? (join (slice #bytes(0 255) 0 1) #bytes(255)) #bytes(0 255))
                 (equal? (bytes-to-list (list-to-bytes (list 0 255))) (list 0 255))
                 (same? (bytes-to-string (string-to-bytes "é")) "é")))
   (raise (error (quote! bytes-differ))))

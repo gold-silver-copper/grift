@@ -396,7 +396,9 @@ fn job_event(g: &mut G, h: &mut Host, id: u64, event: &JobEvent) -> Result<(), E
         JobEvent::Ended(status) => ("ended", Value::Integer(*status)),
     };
     let what = g.symbol(what)?;
-    let event = g.list(&[Value::Symbol(what), job_value(id), value])?;
+    let event = [Value::Symbol(what), job_value(id), value]
+        .into_iter()
+        .try_rfold(Value::EmptyList, |rest, v| g.pair(v, rest))?;
     g.call(h, &f, &[event]).map(drop)
 }
 

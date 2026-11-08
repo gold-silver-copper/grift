@@ -73,16 +73,13 @@ them. Rust's `\0`, `\'` and backslash-newline aren't grift's (`\x0;` says `\0`, 
 escape), and grift's `\xHEX;` takes any scalar value in place of Rust's `\xNN` and `\u{...}`.
 A bytes literal is `#bytes(`, the bytes as integers 0 to 255 written as the reader reads integers,
 with space and comments between them, and `)`. A bytes value prints so, every byte as the integer
-`bytes-byte` gives for it, and reads back as the same bytes; there is no text and no hex in it, so
+`byte-at` gives for it, and reads back as the same bytes; there is no text and no hex in it, so
 bytes never look like a string. Inside, a token is read as anywhere: one that doesn't read is its
 own `parse-error` (`bad-number`, `unknown-constant`, `unclosed-string`) and one that reads as anything
 but an integer 0 to 255 is `bad-byte`, at it. A `.` is `misplaced-dot`, and a missing `)` is
 `unclosed-list` at the `(`; `#bytes` with no `(` after it is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
 a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` wherever a token can start.
-For Rust hosts, `grift::write_string(text, out)` writes one quoted string literal with these same
-escapes, into a `std::fmt::Write`, without an interpreter or allocation. It returns `std::fmt::Result`;
-`Grift::write` uses it for strings too.
 
 ## Primitives (Rust)
 
@@ -90,9 +87,8 @@ All are applicatives except `vau!`. Most are **core**: what no grift definition 
 (the machine, its frames, bindings, pairs, identity, the number substrate, a string's bytes, the
 reader and the printer). The rest are **native**: `first`, `rest`, `select`, `lookup`, the bitwise
 operations, `integer-to-string`, `string-to-integer`, `integer-to-float`, `float-to-integer`,
-`string-byte-length`, `byte-substring`, `string-search`, `code-point-to-string` and the bytes operations
-`bytes-length`, `bytes-byte`, `bytes-slice`, `bytes-append`, `string-to-bytes`, `bytes-to-string`,
-`list-to-bytes` and `bytes-to-list` exist only for speed (a bytes value's contents are what the
+`byte-length`, `slice`, `search`, `code-point-to-string` and the bytes operations
+`string-to-bytes`, `bytes-to-string`, `list-to-bytes` and `bytes-to-list` exist only for speed (a bytes value's contents are what the
 printer writes and the reader reads back), and each
 one's meaning is its grift definition in [`natives.grift`](../crates/grift/src/natives.grift),
 which a test shows no program can tell from the Rust, but for how the combiner itself prints.
@@ -119,20 +115,17 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` meets the error leaving by the one rule (see Errors). A stop from the host can cut `cleanup`, even before it does anything. If memory is refused at its first step, `cleanup` has done nothing and `out-of-memory` goes on, by the same rule; the cleanups around it are still tried. Not a tail call. |
 | `(evaluate-with-handler x c handler)` | Evaluates `x` in `c` and returns its value. If an error leaves it, the cleanups inside run first, then the combiner `handler` is called in `c` with the error as a new context with no parent, binding `kind` (a symbol), `values` (a list) and `trace` (a list, see Errors); its value is `evaluate-with-handler`'s, as a tail call. A limit (see Errors) is never caught. |
 | `(raise e)` | Raises the error `e`, a context binding `kind`, `values` and `trace` as `error` makes and a handler gets. It keeps the trace it has, which then gains the `raise` and the combinations it passes on its way out, each once. The fields are looked up as any record's, so they may be inherited; others aren't carried. Anything else is a `type-error`. |
-| `(string-byte-length s)`, `(string-byte s i)` | The length of string `s` in bytes of UTF-8; the byte at offset `i`, an integer 0–255. Both O(1). |
-| `(byte-substring s start end)` | The string of the bytes of `s` from offset `start` to `end`; a `range-error` unless both lie on character boundaries, in order. |
-| `(string-search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. A `start` out of range or off a character boundary is a `range-error`. |
-| `(string-append s ...)` | The strings joined. |
+| `(byte-length s)`, `(byte-at s i)` | The length of `s`, a string or a bytes value, in bytes (a string's of UTF-8); the byte at offset `i`, an integer 0–255, a `range-error` unless `0 <= i <` the length. Both O(1). |
+| `(slice s start end)` | The bytes of `s` from offset `start` to `end`, of `s`'s kind: a string or a bytes value. A `range-error` unless `0 <= start <= end <=` the length and, for a string, both lie on character boundaries. |
+| `(search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. Both are strings or both bytes; a pattern of the other kind is a `type-error`. A `start` out of range, or off a character boundary of a string, is a `range-error`. |
+| `(join s ...)` | The strings joined, or the bytes values joined: the first decides, and one of the other kind is a `type-error`. `""` for none. |
 | `(code-point-to-string n)` | The string of the one character whose Unicode code point is `n`; a `range-error` for a surrogate or past `#x10FFFF`. |
-| `(bytes-length b)`, `(bytes-byte b i)` | The number of bytes in bytes value `b`; the byte at offset `i`, an integer 0–255, a `range-error` unless `0 <= i <` the length. Both O(1). |
-| `(bytes-slice b start end)` | A copy of the bytes of `b` from offset `start` to `end`; a `range-error` unless `0 <= start <= end <=` the length. |
-| `(bytes-append b ...)` | The bytes values joined; `#bytes()` for none. |
-| `(string-to-bytes s)`, `(bytes-to-string b)` | A string's UTF-8 bytes; and back, by Rust's `str::from_utf8`, keeping NUL and a byte-order mark. Bytes that aren't UTF-8 are an `encoding-error` with the primitive, `b` and the offset of the first sequence that isn't (Rust's `valid_up_to`): `(bytes-to-string #bytes(97 255))` is `encoding-error #[primitive bytes-to-string] #bytes(97 255) 1`. |
-| `(list-to-bytes list)`, `(bytes-to-list b)` | The bytes of a list of integers 0–255, and back. An element that isn't an integer, or a tail that isn't `()`, is a `type-error`, and an integer outside 0–255 a `range-error`, each with the primitive, the value and its position: `(list-to-bytes (list 1 256))` is `range-error #[primitive list-to-bytes] 256 1`. |
+| `(string-to-bytes s)`, `(bytes-to-string b)` | A string's UTF-8 bytes; and back, by Rust's `str::from_utf8`, keeping NUL and a byte-order mark. Bytes that aren't UTF-8 are an `encoding-error` with `b` and the offset of the first sequence that isn't (Rust's `valid_up_to`): `(bytes-to-string #bytes(97 255))` is `encoding-error #bytes(97 255) 1`. |
+| `(list-to-bytes list)`, `(bytes-to-list b)` | The bytes of a list of integers 0–255, and back. An element that isn't an integer, or a tail that isn't `()`, is a `type-error`, and an integer outside 0–255 a `range-error`, each with the value and its position: `(list-to-bytes (list 1 256))` is `range-error 256 1`. |
 | `(string-to-symbol s)` | The symbol named `s`, interned. |
 | `(integer-to-string n)`, `(string-to-integer s)` | Rust's `to_string` and `parse::<i64>`: `"-42"`, and back. A string that isn't an integer in range is a `parse-error`. |
 | `(string-to-float s)` | Rust's `parse::<f64>` and the three `#` names, so it reads what `value-to-string` writes for a float: `(string-to-float "1")` is `1.0`, `(string-to-float "inf")` is `#infinity`. `value-to-string` writes a not-a-number with no sign or payload, so those don't come back. A string that reads as neither is a `parse-error`. |
-| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `byte-substring` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with why and where, in the whole text, as for a program (see Errors); an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
+| `(read-form text offset)` | The program reader, on one form of string `text`: the first form after byte `offset`, as the list `(form start end)`, where `slice` from `start` to `end` is the form's own text, without the space and comments before it; `()` if only those are left, so a form that is `()` gives `(() start end)`. It evaluates nothing. Text that doesn't read is a `parse-error` with why and where, in the whole text, as for a program (see Errors); an offset out of range or off a character boundary, a `range-error`. Reading a long text form by form costs nothing per call for its length. |
 | `(value-to-string v)` | The text the printer writes for `v`, combiners and contexts as they print (see Values): `(value-to-string (list 1.0 "a"))` is `"(1.0 \"a\")"`, and a float's text reads back as the same float. |
 
 ## The library (grift, [`library.grift`](../crates/grift/src/library.grift))
@@ -157,9 +150,9 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
 | `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
-| `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the name, the index and the list's length: `(element-at (list 1) 3)` gives `range-error element-at 3 1`; `(last ())`, with no index, gives `range-error last ()`. |
+| `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the operands, the list and the index or count: `(element-at (list 1) 3)` gives `range-error (1) 3`, `(second (list 1))` `range-error (1) 1`, and `(last ())` `range-error ()`. An index that isn't an integer is a `type-error`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
-| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if its body is empty (5.6.1). A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
+| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if there are no clauses, or if its body is empty (5.6.1), as `when!` and an empty body give `#inert`: `conditional!` may choose nothing, where `if!` must have both branches. A clause that isn't a pair `(test . body)` is an `arity-error`; a body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.6). A binding that isn't `(parameters expression)` is an `arity-error`. |
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on by the one rule (see Errors). A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. A force cuts every cleanup. Memory refused collects once, before the nearest cleanup's first step; a cleanup stops at its first allocation that still fails, so it may do nothing, and that refusal collects again for the next. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. A limit (see Errors) is never caught. |
@@ -173,15 +166,14 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two integers or two floats (12.5.13). |
 | `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.12, 12.9.6). |
 | `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
-| `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. It is `lookup` with a value no program holds as `otherwise`, so a `type-error` names `lookup`. |
+| `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. It is `lookup` with a value no program holds as `otherwise`, so its `type-error` is `lookup`'s. |
 | `(symbol-to-string s)` | A symbol's name. |
 | `(float-to-string f)` | A float's printed text, which reads back as the same float: `(float-to-string 1.0)` is `"1.0"`. Anything else is a `type-error`. |
-| `(bytes-search b pattern start)` | `string-search` over bytes: the offset of the first place at or after `start` where `pattern`'s bytes are in `b`, or `()`; an empty pattern is at `start`. A `start` out of range is `bytes-slice`'s `range-error`. It isn't native, as no program searches bytes yet: 9 KB takes about 12 ms. |
 | `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)` | Whether `s` starts or ends with those bytes. |
 | `(string-split text separator)`, `(string-join strings separator)` | The parts of `text` between the separators, empty ones too, so `(string-split "a,,b" ",")` is `("a" "" "b")` and `(string-split "" ",")` is `("")`; an empty separator is a `range-error`. The strings with the separator between them. `string-join` undoes `string-split`. |
 | `(string-trim s)` | `s` without the ASCII whitespace at either end (space, tab, newline, form feed, return), as Rust's `trim_ascii`. |
 | `(string-less-than? a b)` | Whether `a` comes before `b` in byte order, as Rust's `<` on `str`: at the first byte where they differ, or the shorter first when one starts the other. |
-| `(string-repeat s count)` | `s` `count` times, as Rust's `str::repeat`; a count below 0 is a `range-error`. |
+| `(string-repeat s count)` | `s` `count` times; a count below 1 is no copies, `""`. |
 | `(string-pad-left s width fill)`, `(string-pad-right s width fill)` | `s` with copies of `fill`, a string of one byte, before it, after it, up to `width` bytes; `s` itself if it is that long already: `(string-pad-left "7" 2 "0")` is `"07"`. A `fill` of any other length is a `range-error`. |
 | `(string-to-lowercase s)` | `s` with `A` to `Z` made `a` to `z` and every other byte as it is, as Rust's `to_ascii_lowercase`. |
 | `(standard-context)` | A new child of the built-in context: it sees the language and nothing of any program, and what is bound in it stays there (6.7.7). The built-in context itself stays out of reach. |
@@ -221,16 +213,17 @@ the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this v
 loop of one `if!` and a call, 0.32 µs a turn: another `if!` 0.05 µs, `sequence!` of two forms
 0.07 µs, `let!` of one binding 1.95 µs, `and!?` of two 1.19 µs, making a `lambda!` 1.0 µs, and
 `conditional!` of three clauses, the last one true, 2.1 µs more than the same choice in nested
-`if!`s. A library combiner such as `second` costs a call, about 0.9 µs, where `(first (rest x))`
-costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read better where speed
+`if!`s. A library combiner such as `second` costs a few calls, as it checks the list's length to
+say what is wrong, where `(first (rest x))` costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read better where speed
 doesn't matter.
 
 ## Errors
 
 Every error stops evaluation and goes to the innermost `catch!` around it, or to the host, as a
 kind, the values involved, and a trace: the combinations of the program being evaluated,
-innermost first, each once, out to the top-level form (the library's own code and code built
-around a combiner value are skipped). A combination in tail position has finished when the next
+innermost first, each once, out to the top-level form. Who made a combination decides: the
+library's own code, and the code it builds as it runs, are skipped; code a program reads or builds
+is listed, whatever its head is. A combination in tail position has finished when the next
 one starts, so it isn't listed. Cleanups (`finally!`) run on the way out. A combination read from
 a named text, such as a file the runner runs or loads, keeps its source and line beside it, not in
 it, so the host reports `in (first x) at lib/table.grift:12`.
@@ -288,20 +281,20 @@ its cleanups do.
 | Kind | When | Values |
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
-| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative; an element or a tail given `list-to-bytes` that isn't an integer or `()` | the combiner and the value; for `list-to-bytes`, the primitive, the value and its position in the list |
-| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the primitive and the operands; or the parameters and the value |
+| `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative; an element or a tail given `list-to-bytes` that isn't an integer or `()` | the value; for `list-to-bytes`, the value and its position in the list |
+| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the operands, as one list: `(add 1)` gives `arity-error (1)`, `(if! #true 1)` `arity-error (#true 1)` |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
-| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included, where the arithmetic inside them reports it; a shift by an amount outside 0 to 63 | the primitive and its operands |
-| `division-by-zero` | integer `divide` or `remainder` by 0 | the primitive and the operands |
-| `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative count or exponent; a fill that isn't one byte | the primitive and the operands; or the library combiner's name and the value; for a list index, the name, the index and the length; for `list-to-bytes`, the primitive, the integer and its position |
-| `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the primitive, the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
-| `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1; or the primitive and the string |
+| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included, where the arithmetic inside them reports it; a shift by an amount outside 0 to 63 | the operands of the arithmetic that overflowed |
+| `division-by-zero` | integer `divide` or `remainder` by 0 | the operands |
+| `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative exponent; a fill that isn't one byte | the operands; for `list-to-bytes`, the integer and its position |
+| `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
+| `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1; or the string |
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run in progress; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
-| `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | the host function |
+| `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
 | any symbol | a program raised an error it made | the values given |
 
 A text that doesn't read says why, as a symbol, and where: `unclosed-list` and `unclosed-string`
@@ -344,8 +337,8 @@ The host may answer with a limit instead, to end the run. The call raises it, no
 and the cleanups run on the way out. A cleanup that waits there is a run that waits like any other.
 
 A call that would wait inside a run that can't be set aside, because it runs under `Grift::evaluate`
-or `Grift::call` or inside a host function that called back into grift, is the error `cannot-park`,
-with the function in its values. It can be caught like any other error.
+or `Grift::call` or inside a host function that called back into grift, is the error `cannot-park`;
+the trace says which call. It can be caught like any other error.
 
 A host that drops its interpreter with runs waiting runs none of their cleanups, as if its process
 had died. The README's embedding section gives the host's side.
@@ -363,9 +356,11 @@ had died. The README's embedding section gives the host's side.
 - **Binary arithmetic and comparison.** `add`, `multiply`, `less-than?`, `minimum` and the rest
   take two operands; Kernel's take any number. The type predicates take one value.
 - **Bytes beside strings.** Bytes are a value of their own, never a string, with their own
-  literal; `same?` compares them by content, as strings.
+  literal; `same?` compares them by content, as strings. Both are sequences of bytes, so one
+  vocabulary serves both, as `add` serves integers and floats: `byte-length`, `byte-at`, `slice`,
+  `join` and `search` take either and answer the kind they were given.
 - **Strings are immutable,** and `same?` compares them by content, like integers. R-1RK has no
-  strings; grift's offsets count bytes of UTF-8, so `string-byte` is O(1), and there is no
+  strings; grift's offsets count bytes of UTF-8, so `byte-at` is O(1), and there is no
   character type: a code point is an integer.
 - **`apply` has one form,** `(apply a arguments)`, with a new empty context; `for-each` takes one
   list, and `map` lists of one length, as Kernel's does. `context` takes one operand, its parent or `()`.

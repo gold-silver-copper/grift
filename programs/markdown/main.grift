@@ -17,7 +17,7 @@
 
 ; ---- Bytes and lines
 
-(define! code-of (lambda! (character) (string-byte character 0)))
+(define! code-of (lambda! (character) (byte-at character 0)))
 (define! space (code-of " "))
 (define! tab (code-of "\t"))
 (define! newline-byte (code-of "\n"))
@@ -42,9 +42,9 @@
 (define! single-quote (code-of "'"))
 
 ; The byte at i, or -1 past either end, so a scanner can look ahead without checking first.
-(define! byte-at
+(define! peek-byte
   (lambda! (s i)
-    (if! (and!? (not? (less-than? i 0)) (less-than? i (string-byte-length s))) (string-byte s i) -1)))
+    (if! (and!? (not? (less-than? i 0)) (less-than? i (byte-length s))) (byte-at s i) -1)))
 
 (define! between? (lambda! (low x high) (and!? (not? (less-than? x low)) (not? (less-than? high x)))))
 (define! digit? (lambda! (b) (between? 48 b 57)))
@@ -53,24 +53,24 @@
 (define! white? (lambda! (b) (or!? (same? b space) (same? b newline-byte) (same? b -1))))
 
 ; The set of the bytes of a string, as a string of 256 bytes with "y" at each member's offset,
-; so a test is one string-byte: grift has no vector, and member? costs a call to equal? for each
+; so a test is one byte-at: grift has no vector, and member? costs a call to equal? for each
 ; element.
 (define! byte-set
   (lambda! (characters)
-    (let! ((members (map (lambda! (i) (string-byte characters i)) (range 0 (string-byte-length characters)))))
-      (apply string-append (map (lambda! (b) (if! (member? b members) "y" "n")) (range 0 256))))))
-(define! in-set? (lambda! (set b) (if! (same? b -1) #false (same? (string-byte set b) 121))))
+    (let! ((members (map (lambda! (i) (byte-at characters i)) (range 0 (byte-length characters)))))
+      (apply join (map (lambda! (b) (if! (member? b members) "y" "n")) (range 0 256))))))
+(define! in-set? (lambda! (set b) (if! (same? b -1) #false (same? (byte-at set b) 121))))
 
 ; How many bytes b start s at offset at.
 (define! run-of
   (lambda! (s at b)
-    (define! count (lambda! (i) (if! (same? (byte-at s i) b) (count (add i 1)) i)))
+    (define! count (lambda! (i) (if! (same? (peek-byte s i) b) (count (add i 1)) i)))
     (subtract (count at) at)))
 
 (define! indent-of (lambda! (line) (run-of line 0 space)))
 (define! from-byte
   (lambda! (s at)
-    (let! ((end (string-byte-length s))) (byte-substring s (minimum at end) end))))
+    (let! ((end (byte-length s))) (slice s (minimum at end) end))))
 ; line without up to n spaces in front.
 (define! drop-indent (lambda! (line n) (from-byte line (minimum n (indent-of line)))))
 (define! trim-start (lambda! (line) (from-byte line (indent-of line))))
@@ -78,10 +78,10 @@
 ; Whether the line is only spaces and tabs. (string-trim would do, but costs 40 µs a line.)
 (define! blank?
   (lambda! (line)
-    (define! end (string-byte-length line))
+    (define! end (byte-length line))
     (define! walk
       (lambda! (i)
-        (if! (same? i end) #true (if! (in-set? blanks (string-byte line i)) (walk (add i 1)) #false))))
+        (if! (same? i end) #true (if! (in-set? blanks (byte-at line i)) (walk (add i 1)) #false))))
     (walk 0)))
 
 ; The elements of xs before the first that f refuses, and the rest: (taken rest).
@@ -106,11 +106,11 @@
        (lambda! (s from at end)
          ; if! rather than conditional! in the loops over bytes: it costs a seventh as much.
          (if! (same? at end)
-           (list (byte-substring s from end))
-           (if! (in-set? html-specials (string-byte s at))
-             (pair (byte-substring s from at) (pair (entity (string-byte s at)) (parts s (add at 1) (add at 1) end)))
+           (list (slice s from end))
+           (if! (in-set? html-specials (byte-at s at))
+             (pair (slice s from at) (pair (entity (byte-at s at)) (parts s (add at 1) (add at 1) end)))
              (parts s from (add at 1) end)))))
-     (lambda! (s) (apply string-append (parts s 0 0 (string-byte-length s)))))))
+     (lambda! (s) (apply join (parts s 0 0 (byte-length s)))))))
 
 ; A URL with every byte outside the ones URLs keep as they are written %XX, as CommonMark's
 ; renderers do; a % already followed by two hex digits stays.
@@ -119,26 +119,26 @@
 (define! hex-digits (byte-set "0123456789abcdefABCDEF"))
 (define! encode-url
   (lambda! (url)
-    (define! hex (lambda! (n) (byte-substring "0123456789ABCDEF" n (add n 1))))
+    (define! hex (lambda! (n) (slice "0123456789ABCDEF" n (add n 1))))
     (define! parts
       (lambda! (from at end)
         (if! (same? at end)
-          (list (byte-substring url from end))
-          (let! ((b (string-byte url at)))
+          (list (slice url from end))
+          (let! ((b (byte-at url at)))
             (if! (or!? (in-set? url-keeps b)
-                       (and!? (same? b 37) (in-set? hex-digits (byte-at url (add at 1)))
-                              (in-set? hex-digits (byte-at url (add at 2)))))
+                       (and!? (same? b 37) (in-set? hex-digits (peek-byte url (add at 1)))
+                              (in-set? hex-digits (peek-byte url (add at 2)))))
               (parts from (add at 1) end)
               ; Every byte of the character, whose first byte gives its length in UTF-8.
               (let! ((next (add at (conditional! ((less-than? b 128) 1) ((less-than? b 224) 2)
                                                  ((less-than? b 240) 3) (#true 4)))))
-                (pair (byte-substring url from at)
-                      (pair (apply string-append
-                                   (map (lambda! (i) (let! ((b (string-byte url i)))
-                                                       (string-append "%" (hex (divide b 16)) (hex (remainder b 16)))))
+                (pair (slice url from at)
+                      (pair (apply join
+                                   (map (lambda! (i) (let! ((b (byte-at url i)))
+                                                       (join "%" (hex (divide b 16)) (hex (remainder b 16)))))
                                         (range at next)))
                             (parts next next end)))))))))
-    (escape-html (apply string-append (parts 0 0 (string-byte-length url))))))
+    (escape-html (apply join (parts 0 0 (byte-length url))))))
 
 ; Each line followed by a newline.
 (define! lines-text (lambda! (lines) (string-join (append lines (list "")) "\n")))
@@ -148,7 +148,7 @@
 ; The offset of the next run of exactly n backticks at or after i in s, or ().
 (define! backtick-run
   (lambda! (s i n)
-    (let! ((at (string-search s "`" i)))
+    (let! ((at (search s "`" i)))
       (conditional!
         ((same? at ()) ())
         ((same? (run-of s at backtick) n) at)
@@ -158,10 +158,10 @@
 ; ends have one and it isn't all spaces.
 (define! code-span-text
   (lambda! (code)
-    (let! ((flat (string-join (string-split code "\n") " ")) (size (string-byte-length flat)))
-      (if! (and!? (less-than? 1 size) (same? (string-byte flat 0) space)
-                  (same? (string-byte flat (subtract size 1)) space) (not? (blank? flat)))
-        (byte-substring flat 1 (subtract size 1))
+    (let! ((flat (string-join (string-split code "\n") " ")) (size (byte-length flat)))
+      (if! (and!? (less-than? 1 size) (same? (byte-at flat 0) space)
+                  (same? (byte-at flat (subtract size 1)) space) (not? (blank? flat)))
+        (slice flat 1 (subtract size 1))
         flat))))
 
 ; White space and punctuation above ASCII, by code point, for what stands beside a run: sorted
@@ -223,9 +223,9 @@
 ; The code point of the character starting at offset i, or -1 past either end.
 (define! code-point-at
   (lambda! (s i)
-    (let! ((b (byte-at s i))
+    (let! ((b (peek-byte s i))
            (more (lambda! (code j)
-                   (let! ((c (byte-at s j)))
+                   (let! ((c (peek-byte s j)))
                      (if! (between? 128 c 191) (more (add (multiply code 64) (remainder c 64)) (add j 1)) code)))))
       (conditional!
         ((less-than? b 192) b)
@@ -235,7 +235,7 @@
 
 ; The offset of the character holding the byte at i.
 (define! character-start
-  (lambda! (s i) (if! (between? 128 (byte-at s i) 191) (character-start s (subtract i 1)) i)))
+  (lambda! (s i) (if! (between? 128 (peek-byte s i) 191) (character-start s (subtract i 1)) i)))
 
 ; What the ends of a run need to know, unlike white? and punctuation? elsewhere: every ASCII
 ; white space byte is space, and characters above ASCII count too.
@@ -248,7 +248,7 @@
 ; a word, so a run between two punctuation marks can do both.
 (define! delimiter-run
   (lambda! (s at)
-    (let! ((b (string-byte s at))
+    (let! ((b (byte-at s at))
            (n (run-of s at b))
            (before (code-point-at s (character-start s (subtract at 1))))
            (after (code-point-at s (add at n)))
@@ -269,7 +269,7 @@
 (define! piece-text
   (lambda! (s piece)
     (if! (pair? piece)
-      (byte-substring s (first piece) (add (first piece) (second piece)))
+      (slice s (first piece) (add (first piece) (second piece)))
       piece)))
 
 ; The text pieces on top of out joined into one, with text after them: a run that closed nothing
@@ -277,7 +277,7 @@
 (define! joined
   (lambda! (out text)
     (if! (and!? (pair? out) (not? (pair? (first out))))
-      (joined (rest out) (string-append (first out) text))
+      (joined (rest out) (join (first out) text))
       (pair text out))))
 
 ; Adds the run to out, the HTML so far, last piece first. It closes the nearest run it can pair
@@ -288,7 +288,7 @@
     (let! (((at n opens closes whole) run)
            (pairs?
              (lambda! ((opener size can-open can-close opener-whole))
-               (and!? (same? (string-byte s opener) (string-byte s at))
+               (and!? (same? (byte-at s opener) (byte-at s at))
                       (not? (and!? (or!? opens can-close)
                                    (same? (remainder (add whole opener-whole) 3) 0)
                                    (not? (same? (remainder whole 3) 0)))))))
@@ -307,8 +307,8 @@
                (left (if! (same? size used)
                        under
                        (pair (list from (subtract size used) can-open can-close opener-whole) under)))
-               (done (pair (string-append (if! (same? used 2) "<strong>" "<em>")
-                                          (apply string-append inside)
+               (done (pair (join (if! (same? used 2) "<strong>" "<em>")
+                                          (apply join inside)
                                           (if! (same? used 2) "</strong>" "</em>"))
                            left)))
           (if! (same? n used)
@@ -321,7 +321,7 @@
   (lambda! (s at)
     (define! look
       (lambda! (j depth)
-        (let! ((c (byte-at s j)))
+        (let! ((c (peek-byte s j)))
           (conditional!
             ((same? c -1) ())
             ((same? c backslash) (look (add j 2) depth))
@@ -337,11 +337,11 @@
 ; (destination title next), title "" if none, or () if it isn't one.
 (define! link-target
   (lambda! (s at)
-    (define! skip-white (lambda! (j) (if! (and!? (white? (byte-at s j)) (not? (same? (byte-at s j) -1))) (skip-white (add j 1)) j)))
+    (define! skip-white (lambda! (j) (if! (and!? (white? (peek-byte s j)) (not? (same? (peek-byte s j) -1))) (skip-white (add j 1)) j)))
     ; The end of a destination: no white space, parentheses balanced.
     (define! destination-end
       (lambda! (j depth)
-        (let! ((c (byte-at s j)))
+        (let! ((c (peek-byte s j)))
           (conditional!
             ((white? c) j)
             ((same? c backslash) (destination-end (add j 2) depth))
@@ -349,19 +349,19 @@
             ((same? c close-parenthesis) (if! (same? depth 0) j (destination-end (add j 1) (subtract depth 1))))
             (#true (destination-end (add j 1) depth))))))
     (let! ((start (skip-white (add at 1)))
-           (bracketed (if! (same? (byte-at s start) less) (string-search s ">" start) ()))
+           (bracketed (if! (same? (peek-byte s start) less) (search s ">" start) ()))
            (end (if! (same? bracketed ()) (destination-end start 0) (add bracketed 1)))
            (after (skip-white end))
-           (mark (byte-at s after)))
+           (mark (peek-byte s after)))
       (conditional!
-        ((same? mark close-parenthesis) (list (byte-substring s start end) "" (add after 1)))
+        ((same? mark close-parenthesis) (list (slice s start end) "" (add after 1)))
         ((and!? (or!? (same? mark double-quote) (same? mark single-quote)) (less-than? start after))
-          (let! ((close (string-search s (code-point-to-string mark) (add after 1))))
+          (let! ((close (search s (code-point-to-string mark) (add after 1))))
             (if! (same? close ())
               ()
               (let! ((last (skip-white (add close 1))))
-                (if! (same? (byte-at s last) close-parenthesis)
-                  (list (byte-substring s start end) (byte-substring s (add after 1) close) (add last 1))
+                (if! (same? (peek-byte s last) close-parenthesis)
+                  (list (slice s start end) (slice s (add after 1) close) (add last 1))
                   ())))))
         (#true ())))))
 
@@ -372,12 +372,12 @@
 ; are: an image's tag is <img src="..." alt="..., its description inside the second pair.
 (define! plain-text
   (lambda! (html)
-    (let! ((open (string-search html "<" 0)))
+    (let! ((open (search html "<" 0)))
       (if! (same? open ())
         html
-        (let! ((close (string-search html ">" open))
-               (tag (byte-substring html open close)))
-          (string-append (byte-substring html 0 open)
+        (let! ((close (search html ">" open))
+               (tag (slice html open close)))
+          (join (slice html 0 open)
                          (if! (string-starts-with? tag "<img ")
                            (let! (((#ignore #ignore #ignore alt . #ignore) (string-split tag "\""))) alt)
                            "")
@@ -386,15 +386,15 @@
 ; The HTML of the text of a link or image, where it stands: emphasis inside touches its brackets.
 (define! render-bracketed
   (lambda! (text)
-    (let! ((html (render-inline (string-append "[" text "]"))))
-      (byte-substring html 1 (subtract (string-byte-length html) 1)))))
+    (let! ((html (render-inline (join "[" text "]"))))
+      (slice html 1 (subtract (byte-length html) 1)))))
 
 ; The target of the bracket at `at`, if a ( follows its closing bracket: (close written title
 ; next) or ().
 (define! bracket-target
   (lambda! (s at)
     (let! ((close (closing-bracket s at)))
-      (if! (or!? (same? close ()) (not? (same? (byte-at s (add close 1)) open-parenthesis)))
+      (if! (or!? (same? close ()) (not? (same? (peek-byte s (add close 1)) open-parenthesis)))
         ()
         (let! ((target (link-target s (add close 1))))
           (if! (same? target ()) () (pair close target)))))))
@@ -406,19 +406,19 @@
   (lambda! (text)
     (define! look
       (lambda! (j)
-        (let! ((c (byte-at text j)))
+        (let! ((c (peek-byte text j)))
           (conditional!
             ((same? c -1) #false)
             ((same? c backslash) (look (add j 2)))
             ((same? c backtick)
               (let! ((n (run-of text j backtick)) (close (backtick-run text (add j n) n)))
                 (look (if! (same? close ()) (add j n) (add close n)))))
-            ((and!? (same? c bang) (same? (byte-at text (add j 1)) open-bracket))
+            ((and!? (same? c bang) (same? (peek-byte text (add j 1)) open-bracket))
               (let! ((image (bracket-target text (add j 1))))
                 (if! (same? image ())
                   (look (add j 2))
                   (let! (((close #ignore #ignore next) image))
-                    (if! (holds-link? (byte-substring text (add j 2) close)) #true (look next))))))
+                    (if! (holds-link? (slice text (add j 2) close)) #true (look next))))))
             ((and!? (same? c open-bracket) (pair? (bracket-target text j))) #true)
             ((same? c less)
               (let! ((autolink (autolink-at text j)))
@@ -430,40 +430,40 @@
 (define! link-at
   (lambda! (s at image)
     (let! ((found (bracket-target s at))
-           (text (if! (same? found ()) "" (byte-substring s (add at 1) (first found)))))
+           (text (if! (same? found ()) "" (slice s (add at 1) (first found)))))
       (if! (or!? (same? found ()) (and!? (not? image) (holds-link? text)))
         ()
         (let! (((#ignore written title next) found)
                ; <destination> may hold spaces; the brackets aren't part of it.
                (destination (if! (and!? (string-starts-with? written "<") (string-ends-with? written ">"))
-                              (byte-substring written 1 (subtract (string-byte-length written) 1))
+                              (slice written 1 (subtract (byte-length written) 1))
                               written))
-               (title-attribute (if! (same? title "") "" (string-append " title=\"" (escape-html title) "\""))))
+               (title-attribute (if! (same? title "") "" (join " title=\"" (escape-html title) "\""))))
           (list (if! image
-                  (string-append "<img src=\"" (encode-url destination) "\" alt=\"" (plain-text (render-bracketed text)) "\""
+                  (join "<img src=\"" (encode-url destination) "\" alt=\"" (plain-text (render-bracketed text)) "\""
                                  title-attribute " />")
-                  (string-append "<a href=\"" (encode-url destination) "\"" title-attribute ">"
+                  (join "<a href=\"" (encode-url destination) "\"" title-attribute ">"
                                  (render-bracketed text) "</a>"))
                 next))))))
 
 ; An autolink <scheme:...> at `at`: (html next) or ().
 (define! autolink-at
   (lambda! (s at)
-    (let! ((close (string-search s ">" at)))
+    (let! ((close (search s ">" at)))
       (if! (same? close ())
         ()
-        (let! ((url (byte-substring s (add at 1) close)))
+        (let! ((url (slice s (add at 1) close)))
           (if! (and!? (or!? (string-starts-with? url "http://") (string-starts-with? url "https://")
                             (string-starts-with? url "mailto:"))
-                      (same? (string-search url " " 0) ())
-                      (same? (string-search url "<" 0) ()))
-            (list (string-append "<a href=\"" (encode-url url) "\">" (escape-html url) "</a>") (add close 1))
+                      (same? (search url " " 0) ())
+                      (same? (search url "<" 0) ()))
+            (list (join "<a href=\"" (encode-url url) "\">" (escape-html url) "</a>") (add close 1))
             ()))))))
 
 ; How many spaces come just before offset at, back to offset from.
 (define! spaces-before
   (lambda! (s from at)
-    (if! (and!? (less-than? from at) (same? (string-byte s (subtract at 1)) space))
+    (if! (and!? (less-than? from at) (same? (byte-at s (subtract at 1)) space))
       (add 1 (spaces-before s from (subtract at 1)))
       0)))
 
@@ -473,25 +473,25 @@
 ; The HTML of a paragraph's or heading's text.
 (define! render-inline
   (lambda! (s)
-    (let! ((end (string-byte-length s))
+    (let! ((end (byte-length s))
            ; out holds the HTML so far, last piece first; from is where the text not yet in it
            ; starts. A construct that matches puts that text in, then its own HTML.
            (scan
              (lambda! (from at out)
                (if! (same? at end)
-                 (pair (escape-html (byte-substring s from at)) out)
-                 (if! (not? (in-set? inline-starts (string-byte s at)))
+                 (pair (escape-html (slice s from at)) out)
+                 (if! (not? (in-set? inline-starts (byte-at s at)))
                  (scan from (add at 1) out)
-                 (let! ((c (string-byte s at))
+                 (let! ((c (byte-at s at))
                         (put (lambda! (to html next)
-                               (scan next next (pair html (pair (escape-html (byte-substring s from to)) out)))))
+                               (scan next next (pair html (pair (escape-html (slice s from to)) out)))))
                         (construct (lambda! (found)
                                      (if! (same? found ())
                                        (scan from (add at 1) out)
                                        (put at (first found) (second found))))))
                    (conditional!
                      ((same? c backslash)
-                       (let! ((next (byte-at s (add at 1))))
+                       (let! ((next (peek-byte s (add at 1))))
                          (conditional!
                            ((same? next newline-byte) (put at "<br />\n" (add at 2)))
                            ((punctuation? next) (put at (escape-html (code-point-to-string next)) (add at 2)))
@@ -503,54 +503,54 @@
                        (let! ((n (run-of s at backtick)) (close (backtick-run s (add at n) n)))
                          (if! (same? close ())
                            (scan from (add at n) out)
-                           (put at (string-append "<code>" (escape-html (code-span-text (byte-substring s (add at n) close)))
+                           (put at (join "<code>" (escape-html (code-span-text (slice s (add at n) close)))
                                                   "</code>")
                                 (add close n)))))
                      ((or!? (same? c star) (same? c underscore))
                        (let! ((run (delimiter-run s at)) (next (add at (second run))))
-                         (scan next next (close-emphasis s (pair (escape-html (byte-substring s from at)) out) run))))
+                         (scan next next (close-emphasis s (pair (escape-html (slice s from at)) out) run))))
                      ((same? c open-bracket) (construct (link-at s at #false)))
-                     ((and!? (same? c bang) (same? (byte-at s (add at 1)) open-bracket))
+                     ((and!? (same? c bang) (same? (peek-byte s (add at 1)) open-bracket))
                        (let! ((found (link-at s (add at 1) #true)))
                          (if! (same? found ()) (scan from (add at 1) out) (put at (first found) (second found)))))
                      ((same? c less) (construct (autolink-at s at)))
                      (#true (scan from (add at 1) out)))))))))
-      (apply string-append (reverse (map (lambda! (piece) (piece-text s piece)) (scan 0 0 ())))))))
+      (apply join (reverse (map (lambda! (piece) (piece-text s piece)) (scan 0 0 ())))))))
 
 ; ---- Block starts
 
 ; The level of an ATX heading line, 1 to 6, or 0 if it isn't one.
 (define! heading-level
   (lambda! (line)
-    (let! ((at (indent-of line)) (level (run-of line at hash)) (after (byte-at line (add at level))))
+    (let! ((at (indent-of line)) (level (run-of line at hash)) (after (peek-byte line (add at level))))
       (if! (and!? (less-than? at 4) (between? 1 level 6) (white? after)) level 0))))
 
 ; An ATX heading's text: without the #s, and without a closing run of #s after a space.
 (define! heading-text
   (lambda! (line level)
     (let! ((text (string-trim (from-byte line (add (indent-of line) level))))
-           (size (string-byte-length text))
-           (hashes (lambda! (j) (if! (and!? (less-than? 0 j) (same? (string-byte text (subtract j 1)) hash))
+           (size (byte-length text))
+           (hashes (lambda! (j) (if! (and!? (less-than? 0 j) (same? (byte-at text (subtract j 1)) hash))
                                   (hashes (subtract j 1))
                                   j)))
            (start (hashes size)))
       (conditional!
         ((same? start 0) "")
         ((same? start size) text)
-        ((same? (string-byte text (subtract start 1)) space) (string-trim (byte-substring text 0 start)))
+        ((same? (byte-at text (subtract start 1)) space) (string-trim (slice text 0 start)))
         (#true text)))))
 
 (define! heading
   (lambda! (level html)
     (let! ((tag (integer-to-string level)))
-      (string-append "<h" tag ">" html "</h" tag ">\n"))))
+      (join "<h" tag ">" html "</h" tag ">\n"))))
 
 ; Whether the line is three or more of one of * - _, with spaces between allowed.
 (define! thematic-break?
   (lambda! (line)
-    (let! ((at (indent-of line)) (b (byte-at line at))
+    (let! ((at (indent-of line)) (b (peek-byte line at))
            (count (lambda! (i n)
-                    (let! ((c (byte-at line i)))
+                    (let! ((c (peek-byte line i)))
                       (conditional! ((same? c -1) n)
                                     ((same? c b) (count (add i 1) (add n 1)))
                                     ((same? c space) (count (add i 1) n))
@@ -560,7 +560,7 @@
 ; 1 for a line of =, 2 for a line of -, under a paragraph; 0 otherwise.
 (define! setext-level
   (lambda! (line)
-    (let! ((at (indent-of line)) (b (byte-at line at)))
+    (let! ((at (indent-of line)) (b (peek-byte line at)))
       (if! (and!? (less-than? at 4) (or!? (same? b equals) (same? b dash))
                   (blank? (from-byte line (add at (run-of line at b)))))
         (if! (same? b equals) 1 2)
@@ -569,24 +569,24 @@
 ; A code fence's (indent mark size info), or ().
 (define! fence-of
   (lambda! (line)
-    (let! ((at (indent-of line)) (b (byte-at line at)) (size (run-of line at b)))
+    (let! ((at (indent-of line)) (b (peek-byte line at)) (size (run-of line at b)))
       (if! (and!? (less-than? at 4) (or!? (same? b backtick) (same? b tilde)) (less-than? 2 size))
         (let! ((info (string-trim (from-byte line (add at size)))))
-          (if! (and!? (same? b backtick) (not? (same? (string-search info "`" 0) ())))
+          (if! (and!? (same? b backtick) (not? (same? (search info "`" 0) ())))
             ()
             (list at b size info)))
         ()))))
 
 (define! quote-line?
-  (lambda! (line) (let! ((at (indent-of line))) (and!? (less-than? at 4) (same? (byte-at line at) greater)))))
+  (lambda! (line) (let! ((at (indent-of line))) (and!? (less-than? at 4) (same? (peek-byte line at) greater)))))
 
 ; A quoted line without its > and one space after it.
 (define! quote-content
   (lambda! (line)
     (let! ((at (add (indent-of line) 1)))
-      (from-byte line (if! (same? (byte-at line at) space) (add at 1) at)))))
+      (from-byte line (if! (same? (peek-byte line at) space) (add at 1) at)))))
 
-(define! digits-at (lambda! (s at) (if! (digit? (byte-at s at)) (add 1 (digits-at s (add at 1))) 0)))
+(define! digits-at (lambda! (s at) (if! (digit? (peek-byte s at)) (add 1 (digits-at s (add at 1))) 0)))
 
 ; A list item's marker, (ordered delimiter start column), where column is where the item's
 ; content starts; or ().
@@ -594,20 +594,20 @@
   ((lambda! ()
      (define! marker
        (lambda! (line ordered delimiter start end)
-         (let! ((after (byte-at line end)) (spaces (run-of line end space)))
+         (let! ((after (peek-byte line end)) (spaces (run-of line end space)))
            (conditional!
              ((not? (white? after)) ())
              ((or!? (blank? (from-byte line end)) (less-than? 4 spaces)) (list ordered delimiter start (add end 1)))
              (#true (list ordered delimiter start (add end spaces)))))))
      (lambda! (line)
-       (let! ((at (indent-of line)) (b (byte-at line at))
+       (let! ((at (indent-of line)) (b (peek-byte line at))
               (digits (digits-at line at))
-              (delimiter (byte-at line (add at digits))))
+              (delimiter (peek-byte line (add at digits))))
          (conditional!
            ((less-than? 3 at) ())
            ((member? b (list dash plus star)) (marker line #false b 1 (add at 1)))
            ((and!? (between? 1 digits 9) (or!? (same? delimiter dot) (same? delimiter close-parenthesis)))
-             (marker line #true delimiter (string-to-integer (byte-substring line at (add at digits))) (add at (add digits 1))))
+             (marker line #true delimiter (string-to-integer (slice line at (add at digits))) (add at (add digits 1))))
            (#true ())))))))
 
 ; Whether the line starts a block that ends a paragraph before it. A list item does if it isn't
@@ -615,7 +615,7 @@
 (define! block-starts (byte-set "#`~>*-_+0123456789"))
 (define! interrupts?
   (lambda! (line)
-    (and!? (in-set? block-starts (byte-at line (indent-of line)))
+    (and!? (in-set? block-starts (peek-byte line (indent-of line)))
            (or!? (less-than? 0 (heading-level line)) (pair? (fence-of line)) (quote-line? line) (thematic-break? line)
                  (let! ((marker (list-marker line)))
                    (and!? (pair? marker)
@@ -667,8 +667,8 @@
           (#true (collect (rest lines) (pair (drop-indent (first lines) indent) body))))))
     (let! (((body more) (collect lines ()))
            (language (if! (same? info "") "" (first (string-split info " ")))))
-      (list (string-append "<pre><code"
-                           (if! (same? language "") "" (string-append " class=\"language-" (escape-html language) "\""))
+      (list (join "<pre><code"
+                           (if! (same? language "") "" (join " class=\"language-" (escape-html language) "\""))
                            ">" (escape-html (lines-text body)) "</code></pre>\n")
             more))))
 
@@ -677,7 +677,7 @@
     (let! (((body more) (split-while (lambda! (line) (or!? (blank? line) (less-than? 3 (indent-of line)))) lines))
            ; Blank lines at the end belong to what follows.
            ((trailing kept) (split-while blank? (reverse body))))
-      (list (string-append "<pre><code>"
+      (list (join "<pre><code>"
                            (escape-html (lines-text (map (lambda! (line) (drop-indent line 4)) (reverse kept))))
                            "</code></pre>\n")
             (append trailing more)))))
@@ -696,7 +696,7 @@
                 (collect (rest lines) (pair line body)))
               (#true (list (reverse body) lines)))))))
     (let! (((body more) (collect lines ())))
-      (list (string-append "<blockquote>\n" (blocks-html (first (read-blocks body)) #false) "</blockquote>\n")
+      (list (join "<blockquote>\n" (blocks-html (first (read-blocks body)) #false) "</blockquote>\n")
             more))))
 
 ; A paragraph, or a setext heading when a line of = or - ends it.
@@ -753,29 +753,29 @@
            (read (map read-blocks items))
            (tight (not? (or!? loose (any? (lambda! ((#ignore gap)) gap) read))))
            (tag (if! ordered "ol" "ul")))
-      (list (string-append "<" tag (if! (and!? ordered (not? (same? start 1)))
-                                     (string-append " start=\"" (integer-to-string start) "\"")
+      (list (join "<" tag (if! (and!? ordered (not? (same? start 1)))
+                                     (join " start=\"" (integer-to-string start) "\"")
                                      "")
                            ">\n"
-                           (apply string-append (map (lambda! ((pieces #ignore)) (item-html pieces tight)) read))
+                           (apply join (map (lambda! ((pieces #ignore)) (item-html pieces tight)) read))
                            "</" tag ">\n")
             more))))
 
 ; A piece as a block of its own.
 (define! block-html
-  (lambda! (piece) (if! (pair? piece) (string-append "<p>" (rest piece) "</p>\n") piece)))
+  (lambda! (piece) (if! (pair? piece) (join "<p>" (rest piece) "</p>\n") piece)))
 
 (define! blocks-html
-  (lambda! (pieces tight) (apply string-append (map block-html pieces))))
+  (lambda! (pieces tight) (apply join (map block-html pieces))))
 
 ; An item: in a tight list its paragraphs are bare text; every other block starts a line.
 (define! item-html
   (lambda! (pieces tight)
-    (string-append
+    (join
       (fold (lambda! (html piece)
               (if! (and!? tight (pair? piece))
-                (string-append html (rest piece))
-                (string-append html (if! (string-ends-with? html "\n") "" "\n") (block-html piece))))
+                (join html (rest piece))
+                (join html (if! (string-ends-with? html "\n") "" "\n") (block-html piece))))
             "<li>" pieces)
       "</li>\n")))
 
@@ -785,15 +785,15 @@
   (lambda! (line)
     (define! expand
       (lambda! (at column)
-        (let! ((b (byte-at line at)))
+        (let! ((b (peek-byte line at)))
           (if! (same? b space)
             (expand (add at 1) (add column 1))
             (if! (same? b tab)
               (expand (add at 1) (multiply (add (divide column 4) 1) 4))
-              (string-append (string-repeat " " column) (from-byte line at)))))))
-    (let! ((line (if! (in-set? blanks (byte-at line (indent-of line))) (expand 0 0) line))
-           (size (string-byte-length line)))
-      (if! (string-ends-with? line "\xd;") (byte-substring line 0 (subtract size 1)) line))))
+              (join (string-repeat " " column) (from-byte line at)))))))
+    (let! ((line (if! (in-set? blanks (peek-byte line (indent-of line))) (expand 0 0) line))
+           (size (byte-length line)))
+      (if! (string-ends-with? line "\xd;") (slice line 0 (subtract size 1)) line))))
 
 (define! markdown-to-html
   (lambda! (text)
@@ -829,7 +829,7 @@
              (filter (lambda! ((name markdown expected))
                        (let! ((actual (catch! (markdown-to-html markdown)
                                               e
-                                              (string-append "raised " (value-to-string (evaluate-in! kind e)) " "
+                                              (join "raised " (value-to-string (evaluate-in! kind e)) " "
                                                              (value-to-string (evaluate-in! values e))))))
                          (if! (same? actual expected)
                            #false

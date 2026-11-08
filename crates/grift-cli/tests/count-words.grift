@@ -5,9 +5,9 @@
 (define! words-in
   (lambda! (line)
     (let! ((count (lambda! (i n inside)
-                    (if! (same? i (string-byte-length line))
+                    (if! (same? i (byte-length line))
                       n
-                      (if! (member? (string-byte line i) (list 32 9 10))
+                      (if! (member? (byte-at line i) (list 32 9 10))
                         (count (add i 1) n #false)
                         (count (add i 1) (if! inside n (add n 1)) #true))))))
       (count 0 0 #false))))
@@ -20,7 +20,7 @@
         (tally (add lines 1) (add words (words-in line)))))))
 (define! (lines words) (tally 0 0))
 (define! out (create-file report-path))
-((evaluate-in! write out) (string-append (integer-to-string lines) " " (integer-to-string words) "\n"))
+((evaluate-in! write out) (join (integer-to-string lines) " " (integer-to-string words) "\n"))
 ((evaluate-in! close out))
 (define! checked (run-process "cat" report-path))
 (display "report: " (evaluate-in! output checked))

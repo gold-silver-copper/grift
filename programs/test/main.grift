@@ -73,7 +73,7 @@
 
 ; A failure is a list of lines like "expected:   3".
 (define! field
-  (lambda! (label text) (string-append (string-pad-right (string-append label ":") 12 " ") text)))
+  (lambda! (label text) (join (string-pad-right (join label ":") 12 " ") text)))
 
 ; An error's kind and values on a line. Its trace on lines of their own, without what this program
 ; added: a trace lists this program's combinations as it does a test's. The kinds this program
@@ -119,7 +119,7 @@
   (lambda! (label (fine? result))
     (if! fine?
       (list (field label (value-to-string result)))
-      (pair (field label (string-append "raised " (error-text result))) (trace-lines result)))))
+      (pair (field label (join "raised " (error-text result))) (trace-lines result)))))
 
 (define! fail (lambda! (lines) (bind top (quote! failures) (pair lines failures))))
 
@@ -177,10 +177,10 @@
       (let! (((fine? result) (attempt expression caller)))
         (when! (or!? fine? (not? (same? (evaluate-in! kind result) kind)))
           (fail (append (list (field "expression" (value-to-string expression))
-                              (field "expected" (string-append "raises " (symbol-to-string kind))))
+                              (field "expected" (join "raises " (symbol-to-string kind))))
                         (outcome-lines "actual" (list fine? result)))))))))
 
-(define! captured-text (lambda! () (apply string-append (reverse captured))))
+(define! captured-text (lambda! () (apply join (reverse captured))))
 
 ; expect-output! keeps what its expression displays apart from the rest of the test's output.
 (bind language (quote! expect-output!)
@@ -225,7 +225,7 @@
 
 (define! advance-to-name
   (lambda! (name)
-    (let! ((at (string-search current-text (value-to-string name) current-offset)))
+    (let! ((at (search current-text (value-to-string name) current-offset)))
       (when! (and!? (integer? at) (less-than? at current-form-end)) (advance-to at)))))
 
 (bind language (quote! test!)
@@ -234,7 +234,7 @@
       (when! (pair? running) (misuse (quote! test-inside-test) text))
       (when! (not? (string? text)) (misuse (quote! test-name-not-a-string) text))
       (let! ((full (full-name text))
-             (key (string-to-symbol (string-append current-file ":" full))))
+             (key (string-to-symbol (join current-file ":" full))))
         (when! (binds? seen key) (misuse (quote! test-name-twice) full))
         (bind seen key #true)
         (advance-to-name text)
@@ -271,7 +271,7 @@
 
 (define! lines-between
   (lambda! (text from to)
-    (subtract (length (string-split (byte-substring text from to) "\n")) 1)))
+    (subtract (length (string-split (slice text from to) "\n")) 1)))
 
 ; The forms of current-text from offset, each given to evaluate-one with where.
 (define! load-forms
@@ -319,27 +319,27 @@
             (bind top (quote! load-failures) (add load-failures 1))
             (say path
                  (if! (same? (evaluate-in! kind e) (quote! parse-error))
-                   (string-append ":" (integer-to-string (second (evaluate-in! values e))))
+                   (join ":" (integer-to-string (second (evaluate-in! values e))))
                    "")
                  "  when loading ... FAIL")
-            (say-indented (field "actual" (string-append "raised " (error-text e)))))))
+            (say-indented (field "actual" (join "raised " (error-text e)))))))
 
 ; A name is selected if it holds any --name text, or there are none.
 (define! selected?
   (lambda! ((name . #ignore))
     (or!? (empty-list? patterns)
-          (any? (lambda! (text) (not? (empty-list? (string-search name text 0)))) patterns))))
+          (any? (lambda! (text) (not? (empty-list? (search name text 0)))) patterns))))
 
 (define! place-of
   (lambda! (name file line)
-    (string-append file ":" (integer-to-string line) "  " name)))
+    (join file ":" (integer-to-string line) "  " name)))
 
 ; The running test's output, for its failure.
 (define! say-output
   (lambda! ()
     (when! (pair? captured)
       (say-indented "output:")
-      (for-each (lambda! (line) (say-indented (string-append "| " line)))
+      (for-each (lambda! (line) (say-indented (join "| " line)))
                 (string-split (captured-text) "\n")))))
 
 (define! finish-test
@@ -426,7 +426,7 @@
                (parse-arguments (rest more)))
              (usage-error "--name needs a text")))
           ((string-starts-with? argument "-")
-           (usage-error (string-append "no option " argument)))
+           (usage-error (join "no option " argument)))
           (#true
            (bind top (quote! paths) (pair argument paths))
            (parse-arguments more)))))))

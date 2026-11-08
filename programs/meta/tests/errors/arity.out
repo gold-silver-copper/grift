@@ -1,3 +1,3 @@
-meta: programs/meta/tests/errors/arity.grift:2: arity-error (a b) (1)
+meta: programs/meta/tests/errors/arity.grift:2: arity-error (1)
   in (g 1)
 exit 1

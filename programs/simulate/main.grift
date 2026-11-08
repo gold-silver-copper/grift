@@ -23,13 +23,13 @@
            (fraction (integer-to-string (add scale (remainder n scale))))
            (sign (if! (and!? (less-than? x 0.0) (not? (same? n 0))) "-" "")))
       (if! (same? places 0)
-        (string-append sign (integer-to-string n))
-        (string-append sign (integer-to-string (divide n scale)) "."
-                       (byte-substring fraction 1 (string-byte-length fraction)))))))
+        (join sign (integer-to-string n))
+        (join sign (integer-to-string (divide n scale)) "."
+                       (slice fraction 1 (byte-length fraction)))))))
 
 ; percent: a fraction as a percentage with one decimal.
 (define! percent
-  (lambda! (x) (string-append (float-to-fixed (multiply x 100.0) 1) "%")))
+  (lambda! (x) (join (float-to-fixed (multiply x 100.0) 1) "%")))
 
 ; line-at: the line, from 1, of byte `offset` in `text`.
 (define! line-at
@@ -38,12 +38,12 @@
       (lambda! (i n)
         (if! (same? i offset)
           n
-          (count (add i 1) (if! (same? (string-byte text i) 10) (add n 1) n)))))
+          (count (add i 1) (if! (same? (byte-at text i) 10) (add n 1) n)))))
     (count 0 1)))
 
 ; complain: the error simulate reports and stops for, a message made of the strings given.
 (define! complain
-  (lambda! parts (raise (error (quote! simulate-error) (apply string-append parts)))))
+  (lambda! parts (raise (error (quote! simulate-error) (apply join parts)))))
 
 ; ---------------------------------------------------------------------------------------------
 ; Random numbers.
@@ -170,7 +170,7 @@
   (lambda! (path)
     (define! text (read-file path))
     (define! config (context ()))
-    (define! where (lambda! (offset) (string-append path ":" (integer-to-string (line-at text offset)) ": ")))
+    (define! where (lambda! (offset) (join path ":" (integer-to-string (line-at text offset)) ": ")))
     (define! check
       (lambda! (form start)
         (define! setting
@@ -198,7 +198,7 @@
                                               (conditional!
                                                 ((same? reason (quote! unclosed-list)) "this ( is never closed")
                                                 ((same? reason (quote! unclosed-string)) "this \" is never closed")
-                                                (#true (string-append "the config doesn't read here: "
+                                                (#true (join "the config doesn't read here: "
                                                                       (symbol-to-string reason)))))))))
           (when! (pair? read)
             (let! (((form start end) read))
@@ -296,8 +296,8 @@
     (let! ((kind (evaluate-in! kind event)))
       (display (string-pad-left (float-to-fixed (evaluate-in! time event) 3) 10 " ") "  "
                (if! (same? kind (quote! arrival))
-                 (string-append "arrival   customer " (integer-to-string (evaluate-in! arrived bank)))
-                 (string-append "departure teller " (integer-to-string (evaluate-in! number (evaluate-in! subject event)))))
+                 (join "arrival   customer " (integer-to-string (evaluate-in! arrived bank)))
+                 (join "departure teller " (integer-to-string (evaluate-in! number (evaluate-in! subject event)))))
                "  line " (integer-to-string (evaluate-in! line-length bank))
                ", free tellers " (integer-to-string (length (evaluate-in! free-tellers bank))))
       (display "\n"))))
@@ -352,7 +352,7 @@
     (define! served (evaluate-in! served bank))
     (define! tellers (evaluate-in! tellers bank))
     (define! prediction (erlang-prediction config))
-    (define! minutes (lambda! (x) (string-append (float-to-fixed x 2) " min")))
+    (define! minutes (lambda! (x) (join (float-to-fixed x 2) " min")))
     ; a line of the report: a label, a value, and what Erlang's formula predicts if it is given
     (define! row
       (lambda! (label value . theory)
@@ -364,9 +364,9 @@
       (if! (same? prediction ())
         (list "predicted: none, the line grows without end" "" "")
         (let! (((wait line-length teller-use) prediction))
-          (list (string-append "predicted " (minutes wait))
-                (string-append "predicted " (float-to-fixed line-length 2))
-                (string-append "predicted " (percent teller-use))))))
+          (list (join "predicted " (minutes wait))
+                (join "predicted " (float-to-fixed line-length 2))
+                (join "predicted " (percent teller-use))))))
     (display (integer-to-string (evaluate-in! tellers config)) " tellers, "
              (value-to-string (evaluate-in! arrival-rate config)) " arrivals a minute, "
              (value-to-string (evaluate-in! service-rate config)) " served a minute by each teller, open "
@@ -388,9 +388,9 @@
                           (integer-to-float (length tellers))))
          predicted-use)
     (for-each (lambda! (teller)
-                (row (string-append "  teller " (integer-to-string (evaluate-in! number teller)))
+                (row (join "  teller " (integer-to-string (evaluate-in! number teller)))
                      (percent (use (evaluate-in! busy teller)))
-                     (string-append (integer-to-string (evaluate-in! served teller)) " customers")))
+                     (join (integer-to-string (evaluate-in! served teller)) " customers")))
               tellers)))
 
 ; ---------------------------------------------------------------------------------------------

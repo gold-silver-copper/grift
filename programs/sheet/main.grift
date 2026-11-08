@@ -30,16 +30,16 @@
 (define! digit-byte? (lambda! (b) (and!? (greater-than-or-equal? b 48) (less-than-or-equal? b 57))))
 (define! trim-end
   (lambda! (s)
-    (let! ((end-at (lambda! (i) (if! (and!? (greater-than? i 0) (space-byte? (string-byte s (subtract i 1)))) (end-at (subtract i 1)) i))))
-      (byte-substring s 0 (end-at (string-byte-length s))))))
+    (let! ((end-at (lambda! (i) (if! (and!? (greater-than? i 0) (space-byte? (byte-at s (subtract i 1)))) (end-at (subtract i 1)) i))))
+      (slice s 0 (end-at (byte-length s))))))
 ; The first word of s and the trimmed rest, as a pair of strings.
 (define! split-word
   (lambda! (s)
     (let! ((s (string-trim s))
-           (end (string-byte-length s))
-           (word-end (lambda! (i) (if! (and!? (less-than? i end) (not? (space-byte? (string-byte s i)))) (word-end (add i 1)) i)))
+           (end (byte-length s))
+           (word-end (lambda! (i) (if! (and!? (less-than? i end) (not? (space-byte? (byte-at s i)))) (word-end (add i 1)) i)))
            (i (word-end 0)))
-      (pair (byte-substring s 0 i) (string-trim (byte-substring s i end))))))
+      (pair (slice s 0 i) (string-trim (slice s i end))))))
 
 ; ---------------------------------------------------------------------------------------------
 ; A formula is one form of grift. A problem is the error formula-error, with a message, the text
@@ -53,7 +53,7 @@
                                    parse-error
                                    e
                                    (let! (((reason #ignore column) (evaluate-in! values e)))
-                                     (fail (string-append "does not read: " (symbol-to-string reason))
+                                     (fail (join "does not read: " (symbol-to-string reason))
                                            (subtract column 1))))))
            (found (read-at 0)))
       (when! (same? found ()) (fail "no formula" 0))
@@ -66,27 +66,27 @@
 
 (define! cell-name
   (lambda! (column row)
-    (string-to-symbol (string-append (code-point-to-string (add 65 column)) (integer-to-string row)))))
+    (string-to-symbol (join (code-point-to-string (add 65 column)) (integer-to-string row)))))
 ; The (column . row) of a cell name, or () if s (a string) isn't one.
 (define! cell-position
   (lambda! (s)
-    (let! ((n (string-byte-length s))
-           (digits? (lambda! (i) (or!? (same? i n) (and!? (digit-byte? (string-byte s i)) (digits? (add i 1)))))))
+    (let! ((n (byte-length s))
+           (digits? (lambda! (i) (or!? (same? i n) (and!? (digit-byte? (byte-at s i)) (digits? (add i 1)))))))
       (if! (and!? (greater-than-or-equal? n 2) (less-than-or-equal? n 4)
-                  (greater-than-or-equal? (string-byte s 0) 65) (less-than-or-equal? (string-byte s 0) 90)
-                  (not? (same? (string-byte s 1) 48)) (digits? 1))
-        (pair (subtract (string-byte s 0) 65) (string-to-integer (byte-substring s 1 n)))
+                  (greater-than-or-equal? (byte-at s 0) 65) (less-than-or-equal? (byte-at s 0) 90)
+                  (not? (same? (byte-at s 1) 48)) (digits? 1))
+        (pair (subtract (byte-at s 0) 65) (string-to-integer (slice s 1 n)))
         ()))))
 (define! cell? (lambda! (x) (and!? (symbol? x) (not? (same? (cell-position (symbol-to-string x)) ())))))
 ; The cells of a range symbol such as A1:B3, row by row, or () if it isn't one.
 (define! range-cells
   (lambda! (x)
     (let! ((s (if! (symbol? x) (symbol-to-string x) ""))
-           (at (string-search s ":" 0)))
+           (at (search s ":" 0)))
       (if! (same? at ())
         ()
-        (let! ((from (cell-position (byte-substring s 0 at)))
-               (to (cell-position (byte-substring s (add at 1) (string-byte-length s)))))
+        (let! ((from (cell-position (slice s 0 at)))
+               (to (cell-position (slice s (add at 1) (byte-length s)))))
           (if! (or!? (same? from ()) (same? to ()))
             ()
             (fold append ()
@@ -259,19 +259,19 @@
       ((not? (less-than-or-equal? (absolute-value x) 1e15)) (value-to-string x))
       (#true (let! ((hundredths (float-to-integer (round (multiply x 100.0))))
                     (size (absolute-value hundredths)))
-               (string-append (if! (less-than? hundredths 0) "-" "")
+               (join (if! (less-than? hundredths 0) "-" "")
                               (integer-to-string (divide size 100)) "." (two-digits (remainder size 100))))))))
 (define! value-text
   (lambda! (v)
     (conditional! ((float? v) (float-text v))
                   ((string? v) v)
-                  ((pair? v) (string-append "(" (string-join (map value-text v) " ") ")"))
-                  ((or!? (context? v) (operative? v) (applicative? v)) (string-append "#" (symbol-to-string (type-of v))))
+                  ((pair? v) (join "(" (string-join (map value-text v) " ") ")"))
+                  ((or!? (context? v) (operative? v) (applicative? v)) (join "#" (symbol-to-string (type-of v))))
                   (#true (value-to-string v)))))
 (define! cell-text
   (lambda! (cell)
     (if! (evaluate-in! failed cell)
-      (string-append "#" (symbol-to-string (evaluate-in! kind (evaluate-in! value cell))))
+      (join "#" (symbol-to-string (evaluate-in! kind (evaluate-in! value cell))))
       (value-text (evaluate-in! value cell)))))
 
 (define! print-grid
@@ -286,9 +286,9 @@
                      (let! ((cell (cell-record (cell-name column row))))
                        (and!? (not? (same? cell ())) (not? (evaluate-in! failed cell))
                               (or!? (integer? (evaluate-in! value cell)) (float? (evaluate-in! value cell)))))))
-           (widths (map (lambda! (column) (fold (lambda! (w row) (maximum w (string-byte-length (text-at column row)))) 1 rows)) columns))
-           (label-width (string-byte-length (integer-to-string (length rows))))
-           (line (lambda! (label texts) (display (trim-end (string-append (string-pad-left label label-width " ") " " (string-join texts " "))) "\n"))))
+           (widths (map (lambda! (column) (fold (lambda! (w row) (maximum w (byte-length (text-at column row)))) 1 rows)) columns))
+           (label-width (byte-length (integer-to-string (length rows))))
+           (line (lambda! (label texts) (display (trim-end (join (string-pad-left label label-width " ") " " (string-join texts " "))) "\n"))))
       (line "" (map (lambda! (column width) (string-pad-right (code-point-to-string (add 65 column)) width " ")) columns widths))
       (for-each (lambda! (row)
                   (line (integer-to-string row)
@@ -347,8 +347,8 @@
            (write (evaluate-in! write out)))
       (finally!
         (sequence!
-          (for-each (lambda! (source) (write (string-append source "\n"))) function-sources)
-          (for-each (lambda! (name) (write (string-append (symbol-to-string name) " " (evaluate-in! source (cell-record name)) "\n")))
+          (for-each (lambda! (source) (write (join source "\n"))) function-sources)
+          (for-each (lambda! (name) (write (join (symbol-to-string name) " " (evaluate-in! source (cell-record name)) "\n")))
                     (cell-names)))
         ((evaluate-in! close out)))
       (display "saved " path "\n"))))

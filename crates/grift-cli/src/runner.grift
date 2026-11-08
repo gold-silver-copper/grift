@@ -24,34 +24,17 @@
 (define! standard-output (writer "standard-output" 2))
 (define! open-file (lambda! (path) (reader path (open-host path))))
 (define! create-file (lambda! (path) (writer path (create-host path))))
-; read-file: a file's whole text, as a program could with open-file. Nothing opens a file between
-; the two ends here and no program sees its number, so forgetting it, the last opened, is safe.
-(define! read-file
-  (lambda! (path)
-    (let! ((file (open-host path)))
-      (finally! (read-all-host file) (forget-host)))))
 ; The record of a finished process: its status, output and error output.
 (define! run-process
   (lambda! (program . arguments)
     (record (quote! (status output error-output))
                 (apply run-host (pair program arguments)))))
-; The file whose forms are being loaded, at first the script; a relative path given `load` is
-; relative to it.
-(define! loading (record (quote! (file)) (list script-path)))
-; The file `path`'s forms, all read first, so nothing runs if one doesn't, then evaluated in
-; `c` while a relative path given load is relative to the file. Each combination knows its line
-; in the file, so an error's trace says it.
-(define! load-file
-  (lambda! (path c)
-    (let! ((outer (evaluate-in! file loading)))
-      (bind loading (quote! file) path)
-      (finally! (for-each (lambda! (form) (evaluate form c)) (read-forms path (read-file path)))
-                (bind loading (quote! file) outer)))))
-; load: the forms of a file, evaluated in turn in the caller's context, as Kernel's load does; each
-; load reads the file again.
+; load: the forms of a file, all read first, so nothing runs if one doesn't, then evaluated in turn
+; in the caller's context, as Kernel's load does; each load reads the file again. Each combination
+; knows its line in the file, so an error's trace says it.
 (define! load
   (wrap (vau! (path) caller
-          (load-file (resolve-host (evaluate-in! file loading) path) caller))))
+          (for-each (lambda! (form) (evaluate form caller)) (read-forms path (read-file path))))))
 
 ; Whether `text` is a form left open, so the reader wants more of it. Only reading can say: a
 ; `parse-error` from running the input doesn't mean there is more to come.
@@ -72,7 +55,7 @@
   (lambda! (text prompt)
     (display-error prompt)
     (let! ((line (read-line-host 0))
-           (text (string-append text line)))
+           (text (join text line)))
       (conditional!
         ((same? line "") (read-forms "stdin" text) #inert)
         ((unfinished? text) (session text "  "))

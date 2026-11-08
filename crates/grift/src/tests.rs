@@ -5,8 +5,9 @@
     clippy::indexing_slicing
 )]
 
+use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Error, Grift, Interrupter, Primitive, Value, local};
+use crate::{Error, Grift, Interrupter, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -45,8 +46,8 @@ const CORE: &[&str] = &[
     "round",
     "truncate",
     "absolute-value",
-    "string-byte",
-    "string-append",
+    "byte-at",
+    "join",
     "string-to-symbol",
     "string-to-float",
     "read-form",
@@ -54,13 +55,26 @@ const CORE: &[&str] = &[
 ];
 
 impl<T> Grift<T> {
+    /// The elements of a proper list, by `as_pair`, as a host reads one.
+    pub(crate) fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
+        let (mut items, mut rest) = (Vec::new(), list.clone());
+        while let Some((x, more)) = self.as_pair(&rest)? {
+            items.push(x);
+            rest = more;
+        }
+        match rest {
+            Value::EmptyList => Ok(items),
+            _ => Err(self.export_error(local::Error::new(local::K::TypeError, &[]))),
+        }
+    }
+
     /// From now on the natives are their grift definitions: each bound in the built-in context,
     /// where the library looks it up, wrapped if the native is, and no library form runs a native
     /// twin. As the library's own code, what this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here).unwrap();
-        let forms = self.read_local(MEANINGS, None).unwrap();
+        let forms = self.read_local(MEANINGS, None, true).unwrap();
         self.evaluate_forms(None, forms, here, false).unwrap();
         let name = self.intern("meanings").unwrap();
         let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {
@@ -87,7 +101,6 @@ impl<T> Grift<T> {
                 op.native = None;
             }
         }
-        self.heap.seal_library();
     }
 
     /// The combiner under `v` if it is an applicative, else `v`.
@@ -295,6 +308,133 @@ fn error_kinds() {
     assert_eq!(show(&g, &e.values[0]), "foo");
 }
 
+/// An error's values are the values involved and nothing else: no primitive, combiner or name
+/// says who failed, primitive, library or parameter tree alike; the trace says where.
+#[test]
+fn an_error_carries_its_values_and_no_one_who_failed() {
+    let mut g = grift();
+    for (src, values) in [
+        ("(first 1)", "(1)"),
+        ("(add 1 1.0)", "(1.0)"),
+        ("(add 1)", "((1))"),
+        ("(if! 1 2)", "((1 2))"),
+        ("((lambda! (x) x))", "(())"),
+        ("(byte-at \"a\" 5)", "(\"a\" 5)"),
+        ("(divide 1 0)", "(1 0)"),
+        ("(string-to-integer \"x\")", "(\"x\")"),
+        ("(symbol-to-string 1)", "(1)"),
+        ("(power 2 -1)", "(2 -1)"),
+        ("(catch-kind! 1 2 e 3)", "(2)"),
+        ("(string-split \"a\" \"\")", "(\"\")"),
+        ("(minimum 1 1.0)", "(1)"),
+    ] {
+        let e = g.evaluate(&mut (), src).unwrap_err();
+        let mut shown = Vec::new();
+        for v in &e.values {
+            shown.push(show(&g, v));
+        }
+        assert_eq!(format!("({})", shown.join(" ")), values, "{src}");
+    }
+}
+
+/// Strings and bytes share one vocabulary, as integers and floats share add: each word takes
+/// either kind and answers that kind, and refuses the two mixed.
+#[test]
+fn strings_and_bytes_share_one_vocabulary() {
+    let mut g = grift();
+    holds(
+        &mut g,
+        &[
+            "(equal? (list (byte-length \"\\xe9;\") (byte-length #bytes(1 2 3))) (list 2 3))",
+            "(equal? (list (byte-at \"a\" 0) (byte-at #bytes(5) 0)) (list 97 5))",
+            "(equal? (list (slice \"abc\" 1 2) (slice #bytes(1 2 3) 1 3)) (list \"b\" #bytes(2 3)))",
+            "(equal? (list (join \"a\" \"b\") (join #bytes(1) #bytes(2)) (join)) (list \"ab\" #bytes(1 2) \"\"))",
+            "(equal? (list (search \"hello\" \"ll\" 0) (search #bytes(1 2 3) #bytes(2 3) 0)) (list 2 1))",
+            // A partial match that overlaps the real one: the search goes on from the next byte.
+            "(equal? (list (search \"aab\" \"ab\" 0) (search #bytes(1 1 2) #bytes(1 2) 0)) (list 1 1))",
+            "(not? (or!? (binds? (standard-context) (quote! bytes-search))
+                         (binds? (standard-context) (quote! string-append))
+                         (binds? (standard-context) (quote! bytes-slice))))",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("(join \"a\" #bytes(1))", "type-error"),
+            ("(search \"abc\" #bytes(97) 0)", "type-error"),
+            ("(slice \"\\xe9;\" 0 1)", "range-error"),
+            ("(byte-length 1)", "type-error"),
+        ],
+    );
+}
+
+/// Whether a combination is the program's comes from who made it: the program's reader and the
+/// program's own code make the program's, the library's text and code make the library's, whatever
+/// the head of the combination is and whenever it was made.
+#[test]
+fn a_combination_is_the_program_s_when_the_program_made_it() {
+    let mut g = grift();
+    let first_place = |g: &mut Grift, src: &str| {
+        let e = g.evaluate(&mut (), src).unwrap_err();
+        show(g, &e.trace[0])
+    };
+    // Built by the program around a combiner value: the program's.
+    assert_eq!(
+        first_place(&mut g, "(evaluate (list first 1) (current-context))"),
+        "(#[applicative #[primitive first]] 1)"
+    );
+    // Built by the library around a combiner value, as map's apply builds it: the library's.
+    assert_eq!(
+        first_place(&mut g, "(map first (list 1 2))"),
+        "(map first (list 1 2))"
+    );
+    // Built by the program after an argument that ran library code: still the program's.
+    assert_eq!(
+        first_place(
+            &mut g,
+            "(evaluate (list first (element-at (list 1) 0)) (current-context))"
+        ),
+        "(#[applicative #[primitive first]] 1)"
+    );
+    // Built by a host function after it ran library code, in a nested run or as library text:
+    // the host's, so the program's.
+    fn first_one(g: &mut Grift) -> Result<Value, Error> {
+        let top = g.top_level();
+        let name = g.symbol("first")?;
+        let first = g.lookup(&top, &name)?.unwrap();
+        let one = g.pair(Value::Integer(1), Value::EmptyList)?;
+        g.pair(first, one)
+    }
+    fn after_a_run(g: &mut Grift, s: &mut (), _: &[Value]) -> Result<Value, Error> {
+        g.evaluate(s, "(element-at (list 1) 0)")?;
+        first_one(g)
+    }
+    fn after_library_text(g: &mut Grift, s: &mut (), _: &[Value]) -> Result<Value, Error> {
+        let top = g.top_level();
+        g.evaluate_library_in(s, &top, "prelude.grift", "(element-at (list 1) 0)")?;
+        first_one(g)
+    }
+    define(&mut g, "after-a-run", after_a_run);
+    define(&mut g, "after-library-text", after_library_text);
+    for made in ["after-a-run", "after-library-text"] {
+        assert_eq!(
+            first_place(&mut g, &format!("(evaluate ({made}) (current-context))")),
+            "(#[applicative #[primitive first]] 1)",
+            "{made}"
+        );
+    }
+    // Code the program made stays the program's after a host's own library code has run.
+    g.evaluate(&mut (), "(define! kept (list (quote! first) 1))")
+        .unwrap();
+    let top = g.top_level();
+    g.evaluate_library_in(&mut (), &top, "prelude.grift", "(define! helper 1)")
+        .unwrap();
+    assert_eq!(
+        first_place(&mut g, "(evaluate kept (current-context))"),
+        "(first 1)"
+    );
+}
+
 #[test]
 fn tail_calls_run_in_constant_space() {
     let mut g = grift();
@@ -436,7 +576,7 @@ fn printing_reads_back() {
     assert_eq!(printed, "\"\\x1b;[2J\\ta\\x7f;\u{3bb}\"");
     let again = g.evaluate(&mut (), &printed).unwrap();
     assert_eq!(g.as_str(&again), g.as_str(&v));
-    // Bytes print as their literal, every byte as the integer bytes-byte gives, and read back as
+    // Bytes print as their literal, every byte as the integer byte-at gives, and read back as
     // the same bytes, by the program reader and by read-form.
     let every: Vec<u8> = (0..=255).collect();
     let v = g.bytes(&every).unwrap();
@@ -730,7 +870,7 @@ fn cleanup_runs_and_the_error_goes_on() {
     let e = g
         .evaluate(&mut (), "(finally! (finally! (first 1) (rest 2)) (note 5))")
         .unwrap_err();
-    assert_eq!(show(&g, &e.values[0]), "#[primitive rest]");
+    assert_eq!(show(&g, &e.values[0]), "2");
     assert_eq!(g.evaluate(&mut (), "(first log)"), Ok(Value::Integer(5)));
     // A cleanup that succeeds doesn't lend the error its own location.
     let (protect, here) = (
@@ -797,7 +937,7 @@ fn a_running_program_reads_if_and_sequence_as_their_library_definitions() {
     // What a wrong shape raises is the operative's own parameter tree failing to match.
     let e = g.evaluate(&mut (), "(if! #true 1)").unwrap_err();
     assert_eq!(kind(&g, &e), "arity-error");
-    assert_eq!(show(&g, &e.values[0]), "(test consequent alternative)");
+    assert_eq!(show(&g, &e.values[0]), "(#true 1)");
 }
 
 #[test]
@@ -904,7 +1044,7 @@ fn catch_catches_errors_as_contexts() {
             "(same? (catch! (finally! (finally! (first 1) (note 1)) (note 2)) #ignore (note 3) 7) 7)",
             "(equal? log (quote! (3 2 1)))",
             // catch! nests; an error in a handler goes to the catch! around it.
-            "(same? (catch! (catch! (first 1) #ignore (rest 1)) e (same? (first (evaluate-in! values e)) (unwrap rest))) #true)",
+            "(same? (catch! (catch! (first 1) #ignore (rest 1)) e (same? (first (evaluate-in! values e)) 1)) #true)",
             // catch! in a loop runs in constant space.
             "(sequence! (define! loop (lambda! (n) (if! (same? n 0) #true (sequence! (catch! (first n) #ignore 0) (loop (subtract n 1)))))) \
              (loop 20000))",
@@ -1028,7 +1168,7 @@ fn binds_looks_through_parents() {
         &[
             "(binds? e (string-to-symbol \"x\"))",
             "(not? (binds? e (string-to-symbol \"nope\")))",
-            "(same? (second (catch! (binds? e 1) x (evaluate-in! values x))) 1)",
+            "(same? (first (catch! (binds? e 1) x (evaluate-in! values x))) 1)",
             "(sequence! (define! s (quote! nope)) (not? (binds? e s)))",
             "(binds? (context e) (quote! first))",
         ],
@@ -1084,12 +1224,12 @@ fn strings_by_byte_offsets() {
         &mut g,
         &[
             // Lengths and offsets count bytes: "λx" is three.
-            "(equal? (string-byte-length \"λx\") 3)",
-            "(equal? (list (string-byte \"λx\" 0) (string-byte \"λx\" 2)) (quote! (206 120)))",
-            "(same? (byte-substring \"λx\" 2 3) \"x\")",
-            "(same? (byte-substring \"abc\" 1 1) \"\")",
-            "(same? (string-append \"a\" (code-point-to-string 955) \"\") \"aλ\")",
-            "(same? (string-append) \"\")",
+            "(equal? (byte-length \"λx\") 3)",
+            "(equal? (list (byte-at \"λx\" 0) (byte-at \"λx\" 2)) (quote! (206 120)))",
+            "(same? (slice \"λx\" 2 3) \"x\")",
+            "(same? (slice \"abc\" 1 1) \"\")",
+            "(same? (join \"a\" (code-point-to-string 955) \"\") \"aλ\")",
+            "(same? (join) \"\")",
             // Symbols and integers to strings and back.
             "(same? (string-to-symbol (symbol-to-string (quote! foo?))) (quote! foo?))",
             "(same? (symbol-to-string (quote! a)) \"a\")",
@@ -1100,15 +1240,15 @@ fn strings_by_byte_offsets() {
         &mut g,
         &[
             // Off a character boundary, out of range, or not a Unicode scalar value.
-            ("(byte-substring \"λ\" 0 1)", "range-error"),
-            ("(byte-substring \"abc\" 2 1)", "range-error"),
-            ("(byte-substring \"abc\" 0 4)", "range-error"),
-            ("(string-byte \"abc\" 3)", "range-error"),
-            ("(string-byte \"abc\" -1)", "range-error"),
+            ("(slice \"λ\" 0 1)", "range-error"),
+            ("(slice \"abc\" 2 1)", "range-error"),
+            ("(slice \"abc\" 0 4)", "range-error"),
+            ("(byte-at \"abc\" 3)", "range-error"),
+            ("(byte-at \"abc\" -1)", "range-error"),
             ("(code-point-to-string 55296)", "range-error"),
             ("(code-point-to-string -1)", "range-error"),
-            ("(string-byte-length (quote! a))", "type-error"),
-            ("(string-append \"a\" 1)", "type-error"),
+            ("(byte-length (quote! a))", "type-error"),
+            ("(join \"a\" 1)", "type-error"),
             ("(symbol-to-string \"a\")", "type-error"),
             ("(float-to-string 1)", "type-error"),
             ("(integer-to-string \"1\")", "type-error"),
@@ -1123,29 +1263,29 @@ fn bytes_by_offsets_and_their_conversions() {
         &mut g,
         &[
             // The string operations' shapes, offsets counting bytes, a slice's end exclusive.
-            "(same? (bytes-length #bytes(0 255 9)) 3)",
-            "(same? (bytes-byte #bytes(0 255 9) 1) 255)",
-            "(same? (bytes-slice #bytes(0 255 9) 1 3) #bytes(255 9))",
-            "(same? (bytes-append #bytes(1) #bytes() #bytes(2 3)) #bytes(1 2 3))",
-            "(same? (bytes-append) #bytes())",
-            "(equal? (map (lambda! (start) (bytes-search #bytes(1 2 1 2) #bytes(1 2) start)) (range 0 5)) (list 0 2 2 () ()))",
-            "(same? (bytes-search #bytes(1 2) #bytes() 2) 2)",
+            "(same? (byte-length #bytes(0 255 9)) 3)",
+            "(same? (byte-at #bytes(0 255 9) 1) 255)",
+            "(same? (slice #bytes(0 255 9) 1 3) #bytes(255 9))",
+            "(same? (join #bytes(1) #bytes() #bytes(2 3)) #bytes(1 2 3))",
+            "(same? (join) \"\")",
+            "(equal? (map (lambda! (start) (search #bytes(1 2 1 2) #bytes(1 2) start)) (range 0 5)) (list 0 2 2 () ()))",
+            "(same? (search #bytes(1 2) #bytes() 2) 2)",
             // Text to bytes and back, whatever the text holds, NUL and a byte-order mark too.
             "(same? (string-to-bytes \"\\xe9;\") #bytes(195 169))",
-            "(sequence! (define! s (string-append (code-point-to-string 0) \"\\xfeff;h\\xe9;\\x1f600;\")) (same? (bytes-to-string (string-to-bytes s)) s))",
+            "(sequence! (define! s (join (code-point-to-string 0) \"\\xfeff;h\\xe9;\\x1f600;\")) (same? (bytes-to-string (string-to-bytes s)) s))",
             "(equal? (bytes-to-list (list-to-bytes (list 0 128 255))) (list 0 128 255))",
         ],
     );
     fails(
         &mut g,
         &[
-            ("(bytes-byte #bytes(1) 1)", "range-error"),
-            ("(bytes-slice #bytes(1 2) 2 1)", "range-error"),
-            ("(bytes-search #bytes(1) #bytes(1) 2)", "range-error"),
+            ("(byte-at #bytes(1) 1)", "range-error"),
+            ("(slice #bytes(1 2) 2 1)", "range-error"),
+            ("(search #bytes(1) #bytes(1) 2)", "range-error"),
             // A string is never bytes, nor bytes a string.
             ("(bytes-to-string \"abc\")", "type-error"),
-            ("(bytes-append #bytes(97) \"b\")", "type-error"),
-            ("(string-append \"a\" #bytes(98))", "type-error"),
+            ("(join #bytes(97) \"b\")", "type-error"),
+            ("(join \"a\" #bytes(98))", "type-error"),
         ],
     );
     // What isn't a list of bytes is refused with the value and its place in the list.
@@ -1157,12 +1297,12 @@ fn bytes_by_offsets_and_their_conversions() {
         ("5", "(type-error (5 0))"),
     ] {
         let src = format!(
-            "(catch! (list-to-bytes {list}) e (list (evaluate-in! kind e) (rest (evaluate-in! values e))))"
+            "(catch! (list-to-bytes {list}) e (list (evaluate-in! kind e) (evaluate-in! values e)))"
         );
         let v = g.evaluate(&mut (), &src).unwrap();
         assert_eq!(show(&g, &v), want, "{list}");
     }
-    // Bytes that aren't UTF-8 aren't a string: encoding-error, with the primitive, the bytes
+    // Bytes that aren't UTF-8 aren't a string: encoding-error, with the bytes
     // themselves and Rust's valid_up_to, the offset of the first sequence that is cut short,
     // overlong, a surrogate, past U+10FFFF or no sequence at all.
     for bytes in [
@@ -1182,13 +1322,13 @@ fn bytes_by_offsets_and_their_conversions() {
             .evaluate(
                 &mut (),
                 "(catch! (bytes-to-string b) e
-                   (let! (((p original at) (evaluate-in! values e)))
-                     (list (evaluate-in! kind e) (same? p (unwrap bytes-to-string)) (same? original b) at)))",
+                   (let! (((original at) (evaluate-in! values e)))
+                     (list (evaluate-in! kind e) (same? original b) at)))",
             )
             .unwrap();
         assert_eq!(
             show(&g, &v),
-            format!("(encoding-error #true #true {at})"),
+            format!("(encoding-error #true {at})"),
             "{bytes:?}"
         );
     }
@@ -1493,15 +1633,15 @@ fn same_and_equal() {
             // integers, symbols and strings.
             "(same? 1 1)",
             "(same? (quote! a) (quote! a))",
-            "(same? \"ab\" (string-append \"a\" \"b\"))",
+            "(same? \"ab\" (join \"a\" \"b\"))",
             "(not? (same? (list 1) (list 1)))",
             "(not? (same? (context ()) (context ())))",
             "(not? (same? (lambda! () 1) (lambda! () 1)))",
             "(sequence! (define! p (list 1)) (same? p p))",
             "(same? first first)",
             // Bytes, like strings, by their contents.
-            "(same? #bytes(97 98) (bytes-append #bytes(97) (string-to-bytes \"b\")))",
-            "(same? #bytes() (bytes-slice #bytes(1) 1 1))",
+            "(same? #bytes(97 98) (join #bytes(97) (string-to-bytes \"b\")))",
+            "(same? #bytes() (slice #bytes(1) 1 1))",
             "(not? (same? #bytes(1) #bytes(1 0)))",
             "(equal? (list #bytes(1)) (list (list-to-bytes (list 1))))",
             // Floats: same? compares the stored bits, equal? as IEEE does.
@@ -1800,7 +1940,7 @@ fn read_form_is_the_program_reader() {
                  ()
                  (let! (((form start end) read))
                    ; The text between its offsets is the form's, and reads back as the form.
-                   (if! (equal? (first (read-form (byte-substring text start end) 0)) form)
+                   (if! (equal? (first (read-form (slice text start end) 0)) form)
                      (pair form (forms text end))
                      (raise (error (quote! not-the-form) form))))))))",
     )
@@ -2043,25 +2183,25 @@ fn string_helpers() {
             // string-split and string-join undo each other, and no part holds the separator.
             "(every-pair (lambda! (t p) (same? (string-join (string-split t p) p) t)))",
             "(every-pair (lambda! (t p)
-               (all? (lambda! (part) (empty-list? (string-search part p 0))) (string-split t p))))",
+               (all? (lambda! (part) (empty-list? (search part p 0))) (string-split t p))))",
             "(equal? (string-split \"a,,b\" \",\") (list \"a\" \"\" \"b\"))",
             "(equal? (string-split \"\" \",\") (list \"\"))",
             "(same? (string-join () \",\") \"\")",
             "(same? (string-join (list \"a\") \",\") \"a\")",
-            // string-search: the pattern is at the offset it gives, and it is at none before it.
+            // search: the pattern is at the offset it gives, and it is at none before it.
             "(every-pair (lambda! (t p)
-               (let! ((at (string-search t p 0)) (size (string-byte-length p)))
+               (let! ((at (search t p 0)) (size (byte-length p)))
                  (if! (empty-list? at)
                    (same? (length (string-split t p)) 1)
-                   (and!? (same? (byte-substring t at (add at size)) p)
-                          (empty-list? (string-search (byte-substring t 0 at) p 0)))))))",
-            "(same? (string-search \"abcabc\" \"c\" 3) 5)",
-            "(same? (string-search \"abc\" \"\" 3) 3)",
-            "(empty-list? (string-search \"abc\" \"abcd\" 0))",
+                   (and!? (same? (slice t at (add at size)) p)
+                          (empty-list? (search (slice t 0 at) p 0)))))))",
+            "(same? (search \"abcabc\" \"c\" 3) 5)",
+            "(same? (search \"abc\" \"\" 3) 3)",
+            "(empty-list? (search \"abc\" \"abcd\" 0))",
             // Every text starts with what it starts with and ends with what it ends with.
             "(every-pair (lambda! (t p)
-               (and!? (string-starts-with? (string-append p t) p)
-                      (string-ends-with? (string-append t p) p))))",
+               (and!? (string-starts-with? (join p t) p)
+                      (string-ends-with? (join t p) p))))",
             "(not? (string-starts-with? \"é\" \"a\"))",
             "(not? (string-starts-with? \"a\" \"ab\"))",
             "(not? (string-ends-with? \"é\" \"a\"))",
@@ -2070,10 +2210,10 @@ fn string_helpers() {
             "(same? (string-trim \" \\t\\n a b\\xd;\\n \") \"a b\")",
             "(same? (string-trim \"  \\n\") \"\")",
             "(all? (lambda! (t) (same? (string-trim (string-trim t)) (string-trim t))) texts)",
-            "(all? (lambda! (t) (same? (string-trim (string-append \" \" t \"\\n\")) t)) texts)",
+            "(all? (lambda! (t) (same? (string-trim (join \" \" t \"\\n\")) t)) texts)",
             // The pads: at least the width, the text unchanged, the spaces on the side named.
             "(all? (lambda! (t)
-               (and!? (same? (string-byte-length (string-pad-left t 30 \" \")) 30)
+               (and!? (same? (byte-length (string-pad-left t 30 \" \")) 30)
                       (string-ends-with? (string-pad-left t 30 \"0\") t)
                       (string-starts-with? (string-pad-right t 30 \".\") t)
                       (same? (string-pad-right t 0 \" \") t)
@@ -2084,11 +2224,12 @@ fn string_helpers() {
             "(same? (string-pad-left \"7\" 2 \"0\") \"07\")",
             "(same? (string-pad-left \"ab\" -9223372036854775808 \" \") \"ab\")",
             "(same? (string-pad-right \"ab\" -9223372036854775808 \" \") \"ab\")",
-            // string-repeat: as long as count copies, each one the string.
+            // string-repeat: as long as count copies, each one the string; a count below 1 is none.
+            "(same? (string-repeat \"a\" -1) \"\")",
             "(all? (lambda! (t)
                (all? (lambda! (n)
                        (let! ((r (string-repeat t n)))
-                         (and!? (same? (string-byte-length r) (multiply n (string-byte-length t)))
+                         (and!? (same? (byte-length r) (multiply n (byte-length t)))
                                 (same? (string-join (string-split r t) \"\") (string-repeat \"\" n)))))
                      (range 0 4)))
                (pair \"ab\" (rest texts)))",
@@ -2097,7 +2238,7 @@ fn string_helpers() {
             "(all? (lambda! (t)
                (let! ((low (string-to-lowercase t)))
                  (and!? (same? (string-to-lowercase low) low)
-                        (same? (string-byte-length low) (string-byte-length t)))))
+                        (same? (byte-length low) (byte-length t)))))
                texts)",
         ],
     );
@@ -2105,11 +2246,11 @@ fn string_helpers() {
         &mut g,
         &[
             ("(string-split \"a\" \"\")", "range-error"),
-            ("(string-search \"é\" \"a\" 1)", "range-error"),
-            ("(string-search \"a\" \"a\" 2)", "range-error"),
-            ("(string-search \"a\" \"a\" -1)", "range-error"),
-            ("(string-search 1 \"a\" 0)", "type-error"),
-            ("(string-search \"a\" 1 0)", "type-error"),
+            ("(search \"é\" \"a\" 1)", "range-error"),
+            ("(search \"a\" \"a\" 2)", "range-error"),
+            ("(search \"a\" \"a\" -1)", "range-error"),
+            ("(search 1 \"a\" 0)", "type-error"),
+            ("(search \"a\" 1 0)", "type-error"),
             ("(string-join (list 1 2) \",\")", "type-error"),
             ("(string-starts-with? 1 \"a\")", "type-error"),
             ("(string-ends-with? \"a\" 1)", "type-error"),
@@ -2119,7 +2260,6 @@ fn string_helpers() {
             ("(string-pad-left \"a\" 3 \"ab\")", "range-error"),
             ("(string-pad-left \"a\" 3 \"\")", "range-error"),
             ("(string-pad-left \"a\" 3)", "arity-error"),
-            ("(string-repeat \"a\" -1)", "range-error"),
             ("(string-repeat 1 2)", "type-error"),
             ("(string-repeat \"a\" 1.0)", "type-error"),
             ("(string-to-lowercase 1)", "type-error"),
@@ -2360,7 +2500,7 @@ fn lookup_and_unbind() {
     let held = g
         .evaluate(
             &mut (),
-            "(sequence! (bind inner (quote! held) (string-append \"kept\" \"?\"))
+            "(sequence! (bind inner (quote! held) (join \"kept\" \"?\"))
                         (lookup inner (quote! held) ()))",
         )
         .unwrap();
@@ -2475,18 +2615,20 @@ fn list_access_by_index() {
             "(all? (lambda! (i) (same? (length (take xs i)) i)) (range 0 11))",
             "(and!? (same? (second xs) 11) (same? (third xs) 12) (same? (last xs) 19))",
             "(same? (last (list 1)) 1)",
-            // Out of range: the name, the index and the list's length.
-            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (quote! (element-at 10 10)))",
-            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (quote! (element-at -1 10)))",
-            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (quote! (take 11 10)))",
-            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (quote! (drop 12 10)))",
-            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (quote! (second 1 1)))",
-            "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list (quote! take) xs))",
+            // Out of range: the operands, the list and the index or count, as for a string.
+            "(equal? (catch! (element-at xs 10) e (evaluate-in! values e)) (list xs 10))",
+            "(equal? (catch! (element-at xs -1) e (evaluate-in! values e)) (list xs -1))",
+            "(equal? (catch! (take xs 11) e (evaluate-in! values e)) (list xs 11))",
+            "(equal? (catch! (drop xs 12) e (evaluate-in! values e)) (list xs 12))",
+            "(equal? (catch! (second (list 1)) e (evaluate-in! values e)) (list (list 1) 1))",
+            "(equal? (catch! (third (list 1 2)) e (evaluate-in! values e)) (list (list 1 2) 2))",
+            "(equal? (catch! (last ()) e (evaluate-in! values e)) (list ()))",
+            "(equal? (catch! (take 2 xs) e (evaluate-in! values e)) (list xs))",
             "(equal? (catch! (element-at xs -9223372036854775808) e (evaluate-in! values e))
-                     (quote! (element-at -9223372036854775808 10)))",
+                     (list xs -9223372036854775808))",
             "(equal? (catch! (drop xs -9223372036854775808) e (evaluate-in! values e))
-                     (quote! (drop -9223372036854775808 10)))",
-            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (quote! (take -1 10)))",
+                     (list xs -9223372036854775808))",
+            "(equal? (catch! (take xs -1) e (evaluate-in! values e)) (list xs -1))",
         ],
     );
     fails(
@@ -2602,7 +2744,7 @@ const OTHER_TEXTS: &[&str] = &[
     "(unwrap first)",
     "(wrap if!)",
     "sequence!",
-    "string-search",
+    "search",
     "double",
     "note",
     "(malformed 0)",
@@ -2628,16 +2770,16 @@ const NATIVES: &[(&str, &str)] = &[
     ("string-to-integer", "s"),
     ("integer-to-float", "i"),
     ("float-to-integer", "f"),
-    ("string-byte-length", "s"),
-    ("byte-substring", "soo"),
+    ("byte-length", "s"),
+    ("slice", "soo"),
     ("code-point-to-string", "i"),
     ("if!", "bxx"),
     ("sequence!", "xxx"),
-    ("string-search", "sto"),
-    ("bytes-length", "B"),
-    ("bytes-byte", "Bo"),
-    ("bytes-slice", "Boo"),
-    ("bytes-append", "BB"),
+    ("search", "sto"),
+    ("byte-length", "B"),
+    ("byte-at", "Bo"),
+    ("slice", "Boo"),
+    ("join", "BB"),
     ("string-to-bytes", "s"),
     ("bytes-to-string", "B"),
     ("list-to-bytes", "l"),
@@ -2877,7 +3019,7 @@ impl Comparison<'_> {
                     }
                 }
                 // What a native is, its definition is: the comparison's one allowed difference.
-                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, *p) => {}
+                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, p.0) => {}
                 _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
                     return differ();
                 }
@@ -3126,9 +3268,9 @@ fn boundary_cases() -> Vec<String> {
     let mut cases = Vec::new();
     for start in -1..5 {
         for end in -1..5 {
-            cases.push(format!("(bytes-slice #bytes(1 2 3) {start} {end})"));
+            cases.push(format!("(slice #bytes(1 2 3) {start} {end})"));
         }
-        cases.push(format!("(bytes-byte #bytes(1 2 3) {start})"));
+        cases.push(format!("(byte-at #bytes(1 2 3) {start})"));
     }
     for utf8 in [
         "0 195 169 255 90",
@@ -3151,19 +3293,15 @@ fn boundary_cases() -> Vec<String> {
     cases.extend([
         "(list-to-bytes (list 0 1 255 256))".into(),
         "(list-to-bytes (pair 1 (pair 2 3)))".into(),
-        "(bytes-append #bytes(1) (note #bytes()) #bytes(2 3) 4)".into(),
-        "(bytes-append)".into(),
+        "(join #bytes(1) (note #bytes()) #bytes(2 3) 4)".into(),
+        "(join)".into(),
         "(bytes-to-list (string-to-bytes \"\\xe9;\\x1f600;\"))".into(),
     ]);
     for start in -1..10 {
         for end in -1..10 {
-            cases.push(format!(
-                "(byte-substring \"\\xe9;\\x1f603;a\" {start} {end})"
-            ));
+            cases.push(format!("(slice \"\\xe9;\\x1f603;a\" {start} {end})"));
         }
-        cases.push(format!(
-            "(string-search \"\\xe9;ab\\xe9;ab\" \"ab\" {start})"
-        ));
+        cases.push(format!("(search \"\\xe9;ab\\xe9;ab\" \"ab\" {start})"));
     }
     for n in [
         -1, 0, 31, 127, 128, 55295, 55296, 57343, 57344, 65535, 65536, 1114111, 1114112,
@@ -3206,7 +3344,12 @@ fn boundary_cases() -> Vec<String> {
         "((lambda! () (sequence! (rest 2) 3)))".into(),
         "(if! (first 1) 2 3)".into(),
         "(if! #true (first 1) 3)".into(),
-        "(string-search \"ab\" (first 1) 0)".into(),
+        "(search \"ab\" (first 1) 0)".into(),
+        // A partial match that overlaps the real one, and a pattern of the other kind.
+        "(search \"aab\" \"ab\" 0)".into(),
+        "(search #bytes(1 1 2) #bytes(1 2) 0)".into(),
+        "(search \"ab\" #bytes(98) 0)".into(),
+        "(search #bytes(97 98) \"b\" 0)".into(),
         "(lookup (malformed 0) (quote! x) 42)".into(),
         "(catch! (lookup (malformed 0) (quote! x) 42) e (evaluate-in! kind e))".into(),
     ]);
@@ -3218,7 +3361,7 @@ fn natives_and_their_definitions_run_tail_calls_in_constant_space() {
     for (mut g, natives) in twins().into_iter().zip([true, false]) {
         g.evaluate(
             &mut Vec::new(),
-            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (string-search \"ab\" \"b\" 0) (shift-right n 1) (bytes-length #bytes(1 2)) (loop (subtract n 1))))))
+            "(define! loop (lambda! (n) (if! (same? n 0) (first (list n)) (sequence! (search \"ab\" \"b\" 0) (shift-right n 1) (byte-length #bytes(1 2)) (loop (subtract n 1))))))
              (define! count (lambda! (n) (if! (same? n 0) 0 (count (subtract n 1)))))",
         )
         .unwrap();
@@ -3286,7 +3429,7 @@ fn string_literals_share_the_reader_and_both_writers() {
     let read_form = g.evaluate(&mut (), "read-form").unwrap();
     for text in texts {
         let mut written = String::new();
-        crate::write_string(&text, &mut written).unwrap();
+        crate::print::write_string(&text, &mut written).unwrap();
         assert!(!written.chars().any(char::is_control));
         let value = g.string(&text).unwrap();
         assert_eq!(show(&g, &value), written);
@@ -3311,10 +3454,10 @@ fn string_literals_share_the_reader_and_both_writers() {
     }
     let sample = "a\n\"\\\0λ";
     let mut full = String::new();
-    crate::write_string(sample, &mut full).unwrap();
+    crate::print::write_string(sample, &mut full).unwrap();
     for budget in 0..full.len() {
         assert_eq!(
-            crate::write_string(sample, &mut RefusesAfter(budget)),
+            crate::print::write_string(sample, &mut RefusesAfter(budget)),
             Err(std::fmt::Error)
         );
     }
@@ -3645,13 +3788,13 @@ fn a_body_of_several_forms_needs_no_binding_of_the_program() {
 }
 
 #[test]
-fn an_overflow_is_reported_by_the_arithmetic_that_overflowed() {
+fn an_overflow_carries_the_operands_of_the_arithmetic_that_overflowed() {
     holds(
         &mut grift(),
         &[
-            "(same? (first (catch! (absolute-value -9223372036854775808) e (evaluate-in! values e)))
-                    (unwrap subtract))",
-            "(same? (first (catch! (power 2 100) e (evaluate-in! values e))) (unwrap multiply))",
+            "(equal? (catch! (absolute-value -9223372036854775808) e (evaluate-in! values e))
+                     (list 0 -9223372036854775808))",
+            "(same? (catch! (power 2 100) e (evaluate-in! kind e)) (quote! overflow))",
         ],
     );
 }
@@ -3695,7 +3838,7 @@ fn every_type_has_a_predicate_named_for_it() {
         &mut grift(),
         &[
             "(all? (lambda! (v)
-                     ((evaluate (string-to-symbol (string-append (symbol-to-string (type-of v)) \"?\"))
+                     ((evaluate (string-to-symbol (join (symbol-to-string (type-of v)) \"?\"))
                                 (current-context))
                       v))
                    (list () #true #inert #ignore 1 1.0 (quote! a) (pair 1 2) \"s\" #bytes() (context ())

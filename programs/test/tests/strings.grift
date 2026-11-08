@@ -14,20 +14,20 @@
     (expect-equal! (string-join () ",") "")
     (expect-equal! (string-join (list "x") ",") "x")))
 
-(group! "string-search"
+(group! "search"
   (test! "the first place at or after start"
-    (expect-equal! (string-search "abcabc" "c" 0) 2)
-    (expect-equal! (string-search "abcabc" "c" 3) 5)
-    (expect-equal! (string-search "abcabc" "x" 0) ()))
+    (expect-equal! (search "abcabc" "c" 0) 2)
+    (expect-equal! (search "abcabc" "c" 3) 5)
+    (expect-equal! (search "abcabc" "x" 0) ()))
   (test! "an empty pattern is at start"
-    (expect-equal! (string-search "abc" "" 2) 2)
-    (expect-equal! (string-search "abc" "" 3) 3))
+    (expect-equal! (search "abc" "" 2) 2)
+    (expect-equal! (search "abc" "" 3) 3))
   (test! "a pattern longer than the text isn't there"
-    (expect-equal! (string-search "ab" "abc" 0) ())
-    (expect-equal! (string-search "" "a" 0) ()))
+    (expect-equal! (search "ab" "abc" 0) ())
+    (expect-equal! (search "" "a" 0) ()))
   (test! "a start out of range or off a boundary is a range-error"
-    (expect-error! range-error (string-search "abc" "a" 4))
-    (expect-error! range-error (string-search "é" "a" 1))))
+    (expect-error! range-error (search "abc" "a" 4))
+    (expect-error! range-error (search "é" "a" 1))))
 
 (group! "string-starts-with? and string-ends-with?"
   (test! "by bytes"
@@ -60,13 +60,13 @@
     (expect-equal! (string-to-lowercase "É") "É")))
 
 (group! "bytes"
-  (test! "string-byte-length counts bytes of UTF-8"
-    (expect-equal! (string-byte-length "é") 2)
-    (expect-equal! (string-byte-length "") 0))
-  (test! "byte-substring refuses off a boundary"
-    (expect-equal! (byte-substring "héllo" 0 3) "hé")
-    (expect-error! range-error (byte-substring "é" 0 1))
-    (expect-error! range-error (byte-substring "abc" 2 1)))
+  (test! "byte-length counts bytes of UTF-8"
+    (expect-equal! (byte-length "é") 2)
+    (expect-equal! (byte-length "") 0))
+  (test! "slice refuses off a boundary"
+    (expect-equal! (slice "héllo" 0 3) "hé")
+    (expect-error! range-error (slice "é" 0 1))
+    (expect-error! range-error (slice "abc" 2 1)))
   (test! "code-point-to-string"
     (expect-equal! (code-point-to-string 233) "é")
     (expect-error! range-error (code-point-to-string 55296))

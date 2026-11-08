@@ -56,7 +56,7 @@ built-in-names                              ; every primitive and library name
 (element-at (list 1 2 3) 2)                 ; => 3; take, drop, second, third, last
 (read-form " (add 1 2) x" 0)                ; => ((add 1 2) 1 10): the form, its start and end
 (value-to-string (list 1.0 "a"))            ; => "(1.0 \"a\")": the printer's text
-(string-append "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
+(join "x=" (integer-to-string 42)) ; => "x=42"; offsets count bytes
 (bytes-to-string #bytes(104 105))           ; => "hi"; bytes that aren't UTF-8 are encoding-error
 ```
 
@@ -64,9 +64,9 @@ The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup evaluat
 context bind unbind lookup names pair first rest same? select type-of add subtract multiply divide
 remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
 square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
-integer-to-float float-to-integer string-byte-length string-byte byte-substring string-search string-append
+integer-to-float float-to-integer byte-length byte-at slice search join
 code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
-value-to-string bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
+value-to-string string-to-bytes bytes-to-string
 list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
 let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? inert? ignore? boolean? integer?
 float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? apply any? all? map
@@ -74,7 +74,7 @@ for-each record error length append reverse equal? greater-than? less-than-or-eq
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-starts-with? string-ends-with? string-split string-join string-trim
-string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase bytes-search
+string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase
 bindings standard-context built-in-names`.
 
 ## The runner
@@ -92,9 +92,11 @@ goes on past an error, where a program's `read-line` takes the next line typed, 
 ended by `exit` ends with status 0, or 1 if its input ends inside a form or standard input or error
 fails or is closed. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
-file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
-failed write (`file-error`) or a script it can't read, or the status the program gave `exit`. At a
-terminal, errors are shown and the session goes on. A pipe closing ends it with 0; otherwise it ends 0
+file and line: `stdin: type-error 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
+failed write (`file-error`) or a script it can't read, 141 on a write to a pipe no one reads, or the
+status the program gave `exit`. A script path or argument that isn't UTF-8 is refused before anything
+runs, as `grift: encoding-error` with its bytes: text can't hold it, and a lossy copy would name another
+file. At a terminal, errors are shown and the session goes on. A pipe closing ends it with 141; otherwise it ends 0
 unless the program calls `exit`, input ends inside a form, or standard input or error fails or is
 closed, which ends it with 1. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
@@ -112,7 +114,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(read-file path)` | The file's whole text. |
 | `(read-forms source text)` | The list of the text's forms, nothing evaluated; each combination keeps `source` and its line, so an error's trace says `at source:12`. A text that doesn't read is the `parse-error` naming `source`. |
 | `(position form)` | A combination's source and line, `("lib.grift" 12)`, if it was read with one; `()` for anything else. |
-| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the file being loaded when `load` is called: during a load, that file; otherwise the script, or the current directory for a program on stdin. A script whose path isn't UTF-8 gets `encoding-error` for a relative path. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
+| `(load path)` | Evaluates the forms of the file in turn in the caller's context, as if they were written there, and gives `#inert`. A relative path is relative to the working directory, as for every other file operation; a file beside the script is `(load (beside-script "lib.grift"))` with `(define! beside-script (lambda! (path) (string-join (reverse (pair path (rest (reverse (string-split script-path "/"))))) "/")))`. All the forms are read first, so nothing runs if one doesn't read; each `load` reads and runs the file again. Each combination of the file knows its line, so an error's trace says `at lib/table.grift:12` beside it, as for the script's own. A file that loads itself, directly or not, loads without end, as an endless recursion runs. |
 | `command-line-arguments` | The list of the arguments after the script, as strings. |
 | `script-path` | The script's path, as given; `""` when the program is stdin. |
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
@@ -128,8 +130,9 @@ system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the pat
 `unset-variable` (the name), `process-error` (the program and the message). `display` and
 `display-error` fail as a write on their file does. A write to a pipe no one reads, on any file,
 ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can keep it going, each
-`finally!` runs its cleanup forms, and the run ends quietly with status 0, so `grift script | head`
-is quiet. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
+`finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
+program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
+success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
 aborts the runner, since `std` buffers its output without asking.
 
 ```lisp
@@ -142,7 +145,7 @@ aborts the runner, since `std` buffers its output without asking.
   (lambda! (n)
     (let! ((line (read-line)))
       (when! (not? (same? line ""))
-        ((evaluate-in! write out) (string-append (integer-to-string n) " " line))
+        ((evaluate-in! write out) (join (integer-to-string n) " " line))
         (copy (add n 1))))))
 (copy 1)
 ((evaluate-in! close out))
@@ -182,8 +185,8 @@ fn main() -> Result<(), Error> {
     assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.list(&[hi.clone(), Value::Integer(1)])?;
-    assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]);
+    let list = g.pair(hi.clone(), Value::EmptyList)?; // a list is pairs, built from its end
+    assert_eq!(g.as_pair(&list)?, Some((hi, Value::EmptyList)));
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = String::new();
     g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
@@ -191,7 +194,7 @@ fn main() -> Result<(), Error> {
     let e = g.evaluate_in(&mut board, &top, "user.grift", "\n(f (quote! x))").unwrap_err();
     let mut text = String::new();
     g.describe(&e, &mut text).unwrap(); // innermost first, with the source and line
-    assert_eq!(text, "type-error #[primitive add] x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
+    assert_eq!(text, "type-error x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
     let kept = g.keep(f)?; // alive across evaluations until released
     g.release(kept).map_err(|(e, _)| e)?;
     Ok(())
@@ -214,14 +217,15 @@ fn main() -> Result<(), Error> {
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive (one name is `Value::Symbol`);
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
-  `define(name, value)` at top level. `seal_library()` after a host's prelude makes its code
-  count as library code, as grift's own: traces skip it.
-- **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
-  `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
-  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
-  `grift::write_string(text, out)` writes host text as one string literal, with the same quoting
-  and escapes, into any `std::fmt::Write`, without an interpreter or allocation; it returns
-  `std::fmt::Result`.
+  `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
+  grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
+  as grift's own: traces skip it. Code a program reads or builds is the program's.
+- **Values:** `string`, `bytes(&[u8])`, `pair`, `symbol`; read with `as_str`, `as_bytes`,
+  `as_pair`, `symbol_name`, each `Result<Option<_>, Error>` or `Result<_, Error>`, so a reclaimed
+  value is `stale-value`, never a wrong answer; `write(&v, out)`. A list is built with `pair` from
+  its end and read with `as_pair` from its start. Host text is written as a string literal the
+  same way: `string`, then `write`. A `Value::Primitive` is opaque: a host compares and writes it,
+  and can't name or make one.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
@@ -230,10 +234,11 @@ fn main() -> Result<(), Error> {
   in a `private_context()`, that makes the operations as closures over them, as the runner's
   [`runner.grift`](crates/grift-cli/src/runner.grift) does. Closing is explicit; using a resource
   after it is closed is the error `closed`.
-- `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its trace lists the
+- `Error { kind: Symbol, values: Vec<Value>, trace: Vec<Value>, .. }`. Its values are the values
+  involved, never who failed: `(first 1)` gives `type-error 1`. Its trace lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
-  top-level form; the library's own code is skipped, so `(if! 1 2 3)` fails at `(if! 1 2 3)`,
-  not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
+  top-level form; the library's code, read or built, is skipped, so `(if! 1 2 3)` fails at
+  `(if! 1 2 3)`, not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
   input to `read_in` or `evaluate_in`, the trace starts with the supplied source symbol; the
   values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
@@ -311,7 +316,7 @@ fn main() -> Result<(), Error> {
         "(define! job (lambda! (name ms)
            (finally!
              (sequence! (sleep ms) (say name) (sleep ms))
-             (say (string-append name \" closed\")))))",
+             (say (join name \" closed\")))))",
     )?;
 
     // An event loop: one thread, nothing blocks. Timers stand for what a real host waits on.
@@ -365,7 +370,7 @@ fn main() -> Result<(), Error> {
   Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;
   refused the little it does need, the run waits still and the handle comes back.
 - **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
-  frames that can't be set aside. A waiting call there is the error `cannot-park`, naming the function,
+  frames that can't be set aside. A waiting call there is the error `cannot-park`, its trace saying which call,
   and `can_park()` lets a host function do something else instead.
   `start` inside a host call is such a run. `resume` there is refused (`cannot-park`), the handle
   coming back in `ResumeError::parked` with the run untouched: queue it for your loop. Another

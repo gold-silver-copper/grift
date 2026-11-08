@@ -31,13 +31,13 @@ macro_rules! primitives {
     ($($p:ident $name:literal $lo:literal $hi:expr;)*) => {
         /// The Rust primitives, each bound wrapped, as an applicative, until the library says otherwise.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Primitive { $($p),* }
+        pub(crate) enum Primitive { $($p),* }
 
         impl Primitive {
             pub(crate) const ALL: &[Primitive] = &[$(Primitive::$p),*];
 
             /// The name the primitive is bound to in the built-in context.
-            pub fn name(self) -> &'static str {
+            pub(crate) fn name(self) -> &'static str {
                 match self { $(Primitive::$p => $name),* }
             }
 
@@ -87,9 +87,10 @@ primitives! {
     Round "round" 1 1;
     Truncate "truncate" 1 1;
     AbsoluteValue "absolute-value" 1 1;
-    // A string's bytes, making text, names and floats from it, the reader and the printer.
-    StringByte "string-byte" 2 2;
-    StringAppend "string-append" 0 usize::MAX;
+    // A string's or a bytes value's bytes, joining them, making names and floats from text, the
+    // reader and the printer.
+    ByteAt "byte-at" 2 2;
+    Join "join" 0 usize::MAX;
     StringToSymbol "string-to-symbol" 1 1;
     StringToFloat "string-to-float" 1 1;
     ReadForm "read-form" 2 2;
@@ -106,17 +107,13 @@ primitives! {
     ShiftRight "shift-right" 2 2;
     IntegerToFloat "integer-to-float" 1 1;
     FloatToInteger "float-to-integer" 1 1;
-    StringByteLength "string-byte-length" 1 1;
-    ByteSubstring "byte-substring" 3 3;
+    ByteLength "byte-length" 1 1;
+    Slice "slice" 3 3;
     CodePointToString "code-point-to-string" 1 1;
-    StringSearch "string-search" 3 3;
+    Search "search" 3 3;
     IntegerToString "integer-to-string" 1 1;
     StringToInteger "string-to-integer" 1 1;
     // A bytes value's contents: the printer writes them and the reader reads them back.
-    BytesLength "bytes-length" 1 1;
-    BytesByte "bytes-byte" 2 2;
-    BytesSlice "bytes-slice" 3 3;
-    BytesAppend "bytes-append" 0 usize::MAX;
     StringToBytes "string-to-bytes" 1 1;
     BytesToString "bytes-to-string" 1 1;
     ListToBytes "list-to-bytes" 1 1;
@@ -151,18 +148,21 @@ struct Frame {
     at: Reference,
 }
 
+// Every step pushes or pops a frame: a bigger one costs every program.
+const _: () = assert!(size_of::<Frame>() == 56);
+
 #[derive(Clone, Copy)]
 enum What {
     /// Evaluate the remaining forms of one `evaluate` call; with none left, pass the value on.
     Forms { rest: Value },
-    /// The value is the combiner of a combination with these operands.
-    Combine { operands: Value },
+    /// The value is the combiner of a combination with these operands, which `maker` made.
+    Combine { operands: Value, maker: Maker },
     /// The value is an argument of `combiner`; arguments so far are on the argument stack from
-    /// `base`.
+    /// `base`'s height, and `base` says whether the library made the combination.
     Arguments {
         combiner: Value,
         rest: Value,
-        base: usize,
+        base: Base,
     },
     /// When the evaluation above ends, by a value or an error, call the combiner `cleanup` with
     /// no arguments; `base` is the argument stack's height to go back to.
@@ -183,12 +183,53 @@ enum What {
     Form,
 }
 
+/// Who made a combination, as a whole word: a frame holding a one-byte flag is read back whole,
+/// which waits for the narrow write to land.
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u64)]
+enum Maker {
+    Program,
+    Library,
+}
+
+impl Maker {
+    fn of(library: bool) -> Maker {
+        if library {
+            Maker::Library
+        } else {
+            Maker::Program
+        }
+    }
+}
+
+/// An argument stack's height and whether the library made the combination, in one word. Written
+/// whole, the frame reads back without waiting on two narrow writes, and stays 56 bytes.
+#[derive(Clone, Copy)]
+struct Base(usize);
+
+impl Base {
+    /// The top bit: a `Vec`'s length never reaches it.
+    const LIBRARY: usize = 1 << (usize::BITS - 1);
+
+    fn new(height: usize, library: bool) -> Base {
+        Base(height | if library { Base::LIBRARY } else { 0 })
+    }
+
+    fn height(self) -> usize {
+        self.0 & !Base::LIBRARY
+    }
+
+    fn library(self) -> bool {
+        self.0 & Base::LIBRARY != 0
+    }
+}
+
 impl Frame {
     fn values(self) -> [Value; 4] {
         let empty = Value::EmptyList;
         let (a, b) = match self.what {
             What::Forms { rest: v }
-            | What::Combine { operands: v }
+            | What::Combine { operands: v, .. }
             | What::Cleanup { cleanup: v, .. }
             | What::Handler { handler: v, .. }
             | What::Body { rest: v } => (v, empty),
@@ -214,6 +255,9 @@ pub(crate) struct Machine {
     /// The innermost combination of the program being evaluated, or [`Reference::NONE`]. A
     /// `Reference`, not a `Value`: this is written and read at every step.
     here: Reference,
+    /// Whether the combination being combined is the library's: the pairs made now are too, so
+    /// the code the library builds is the library's, and the code a program builds the program's.
+    pub(crate) library: bool,
     /// Scratch for matching parameter trees.
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
@@ -247,6 +291,7 @@ impl Machine {
         self.arguments.clear();
         self.waiting.clear();
         self.here = Reference::NONE;
+        self.library = false;
         self.request = Value::Inert;
     }
 
@@ -276,6 +321,7 @@ impl Default for Machine {
             arguments: Vec::new(),
             waiting: Vec::new(),
             here: Reference::NONE,
+            library: false,
             work: Vec::new(),
             request: Value::Inert,
             #[cfg(test)]
@@ -296,8 +342,8 @@ impl Drop for Hosting {
     }
 }
 
-pub(crate) fn type_error(p: Primitive, v: Value) -> Error {
-    Error::new(K::TypeError, &[Value::Primitive(p), v])
+pub(crate) fn type_error(v: Value) -> Error {
+    Error::new(K::TypeError, &[v])
 }
 
 impl<T> Grift<T> {
@@ -324,13 +370,17 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let f = match f {
             Value::Applicative(r) => self.unwrapped(r)?,
-            _ => return Err(type_error(Primitive::Unwrap, f)),
+            _ => return Err(type_error(f)),
         };
+        self.settled();
         let operands = self.list_local(arguments)?;
         let context = self
             .heap
             .alloc(Object::Context(None, Bindings::default()))?;
-        let call = What::Combine { operands };
+        let call = What::Combine {
+            operands,
+            maker: Maker::Program,
+        };
         self.enter(state, &[(call, context)], Mode::Return(f), parks)
     }
 
@@ -350,8 +400,13 @@ impl<T> Grift<T> {
         let outer = self.begin_run();
         let around = std::mem::replace(&mut self.may_park, outer && parks);
         let m = &mut self.machine;
-        let (base, arguments, waiting, here) =
-            (m.frames.len(), m.arguments.len(), m.waiting.len(), m.here);
+        let (base, arguments, waiting, here, library) = (
+            m.frames.len(),
+            m.arguments.len(),
+            m.waiting.len(),
+            m.here,
+            m.library,
+        );
         let held = What::Forms {
             rest: Value::EmptyList,
         };
@@ -364,6 +419,7 @@ impl<T> Grift<T> {
         // A machine that parked or was given up has nothing left to restore: these do nothing.
         let m = &mut self.machine;
         m.here = here;
+        m.library = library;
         m.frames.truncate(base);
         m.arguments.truncate(arguments);
         m.waiting.truncate(waiting);
@@ -398,9 +454,9 @@ impl<T> Grift<T> {
     /// kept entry holds, and this interpreter's machine is empty again. Everything that can fail
     /// comes first, so a run that can't park goes on where it was, with the error, and that it
     /// was asked to stop is the last of those. Its kept name is left for [`Grift::ran`].
-    fn park(&mut self, h: Host, request: Value) -> Result<(), Error> {
+    fn park(&mut self, request: Value) -> Result<(), Error> {
         if !self.may_park {
-            return Err(Error::new(K::CannotPark, &[Value::Host(h)]));
+            return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
         room.try_reserve_exact(1).map_err(|_| Error::oom())?;
@@ -483,9 +539,8 @@ impl<T> Grift<T> {
                     (Object::Pair(a, b), library) => (*a, *b, library),
                     _ => return Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
                 };
-                // A combination is the program's unless it is the library's code, or code built
-                // around a combiner value (as the library builds it), not written.
-                if !library && !is_combiner(combiner) {
+                // A combination is the program's unless the library made it.
+                if !library {
                     self.machine.here = r;
                     if self
                         .positions
@@ -495,7 +550,11 @@ impl<T> Grift<T> {
                         self.hold_form(r)?;
                     }
                 }
-                self.frame(What::Combine { operands }, context, self.machine.here)?;
+                let combine = What::Combine {
+                    operands,
+                    maker: Maker::of(library),
+                };
+                self.frame(combine, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
             }
             Mode::Evaluate(x, _) => Mode::Return(x),
@@ -509,7 +568,7 @@ impl<T> Grift<T> {
                     } => {
                         let (form, rest) = self.pair_at(r)?;
                         let at = match form {
-                            Value::Pair(f) => f,
+                            Value::Pair(f) if !self.heap.get_code(f)?.1 => f,
                             _ => Reference::NONE,
                         };
                         self.frame(What::Forms { rest }, context, at)?;
@@ -517,8 +576,9 @@ impl<T> Grift<T> {
                         Mode::Evaluate(form, context)
                     }
                     What::Forms { .. } | What::Form => Mode::Return(v),
-                    What::Combine { operands } => {
+                    What::Combine { operands, maker } => {
                         self.machine.here = at;
+                        self.machine.library = maker == Maker::Library;
                         self.combine(v, operands, context)?
                     }
                     What::Arguments {
@@ -546,7 +606,7 @@ impl<T> Grift<T> {
                         match v {
                             Value::Boolean(true) => Mode::Evaluate(consequent, context),
                             Value::Boolean(false) => Mode::Evaluate(alternative, context),
-                            _ => return Err(type_error(Primitive::Select, v)),
+                            _ => return Err(type_error(v)),
                         }
                     }
                     What::Body { rest } => {
@@ -663,8 +723,11 @@ impl<T> Grift<T> {
             context: Reference::NONE,
             at: Reference::NONE,
         });
-        let operands = Value::EmptyList;
-        self.frame(What::Combine { operands }, context, at)?;
+        let call = What::Combine {
+            operands: Value::EmptyList,
+            maker: Maker::Program,
+        };
+        self.frame(call, context, at)?;
         Ok(Mode::Return(cleanup))
     }
 
@@ -737,19 +800,19 @@ impl<T> Grift<T> {
         }
         hosting.0 = None;
         self.machine.arguments.truncate(base);
-        self.answered(h, v)
+        self.answered(v)
     }
 
     /// What a host function answered, checked as everything the host hands in is. Apart from
     /// [`Grift::host`], so that its temporaries stay off the stack of a run under a nested one.
     #[inline(never)]
-    fn answered(&mut self, h: Host, v: Result<Answer, crate::Error>) -> Result<Mode, Error> {
+    fn answered(&mut self, v: Result<Answer, crate::Error>) -> Result<Mode, Error> {
         match v {
             Ok(Answer::Now(v)) => Ok(Mode::Return(self.import(&v)?)),
             // Parked, the machine is empty, so this value ends the loop.
             Ok(Answer::Later(request)) => {
                 let request = self.import(&request)?;
-                self.park(h, request).map(|()| Mode::Return(Value::Inert))
+                self.park(request).map(|()| Mode::Return(Value::Inert))
             }
             Err(e) => Err(self.incoming_error(&e)),
         }
@@ -765,7 +828,7 @@ impl<T> Grift<T> {
                 while let (Value::Applicative(r), Value::EmptyList) = (inner, operands) {
                     inner = self.unwrapped(r)?;
                 }
-                let base = self.machine.arguments.len();
+                let base = Base::new(self.machine.arguments.len(), self.machine.library);
                 self.next_argument(inner, context, operands, base)
             }
             Value::Operative(r) => self.call_compound(r, operands, context),
@@ -795,7 +858,7 @@ impl<T> Grift<T> {
         combiner: Value,
         context: Reference,
         rest: Value,
-        base: usize,
+        base: Base,
     ) -> Result<Mode, Error> {
         match rest {
             Value::Pair(r) => {
@@ -808,8 +871,11 @@ impl<T> Grift<T> {
                 self.frame(arguments, context, self.machine.here)?;
                 Ok(Mode::Evaluate(x, context))
             }
-            Value::EmptyList => self.apply(combiner, context, base),
-            _ => Err(Error::new(K::TypeError, &[combiner, rest])),
+            Value::EmptyList => {
+                self.machine.library = base.library();
+                self.apply(combiner, context, base.height())
+            }
+            _ => Err(type_error(rest)),
         }
     }
 
@@ -981,10 +1047,7 @@ impl<T> Grift<T> {
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let (lo, hi) = p.arity();
         if given.len() < lo || given.len() > hi {
-            let mut e = Error::new(K::ArityError, given);
-            push(&mut e.values, Value::Primitive(p))?;
-            e.values.rotate_right(1);
-            return Err(e);
+            return Err(self.arity_error(base));
         }
         let mut a = [Value::EmptyList; 3];
         a.iter_mut().zip(given).for_each(|(d, s)| *d = *s);
@@ -1003,21 +1066,21 @@ impl<T> Grift<T> {
                 };
                 Value::Operative(self.heap.alloc(Object::Operative(op))?)
             }
-            P::Wrap if !is_combiner(x) => return Err(type_error(p, x)),
+            P::Wrap if !is_combiner(x) => return Err(type_error(x)),
             P::Wrap => Value::Applicative(self.heap.alloc(Object::Applicative(x))?),
             P::Unwrap => match x {
                 Value::Applicative(r) => self.unwrapped(r)?,
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Evaluate => match y {
                 Value::Context(c) => return Ok(Mode::Evaluate(x, c)),
-                _ => return Err(type_error(p, y)),
+                _ => return Err(type_error(y)),
             },
             P::Context => {
                 let parent = match x {
                     Value::Context(c) => Some(c),
                     Value::EmptyList => None,
-                    _ => return Err(type_error(p, x)),
+                    _ => return Err(type_error(x)),
                 };
                 Value::Context(
                     self.heap
@@ -1029,12 +1092,12 @@ impl<T> Grift<T> {
                     self.bind_tree(c, y, z)?;
                     Value::Inert
                 }
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Unbind | P::Lookup => {
                 let (Value::Context(c), Value::Symbol(s)) = (x, y) else {
                     let bad = if matches!(x, Value::Context(_)) { y } else { x };
-                    return Err(type_error(p, bad));
+                    return Err(type_error(bad));
                 };
                 match p {
                     P::Unbind => Value::Boolean(self.bindings_mut(c)?.remove(&s).is_some()),
@@ -1043,7 +1106,7 @@ impl<T> Grift<T> {
             }
             P::Names => match x {
                 Value::Context(c) => self.names_list(c)?,
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Pair => self.pair_local(x, y)?,
             P::First | P::Rest => match x {
@@ -1051,13 +1114,13 @@ impl<T> Grift<T> {
                     let (a, b) = self.pair_at(r)?;
                     if p == P::First { a } else { b }
                 }
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::Same => Value::Boolean(self.same(x, y)?),
             P::Select => match x {
                 Value::Boolean(true) => y,
                 Value::Boolean(false) => z,
-                _ => return Err(type_error(p, x)),
+                _ => return Err(type_error(x)),
             },
             P::TypeOf => Value::Symbol(type_of(x).into()),
             P::Add | P::Subtract | P::Multiply | P::Divide | P::Remainder | P::LessThan => {
@@ -1066,27 +1129,27 @@ impl<T> Grift<T> {
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
             }
-            P::Power => Value::Float(float_of(p, x)?.powf(float_of(p, y)?)),
-            P::SquareRoot => Value::Float(float_of(p, x)?.sqrt()),
-            P::Sine => Value::Float(float_of(p, x)?.sin()),
-            P::Cosine => Value::Float(float_of(p, x)?.cos()),
-            P::Tangent => Value::Float(float_of(p, x)?.tan()),
-            P::Exponential => Value::Float(float_of(p, x)?.exp()),
-            P::NaturalLogarithm => Value::Float(float_of(p, x)?.ln()),
-            P::Floor => Value::Float(float_of(p, x)?.floor()),
-            P::Ceiling => Value::Float(float_of(p, x)?.ceil()),
-            P::Round => Value::Float(float_of(p, x)?.round()),
-            P::Truncate => Value::Float(float_of(p, x)?.trunc()),
-            P::AbsoluteValue => Value::Float(float_of(p, x)?.abs()),
-            P::IntegerToFloat => Value::Float(integer_of(p, x)? as f64),
+            P::Power => Value::Float(float_of(x)?.powf(float_of(y)?)),
+            P::SquareRoot => Value::Float(float_of(x)?.sqrt()),
+            P::Sine => Value::Float(float_of(x)?.sin()),
+            P::Cosine => Value::Float(float_of(x)?.cos()),
+            P::Tangent => Value::Float(float_of(x)?.tan()),
+            P::Exponential => Value::Float(float_of(x)?.exp()),
+            P::NaturalLogarithm => Value::Float(float_of(x)?.ln()),
+            P::Floor => Value::Float(float_of(x)?.floor()),
+            P::Ceiling => Value::Float(float_of(x)?.ceil()),
+            P::Round => Value::Float(float_of(x)?.round()),
+            P::Truncate => Value::Float(float_of(x)?.trunc()),
+            P::AbsoluteValue => Value::Float(float_of(x)?.abs()),
+            P::IntegerToFloat => Value::Float(integer_of(x)? as f64),
             // Rust's `as`: saturating, and not-a-number becomes 0.
-            P::FloatToInteger => Value::Integer(float_of(p, x)? as i64),
+            P::FloatToInteger => Value::Integer(float_of(x)? as i64),
             P::EvaluateWithCleanup | P::EvaluateWithHandler if !is_combiner(z) => {
-                return Err(type_error(p, z));
+                return Err(type_error(z));
             }
             P::EvaluateWithCleanup | P::EvaluateWithHandler => {
                 let Value::Context(c) = y else {
-                    return Err(type_error(p, y));
+                    return Err(type_error(y));
                 };
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
@@ -1103,91 +1166,42 @@ impl<T> Grift<T> {
             P::Raise => {
                 return Err(self.error_of(x)?);
             }
-            P::StringByteLength => integer(self.text(p, x)?.len()),
-            P::StringByte => {
-                let (s, i) = (self.text(p, x)?, integer_of(p, y)?);
-                let byte = usize::try_from(i).ok().and_then(|i| s.as_bytes().get(i));
-                let byte =
-                    byte.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
-                Value::Integer(i64::from(*byte))
-            }
-            P::ByteSubstring => {
-                let s = self.text(p, x)?;
-                let range = (
-                    usize::try_from(integer_of(p, y)?),
-                    usize::try_from(integer_of(p, z)?),
-                );
-                let part = match range {
-                    (Ok(a), Ok(b)) => s.get(a..b),
-                    _ => None,
-                };
-                let part =
-                    part.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y, z]))?;
-                let part = boxed(part)?;
-                Value::String(self.heap.alloc(Object::String(part))?)
-            }
-            P::StringAppend => {
-                let given = self.machine.arguments.get(base..).unwrap_or_default();
-                let mut len = 0usize;
-                for &v in given {
-                    len = len.saturating_add(self.text(p, v)?.len());
-                }
-                // Exactly the length, so boxing it never reallocates.
-                let mut s = String::new();
-                s.try_reserve_exact(len).map_err(|_| Error::oom())?;
-                for &v in given {
-                    s.push_str(self.text(p, v)?);
-                }
-                Value::String(self.heap.alloc(Object::String(s.into_boxed_str()))?)
-            }
-            P::BytesLength
-            | P::BytesByte
-            | P::BytesSlice
-            | P::BytesAppend
+            P::ByteAt
+            | P::Join
+            | P::ByteLength
+            | P::Slice
+            | P::Search
             | P::StringToBytes
             | P::BytesToString
             | P::ListToBytes
-            | P::BytesToList => self.bytes_primitive(p, [x, y, z], base)?,
-            P::StringSearch => {
-                let (t, pattern) = (self.text(p, x)?, self.text(p, y)?);
-                let start = integer_of(p, z)?;
-                let after = usize::try_from(start)
-                    .ok()
-                    .and_then(|i| Some((i, t.get(i..)?)));
-                let (start, after) =
-                    after.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, z]))?;
-                let found = after.find(pattern).map(|at| integer(start + at));
-                found.unwrap_or(Value::EmptyList)
-            }
+            | P::BytesToList => self.sequence_primitive(p, [x, y, z], base)?,
             P::CodePointToString => {
-                let c = u32::try_from(integer_of(p, x)?)
-                    .ok()
-                    .and_then(char::from_u32);
-                let c = c.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x]))?;
+                let c = u32::try_from(integer_of(x)?).ok().and_then(char::from_u32);
+                let c = c.ok_or_else(|| Error::new(K::RangeError, &[x]))?;
                 self.string_local(c.encode_utf8(&mut [0; 4]))?
             }
             P::StringToSymbol => {
-                let name = boxed(self.text(p, x)?)?;
+                let name = boxed(self.text(x)?)?;
                 Value::Symbol(self.intern(&name)?)
             }
             P::IntegerToString => {
-                integer_of(p, x)?;
+                integer_of(x)?;
                 self.printed(x)?
             }
             P::ValueToString => self.printed(x)?,
             P::StringToInteger | P::StringToFloat => {
-                let s = self.text(p, x)?;
+                let s = self.text(x)?;
                 let n = match p {
                     P::StringToInteger => s.parse().ok().map(Value::Integer),
                     _ => float_name(s).or_else(|| s.parse().ok()).map(Value::Float),
                 };
-                n.ok_or_else(|| Error::new(K::ParseError, &[Value::Primitive(p), x]))?
+                n.ok_or_else(|| Error::new(K::ParseError, &[x]))?
             }
             P::ReadForm => {
                 let Value::String(r) = x else {
-                    return Err(type_error(p, x));
+                    return Err(type_error(x));
                 };
-                let offset = usize::try_from(integer_of(p, y)?).ok();
+                let offset = usize::try_from(integer_of(y)?).ok();
                 // The text is lent to the reader, not copied: a program reads a long text one
                 // form at a time.
                 let Object::String(text) = self.heap.get_mut(r)? else {
@@ -1200,8 +1214,7 @@ impl<T> Grift<T> {
                 if let Object::String(s) = self.heap.get_mut(r)? {
                     *s = text;
                 }
-                let read =
-                    read.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 match read? {
                     Some((form, place, _)) => {
                         self.list_local(&[form, integer(place.start), integer(place.end)])?
@@ -1213,10 +1226,25 @@ impl<T> Grift<T> {
         Ok(Mode::Return(v))
     }
 
-    /// The primitives on bytes, apart from [`Grift::primitive`] so that its common cases stay
-    /// small enough for the compiler to inline it into the machine's loop.
+    /// The arguments from `base` don't fit the primitive: an `arity-error` carrying them as one
+    /// list. Cold and apart, so that the check costs the machine's loop nothing more.
+    #[cold]
     #[inline(never)]
-    fn bytes_primitive(
+    fn arity_error(&mut self, base: usize) -> Error {
+        let given = self.machine.arguments.get(base..).unwrap_or_default();
+        let made = collected(given.iter().copied()).and_then(|operands| self.list_local(&operands));
+        match made {
+            Ok(operands) => Error::new(K::ArityError, &[operands]),
+            Err(e) => e,
+        }
+    }
+
+    /// The primitives on strings and bytes, apart from [`Grift::primitive`] so that its common cases
+    /// stay small enough for the compiler to inline it into the machine's loop. A string or a bytes
+    /// value is a sequence of bytes: the first argument's kind is the answer's, and a string is cut
+    /// only on character boundaries.
+    #[inline(never)]
+    fn sequence_primitive(
         &mut self,
         p: Primitive,
         [x, y, z]: [Value; 3],
@@ -1224,51 +1252,92 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         use Primitive as P;
         Ok(match p {
-            P::BytesLength => integer(self.bytes_of(p, x)?.len()),
-            P::BytesByte => {
-                let (b, i) = (self.bytes_of(p, x)?, integer_of(p, y)?);
+            P::ByteLength => integer(self.octets(x)?.len()),
+            P::ByteAt => {
+                let (b, i) = (self.octets(x)?, integer_of(y)?);
                 let byte = usize::try_from(i).ok().and_then(|i| b.get(i));
-                let byte =
-                    byte.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y]))?;
+                let byte = byte.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 Value::Integer(i64::from(*byte))
             }
-            P::BytesSlice => {
-                let b = self.bytes_of(p, x)?;
+            P::Slice => {
+                self.octets(x)?;
                 let range = (
-                    usize::try_from(integer_of(p, y)?),
-                    usize::try_from(integer_of(p, z)?),
+                    usize::try_from(integer_of(y)?),
+                    usize::try_from(integer_of(z)?),
                 );
-                let part = match range {
-                    (Ok(start), Ok(end)) => b.get(start..end),
+                let part = match (range, x) {
+                    ((Ok(a), Ok(b)), Value::String(_)) => self
+                        .text(x)?
+                        .get(a..b)
+                        .map(|t| boxed(t).map(Object::String)),
+                    ((Ok(a), Ok(b)), _) => self
+                        .bytes_of(x)?
+                        .get(a..b)
+                        .map(|b| collected(b.iter().copied()).map(Object::Bytes)),
                     _ => None,
                 };
-                let part =
-                    part.ok_or_else(|| Error::new(K::RangeError, &[Value::Primitive(p), x, y, z]))?;
-                self.bytes_local(collected(part.iter().copied())?)?
+                let part = part.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))??;
+                Self::sequence_of(matches!(x, Value::Bytes(_)), self.heap.alloc(part)?)
             }
-            P::BytesAppend => {
+            P::Join => {
                 let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let bytes = matches!(given.first(), Some(Value::Bytes(_)));
                 let mut len = 0usize;
                 for &v in given {
+                    if matches!(v, Value::Bytes(_)) != bytes {
+                        return Err(type_error(v));
+                    }
                     len = len
-                        .checked_add(self.bytes_of(p, v)?.len())
+                        .checked_add(self.octets(v)?.len())
                         .ok_or_else(Error::oom)?;
                 }
-                let mut joined = Vec::new();
-                joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
-                for &v in given {
-                    joined.extend_from_slice(self.bytes_of(p, v)?);
+                // Exactly the length, so boxing a string never reallocates.
+                let made = if bytes {
+                    let mut joined = Vec::new();
+                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    for &v in given {
+                        joined.extend_from_slice(self.bytes_of(v)?);
+                    }
+                    Object::Bytes(joined)
+                } else {
+                    let mut joined = String::new();
+                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    for &v in given {
+                        joined.push_str(self.text(v)?);
+                    }
+                    Object::String(joined.into_boxed_str())
+                };
+                Self::sequence_of(bytes, self.heap.alloc(made)?)
+            }
+            P::Search => {
+                self.octets(x)?;
+                self.octets(y)?;
+                if std::mem::discriminant(&x) != std::mem::discriminant(&y) {
+                    return Err(type_error(y));
                 }
-                self.bytes_local(joined)?
+                let start = usize::try_from(integer_of(z)?).ok();
+                // A valid pattern in valid text matches only on character boundaries.
+                let found = match x {
+                    Value::String(_) => {
+                        let (t, pattern) = (self.text(x)?, self.text(y)?);
+                        start.and_then(|i| Some((i, t.get(i..)?.find(pattern))))
+                    }
+                    _ => {
+                        let (t, pattern) = (self.bytes_of(x)?, self.bytes_of(y)?);
+                        start.and_then(|i| Some((i, find(t.get(i..)?, pattern))))
+                    }
+                };
+                let (start, at) = found.ok_or_else(|| Error::new(K::RangeError, &[x, y, z]))?;
+                at.map_or(Value::EmptyList, |at| integer(start + at))
             }
             P::StringToBytes => {
-                let b = collected(self.text(p, x)?.bytes())?;
+                let b = collected(self.text(x)?.bytes())?;
                 self.bytes_local(b)?
             }
             P::BytesToString => {
-                let text = std::str::from_utf8(self.bytes_of(p, x)?).map_err(|e| {
+                let text = std::str::from_utf8(self.bytes_of(x)?).map_err(|e| {
                     let at = integer(e.valid_up_to());
-                    Error::new(K::EncodingError, &[Value::Primitive(p), x, at])
+                    Error::new(K::EncodingError, &[x, at])
                 })?;
                 let text = boxed(text)?;
                 Value::String(self.heap.alloc(Object::String(text))?)
@@ -1280,33 +1349,42 @@ impl<T> Grift<T> {
                     let (v, next) = self.pair_at(r)?;
                     let at = integer(bytes.len());
                     let byte = match v {
-                        Value::Integer(n) => u8::try_from(n).map_err(|_| {
-                            Error::new(K::RangeError, &[Value::Primitive(p), v, at])
-                        })?,
-                        _ => return Err(Error::new(K::TypeError, &[Value::Primitive(p), v, at])),
+                        Value::Integer(n) => {
+                            u8::try_from(n).map_err(|_| Error::new(K::RangeError, &[v, at]))?
+                        }
+                        _ => return Err(Error::new(K::TypeError, &[v, at])),
                     };
                     push(&mut bytes, byte)?;
                     rest = next;
                 }
                 if rest != Value::EmptyList {
                     let at = integer(bytes.len());
-                    return Err(Error::new(K::TypeError, &[Value::Primitive(p), rest, at]));
+                    return Err(Error::new(K::TypeError, &[rest, at]));
                 }
                 self.bytes_local(bytes)?
             }
             P::BytesToList => {
-                let b = collected(self.bytes_of(p, x)?.iter().copied())?;
+                let b = collected(self.bytes_of(x)?.iter().copied())?;
                 b.iter().rev().try_fold(Value::EmptyList, |list, &byte| {
                     self.pair_local(Value::Integer(i64::from(byte)), list)
                 })?
             }
-            _ => return Err(type_error(p, x)),
+            _ => return Err(type_error(x)),
         })
+    }
+
+    /// A bytes value or a string for object `r`.
+    fn sequence_of(bytes: bool, r: Reference) -> Value {
+        if bytes {
+            Value::Bytes(r)
+        } else {
+            Value::String(r)
+        }
     }
 
     /// The error an error context describes: one `error` made, or a handler got.
     fn error_of(&self, e: Value) -> Result<Error, Error> {
-        let bad = || type_error(Primitive::Raise, e);
+        let bad = || type_error(e);
         let Value::Context(r) = e else {
             return Err(bad());
         };
@@ -1342,36 +1420,40 @@ impl<T> Grift<T> {
     /// with the same bits, and otherwise the same object.
     fn same(&self, x: Value, y: Value) -> Result<bool, Error> {
         Ok(match (x, y) {
-            (Value::String(_), Value::String(_)) => {
-                self.text(Primitive::Same, x)? == self.text(Primitive::Same, y)?
-            }
-            (Value::Bytes(_), Value::Bytes(_)) => {
-                self.bytes_of(Primitive::Same, x)? == self.bytes_of(Primitive::Same, y)?
-            }
+            (Value::String(_), Value::String(_)) => self.text(x)? == self.text(y)?,
+            (Value::Bytes(_), Value::Bytes(_)) => self.bytes_of(x)? == self.bytes_of(y)?,
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             _ => x == y,
         })
     }
 
-    /// The contents of string `v`, or a type error naming `p`.
-    pub(crate) fn text(&self, p: Primitive, v: Value) -> Result<&str, Error> {
+    /// The contents of string `v`, or a type error.
+    pub(crate) fn text(&self, v: Value) -> Result<&str, Error> {
         match v {
             Value::String(r) => match self.heap.get(r)? {
                 Object::String(s) => Ok(s),
                 _ => Err(Error::new(K::StaleValue, &[v])),
             },
-            _ => Err(type_error(p, v)),
+            _ => Err(type_error(v)),
         }
     }
 
-    /// The contents of bytes value `v`, or a type error naming `p`.
-    pub(crate) fn bytes_of(&self, p: Primitive, v: Value) -> Result<&[u8], Error> {
+    /// The bytes of string or bytes value `v`, or a type error.
+    pub(crate) fn octets(&self, v: Value) -> Result<&[u8], Error> {
+        match v {
+            Value::String(_) => self.text(v).map(str::as_bytes),
+            _ => self.bytes_of(v),
+        }
+    }
+
+    /// The contents of bytes value `v`, or a type error.
+    pub(crate) fn bytes_of(&self, v: Value) -> Result<&[u8], Error> {
         match v {
             Value::Bytes(r) => match self.heap.get(r)? {
                 Object::Bytes(b) => Ok(b),
                 _ => Err(Error::new(K::StaleValue, &[v])),
             },
-            _ => Err(type_error(p, v)),
+            _ => Err(type_error(v)),
         }
     }
 
@@ -1382,8 +1464,12 @@ impl<T> Grift<T> {
             .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l))
     }
 
+    /// A new pair, the library's if the combination being combined is.
     pub(crate) fn pair_local(&mut self, a: Value, b: Value) -> Result<Value, Error> {
-        Ok(Value::Pair(self.heap.alloc(Object::Pair(a, b))?))
+        let pair = Object::Pair(a, b);
+        Ok(Value::Pair(
+            self.heap.alloc_marked(pair, self.machine.library)?,
+        ))
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
@@ -1438,9 +1524,7 @@ impl<T> Grift<T> {
                     push(&mut work, (tb, vb))?;
                     push(&mut work, (ta, va))
                 }),
-                (Value::Pair(_) | Value::EmptyList, _) => {
-                    Err(Error::new(K::ArityError, &[tree, value]))
-                }
+                (Value::Pair(_) | Value::EmptyList, _) => Err(Error::new(K::ArityError, &[value])),
                 _ => Err(Error::new(K::ParameterError, &[tree])),
             };
         }
@@ -1554,7 +1638,7 @@ fn locate(e: &mut Error, r: Reference) {
 /// outside 0 to 63 is `overflow`, where Rust panics, and the bits shifted out are lost, as in Rust.
 fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
     use Primitive as P;
-    let (a, b) = (integer_of(p, x)?, integer_of(p, y)?);
+    let (a, b) = (integer_of(x)?, integer_of(y)?);
     let amount = u32::try_from(b).ok();
     let r = match p {
         P::BitwiseAnd => Some(a & b),
@@ -1564,7 +1648,15 @@ fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
         _ => amount.and_then(|n| a.checked_shr(n)),
     };
     r.map(Value::Integer)
-        .ok_or_else(|| Error::new(K::Overflow, &[Value::Primitive(p), x, y]))
+        .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
+}
+
+/// Where `pattern` first is in `b`; an empty one is at 0.
+fn find(b: &[u8], pattern: &[u8]) -> Option<usize> {
+    match pattern.len() {
+        0 => Some(0),
+        n => b.windows(n).position(|w| w == pattern),
+    }
 }
 
 /// A length or offset as a grift integer.
@@ -1572,17 +1664,17 @@ pub(crate) fn integer(n: usize) -> Value {
     Value::Integer(i64::try_from(n).unwrap_or(i64::MAX))
 }
 
-fn integer_of(p: Primitive, v: Value) -> Result<i64, Error> {
+fn integer_of(v: Value) -> Result<i64, Error> {
     match v {
         Value::Integer(n) => Ok(n),
-        _ => Err(type_error(p, v)),
+        _ => Err(type_error(v)),
     }
 }
 
-fn float_of(p: Primitive, v: Value) -> Result<f64, Error> {
+fn float_of(v: Value) -> Result<f64, Error> {
     match v {
         Value::Float(f) => Ok(f),
-        _ => Err(type_error(p, v)),
+        _ => Err(type_error(v)),
     }
 }
 
@@ -1624,7 +1716,7 @@ fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
             P::Subtract => a.checked_sub(b),
             P::Multiply => a.checked_mul(b),
             P::Divide | P::Remainder if b == 0 => {
-                return Err(Error::new(K::DivisionByZero, &[Value::Primitive(p), x, y]));
+                return Err(Error::new(K::DivisionByZero, &[x, y]));
             }
             P::Divide => a.checked_div(b),
             P::Remainder => a.checked_rem(b),
@@ -1640,9 +1732,9 @@ fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
                 _ => return Ok(Value::Boolean(a < b)),
             }));
         }
-        (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(p, y)),
-        _ => return Err(type_error(p, x)),
+        (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(y)),
+        _ => return Err(type_error(x)),
     };
     r.map(Value::Integer)
-        .ok_or_else(|| Error::new(K::Overflow, &[Value::Primitive(p), x, y]))
+        .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
 }

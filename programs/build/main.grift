@@ -65,7 +65,7 @@
     (let! (; The line of offset to, counting from offset from on line n.
            (line-from
              (lambda! (from to n)
-               (add n (subtract (length (string-split (byte-substring text from to) "\n")) 1))))
+               (add n (subtract (length (string-split (slice text from to) "\n")) 1))))
            ; A ( or " never closed is told at the line where it opened.
            (read-after
              (lambda! (i)
@@ -98,11 +98,11 @@
 (define! without-suffix
   (lambda! (s suffix)
     (if! (string-ends-with? s suffix)
-      (byte-substring s 0 (subtract (string-byte-length s) (string-byte-length suffix)))
+      (slice s 0 (subtract (byte-length s) (byte-length suffix)))
       (fail "\"" s "\" doesn't end with \"" suffix "\""))))
 
 (define! replace-suffix
-  (lambda! (s old new) (string-append (without-suffix s old) new)))
+  (lambda! (s old new) (join (without-suffix s old) new)))
 
 ; The words that run line in sh, for a command that needs redirection or a pipe.
 (define! shell (lambda! (line) (list "sh" "-c" line)))
@@ -256,8 +256,8 @@
 ; A word as it would be typed to a shell, for echoing a command.
 (define! shown
   (lambda! (word)
-    (if! (or!? (same? word "") (integer? (string-search word " " 0)) (integer? (string-search word "'" 0)))
-      (string-append "'" (string-join (string-split word "'") "'\\''") "'")
+    (if! (or!? (same? word "") (integer? (search word " " 0)) (integer? (search word "'" 0)))
+      (join "'" (string-join (string-split word "'") "'\\''") "'")
       word)))
 
 (define! run-command

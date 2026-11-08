@@ -31,7 +31,7 @@
 ; test! evaluates its name, and a test's body sees where it was made: a table of cases is a loop.
 (for-each
   (lambda! ((text parts))
-    (test! (string-append "string-split of " (value-to-string text))
+    (test! (join "string-split of " (value-to-string text))
       (expect-equal! (string-split text ",") parts)))
   (quote! (("" (""))
            ("a" ("a"))
@@ -47,8 +47,8 @@
   (expect-true! (member? (quote! make-stack) (names (current-context)))))
 
 ; A computed name whose text is written further on doesn't move the lines of the forms between.
-(test! (string-append "computed " "name")
+(test! (join "computed " "name")
   (expect-true! #true))
 
 (test! "the form after it has its own line"
-  (expect-equal! (string-append "computed " "name") "computed name"))
+  (expect-equal! (join "computed " "name") "computed name"))

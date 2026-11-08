@@ -171,9 +171,9 @@
 ; count of 1 is left out and an empty range starts at the line before it, as GNU diff does.
 (define! range-text
   (lambda! (sign start count)
-    (string-append sign
+    (join sign
                    (integer-to-string (if! (same? count 0) (subtract start 1) start))
-                   (if! (same? count 1) "" (string-append "," (integer-to-string count))))))
+                   (if! (same? count 1) "" (join "," (integer-to-string count))))))
 
 (define! count-of
   (lambda! (kind hunk)
@@ -183,8 +183,8 @@
 (define! line-text
   (lambda! (sign line)
     (if! (string-ends-with? line "\n")
-      (string-append sign line)
-      (string-append sign line "\n\\ No newline at end of file\n"))))
+      (join sign line)
+      (join sign line "\n\\ No newline at end of file\n"))))
 
 ; The lines of a hunk, each run of changes with its deletions before its insertions.
 (define! hunk-lines
@@ -206,8 +206,8 @@
 (define! hunk-text
   (lambda! (hunk)
     (let! (((#ignore #ignore old-start new-start) (first hunk)))
-      (apply string-append
-             (pair (string-append "@@ " (range-text "-" old-start (count-of (quote! delete) hunk))
+      (apply join
+             (pair (join "@@ " (range-text "-" old-start (count-of (quote! delete) hunk))
                                   " " (range-text "+" new-start (count-of (quote! insert) hunk))
                                   " @@\n")
                    (hunk-lines hunk))))))
@@ -226,8 +226,8 @@
             e
             (let! ((kind (evaluate-in! kind e)) (values (evaluate-in! values e)))
               (conditional!
-                ((same? kind (quote! file-error)) (fail (string-append path ": " (second values))))
-                ((same? kind (quote! encoding-error)) (fail (string-append path ": not UTF-8 text")))
+                ((same? kind (quote! file-error)) (fail (join path ": " (second values))))
+                ((same? kind (quote! encoding-error)) (fail (join path ": not UTF-8 text")))
                 (#true (raise e)))))))
 
 (define! diff

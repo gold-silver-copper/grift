@@ -89,7 +89,7 @@
 
 (group! "equal? and same?"
   (test! "same? on strings by content, on pairs by identity"
-    (expect-same! "a" (string-append "a" ""))
+    (expect-same! "a" (join "a" ""))
     (expect-false! (same? (list 1) (list 1)))
     (expect-true! (equal? (list 1) (list 1))))
   (test! "different types are never equal"

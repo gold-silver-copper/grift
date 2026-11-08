@@ -190,16 +190,16 @@
       ((operative? v)
        (let! ((text (value-to-string v)))
          (if! (string-starts-with? text "#[primitive") text "#[operative]")))
-      ((applicative? v) (string-append "#[applicative " (print (unwrap v)) "]"))
-      ((pair? v) (string-append "(" (print-list v) ")"))
+      ((applicative? v) (join "#[applicative " (print (unwrap v)) "]"))
+      ((pair? v) (join "(" (print-list v) ")"))
       (#true (value-to-string v)))))
 
 (define! print-list
   (lambda! (v)
     (conditional!
       ((same? (rest v) ()) (print (first v)))
-      ((pair? (rest v)) (string-append (print (first v)) " " (print-list (rest v))))
-      (#true (string-append (print (first v)) " . " (print (rest v)))))))
+      ((pair? (rest v)) (join (print (first v)) " " (print-list (rest v))))
+      (#true (join (print (first v)) " . " (print (rest v)))))))
 
 ; display and display-error: strings as they are, everything else as print gives it.
 (define! printed (lambda! (v) (if! (string? v) v (print v))))
@@ -218,9 +218,9 @@
                    bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
                    square-root sine cosine tangent exponential natural-logarithm floor ceiling round
                    truncate absolute-value power integer-to-float float-to-integer
-                   string-byte-length string-byte byte-substring string-search string-append code-point-to-string
+                   byte-length byte-at slice search join code-point-to-string
                    string-to-symbol integer-to-string string-to-integer string-to-float read-form
-                   bytes-length bytes-byte bytes-slice bytes-append string-to-bytes bytes-to-string
+                   string-to-bytes bytes-to-string
                    list-to-bytes bytes-to-list)))
 
 ; Each form of `text` in turn, from byte `at`, with `each` given the form, its start and the
@@ -235,7 +235,7 @@
 
 (define! line-of
   (lambda! (text at)
-    (add 1 (length (filter (lambda! (i) (same? (string-byte text i) 10)) (range 0 at))))))
+    (add 1 (length (filter (lambda! (i) (same? (byte-at text i) 10)) (range 0 at))))))
 
 ; The runner's operations, for the program's top-level context as the runner binds them in
 ; grift's: each host operation becomes a primitive of the interpreter, and so does each operation

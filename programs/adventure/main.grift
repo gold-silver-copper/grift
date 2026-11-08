@@ -16,9 +16,9 @@
 (define! say
   (lambda! texts
     (define! line (message* texts))
-    (define! b (if! (same? line "") 0 (string-byte line 0)))
+    (define! b (if! (same? line "") 0 (byte-at line 0)))
     (if! (and!? (less-than-or-equal? 97 b) (less-than-or-equal? b 122))
-      (display (code-point-to-string (subtract b 32)) (byte-substring line 1 (string-byte-length line)))
+      (display (code-point-to-string (subtract b 32)) (slice line 1 (byte-length line)))
       (display line))
     (display "\n")))
 
@@ -35,7 +35,7 @@
 ; Reading and writing data: worlds and saved games are read with read-form.
 
 ; The text of each part, strings as they are and other values as they print.
-(define! message* (lambda! (parts) (apply string-append (map (lambda! (p) (if! (string? p) p (value-to-string p))) parts))))
+(define! message* (lambda! (parts) (apply join (map (lambda! (p) (if! (string? p) p (value-to-string p))) parts))))
 (define! message (lambda! parts (message* parts)))
 
 ; A mistake at a line of a file.
@@ -51,7 +51,7 @@
     ; The line of offset `to`, when offset `from` is on `line`.
     (define! line-at
       (lambda! (line from to)
-        (add line (subtract (length (string-split (byte-substring text from to) "\n")) 1))))
+        (add line (subtract (length (string-split (slice text from to) "\n")) 1))))
     (define! read-after
       (lambda! (offset)
         (catch-kind! (read-form text offset) parse-error e
@@ -392,7 +392,7 @@
   (lambda! (path)
     (let! ((out (create-file path)))
       (finally!
-        (for-each (lambda! (form) ((evaluate-in! write out) (string-append (value-to-string form) "\n")))
+        (for-each (lambda! (form) ((evaluate-in! write out) (join (value-to-string form) "\n")))
                   (saved-state))
         ((evaluate-in! close out))))
     (say "Saved to " path ".")))
