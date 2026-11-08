@@ -183,18 +183,6 @@ impl Default for Heap {
     }
 }
 
-fn reference(v: Value) -> Option<Reference> {
-    match v {
-        Value::Pair(r)
-        | Value::String(r)
-        | Value::Bytes(r)
-        | Value::Context(r)
-        | Value::Operative(r)
-        | Value::Applicative(r) => Some(r),
-        _ => None,
-    }
-}
-
 impl Reference {
     /// No object: a reference no slot has.
     pub(crate) const NONE: Reference = Reference {
@@ -371,7 +359,15 @@ impl Heap {
 
 /// Puts `v`'s object on the mark stack, unless a collection already reached it.
 fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
-    let Some(r) = reference(v) else { return };
+    let r = match v {
+        Value::Pair(r)
+        | Value::String(r)
+        | Value::Bytes(r)
+        | Value::Context(r)
+        | Value::Operative(r)
+        | Value::Applicative(r) => r,
+        _ => return,
+    };
     if let Some(s) = slots.get(r.idx as usize)
         && s.generation == r.generation
         && !s.marked.replace(true)
