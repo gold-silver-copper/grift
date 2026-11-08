@@ -127,7 +127,7 @@ impl Error {
         let mut seen = Seen::default();
         seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
         seen.extend(trace.iter().filter_map(|v| match v {
-            Value::Pair(r) => Some(*r),
+            Value::Pair(r) => Some(r.idx),
             _ => None,
         }));
         Ok(Error {

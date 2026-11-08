@@ -1657,7 +1657,7 @@ fn locate(e: &mut Error, r: Reference) {
     if r != Reference::NONE
         && e.seen.try_reserve(1).is_ok()
         && e.trace.try_reserve(1).is_ok()
-        && e.seen.insert(r)
+        && e.seen.insert(r.idx)
     {
         e.trace.push(Value::Pair(r));
     }

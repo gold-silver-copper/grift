@@ -6,7 +6,7 @@ use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, Eq)]
@@ -21,12 +21,6 @@ impl PartialEq for Reference {
     fn eq(&self, other: &Reference) -> bool {
         crate::local::COMPARED.with(|n| n.set(n.get() + 1));
         self.idx == other.idx && self.generation == other.generation
-    }
-}
-
-impl Hash for Reference {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u32(self.idx);
     }
 }
 
@@ -58,10 +52,11 @@ pub(crate) enum Object {
 /// A context's bindings.
 pub(crate) type Bindings = HashMap<Symbol, Value, BuildHasherDefault<IdHasher>>;
 
-/// A set of references, for checking in constant time whether one was met before.
-pub(crate) type Seen = HashSet<Reference, BuildHasherDefault<IdHasher>>;
+/// The slot numbers of a trace's combinations, for checking in constant time whether one was met
+/// before. The combinations in a trace are live, so a slot number identifies one.
+pub(crate) type Seen = HashSet<u32, BuildHasherDefault<IdHasher>>;
 
-/// Hashes a symbol or a reference by its id, a small integer: one multiplication spreads it over
+/// Hashes a symbol or a slot by its number, a small integer: one multiplication spreads it over
 /// the bits the table looks at.
 #[derive(Default)]
 pub(crate) struct IdHasher(u64);
