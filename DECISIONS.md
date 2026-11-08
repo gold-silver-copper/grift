@@ -1816,3 +1816,25 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
 - **G-174. The owner restores `Grift::list`, `Grift::list_items` and public `write_string`** (2026-11-07, Job 5
   update), replacing U82 and U90 in G-173. Why: owner's call. A host may build and read a list whole or pair by pair,
   and write text as a literal with `write_string` or with `string` then `write`.
+- **G-175. Before 3.0.0: what the independent testers found, and three loose ends** (owner, Job 5, 2026-11-07).
+  - **A handle names one run** (replaces G-170's "force on a handle that never stopped anything forces the run in
+    progress" and its fresh-handle hazard): an `Interrupter` is for the run in progress when it is taken, or else the
+    next one to begin. A stop or force reaches only that run, says `false` before it begins and after it ends, and a
+    clone is for its source's run. A force needs no stop first. A watchdog needs no lock. A resumed run is a run of its
+    own, so a host takes a handle for it just before `resume`. Evidence: `a_handle_reaches_only_the_run_it_was_taken_for`,
+    `a_force_needs_no_stop_before_it`, `a_watchdog_over_many_jobs_needs_no_lock`.
+  - **A collection needs no memory of its own** (testers' P33): the mark stack's room is made at `Grift::new`, and past
+    it, passes over the heap find what is left to mark, so a heap full of garbage is reclaimed with nothing left to
+    allocate. Evidence: `a_collection_needs_no_memory_of_its_own`, `the_mark_stack_has_room_before_any_collection`.
+  - **The machine loop's data shape is asserted as it compiles**, guarding #210: a frame 56 bytes, align 8; `What` 40;
+    `Mode` 24; a value 16; every `What` field whole machine words; the value's tag a whole word (a test, since its size
+    alone doesn't show it). It can't catch code layout, inlining or branch shape: speed is still measured on desk.
+  - **`run-process` no longer aborts when memory is refused** (replaces G-170's note): fallible buffers, both pipes
+    drained, the child reaped, and the `out-of-memory` limit. Evidence: `memory_refused_to_a_process_s_output_is_a_limit`.
+  - **A session numbers its lines from its start**, so `stdin:N` can be found. **An error report is one write** up to
+    4 KiB, so output sharing its pipe can't land inside it.
+  - **Docs made exact, not code:** a descriptor the shell closed is `/dev/null` by the time grift starts (Rust's runtime);
+    `--help`, `--version` and `-` stay script names (G-172 stands); `read-line` consumes a line that isn't UTF-8; a bare
+    symbol at top level has no combination to list; an `out-of-memory` trace can miss places; a tail call replaces
+    its caller in the trace; prompts, what a session prints, C-c, `read-bytes` at a terminal, `load` in a `lambda!`,
+    `(names here)`, `Ran::Finished`, `Symbol`, a watchdog, the `forgotten` loop and ending a cleanup chain that waits.
