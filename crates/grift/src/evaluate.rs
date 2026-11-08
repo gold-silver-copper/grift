@@ -167,7 +167,7 @@ const _: () = {
     const fn words(what: &What) -> bool {
         match what {
             What::Forms { rest } | What::Body { rest } => whole(rest),
-            What::Combine { operands, maker } => whole(operands) && whole(maker),
+            What::Combine { operands, base } => whole(operands) && whole(base),
             What::Arguments {
                 combiner,
                 rest,
@@ -183,9 +183,9 @@ const _: () = {
             What::Finish | What::Form => true,
         }
     }
-    let (v, maker, base) = (Value::Inert, Maker::Program, Base(0));
+    let (v, base) = (Value::Inert, Base(0));
     assert!(words(&What::Forms { rest: v }) && words(&What::Body { rest: v }));
-    assert!(words(&What::Combine { operands: v, maker }));
+    assert!(words(&What::Combine { operands: v, base }));
     assert!(words(&What::Arguments {
         combiner: v,
         rest: v,
@@ -211,8 +211,9 @@ const _: () = {
 enum What {
     /// Evaluate the remaining forms of one `evaluate` call; with none left, pass the value on.
     Forms { rest: Value },
-    /// The value is the combiner of a combination with these operands, which `maker` made.
-    Combine { operands: Value, maker: Maker },
+    /// The value is the combiner of a combination with these operands; `base` says whether the
+    /// library made the combination.
+    Combine { operands: Value, base: Base },
     /// The value is an argument of `combiner`; arguments so far are on the argument stack from
     /// `base`'s height, and `base` says whether the library made the combination.
     Arguments {
@@ -237,25 +238,6 @@ enum What {
     Body { rest: Value },
     /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
     Form,
-}
-
-/// Who made a combination, as a whole word: a frame holding a one-byte flag is read back whole,
-/// which waits for the narrow write to land.
-#[derive(Clone, Copy, PartialEq)]
-#[repr(u64)]
-enum Maker {
-    Program,
-    Library,
-}
-
-impl Maker {
-    fn of(library: bool) -> Maker {
-        if library {
-            Maker::Library
-        } else {
-            Maker::Program
-        }
-    }
 }
 
 /// An argument stack's height and whether the library made the combination, in one word. Written
@@ -435,7 +417,7 @@ impl<T> Grift<T> {
             .alloc(Object::Context(None, Bindings::default()))?;
         let call = What::Combine {
             operands,
-            maker: Maker::Program,
+            base: Base::new(self.machine.arguments.len(), false),
         };
         self.enter(state, &[(call, context)], Mode::Return(f), parks)
     }
@@ -608,7 +590,7 @@ impl<T> Grift<T> {
                 }
                 let combine = What::Combine {
                     operands,
-                    maker: Maker::of(library),
+                    base: Base::new(self.machine.arguments.len(), library),
                 };
                 self.frame(combine, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
@@ -632,9 +614,9 @@ impl<T> Grift<T> {
                         Mode::Evaluate(form, context)
                     }
                     What::Forms { .. } | What::Form => Mode::Return(v),
-                    What::Combine { operands, maker } => {
+                    What::Combine { operands, base } => {
                         self.machine.here = at;
-                        self.machine.library = maker == Maker::Library;
+                        self.machine.library = base.library();
                         self.combine(v, operands, context)?
                     }
                     What::Arguments {
@@ -781,7 +763,7 @@ impl<T> Grift<T> {
         });
         let call = What::Combine {
             operands: Value::EmptyList,
-            maker: Maker::Program,
+            base: Base::new(self.machine.arguments.len(), false),
         };
         self.frame(call, context, at)?;
         Ok(Mode::Return(cleanup))
