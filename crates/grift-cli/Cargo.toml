@@ -15,4 +15,4 @@ name = "grift"
 path = "src/main.rs"
 
 [dependencies]
-grift = { path = "../grift", version = "2.0.0" }
+grift = { path = "../grift", version = "3.0.0" }
