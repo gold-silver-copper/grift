@@ -136,8 +136,7 @@
   (lambda! ((text pattern start))
     (sequence!
       (sequence text)
-      (sequence pattern)
-      (if! (same? (type-of pattern) (type-of text)) pattern (type-failed pattern))
+      (typed pattern (type-of text))
       (typed start (quote! integer))
       (if! (and!? (not? (less-than? start 0)) (not? (less-than? (byte-length text) start)) (boundary? text start))
         (found text pattern start (subtract (byte-length text) (byte-length pattern)) (byte-length pattern) 0)
