@@ -160,7 +160,6 @@ impl<T> Grift<T> {
             cur.skip_space();
             let begin = cur.at;
             let fail = |reason| parse_error(src, begin, reason);
-            let in_bytes = open.last().is_some_and(|list| list.bytes.is_some());
             let Some(c) = cur.next() else {
                 return match open.last() {
                     None => Ok(None),
@@ -168,7 +167,6 @@ impl<T> Grift<T> {
                 };
             };
             let datum = match c {
-                '(' if in_bytes => return Err(fail(K::BadByte)),
                 '(' => {
                     push(&mut open, List::new(begin, cur.line))?;
                     continue;
@@ -202,9 +200,6 @@ impl<T> Grift<T> {
                         }
                     }
                     if token == "#bytes" && cur.peek() == Some('(') {
-                        if in_bytes {
-                            return Err(fail(K::BadByte));
-                        }
                         let list = List {
                             bytes: Some(Vec::new()),
                             ..List::new(cur.at, cur.line)

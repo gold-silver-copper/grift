@@ -2286,7 +2286,8 @@ fn a_parse_error_says_why_and_where() {
         ("#bytes(#foo)", "unknown-constant 1 8"),
         ("#bytes(\"a", "unclosed-string 1 8"),
         ("#bytes(1 \"a\" x)", "bad-byte 1 10"),
-        ("(#bytes((1)))", "bad-byte 1 9"),
+        ("(#bytes((1)))", "bad-byte 1 11"),
+        ("#bytes((1", "unclosed-list 1 8"),
         ("#bytes(1.0)", "bad-byte 1 8"),
         ("#bytes(1 . 2)", "misplaced-dot 1 10"),
         ("#bytes (1)", "unknown-constant 1 1"),
@@ -2327,7 +2328,7 @@ fn a_parse_error_says_why_and_where() {
     // byte that isn't one.
     for (text, want) in [
         ("(#bytes(1 2", "unclosed-list 1 8"),
-        ("(#bytes(1 2\n(g 3)", "bad-byte 2 1"),
+        ("(#bytes(1 2\n(g 3)", "bad-byte 2 5"),
     ] {
         let e = g.read(text).unwrap_err();
         let values: Vec<String> = e.values.iter().map(|v| show(&g, v)).collect();

@@ -76,7 +76,7 @@ with space and comments between them, and `)`. A bytes value prints so, every by
 `byte-at` gives for it, and reads back as the same bytes; there is no text and no hex in it, so
 bytes never look like a string. Inside, a token is read as anywhere: one that doesn't read is its
 own `parse-error` (`bad-number`, `unknown-constant`, `unclosed-string`) and one that reads as anything
-but an integer 0 to 255 is `bad-byte`, at it. A `.` is `misplaced-dot`, and a missing `)` is
+but an integer 0 to 255 is `bad-byte`, at it, and a list at its `)`. A `.` is `misplaced-dot`, and a missing `)` is
 `unclosed-list` at the `(`; `#bytes` with no `(` after it is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
 a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` wherever a token can start.
