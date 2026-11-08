@@ -435,7 +435,7 @@ fn what_a_host_keeps_comes_back_what_it_was() {
         &mut s,
         "(catch! (wait) #ignore (note (quote! caught)))",
     ));
-    let e = g.resume(&mut s, p, Err(limit.clone())).unwrap_err().error;
+    let e = g.resume(&mut s, p, Err(limit)).unwrap_err().error;
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     let ordinary = g
         .evaluate(&mut s, "(raise (error (quote! ordinary) 123))")

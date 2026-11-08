@@ -182,7 +182,7 @@ pub enum Answer {
 
 /// What went wrong: a symbol naming the kind of error, the values involved, and where.
 /// [`Grift::describe`] writes it for a person.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Error {
     /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::symbol_name`]
     /// reads it.
@@ -225,6 +225,17 @@ pub struct Error {
     /// ```
     pub limit: bool,
 }
+
+/// An error has no `clone`, which would abort when memory is refused: a host keeps the one it was
+/// given, or makes another with [`Grift::error`].
+///
+/// ```compile_fail
+/// fn copied(e: &grift::Error) -> grift::Error {
+///     e.clone()
+/// }
+/// ```
+#[cfg(doctest)]
+struct ErrorIsNotClone;
 
 /// A value the host keeps across evaluations: an entry in a table the collector marks and no
 /// program reaches. Read it with [`Grift::kept`]; [`Grift::release`] clears it. Neither
