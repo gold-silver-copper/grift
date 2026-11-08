@@ -47,17 +47,17 @@ fn wait(_: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
 }
 
 /// What `wait` is to a program, with the answer already there: the same call, not parked.
-fn answer(_: &mut G, world: &mut World, _: &[Value]) -> Result<Value, Error> {
-    Ok(world.saved.pop().unwrap_or(Value::Inert))
+fn answer(_: &mut G, world: &mut World, _: &[Value]) -> Result<Answer, Error> {
+    Ok(Answer::Now(world.saved.pop().unwrap_or(Value::Inert)))
 }
 
-fn note(g: &mut G, world: &mut World, args: &[Value]) -> Result<Value, Error> {
+fn note(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
     for v in args {
         let mut text = String::new();
         g.write(v, &mut text).unwrap();
         world.log.push(text);
     }
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// Saves its arguments for the host, parks, and stops itself first if the host armed that.
@@ -70,22 +70,19 @@ fn wait_with(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Err
     Ok(Answer::Later(Value::Inert))
 }
 
-/// Evaluates its string argument inside this host call.
-fn nest(g: &mut G, world: &mut World, args: &[Value]) -> Result<Value, Error> {
+/// Tries to evaluate its string argument inside this host call.
+fn nest(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
     let src = g.as_str(&args[0])?.unwrap().to_owned();
     assert!(g.can_park());
     let done = g.evaluate(world, &src);
     assert!(g.can_park());
-    done
+    done.map(Answer::Now)
 }
 
-/// Starts a nested run, and tries every way to take up a run or wait from inside a host call.
-fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Value, Error> {
+/// Tries every way to begin or take up a run from inside a host call.
+fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Answer, Error> {
     let top = g.top_level();
-    let Ok(Ran::Finished(Value::Integer(1))) = g.start_in(world, &top, "inner", "1") else {
-        panic!("a nested run that doesn't wait just runs");
-    };
-    let e = g.start_in(world, &top, "inner", "(wait)").unwrap_err();
+    let e = g.start_in(world, &top, "inner", "1").unwrap_err();
     world.refused.push(kind(g, &e));
     let parked = world.held.take().unwrap();
     let refused = g.resume(world, parked, Ok(Value::Inert)).unwrap_err();
@@ -93,7 +90,7 @@ fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Value, Error> {
     let refused = give_up(g, world, refused.parked.unwrap()).unwrap_err();
     world.refused.push(kind(g, &refused.error));
     world.held = refused.parked;
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// Asks for its argument.
@@ -106,32 +103,30 @@ fn ask_saved(_: &mut G, world: &mut World, _: &[Value]) -> Result<Answer, Error>
     Ok(Answer::Later(world.saved.pop().unwrap()))
 }
 
-fn boom(_: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
+fn boom(_: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
     panic!("a host function panics");
 }
 
 /// The forms of the text in the host's first saved value, as the runner's `read-forms-host`.
-fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
     let name = g.as_str(&args[0])?.unwrap().to_owned();
     g.read_in(
         &name,
         "(note (quote! loaded))\n(define! from-file (wait))\n(first from-file)",
     )
+    .map(Answer::Now)
 }
 
 fn grift() -> G {
     let mut g = G::new().unwrap();
     for (name, f) in [
-        ("wait", wait as grift::ParkingFunction<World>),
+        ("wait", wait as grift::HostFunction<World>),
         ("wait-with", wait_with),
         ("ask", ask),
         ("ask-saved", ask_saved),
-    ] {
-        let f = g.parking_function(name, f).unwrap();
-        g.define(name, f).unwrap();
-    }
-    for (name, f) in [
-        ("answer", answer as grift::HostFunction<World>),
+        ("on-machine", on_machine),
+        ("and-then", and_then),
+        ("answer", answer),
         ("note", note),
         ("nest", nest),
         ("meddle", meddle),
@@ -598,16 +593,16 @@ fn a_trace_keeps_a_built_combination_only_the_parked_run_still_holds() {
     assert!(described(&g, &failed(done)).starts_with("timed-out in (wait)"));
 }
 
+/// A run begun inside a host call is refused, by name, and the run that made the call can still
+/// park.
 #[test]
-fn parking_inside_a_host_call_is_refused_by_name() {
+fn a_run_inside_a_host_call_is_refused_by_name_and_the_outer_one_still_parks() {
     let (mut g, mut w) = (grift(), World::default());
     let e = failed(run(&mut g, &mut w, "(nest \"(wait)\")"));
-    assert_eq!(kind(&g, &e), "cannot-park");
     assert_eq!(
-        described(&g, &e).lines().next().unwrap(),
-        "cannot-park in (wait)"
+        described(&g, &e),
+        "cannot-nest in (nest \"(wait)\") at script.grift:1"
     );
-    // The outer run can still park after the nested one failed.
     let p = parked(run(&mut g, &mut w, "(catch! (nest \"(wait)\") e (wait))"));
     let done = resume(&mut g, &mut w, p, Value::Integer(5));
     assert_eq!(finished(&g, done), "5");
@@ -625,11 +620,11 @@ fn a_run_that_cannot_park_says_so() {
 }
 
 #[test]
-fn inside_a_host_call_a_start_is_a_nested_run_and_nothing_resumes() {
+fn inside_a_host_call_nothing_starts_or_resumes() {
     let (mut g, mut w) = (grift(), World::default());
     w.held = Some(parked(run(&mut g, &mut w, "(add 1 (wait))")));
     let done = run(&mut g, &mut w, "(meddle) (wait) 7");
-    assert_eq!(w.refused, ["cannot-park", "cannot-park", "cannot-park"]);
+    assert_eq!(w.refused, ["cannot-nest", "cannot-nest", "cannot-nest"]);
     let done = resume(&mut g, &mut w, parked(done), Value::Inert);
     assert_eq!(finished(&g, done), "7");
     let p = w.held.take().unwrap();
@@ -714,18 +709,75 @@ fn an_error_after_giving_up_shows_where_the_run_was_waiting() {
     );
 }
 
+/// A call the machine makes for a host function is part of the run, in a resumed run too: a wait
+/// in it parks the run, where a run inside the host call could not have.
 #[test]
-fn a_nested_run_in_a_resumed_run_may_not_park_and_the_outer_still_may() {
+fn a_call_made_for_a_host_function_in_a_resumed_run_parks_it() {
     let (mut g, mut w) = (grift(), World::default());
-    let p = parked(run(
-        &mut g,
-        &mut w,
-        "(wait) (catch! (nest \"(wait)\") e (note (evaluate-in! kind e))) (nest \"(add 1 1)\") (wait)",
-    ));
+    let src = "(wait) (note (add 1 (on-machine (lambda! () (wait))))) (wait)";
+    let p = parked(run(&mut g, &mut w, src));
     let p = parked(resume(&mut g, &mut w, p, Value::Inert));
-    assert_eq!(w.log, ["cannot-park"]);
+    let p = parked(resume(&mut g, &mut w, p, Value::Integer(41)));
+    assert_eq!(w.log, ["42"]);
     let done = resume(&mut g, &mut w, p, Value::Integer(5));
     assert_eq!(finished(&g, done), "5");
+}
+
+/// `(on-machine thunk)`: calls `thunk` on the machine, as this call's answer.
+fn on_machine(_: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    Ok(Answer::Call {
+        function: args[0].clone(),
+        arguments: Vec::new(),
+        then: None,
+    })
+}
+
+/// `(and-then f x)`: calls `f` on the machine, then `(note x result)`, and gives what `note` does.
+fn and_then(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    let top = g.top_level();
+    let name = g.symbol("note")?;
+    Ok(Answer::Call {
+        function: args[0].clone(),
+        arguments: Vec::new(),
+        then: Some((g.lookup(&top, &name)?.unwrap(), vec![args[1].clone()])),
+    })
+}
+
+#[test]
+fn a_then_gets_its_saved_values_and_the_result_and_an_error_passes_it_by() {
+    let (mut g, mut w) = (grift(), World::default());
+    let v = g.evaluate(&mut w, "(and-then (lambda! () 41) 1)").unwrap();
+    assert_eq!(v, Value::Inert);
+    assert_eq!(w.log, ["1", "41"]);
+    w.log.clear();
+    let src = "(catch! (and-then (lambda! () (raise (error (quote! no)))) 1) e 7)";
+    assert_eq!(g.evaluate(&mut w, src).unwrap(), Value::Integer(7));
+    assert!(w.log.is_empty(), "then ran: {:?}", w.log);
+}
+
+/// `(each-step f items)`: calls `f` on each item with no Rust stack: its `then` is itself, and
+/// what it must remember is in the saved values.
+fn each_step(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    let Some((x, rest)) = g.as_pair(&args[1])? else {
+        return Ok(Answer::Now(Value::Inert));
+    };
+    let (top, name) = (g.top_level(), g.symbol("each-step")?);
+    Ok(Answer::Call {
+        function: args[0].clone(),
+        arguments: vec![x],
+        then: Some((g.lookup(&top, &name)?.unwrap(), vec![args[0].clone(), rest])),
+    })
+}
+
+#[test]
+fn a_host_function_loops_over_callbacks_by_answering_call_from_its_then() {
+    let (mut g, mut w) = (grift(), World::default());
+    let f = g.host_function("each-step", each_step).unwrap();
+    g.define("each-step", f).unwrap();
+    // The `then` gets the last item's result too, as a third argument it ignores.
+    let v = g.evaluate(&mut w, "(each-step note (list 1 2 3))").unwrap();
+    assert_eq!(v, Value::Inert);
+    assert_eq!(w.log, ["1", "2", "3"]);
 }
 
 /// What giving a run up promises doesn't rest on what `stop` means.
@@ -748,7 +800,7 @@ mod giving_up_and_the_stop_rule {
         let watch = g
             .host_function("watch", |g, w, _| {
                 w.watchdog = Some(stop_until_heard(g.interrupter()));
-                Ok(Value::Inert)
+                Ok(Answer::Now(Value::Inert))
             })
             .unwrap();
         g.define("watch", watch).unwrap();
@@ -851,7 +903,7 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
     }
 
     let (mut g, mut w) = (grift(), World::default());
-    let f = g.parking_function("arm", arm).unwrap();
+    let f = g.host_function("arm", arm).unwrap();
     g.define("arm", f).unwrap();
     let body = g.evaluate(&mut w, "(lambda! () (arm))").unwrap();
     let body = g.keep(body).unwrap();
@@ -911,18 +963,19 @@ fn a_stop_that_says_true_is_never_lost_as_its_run_parks() {
 /// and the cleanup around the load run after it.
 #[test]
 fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
-    fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn read_file(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
         let path = g.as_str(&args[0])?.unwrap().to_owned();
         g.string(&std::fs::read_to_string(&path).unwrap())
+            .map(Answer::Now)
     }
-    fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
         let (source, text) = (
             g.as_str(&args[0])?.unwrap().to_owned(),
             g.as_str(&args[1])?.unwrap().to_owned(),
         );
-        g.read_in(&source, &text)
+        g.read_in(&source, &text).map(Answer::Now)
     }
-    fn unused(g: &mut G, _: &mut World, _: &[Value]) -> Result<Value, Error> {
+    fn unused(g: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
         Err(g.error("unused", &[]))
     }
     let (mut g, mut w) = (grift(), World::default());

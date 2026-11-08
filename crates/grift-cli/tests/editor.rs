@@ -1,6 +1,6 @@
 //! The editor example's own code, given keys and files by a stand-in host.
 
-use grift::{Error, Grift, Value};
+use grift::{Answer, Error, Grift, Value};
 use std::collections::VecDeque;
 
 const EDITOR: &str = include_str!("../../../examples/emacs/src/editor.grift");
@@ -14,29 +14,29 @@ struct Host {
 
 type G = Grift<Host>;
 
-fn key(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
+fn key(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     match h.keys.pop_front() {
-        Some(b) => Ok(Value::Integer(i64::from(b))),
+        Some(b) => Ok(Answer::Now(Value::Integer(i64::from(b)))),
         None => Err(g.error("end-of-input", &[])),
     }
 }
 
-fn terminal_write(_: &mut G, _: &mut Host, _: &[Value]) -> Result<Value, Error> {
-    Ok(Value::Inert)
+fn terminal_write(_: &mut G, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
+    Ok(Answer::Now(Value::Inert))
 }
 
-fn terminal_size(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Value, Error> {
+fn terminal_size(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     let columns = g.pair(Value::Integer(80), Value::EmptyList)?;
-    g.pair(Value::Integer(24), columns)
+    g.pair(Value::Integer(24), columns).map(Answer::Now)
 }
 
-fn read_file(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Value, Error> {
-    g.string("precious\n")
+fn read_file(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
+    g.string("precious\n").map(Answer::Now)
 }
 
-fn write_file(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn write_file(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     h.saved.extend(g.as_str(&args[1])?.map(str::to_owned));
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// What the editor saved, with `notes` open, after `keys`.

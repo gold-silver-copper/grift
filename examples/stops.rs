@@ -21,7 +21,7 @@ struct Host {
 /// real watchdog starts with its run; this one starts inside it, so that the stop can't come before
 /// the program's cleanups are in place. Its handle is for this run and no other, so it can't stop
 /// the next even late. Nothing joins it: it ends by itself.
-fn watch(g: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Value, grift::Error> {
+fn watch(g: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Answer, grift::Error> {
     let mut handle: Interrupter = g.interrupter();
     let force = host.force;
     thread::spawn(move || {
@@ -31,7 +31,7 @@ fn watch(g: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Value, gri
             handle.force();
         }
     });
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 pub fn main() -> Result<(), grift::Error> {
@@ -39,7 +39,7 @@ pub fn main() -> Result<(), grift::Error> {
     let mut host = Host { force: false };
     let f = g.host_function("watch", watch)?;
     g.define("watch", f)?;
-    let wait = g.parking_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
+    let wait = g.host_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
     g.define("wait", wait)?;
     g.evaluate(&mut host, PROGRAM)?;
 

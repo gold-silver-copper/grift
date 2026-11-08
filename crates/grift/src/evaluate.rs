@@ -21,9 +21,8 @@
 use crate::heap::{Bindings, Object, Operative, Origin, Reference};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
-use crate::parked::{Answer, Hosted};
 use crate::read::float_name;
-use crate::{Entry, Grift, collected, context_kind};
+use crate::{Answer, Entry, Grift, collected, context_kind};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -284,9 +283,8 @@ impl Frame {
     }
 }
 
-/// A run's state, all of it: a run that parks moves this into the kept table, a run under a nested
-/// one waits whole in `Grift::suspended`, and what belongs to a run but lives anywhere else stays
-/// behind when it does. An interpreter has one current, empty between runs.
+/// A run's state, all of it: a run that parks moves this into the kept table, and what belongs to a
+/// run but lives anywhere else stays behind when it does. An interpreter has one current, empty between runs.
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     arguments: Vec<Value>,
@@ -303,8 +301,7 @@ pub(crate) struct Machine {
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
     pub request: Value,
-    /// Whether this run may park: only an outer run the host asked to, for a run inside a host call
-    /// has that call's Rust frames under it, which can't be set aside.
+    /// Whether this run may park: only one the host began to, with [`Grift::start`] or the like.
     pub(crate) may_park: bool,
     /// Steps taken, for tests of what a form costs.
     #[cfg(test)]
@@ -396,8 +393,7 @@ pub(crate) fn type_error(v: Value) -> Error {
 }
 
 impl<T> Grift<T> {
-    /// Evaluates the list `forms` in `context`, in order. Reentrant: a host function may call
-    /// `evaluate`, which is a machine of its own while the caller's waits.
+    /// Evaluates the list `forms` in `context`, in order.
     pub(crate) fn evaluate_forms(
         &mut self,
         state: Option<&mut T>,
@@ -417,10 +413,7 @@ impl<T> Grift<T> {
         arguments: &[Value],
         parks: bool,
     ) -> Result<Value, Error> {
-        let f = match f {
-            Value::Applicative(r) => self.unwrapped(r)?,
-            _ => return Err(type_error(f)),
-        };
+        let f = self.combiner_of(f)?;
         self.settled();
         let operands = self.list_local(arguments)?;
         let context = self.heap.context(None)?;
@@ -432,9 +425,16 @@ impl<T> Grift<T> {
         self.enter(state, call, context, Mode::Return(f), parks)
     }
 
-    /// Runs a machine from `mode` with one frame until its frames are gone. An outer run uses the
-    /// interpreter's, and gets its number, for stops. A nested run sets the caller's machine aside
-    /// and has a new one, and only a run an outer host asked for may park.
+    /// An applicative's underlying combiner; anything else is apply's `type-error`.
+    fn combiner_of(&self, f: Value) -> Result<Value, Error> {
+        match f {
+            Value::Applicative(r) => self.unwrapped(r),
+            _ => Err(type_error(f)),
+        }
+    }
+
+    /// Runs the interpreter's machine from `mode` with one frame until its frames are gone, as a
+    /// run of its own, for stops.
     fn enter(
         &mut self,
         state: Option<&mut T>,
@@ -443,28 +443,19 @@ impl<T> Grift<T> {
         mode: Mode,
         parks: bool,
     ) -> Result<Value, Error> {
-        let outer = self.begin_run();
-        if outer {
-            self.machine.may_park = parks;
-        } else {
-            self.suspended.try_reserve(1).map_err(|_| Error::oom())?;
-            self.suspended.push(std::mem::take(&mut self.machine));
-        }
+        self.begin_run();
+        self.machine.may_park = parks;
         let result = self
             .frame(what, context, Reference::NONE)
             .and_then(|()| self.run(state, mode));
         // A machine that parked or was given up has nothing to go back to.
-        if outer {
-            self.machine.clear();
-            self.control.end();
-        } else if let Some(caller) = self.suspended.pop() {
-            self.machine = caller;
-        }
+        self.machine.clear();
+        self.control.end();
         result
     }
 
     /// Takes up parked `machine` with the host's answer, until it ends or parks again. Nothing is
-    /// around it: the machine is its own, as it was when it began as an outer run.
+    /// around it: the machine is its own, as it was when it began.
     pub(crate) fn wake(
         &mut self,
         state: Option<&mut T>,
@@ -535,9 +526,7 @@ impl<T> Grift<T> {
         }
     }
 
-    /// The safe point: the machine's state is all there is, so the collector may run. Let the
-    /// optimizer choose inlining: forcing it keeps this check's temporaries on every suspended
-    /// run's stack in unoptimized hosts.
+    /// The safe point: the machine's state is all there is, so the collector may run.
     #[inline]
     fn safe_point(&mut self, mode: Mode) -> Result<(), Error> {
         if self.heap.due() {
@@ -766,25 +755,28 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    /// A host's next run may need slots before reaching the machine loop. Collect here first,
-    /// with its checked inputs and the suspended machine as roots; never during allocation.
+    /// Every way into a run comes here first. One inside a host call is refused, `cannot-nest`: it
+    /// would stack the program's depth on the host function's Rust frame, where a host function
+    /// answers [`Answer::Call`] instead. Then, as the run may need slots before reaching the
+    /// machine loop, collect first if due, with its checked inputs as roots.
     pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
+        if self.control.running() {
+            return Err(Error::new(K::CannotNest, &[]));
+        }
         if self.heap.due() {
             self.collect(current);
         }
         Ok(())
     }
 
-    // Root iterators and marking temporaries belong only to collection, never suspended runs.
+    // Root iterators and marking temporaries belong only to collection.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) {
         let parked = self.kept.iter().map(Entry::weight).sum();
         let kept = self.kept.iter().flat_map(Entry::roots);
-        let waiting = self.suspended.iter().flat_map(Machine::roots);
         let roots = self
             .machine
             .roots()
-            .chain(waiting)
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
@@ -801,18 +793,15 @@ impl<T> Grift<T> {
         // The arguments stay on the argument stack, rooted, while the host runs.
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let arguments = collected(given.iter().map(|&v| self.export(v)))?;
-        let run = self.control.run();
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
-        let v = match f {
-            Hosted::Plain(f) => f(self, state, &arguments).map(Answer::Now),
-            Hosted::Parking(f) => f(self, state, &arguments),
-        };
-        // Replaced, or restored after a run inside gave this one up: the run is over, and what is
-        // on this machine is no part of it. The replaced interpreter's run ends as `hosting` drops.
+        let v = f(self, state, &arguments);
+        // Replaced: the run is over, and what is on this machine is no part of it. The replaced
+        // interpreter's run ends as `hosting` drops. Nothing else ends a run in a host call, which
+        // begins none.
         let same = hosting
             .0
             .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(c, &self.control) && c.run() == run);
+            .is_some_and(|c| Arc::ptr_eq(c, &self.control));
         if !same {
             self.control.end();
             self.settled();
@@ -824,7 +813,7 @@ impl<T> Grift<T> {
     }
 
     /// What a host function answered, checked as everything the host hands in is. Apart from
-    /// [`Grift::host`], so that its temporaries stay off the stack of a run under a nested one.
+    /// [`Grift::host`], so that its temporaries stay off the machine loop's stack.
     #[inline(never)]
     fn answered(&mut self, v: Result<Answer, crate::Error>) -> Result<Mode, Error> {
         match v {
@@ -834,8 +823,56 @@ impl<T> Grift<T> {
                 let request = self.import(&request)?;
                 self.park(request).map(|()| Mode::Return(Value::Inert))
             }
+            Ok(Answer::Call {
+                function,
+                arguments,
+                then,
+            }) => {
+                let function = self.import(&function)?;
+                let arguments = self.imported(&arguments)?;
+                let then = match then {
+                    Some((f, saved)) => Some((self.import(&f)?, self.imported(&saved)?)),
+                    None => None,
+                };
+                self.call_on_machine(function, &arguments, then)
+            }
             Err(e) => Err(self.incoming_error(&e)),
         }
+    }
+
+    /// [`Answer::Call`]: the frames of a call of `function`, as [`Grift::call_local`] builds them.
+    /// The frame of an argument still to come is all a `then` needs: the saved values are the
+    /// arguments so far and the call's value is the last, so the machine has no new kind of frame.
+    fn call_on_machine(
+        &mut self,
+        function: Value,
+        arguments: &[Value],
+        then: Option<(Value, Vec<Value>)>,
+    ) -> Result<Mode, Error> {
+        let function = self.combiner_of(function)?;
+        let operands = self.list_local(arguments)?;
+        let context = self.heap.context(None)?;
+        let at = self.machine.here;
+        if let Some((then, saved)) = then {
+            let combiner = self.combiner_of(then)?;
+            let base = Base::new(self.machine.arguments.len(), false);
+            for v in saved {
+                push(&mut self.machine.arguments, v)?;
+            }
+            let rest = Value::EmptyList;
+            self.frame(
+                What::Arguments {
+                    combiner,
+                    rest,
+                    base,
+                },
+                context,
+                at,
+            )?;
+        }
+        let base = Base::new(self.machine.arguments.len(), false);
+        self.frame(What::Combine { operands, base }, context, at)?;
+        Ok(Mode::Return(function))
     }
 
     /// Combines a combiner with unevaluated operands.

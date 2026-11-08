@@ -12,41 +12,38 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         // Each stops or forces the run it is called in, with a handle for that run.
         ("stop", |g, _, _| {
             g.interrupter().stop();
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         }),
         ("force", |g, _, _| {
-            Ok(Value::Boolean(g.interrupter().force()))
+            Ok(Answer::Now(Value::Boolean(g.interrupter().force())))
         }),
-        ("nested", |g, s, args| {
-            let src = g.as_str(&args[0])?.unwrap().to_owned();
-            g.evaluate(s, &src)
+        // `(on-machine thunk)`: the machine calls `thunk` for this host function.
+        ("on-machine", |_, _, args| {
+            Ok(Answer::Call {
+                function: args[0].clone(),
+                arguments: Vec::new(),
+                then: None,
+            })
         }),
-        // Returns a nested stop's error after a collection has made its trace stale.
-        ("late", |g, s, _| {
-            let e = g.evaluate(s, "(stop) (add 1 2)").unwrap_err();
-            g.heap.request_collection();
-            g.evaluate(s, "#inert")?;
-            Err(e)
-        }),
-        // Whatever its nested run ended with, it goes on.
-        ("swallow", |g, s, args| {
-            let src = g.as_str(&args[0])?.unwrap().to_owned();
-            let _ = g.evaluate(s, &src);
-            Ok(Value::Inert)
+        // `(swallow thunk)`: calls `thunk`, then would give `(list ending)`, whatever it ends with.
+        ("swallow", |g, _, args| {
+            let (top, list) = (g.top_level(), g.symbol("list")?);
+            Ok(Answer::Call {
+                function: args[0].clone(),
+                arguments: Vec::new(),
+                then: Some((g.lookup(&top, &list)?.unwrap(), Vec::new())),
+            })
         }),
         ("reports", |g, _, args| {
             let name = g.as_str(&args[0])?.unwrap().to_owned();
             Err(g.error(&name, &[]))
         }),
+        ("wait", |_, _, _| Ok(Answer::Later(Value::Inert))),
     ];
     for (name, f) in functions {
         let f = g.host_function(name, f).unwrap();
         g.define(name, f).unwrap();
     }
-    let wait = g
-        .parking_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))
-        .unwrap();
-    g.define("wait", wait).unwrap();
     let s = g.interrupter();
     (g, s)
 }
@@ -124,9 +121,22 @@ fn running_out_of_memory_passes_handlers_and_the_host_can_tell() {
     assert_eq!(g.evaluate(&mut s, "caught"), Ok(Value::Boolean(false)));
 }
 
+/// A limit a host function returns stays the host's when its values were reclaimed and it can't
+/// come in: it is `stale-value`, and still a limit.
 #[test]
-fn a_nested_runs_stop_stays_the_hosts_even_if_it_can_no_longer_come_in() {
-    let (mut g, mut s) = host();
+fn a_limit_from_a_host_function_stays_one_even_if_it_can_no_longer_come_in() {
+    let mut g: Grift<Option<Error>> = Grift::new().unwrap();
+    let late = g
+        .host_function("late", |_, s, _| Err(s.take().unwrap()))
+        .unwrap();
+    g.define("late", late).unwrap();
+    let held = g.string("reclaimed").unwrap();
+    let mut s = Some(Error {
+        limit: true,
+        ..g.error("ended", &[held])
+    });
+    g.heap.request_collection();
+    g.evaluate(&mut None, "#inert").unwrap();
     let e = g.evaluate(&mut s, "(catch! (late) #ignore 0)").unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("stale-value", true));
 }
@@ -178,7 +188,7 @@ fn forced(g: &mut Grift<Interrupter>, s: &mut Interrupter, src: &str) {
                 std::thread::sleep(std::time::Duration::from_millis(30));
                 watchdog.force();
             });
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         })
         .unwrap();
     g.define("watch", watch).unwrap();
@@ -200,14 +210,15 @@ fn a_force_cuts_a_cleanup_that_never_ends() {
 }
 
 #[test]
-fn a_force_cuts_a_cleanup_that_never_ends_in_a_nested_run() {
+fn a_force_cuts_a_cleanup_that_never_ends_in_a_call_made_for_a_host_function() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
     forced(
         &mut g,
         &mut s,
-        r#"(finally! (nested "(finally! (sequence! (watch) (spin 100000000)) (spin 100000000) (note 1))")
-                     (note 2))"#,
+        "(finally! (on-machine (lambda! ()
+           (finally! (sequence! (watch) (spin 100000000)) (spin 100000000) (note 1))))
+         (note 2))",
     );
 }
 
@@ -294,7 +305,7 @@ fn a_force_before_a_run_parks_ends_it() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
     let wait = g
-        .parking_function("force-and-wait", |g, _, _| {
+        .host_function("force-and-wait", |g, _, _| {
             assert!(g.interrupter().force());
             Ok(Answer::Later(Value::Inert))
         })
@@ -316,7 +327,7 @@ fn a_force_names_the_ending_whatever_memory_refuses_next() {
         .host_function("refuse", |g, _, _| {
             g.heap.refuse_in = Some(0);
             g.heap.refuse_once = true;
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         })
         .unwrap();
     g.define("refuse", refuse).unwrap();
@@ -327,15 +338,16 @@ fn a_force_names_the_ending_whatever_memory_refuses_next() {
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
-/// A host function can swallow a nested run's force, and the run is forced all the same.
+/// A force in a call made for a host function passes the host function's `then` by: nothing a
+/// host function does can swallow it.
 #[test]
-fn a_host_function_that_swallows_a_force_ends_with_it_all_the_same() {
+fn a_host_function_cannot_swallow_a_force_in_a_call_made_for_it() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
     let e = g
         .evaluate(
             &mut s,
-            r#"(finally! (sequence! (swallow "(force)") (note 1)) (note 2))"#,
+            "(finally! (sequence! (swallow (lambda! () (force))) (note 1)) (note 2))",
         )
         .unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
@@ -352,7 +364,7 @@ fn a_cleanups_install_makes_the_room_its_start_needs() {
                 panic!("{args:?}");
             };
             g.machine.leave_room(*room as usize);
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         })
         .unwrap();
     g.define("tight", tight).unwrap();
@@ -387,7 +399,7 @@ fn memory_refused_collects_once_however_many_cleanups_it_passes() {
     let seen = g
         .host_function("seen", |g, seen: &mut Vec<usize>, _| {
             seen.push(g.heap.collections);
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         })
         .unwrap();
     g.define("seen", seen).unwrap();
@@ -448,29 +460,23 @@ fn what_a_host_keeps_comes_back_what_it_was() {
 #[test]
 fn a_handle_reaches_only_the_run_it_was_taken_for() {
     let mut g: Grift<Vec<Interrupter>> = Grift::new().unwrap();
-    let functions: [(&str, crate::HostFunction<Vec<Interrupter>>); 6] = [
+    let functions: [(&str, crate::HostFunction<Vec<Interrupter>>); 5] = [
         ("panics", |_, _, _| panic!("a host function's bug")),
-        ("rescue", |g, s, _| {
-            let nested = std::panic::AssertUnwindSafe(|| g.evaluate(s, "(panics)"));
-            assert!(std::panic::catch_unwind(nested).is_err());
-            s.push(g.interrupter());
-            Ok(Value::Inert)
-        }),
         ("take", |g, s, _| {
             s.push(g.interrupter());
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         }),
         ("stop-each", |_, s, _| {
             let said = s.iter_mut().map(|h| h.stop()).filter(|&b| b).count();
-            Ok(Value::Integer(said as i64))
+            Ok(Answer::Now(Value::Integer(said as i64)))
         }),
         ("force-each", |_, s, _| {
             let said = s.iter_mut().map(|h| h.force()).filter(|&b| b).count();
-            Ok(Value::Integer(said as i64))
+            Ok(Answer::Now(Value::Integer(said as i64)))
         }),
         ("force-clones", |_, s, _| {
             let said = s.iter().map(|h| h.clone().force()).filter(|&b| b).count();
-            Ok(Value::Integer(said as i64))
+            Ok(Answer::Now(Value::Integer(said as i64)))
         }),
     ];
     for (name, f) in functions {
@@ -521,11 +527,11 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
         .evaluate(&mut s, "(take) (stop-each) (add 1 2)")
         .unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
-    // A run given up under a nested one leaves no machine behind and ends once, so one taken after
-    // it is for the next run.
-    let e = g.evaluate(&mut s, "(rescue)").unwrap_err();
-    assert_eq!(kind(&g, &e), "foreign-value");
-    assert!(g.suspended.is_empty());
+    // A run a host function's panic ended leaves no machine behind and ends once, so one taken
+    // after it is for the next run.
+    let panicked = std::panic::AssertUnwindSafe(|| g.evaluate(&mut s, "(take) (panics)"));
+    assert!(std::panic::catch_unwind(panicked).is_err());
+    s.push(g.interrupter());
     let e = g.evaluate(&mut s, "(stop-each)").unwrap_err();
     assert_eq!(kind(&g, &e), "interrupted");
 }

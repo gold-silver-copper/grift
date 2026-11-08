@@ -12,7 +12,7 @@
     clippy::indexing_slicing
 )]
 
-use grift::{Error, Grift, Interrupter, Value};
+use grift::{Answer, Error, Grift, Interrupter, Value};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -48,26 +48,27 @@ fn grift() -> G {
 }
 
 /// `(give)`: what the host put in its state.
-fn give(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
+fn give(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     h.give
         .take()
         .unwrap_or_else(|| Err(g.error("nothing-to-give", &[])))
+        .map(Answer::Now)
 }
 
 /// `(stop)`: stops the run it is part of, and returns.
-fn stop(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Value, Error> {
+fn stop(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     assert!(g.interrupter().stop(), "a run to stop");
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(started)`: tells the host's other thread that the run is under way.
-fn started(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
+fn started(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     h.started.take().unwrap().send(()).unwrap();
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(stop-and-fail)`: stops the run it is part of, and fails.
-fn stop_and_fail(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn stop_and_fail(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     g.interrupter().stop();
     let kind = match args.first() {
         Some(Value::Symbol(s)) => g.symbol_name(s)?.to_string(),
@@ -399,13 +400,14 @@ fn a_stop_reaches_only_the_run_in_progress() {
         );
         expect(&mut g, &mut h, "a stop as a run ended", "(add 1 2)", "ok 3");
     }
-    // An evaluation inside a host function is part of the run that called it.
+    // A call the machine makes for a host function is part of the run that called it, and the
+    // host function can't swallow the stop: it passes its `then` by.
     let f = g.host_function("nested", nested).unwrap();
     g.define("nested", f).unwrap();
     expect(
         &mut g,
         &mut h,
-        "a stop in a nested run",
+        "a stop in a call made for a host function",
         "(catch! (nested) #ignore 0)",
         "interrupted",
     );
@@ -426,52 +428,27 @@ fn a_stop_reaches_only_the_run_in_progress() {
         );
         expect(&mut g, &mut h, "the cleanup ran once", "cleaned", "ok 1");
     }
-    // A host function that handles its nested run's interruption itself lets the run go on, and
-    // the next stop stops it.
-    let f = g.host_function("swallow", swallow).unwrap();
-    g.define("swallow", f).unwrap();
-    expect(
-        &mut g,
-        &mut h,
-        "a stop after a swallowed one",
-        "(swallow) (stop) (spin)",
-        "interrupted",
-    );
     assert!(broken.is_empty(), "{}", broken.join("\n"));
 }
 
-/// `(swallow)`: a nested run that is stopped, its `interrupted` handled here.
-fn swallow(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
-    let _ = g.evaluate(h, "(stop) (add 1 2)");
-    Ok(Value::Inert)
-}
-
-/// A host whose functions leave the run they were called from: by a panic, by replacing the
-/// interpreter, or by putting it back after a run inside was given up.
+/// A host whose functions leave the run they were called from: by a panic, or by replacing the
+/// interpreter.
 #[derive(Default)]
 struct Leaving {
     saved: Option<Grift<Leaving>>,
 }
 
-fn panics(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+fn panics(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
     panic!("a host function's bug")
 }
 
-fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
+fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
     s.saved = Some(std::mem::replace(g, leaving()));
-    Ok(Value::Integer(0))
+    Ok(Answer::Now(Value::Integer(0)))
 }
 
-fn restore(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
-    let _ = g.evaluate(s, "(finally! (swap-out) (note))");
-    if let Some(old) = s.saved.take() {
-        *g = old;
-    }
-    Err(g.error("restored", &[]))
-}
-
-fn note(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Value, Error> {
-    Ok(Value::Inert)
+fn note(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
+    Ok(Answer::Now(Value::Inert))
 }
 
 fn leaving() -> Grift<Leaving> {
@@ -479,7 +456,6 @@ fn leaving() -> Grift<Leaving> {
     for (name, f) in [
         ("panics", panics as grift::HostFunction<Leaving>),
         ("swap-out", swap_out),
-        ("restore", restore),
         ("note", note),
     ] {
         let f = g.host_function(name, f).unwrap();
@@ -575,18 +551,17 @@ fn a_run_its_host_function_left_is_over() {
     // The one swapped out, put back: its run is over, and it runs the next.
     let mut parked = s.saved.take().unwrap();
     quiet(&mut parked, &mut s);
-    // Put back after a run inside it was given up: neither that run's cleanup nor its frames
-    // reach the run around it.
-    let mut g = leaving();
-    let r = g.evaluate(&mut s, "(restore)");
-    assert_eq!(kind(&g, &r), "foreign-value");
-    assert!(r.unwrap_err().trace.is_empty());
-    quiet(&mut g, &mut s);
 }
 
-/// `(nested)`: evaluates `(stop)` from inside the host.
-fn nested(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Value, Error> {
-    g.evaluate(h, "(stop) (add 1 2)")
+/// `(nested)`: has the machine call `stop`, with a `then` that would swallow what it ends with.
+fn nested(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
+    let top = g.top_level();
+    let (stop, list) = (g.symbol("stop")?, g.symbol("list")?);
+    Ok(Answer::Call {
+        function: g.lookup(&top, &stop)?.unwrap(),
+        arguments: Vec::new(),
+        then: Some((g.lookup(&top, &list)?.unwrap(), Vec::new())),
+    })
 }
 
 #[test]

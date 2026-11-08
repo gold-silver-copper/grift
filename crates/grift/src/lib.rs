@@ -23,7 +23,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 
 pub use interrupt::Interrupter;
-pub use parked::{Answer, Parked, ParkingFunction, Ran, ResumeError};
+pub use parked::{Parked, Ran, ResumeError};
 pub use print::write_string;
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
@@ -118,11 +118,67 @@ impl Hash for Owner {
 }
 
 /// A host function. It receives the interpreter, the host's state (the one passed to
-/// [`Grift::evaluate`] or [`Grift::call`]) and the evaluated arguments. One that panics ends the
-/// run it was called from: the panic goes on to the host and no cleanup runs. One that replaces
-/// the interpreter it was given ends the run too: the interpreter answers `foreign-value`. Either
-/// way the interpreter starts its next evaluation afresh.
-pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>;
+/// [`Grift::evaluate`], [`Grift::call`] or the like) and the evaluated arguments, and gives its
+/// [`Answer`]. It begins no run of its own: inside a host call, `evaluate`, `call` and every other
+/// way in are the error `cannot-nest`, for a run there would stack the program's depth on this
+/// function's Rust frame. To have grift call something, it answers [`Answer::Call`]. One that
+/// panics ends the run it was called from: the panic goes on to the host and no cleanup runs. One
+/// that replaces the interpreter it was given ends the run too: the interpreter answers
+/// `foreign-value`. Either way the interpreter starts its next evaluation afresh.
+pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>;
+
+/// What a [`HostFunction`] answers.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Answer {
+    /// This value.
+    Now(Value),
+    /// Not yet: the run is set aside, and [`Grift::resume`] gives this call its value or error.
+    /// The value says what is being waited for, and [`Parked::request`] hands it to the host's
+    /// loop: do the work there, once the run has really parked, for it may not. In a run that
+    /// can't park ([`Grift::can_park`]) this call fails with `cannot-park`, naming the function; a
+    /// stop that reached the run fails it with `interrupted`; and with no memory to park,
+    /// `out-of-memory`.
+    Later(Value),
+    /// Call `function` with `arguments`, as [`Grift::call`] would, once this host call has
+    /// returned: the machine makes the call on its own frames, so it costs no Rust stack, a
+    /// program can recurse through a host function as deep as memory goes, and a wait inside it
+    /// parks the run as any other does. With no `then`, the call's ending is this call's, in tail
+    /// position. With `then`, an applicative and values saved for it, the call's value goes to
+    /// `then` after those values, and what `then` gives is this call's; a host function as `then`
+    /// may answer `Call` again, which is how a host function loops. An error passes `then` by, as
+    /// a `?` would. The vectors are the host's to make: `Vec::new()` allocates nothing, and
+    /// `try_reserve` makes room that can be refused instead of aborting.
+    ///
+    /// ```
+    /// use grift::{Answer, Grift, Value};
+    /// let mut g: Grift = Grift::new()?;
+    /// // `(twice f x)` is `(f (f x))`: the first call's value goes to `again`, saved with `f`.
+    /// let twice = g.host_function("twice", |g, s, args| {
+    ///     assert!(g.call(s, &args[0], &args[1..2]).is_err()); // `cannot-nest`: no run in here
+    ///     Ok(Answer::Call {
+    ///         function: args[0].clone(),
+    ///         arguments: vec![args[1].clone()],
+    ///         then: Some((args[2].clone(), vec![args[0].clone()])),
+    ///     })
+    /// })?;
+    /// g.define("twice", twice)?;
+    /// let again = g.host_function("again", |_, _, args| {
+    ///     Ok(Answer::Call { function: args[0].clone(), arguments: vec![args[1].clone()], then: None })
+    /// })?;
+    /// g.define("again", again)?;
+    /// let v = g.evaluate(&mut (), "(twice (lambda! (n) (multiply n 3)) 7 again)")?;
+    /// assert_eq!(v, Value::Integer(63));
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    Call {
+        /// An applicative, as for [`Grift::call`].
+        function: Value,
+        /// What it is called with.
+        arguments: Vec<Value>,
+        /// An applicative for the call's value, and the values it gets before that value.
+        then: Option<(Value, Vec<Value>)>,
+    },
+}
 
 /// What went wrong: a symbol naming the kind of error, the values involved, and where.
 /// [`Grift::describe`] writes it for a person.
@@ -144,7 +200,7 @@ pub struct Error {
     /// memory) began this, so that no handler could catch it. Never so for what a program raises or
     /// a host function makes with [`Grift::error`], whatever its kind is called (unless memory is
     /// refused to make it: that is the limit `out-of-memory`), and an error passing through a
-    /// nested run or a host function stays what it was. Its kind then says which limit it is, or,
+    /// host function stays what it was. Its kind then says which limit it is, or,
     /// if the host handed one in after its values were reclaimed, `stale-value`.
     ///
     /// ```
@@ -240,7 +296,7 @@ pub struct Grift<T = ()> {
     names: Vec<Box<str>>,
     /// Names to symbol ids, for interning; `names` gives the spelling by id.
     symbols: HashMap<Box<str>, u32>,
-    hosts: Vec<(local::Symbol, parked::Hosted<T>)>,
+    hosts: Vec<(local::Symbol, HostFunction<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
     /// The kept values and parked runs, and the first free entry.
@@ -252,8 +308,6 @@ pub struct Grift<T = ()> {
     /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
     /// unwinds, when small allocations may have only scraps left, and taken again by the next run.
     spare: Vec<u8>,
-    /// The machines of the runs under a nested run, whose host functions are waiting for it.
-    suspended: Vec<evaluate::Machine>,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
@@ -274,7 +328,6 @@ impl<T> Grift<T> {
             parked_as: None,
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
-            suspended: Vec::new(),
             control: Arc::new(Control::default()),
         };
         let loaded = g.load();
@@ -382,7 +435,8 @@ impl<T> Grift<T> {
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
     /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
-    /// Host functions get `state`.
+    /// Host functions get `state`. Inside a host call this, and every other way to begin a run, is
+    /// `cannot-nest`: a host function answers [`Answer::Call`] instead.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.run_call(state, f, arguments, false);
         self.exported(done)
@@ -404,10 +458,6 @@ impl<T> Grift<T> {
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
     /// hands it to grift code that keeps it private.
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
-        self.hosted(name, parked::Hosted::Plain(f))
-    }
-
-    fn hosted(&mut self, name: &str, f: parked::Hosted<T>) -> Result<Value, Error> {
         let made = self.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
@@ -842,27 +892,23 @@ impl<T> Grift<T> {
         before / WALK_CHECK != *walked / WALK_CHECK && self.control.asked()
     }
 
-    /// Starts an outer run, unless one is in progress; whether it did, which `Control::end` then
-    /// ends. What a host function left behind when it panicked or replaced the interpreter is
-    /// over: its machines go here.
-    pub(crate) fn begin_run(&mut self) -> bool {
+    /// Starts a run, which `Control::end` then ends. Every way in has passed [`Grift::prepare`],
+    /// which refuses one inside a host call, so none is in progress; what a host function left
+    /// behind when it panicked or replaced the interpreter is over, and its machine is cleared.
+    pub(crate) fn begin_run(&mut self) {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
-        let outer = self.settled();
-        if outer {
-            self.control.begin();
-        }
-        outer
+        self.settled();
+        self.control.begin();
     }
 
     /// Whether no run is in progress; if none is, what a host function left on the machines when
     /// it panicked or replaced the interpreter is over, so nothing the host makes now takes its
-    /// mark. A machine is empty between runs, and none is suspended.
+    /// mark. A machine is empty between runs.
     pub(crate) fn settled(&mut self) -> bool {
         let none = !self.control.running();
         if none {
             self.machine.clear();
-            self.suspended.clear();
         }
         none
     }
@@ -953,8 +999,7 @@ impl<T> Grift<T> {
         })
     }
 
-    /// Validate and root a host call before its first allocation. Return before running it, so
-    /// validation and root-iterator temporaries do not stay on a suspended host's stack.
+    /// Validate and root a host call before its first allocation.
     fn prepare_call(
         &mut self,
         f: &Value,

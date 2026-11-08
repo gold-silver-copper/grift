@@ -14,11 +14,11 @@ use crate::{Answer, Error, Grift, Parked, Ran, Value};
 
 type Log = Vec<String>;
 
-fn note(g: &mut Grift<Log>, log: &mut Log, args: &[Value]) -> Result<Value, Error> {
+fn note(g: &mut Grift<Log>, log: &mut Log, args: &[Value]) -> Result<Answer, Error> {
     for v in args {
         log.push(show(g, v));
     }
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 fn wait(_: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
@@ -35,9 +35,9 @@ fn full_wait(g: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Err
 
 fn grift() -> Grift<Log> {
     let mut g: Grift<Log> = Grift::new().unwrap();
-    let f = g.parking_function("wait", wait).unwrap();
+    let f = g.host_function("wait", wait).unwrap();
     g.define("wait", f).unwrap();
-    let f = g.parking_function("full-wait", full_wait).unwrap();
+    let f = g.host_function("full-wait", full_wait).unwrap();
     g.define("full-wait", f).unwrap();
     let f = g.host_function("note", note).unwrap();
     g.define("note", f).unwrap();
@@ -223,13 +223,13 @@ fn a_cleanup_whose_first_step_is_refused_is_passed_over_for_the_next() {
 fn a_resumed_run_holds_its_request_no_longer() {
     let (mut g, mut log) = (grift(), Vec::new());
     let ask = g
-        .parking_function("ask", |_, _, args| Ok(Answer::Later(args[0].clone())))
+        .host_function("ask", |_, _, args| Ok(Answer::Later(args[0].clone())))
         .unwrap();
     g.define("ask", ask).unwrap();
     let held = g
         .host_function("held", |g, log: &mut Log, _| {
             log.push(format!("{:?}", g.machine.request));
-            Ok(Value::Inert)
+            Ok(Answer::Now(Value::Inert))
         })
         .unwrap();
     g.define("held", held).unwrap();
@@ -527,25 +527,25 @@ mod generated {
         }
     }
 
-    fn g_note(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn g_note(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         for v in args {
             w.log(show(g, v));
         }
         w.call(g);
-        Ok(Value::Inert)
+        Ok(Answer::Now(Value::Inert))
     }
 
-    fn g_enter(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn g_enter(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         if let [Value::Integer(id)] = args {
             w.log(format!("+{id}"));
         }
         w.call(g);
-        Ok(Value::Inert)
+        Ok(Answer::Now(Value::Inert))
     }
 
     /// `(seen id kind values)`: a handler ran. Only what carries the forger's mark may have a
     /// limit's name; the real thing would have passed.
-    fn g_seen(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn g_seen(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         let [Value::Integer(id), Value::Symbol(kind), values] = args else {
             panic!("{args:?}");
         };
@@ -560,10 +560,10 @@ mod generated {
         );
         w.log(id.to_string());
         w.call(g);
-        Ok(Value::Inert)
+        Ok(Answer::Now(Value::Inert))
     }
 
-    fn g_host_limit(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+    fn g_host_limit(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         if let [Value::Integer(id)] = args {
             w.log(format!("${id}"));
         }
@@ -583,10 +583,15 @@ mod generated {
         Ok(Answer::Later(args[0].clone()))
     }
 
-    fn g_nest(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Value, Error> {
+    /// `(nest form)`: the machine evaluates `form` at top level for this host function.
+    fn g_nest(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         w.call(g);
-        let text = show(g, &args[0]);
-        g.evaluate(w, &text)
+        let (top, evaluate) = (g.top_level(), g.symbol("evaluate")?);
+        Ok(Answer::Call {
+            function: g.lookup(&top, &evaluate)?.unwrap(),
+            arguments: vec![args[0].clone(), top],
+            then: None,
+        })
     }
 
     fn request_id<T>(g: &Grift<T>, request: &Value) -> i64 {
@@ -605,7 +610,7 @@ mod generated {
 
     fn interpreter() -> Grift<World> {
         let mut g: Grift<World> = Grift::new().unwrap();
-        let f = g.parking_function("wait", g_wait).unwrap();
+        let f = g.host_function("wait", g_wait).unwrap();
         g.define("wait", f).unwrap();
         let f = g.host_function("note", g_note).unwrap();
         g.define("note", f).unwrap();

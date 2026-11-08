@@ -260,7 +260,7 @@ retain their own boundaries too.
 host function's, and the program's own, whatever kind they are called. A **limit** can't: an error
 the host or the machine began, a real stop (`interrupted`), the allocator refusing (`out-of-memory`),
 or an error a host function or a host's answer made a limit. It goes on through every `catch!` to the
-host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through nested runs. Who began
+host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through a host function. Who began
 an unwinding decides this, and no name does: a program that raises its own `interrupted` raises an
 ordinary error, `catch!` catches it, and rebinding a kind's name changes nothing.
 
@@ -298,6 +298,7 @@ its cleanups do.
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
+| `cannot-nest` | a host function began a run of its own, which would put the program's depth on its Rust stack; it hands grift the call to make instead | none |
 | `output-error` | a host's output refused what `write` or `describe` wrote: a host may pass it on | none |
 | any symbol | a program raised an error it made | the values given |
 
@@ -341,8 +342,8 @@ The host may answer with a limit instead, to end the run. The call raises it, no
 and the cleanups run on the way out. A cleanup that waits there is a run that waits like any other.
 
 A call that would wait inside a run that can't be set aside, because it runs under `Grift::evaluate`
-or `Grift::call` or inside a host function that called back into grift, is the error `cannot-park`;
-the trace says which call. It can be caught like any other error.
+or `Grift::call`, is the error `cannot-park`; the trace says which call. It can be caught like any
+other error. A call a host function hands grift to make is part of the run, and waits as it does.
 
 A host that drops its interpreter with runs waiting runs none of their cleanups, as if its process
 had died. The README's embedding section gives the host's side.

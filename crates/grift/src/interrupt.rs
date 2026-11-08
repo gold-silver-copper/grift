@@ -102,8 +102,7 @@ impl Control {
 /// Stops waiting together count as one; a later stop of the same run, say of a cleanup that doesn't
 /// end, interrupts it again. One that reached a run before it parked stops it there, its cleanups
 /// then running, and they may park in turn. Each [`Grift::resume`](crate::Grift::resume) is a run
-/// of its own: take a handle for it before resuming. A run inside a host call is part of the run
-/// that made the call. [`Interrupter::force`] ends a run however its cleanups behave.
+/// of its own: take a handle for it before resuming. [`Interrupter::force`] ends a run however its cleanups behave.
 ///
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
