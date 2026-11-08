@@ -44,12 +44,10 @@ impl<T> Grift<T> {
                     continue;
                 }
                 Item::Tail(Value::Pair(r), text) => {
-                    let Ok(Object::Pair(element, rest, _)) = self.heap.get(r) else {
-                        return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
-                    };
+                    let (element, rest) = self.pair_at(r)?;
                     out.write_char(' ')?;
-                    push(&mut todo, Item::Tail(*rest, text))?;
-                    push(&mut todo, Item::Value(*element))?;
+                    push(&mut todo, Item::Tail(rest, text))?;
+                    push(&mut todo, Item::Value(element))?;
                     continue;
                 }
                 Item::Tail(v, text) => {
