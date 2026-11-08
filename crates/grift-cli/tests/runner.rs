@@ -828,35 +828,6 @@ fn closed_pipe() -> std::io::PipeWriter {
     std::io::pipe().unwrap().1
 }
 
-#[test]
-fn a_closed_stdout_ends_the_run_whatever_catches_the_write() {
-    let dir = scratch("closed-stdout");
-    for write in ["display", "(evaluate-in! write standard-output)"] {
-        let path = dir.join("script.grift");
-        let loop_ = format!(
-            "(define! go (lambda! () (catch! ({write} \"y\\n\") e 0) (go)))
-             (catch! (go) e 0)
-             (display-error \"went on\")
-             (first 1)"
-        );
-        std::fs::write(&path, loop_).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
-            .arg(&path)
-            .stdin(Stdio::null())
-            .stdout(closed_pipe())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let start = std::time::Instant::now();
-        while child.try_wait().unwrap().is_none() && start.elapsed().as_secs() < 10 {
-            std::thread::yield_now();
-        }
-        let _ = child.kill();
-        let out = child.wait_with_output().unwrap();
-        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
-    }
-}
-
 /// A pipe no one reads ends the run quietly, with 141 as a shell says of a program SIGPIPE ended,
 /// so `grift script | head` is quiet and a run never reports a success it didn't have.
 #[test]
@@ -875,6 +846,11 @@ fn a_closed_pipe_is_a_limit_on_any_file() {
                 .unwrap()
         };
         let out = run(&format!("({write} \"y\")"));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
+        // No `catch!` keeps it going: what follows the one that caught the write never runs.
+        let out = run(&format!(
+            "(catch! ({write} \"y\") e 0) (display-error \"went on\")"
+        ));
         assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
         // Its cleanups run, and a program's error in one doesn't replace it.
         let out = run(&format!(
