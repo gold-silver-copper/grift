@@ -3992,3 +3992,34 @@ fn searching_finds_what_the_plain_definition_finds() {
         check(&text, &pattern);
     }
 }
+/// Asks for a stop of the run in progress, then writes the value it was given: the printer must
+/// find the stop by what it has written, however few items that took.
+fn writes_with_a_stop_waiting(
+    g: &mut Grift<Interrupter>,
+    stop: &mut Interrupter,
+    args: &[Value],
+) -> Result<Value, Error> {
+    assert!(stop.stop(), "a run to stop");
+    let Err(e) = g.write(&args[0], &mut String::new()) else {
+        panic!("printing went on past a stop");
+    };
+    assert_eq!(kind(g, &e), "interrupted");
+    Ok(Value::Inert)
+}
+
+/// A few items can be a great deal of text: 64 references to one 64 KiB string, or one 64 KiB
+/// bytes value, which prints as one item.
+#[test]
+fn printing_finds_a_stop_by_the_bytes_it_writes() {
+    for value in [
+        "(map (lambda! (n) big) (range 0 64))",
+        "(string-to-bytes big)",
+    ] {
+        let mut g: Grift<Interrupter> = Grift::new().unwrap();
+        define(&mut g, "walk", writes_with_a_stop_waiting);
+        let mut stop = g.interrupter();
+        let src = format!("(define! big (string-repeat \"x\" 65536)) (walk {value})");
+        let r = g.evaluate(&mut stop, &src);
+        assert_eq!(kind(&g, &r.unwrap_err()), "interrupted", "{value}");
+    }
+}

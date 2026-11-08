@@ -835,6 +835,13 @@ impl<T> Grift<T> {
         *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
     }
 
+    /// [`Grift::walk_stopped`] for `cost` items at once, such as the bytes of a piece of text.
+    pub(crate) fn walk_charged(&self, walked: &mut usize, cost: usize) -> bool {
+        let before = *walked;
+        *walked = before.wrapping_add(cost);
+        before / WALK_CHECK != *walked / WALK_CHECK && self.control.asked()
+    }
+
     /// Starts an outer run, unless one is in progress; whether it did, which `Control::end` then
     /// ends. What a host function left behind when it panicked or replaced the interpreter is
     /// over: its machines go here.

@@ -27,15 +27,30 @@ impl<T> Grift<T> {
         self.string_local(&s.0)
     }
 
-    /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in.
+    /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in. Each
+    /// item and each byte written is a step of the walk, so a stop reaches a print that writes a
+    /// great deal from a few items: many references to one long string, or one long bytes value.
     pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Error> {
+        let mut charged = Charged {
+            grift: self,
+            out,
+            walked: 0,
+            stopped: false,
+        };
+        let printed = self.print_charged(v, &mut charged);
+        if charged.stopped {
+            return Err(Error::interrupted());
+        }
+        printed
+    }
+
+    fn print_charged(&self, v: Value, out: &mut Charged<'_, T>) -> Result<(), Error> {
         let mut todo = Vec::new();
         // The first item is held outside the stack, so writing an atom allocates nothing and an
         // `out-of-memory` error can still be printed.
         let mut first = Some(Item::Value(v));
-        let mut walked = 0;
         while let Some(item) = first.take().or_else(|| todo.pop()) {
-            if self.walk_stopped(&mut walked) {
+            if self.walk_charged(&mut out.walked, 1) {
                 return Err(Error::interrupted());
             }
             let v = match item {
@@ -128,6 +143,25 @@ impl<T> Grift<T> {
             }
         }
         Ok(())
+    }
+}
+
+/// The printer's output, which charges every byte written to its walk and refuses it once a stop
+/// is found.
+struct Charged<'a, T> {
+    grift: &'a Grift<T>,
+    out: &'a mut dyn Write,
+    walked: usize,
+    stopped: bool,
+}
+
+impl<T> Write for Charged<'_, T> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        if self.grift.walk_charged(&mut self.walked, text.len()) {
+            self.stopped = true;
+            return Err(fmt::Error);
+        }
+        self.out.write_str(text)
     }
 }
 
