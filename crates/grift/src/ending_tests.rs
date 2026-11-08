@@ -3,7 +3,7 @@
 
 use crate::parked_tests::{give_up, parked, start};
 use crate::tests::kind;
-use crate::{Answer, Grift, Interrupter, Ran, Value};
+use crate::{Answer, Error, Grift, Interrupter, Ran, Value};
 
 /// A host whose program can stop its own run and force it, with a run that waits.
 fn host() -> (Grift<Interrupter>, Interrupter) {
