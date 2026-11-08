@@ -1730,10 +1730,7 @@ fn float_of(v: Value) -> Result<f64, Error> {
 
 #[inline]
 fn is_combiner(v: Value) -> bool {
-    matches!(
-        v,
-        Value::Operative(_) | Value::Applicative(_) | Value::Primitive(_) | Value::Host(_)
-    )
+    matches!(type_of(v), K::Operative | K::Applicative)
 }
 
 fn type_of(v: Value) -> K {
