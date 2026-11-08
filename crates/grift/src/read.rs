@@ -208,12 +208,7 @@ impl<T> Grift<T> {
                         cur.next();
                         continue;
                     }
-                    let reason = if token.starts_with('#') {
-                        K::UnknownConstant
-                    } else {
-                        K::BadNumber
-                    };
-                    self.atom(token).ok_or_else(|| fail(reason))??
+                    self.atom(token, fail)?
                 }
             };
             let Some(list) = open.last_mut() else {
@@ -261,16 +256,18 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    /// An atom: a constant, a number or a symbol. `None` for a token that is none of them. A
-    /// number starts with a digit, after an optional sign: an integer if it is one, else a float
-    /// if it has a `.` or an exponent, as Rust reads them.
-    fn atom(&mut self, token: &str) -> Option<Result<Value, Error>> {
+    /// An atom: a constant, a number or a symbol. `fail` makes the error for a token that is none
+    /// of them. A number starts with a digit, after an optional sign: an integer if it is one, else
+    /// a float if it has a `.` or an exponent, as Rust reads them.
+    fn atom(&mut self, token: &str, fail: impl Fn(K) -> Error) -> Result<Value, Error> {
         let v = match token {
             "#true" => Value::Boolean(true),
             "#false" => Value::Boolean(false),
             "#inert" => Value::Inert,
             "#ignore" => Value::Ignore,
-            _ if token.starts_with('#') => Value::Float(float_name(token)?),
+            _ if token.starts_with('#') => {
+                Value::Float(float_name(token).ok_or_else(|| fail(K::UnknownConstant))?)
+            }
             _ if token
                 .strip_prefix(['+', '-'])
                 .unwrap_or(token)
@@ -278,13 +275,15 @@ impl<T> Grift<T> {
             {
                 match token.parse() {
                     Ok(n) => Value::Integer(n),
-                    Err(_) if token.contains(['.', 'e', 'E']) => Value::Float(token.parse().ok()?),
-                    Err(_) => return None,
+                    Err(_) if token.contains(['.', 'e', 'E']) => {
+                        Value::Float(token.parse().map_err(|_| fail(K::BadNumber))?)
+                    }
+                    Err(_) => return Err(fail(K::BadNumber)),
                 }
             }
-            _ => return Some(self.intern(token).map(Value::Symbol)),
+            _ => Value::Symbol(self.intern(token)?),
         };
-        Some(Ok(v))
+        Ok(v)
     }
 
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,
