@@ -311,16 +311,19 @@ pub(crate) struct Machine {
     pub steps: u64,
 }
 
+/// What an ending holds for the collector: its value, or its error's values and trace.
+pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
+    let (value, values, trace) = match ending {
+        Ok(v) => (Some(*v), &[][..], &[][..]),
+        Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
+    };
+    value.into_iter().chain(values.iter().chain(trace).copied())
+}
+
 impl Machine {
     /// What this machine holds for the collector, running or parked.
     pub(crate) fn roots(&self) -> impl Iterator<Item = Value> {
-        let waiting = self.waiting.iter().flat_map(|ending| {
-            let (value, values, trace) = match ending {
-                Ok(v) => (Some(*v), &[][..], &[][..]),
-                Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
-            };
-            value.into_iter().chain(values.iter().chain(trace).copied())
-        });
+        let waiting = self.waiting.iter().flat_map(ending_values);
         self.frames
             .iter()
             .flat_map(|f| f.values())

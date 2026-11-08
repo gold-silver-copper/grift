@@ -6,7 +6,7 @@
 //! machine is then empty, for whatever runs next. Taking a run up moves the machine back. The [`Parked`] handle says which: it is linear, so a run goes on at most
 //! once by the type, and it carries its interpreter's identity as every value does.
 
-use crate::evaluate::Machine;
+use crate::evaluate::{Machine, ending_values};
 use crate::local::{self, K};
 use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::Weak;
@@ -276,11 +276,7 @@ impl<T> Grift<T> {
         if self.control.running() {
             return Err(local::Error::new(K::CannotPark, &[]));
         }
-        let (value, error, trace) = match answer {
-            Ok(v) => (std::slice::from_ref(v), &[][..], &[][..]),
-            Err(e) => (&[][..], e.values.as_slice(), e.trace.as_slice()),
-        };
-        self.prepare(value.iter().chain(error).chain(trace).copied())?;
+        self.prepare(ending_values(answer))?;
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));
