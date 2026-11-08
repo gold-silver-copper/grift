@@ -969,24 +969,15 @@ impl<T> Grift<T> {
         operands: Value,
         context: Reference,
     ) -> Result<Mode, Error> {
-        let stale = || Error::new(K::StaleValue, &[Value::Operative(r)]);
         let op = match self.heap.get(r)? {
-            Object::Operative(op) => match op.native {
-                Some(native) => Err(native),
-                _ => Ok(*op),
-            },
-            _ => return Err(stale()),
+            Object::Operative(op) => *op,
+            _ => return Err(Error::new(K::StaleValue, &[Value::Operative(r)])),
         };
-        let op = match op {
-            Ok(op) => op,
-            Err(native) => match self.native(native, operands, context)? {
-                Some(mode) => return Ok(mode),
-                None => match self.heap.get(r)? {
-                    Object::Operative(op) => *op,
-                    _ => return Err(stale()),
-                },
-            },
-        };
+        if let Some(native) = op.native
+            && let Some(mode) = self.native(native, operands, context)?
+        {
+            return Ok(mode);
+        }
         // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
         bindings
