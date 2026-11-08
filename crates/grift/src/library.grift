@@ -296,16 +296,13 @@
 (define! bindings (lambda! (c) (map (lambda! (name) (list name (evaluate name c))) (names c))))
 
 ; symbol-to-string, float-to-string: the printer's text, refusing any other type.
-(define! symbol-to-string
-  (lambda! (s)
-    (if! (symbol? s)
-      (value-to-string s)
-      (raise (error (quote! type-error) s)))))
-(define! float-to-string
-  (lambda! (f)
-    (if! (float? f)
-      (value-to-string f)
-      (raise (error (quote! type-error) f)))))
+(define! (symbol-to-string float-to-string)
+  ((lambda! ()
+     (define! printing
+       (lambda! (type?)
+         (lambda! (x)
+           (if! (type? x) (value-to-string x) (raise (error (quote! type-error) x))))))
+     (list (printing symbol?) (printing float?)))))
 
 ; filter (6.3.5), and, not in Kernel, fold, range, sort and the list access below.
 (define! filter
