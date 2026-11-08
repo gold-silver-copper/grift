@@ -37,40 +37,38 @@
 ; $cond), let! (6.7.6, $letrec*), finally!, catch! and catch-kind!; and record, which shares a helper with them. Each form is an
 ; operative that walks its operands and evaluates only them, in the caller's context or one it made;
 ; none builds code to evaluate. A loop that evaluates something only for its effect gets its value as
-; an ignored first operand, and a list known not to be empty is taken apart in the parameters. `list`
-; evaluates the helpers' definitions in order, and the outer define! ignores their values.
-(define! (#ignore #ignore #ignore #ignore #ignore #ignore #ignore
-          sequence! when! conditional! let! finally! catch! catch-kind! record)
+; an ignored first operand, and a list known not to be empty is taken apart in the parameters.
+(define! (sequence! when! conditional! let! finally! catch! catch-kind! record)
   ((lambda! ()
+     ; The forms of a body in turn, the last as a tail call; called only with a form left.
+     (define! forms
+       (lambda! (#ignore (form . more) c)
+         (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
+     ; A body: its forms, #inert for none.
+     (define! run (lambda! (body c) (if! (same? body ()) #inert (forms #inert body c))))
+     ; The body of the first clause whose test is #true, or #inert; called only with a clause
+     ; left, so a clause that isn't a pair (test . body) is an arity-error.
+     (define! first-true
+       (lambda! (((test . body) . more) caller)
+         (if! (evaluate test caller)
+           (run body caller)
+           (if! (same? more ()) #inert (first-true more caller)))))
+     ; The context `local` with each binding in order; called only with a binding left, so one
+     ; that isn't (parameters expression) is an arity-error.
+     (define! bind-each
+       (lambda! (#ignore ((parameters expression) . more) local)
+         ((if! (same? more ()) done bind-each)
+          (bind local parameters (evaluate expression local))
+          more
+          local)))
+     (define! done (lambda! (#ignore #ignore local) local))
+     ; The context c, with the values bound to the names there.
+     (define! filled (lambda! (c names values) (done (bind c names values) #ignore c)))
+     ; A caught error's handler forms, with the parameter bound in local, a new child of the
+     ; caller's context.
+     (define! handle
+       (lambda! (e parameter handler local) (run handler (filled local parameter e))))
      (list
-       ; The forms of a body in turn, the last as a tail call; called only with a form left.
-       (define! forms
-         (lambda! (#ignore (form . more) c)
-           (if! (same? more ()) (evaluate form c) (forms (evaluate form c) more c))))
-       ; A body: its forms, #inert for none.
-       (define! run (lambda! (body c) (if! (same? body ()) #inert (forms #inert body c))))
-       ; The body of the first clause whose test is #true, or #inert; called only with a clause
-       ; left, so a clause that isn't a pair (test . body) is an arity-error.
-       (define! first-true
-         (lambda! (((test . body) . more) caller)
-           (if! (evaluate test caller)
-             (run body caller)
-             (if! (same? more ()) #inert (first-true more caller)))))
-       ; The context `local` with each binding in order; called only with a binding left, so one
-       ; that isn't (parameters expression) is an arity-error.
-       (define! bind-each
-         (lambda! (#ignore ((parameters expression) . more) local)
-           ((if! (same? more ()) done bind-each)
-            (bind local parameters (evaluate expression local))
-            more
-            local)))
-       (define! done (lambda! (#ignore #ignore local) local))
-       ; The context c, with the values bound to the names there.
-       (define! filled (lambda! (c names values) (done (bind c names values) #ignore c)))
-       ; A caught error's handler forms, with the parameter bound in local, a new child of the
-       ; caller's context.
-       (define! handle
-         (lambda! (e parameter handler local) (run handler (filled local parameter e))))
        ; sequence!: each in turn, the last one's value; #inert for none.
        (vau! body caller (run body caller))
        ; when!: the body if the test is #true, #inert if it is #false.
