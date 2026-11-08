@@ -112,9 +112,13 @@ fn weight(obj: &Object) -> usize {
 pub(crate) struct Heap {
     slots: Vec<Slot>,
     free: u32,
-    since_gc: Cell<usize>,
-    live: usize,
+    /// How much may be allocated before the next collection: collection sets it, allocation
+    /// spends it, and a refusal empties it.
+    until_gc: Cell<usize>,
     marks: Vec<Reference>,
+    /// What the last collection found alive, by weight, for tests of what a run keeps.
+    #[cfg(test)]
+    live: usize,
     /// Operatives made, for tests of what a form costs.
     #[cfg(test)]
     pub operatives: usize,
@@ -145,9 +149,10 @@ impl Default for Heap {
         Heap {
             slots: Vec::new(),
             free: NONE,
-            since_gc: Cell::new(0),
-            live: 0,
+            until_gc: Cell::new(GC_MIN),
             marks: Vec::new(),
+            #[cfg(test)]
+            live: 0,
             #[cfg(test)]
             operatives: 0,
             #[cfg(test)]
@@ -197,8 +202,8 @@ impl Heap {
     /// A new object, marked as the library's if `library`: code it read or built.
     #[inline]
     pub fn alloc_marked(&mut self, obj: Object, library: bool) -> Result<Reference, Error> {
-        let since_gc = self.since_gc.get_mut();
-        *since_gc = since_gc.saturating_add(weight(&obj));
+        let until_gc = self.until_gc.get_mut();
+        *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -293,7 +298,7 @@ impl Heap {
     /// Puts the next collection off, as if the last had just been.
     #[cfg(test)]
     pub fn not_due(&self) {
-        self.since_gc.set(0);
+        self.until_gc.set(self.live.max(GC_MIN));
     }
 
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
@@ -303,12 +308,12 @@ impl Heap {
         if self.stress {
             return true;
         }
-        self.since_gc.get() >= self.live.max(GC_MIN)
+        self.until_gc.get() == 0
     }
 
     /// The next safe point collects.
     pub fn request_collection(&self) {
-        self.since_gc.set(usize::MAX);
+        self.until_gc.set(0);
     }
 
     /// The mark stack's room, made with the interpreter and never given back, so a collection
@@ -351,11 +356,11 @@ impl Heap {
             }
         }
         self.marks = marks;
-        self.live = 0;
+        let mut live = 0usize;
         for (idx, s) in (0..).zip(self.slots.iter_mut()) {
             if s.marked {
                 s.marked = false;
-                self.live = self.live.saturating_add(weight(&s.obj));
+                live = live.saturating_add(weight(&s.obj));
             } else if !matches!(s.obj, Object::Free(_)) {
                 s.obj = Object::Free(self.free);
                 // A slot whose generations run out is retired, never reused: its last one, which
@@ -366,7 +371,11 @@ impl Heap {
                 }
             }
         }
-        *self.since_gc.get_mut() = 0;
+        *self.until_gc.get_mut() = live.max(GC_MIN);
+        #[cfg(test)]
+        {
+            self.live = live;
+        }
     }
 
     /// Marks what is on the stack and everything reachable from it.
