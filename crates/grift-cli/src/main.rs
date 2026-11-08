@@ -143,14 +143,14 @@ fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, 
 /// A copy of a string value's contents, `None` for anything else; a program that fills memory gets
 /// the limit `out-of-memory`, not an abort.
 fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
-    let Some(len) = g.as_str(v)?.map(str::len) else {
+    let Some(s) = g.as_str(v)? else {
         return Ok(None);
     };
     let mut copy = String::new();
-    if copy.try_reserve_exact(len).is_err() {
+    if copy.try_reserve_exact(s.len()).is_err() {
         return Err(limit(g, "out-of-memory", &[]));
     }
-    copy.push_str(g.as_str(v)?.unwrap_or_default());
+    copy.push_str(s);
     Ok(Some(copy))
 }
 
