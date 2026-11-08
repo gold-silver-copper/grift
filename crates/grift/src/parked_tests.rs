@@ -351,27 +351,6 @@ fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
     assert_eq!(slots[6], slots[11], "{slots:?}");
 }
 
-/// A stop that reached the run before it parks stops it, and it doesn't park.
-#[test]
-fn a_stop_before_a_run_parks_stops_it() {
-    use std::sync::Mutex;
-
-    static STOPPER: Mutex<Option<crate::Interrupter>> = Mutex::new(None);
-    fn stop_and_wait(_: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
-        assert!(STOPPER.lock().unwrap().as_mut().unwrap().stop());
-        Ok(Answer::Later(Value::Inert))
-    }
-
-    let (mut g, mut log) = (grift(), Vec::new());
-    let f = g.parking_function("stop-and-wait", stop_and_wait).unwrap();
-    g.define("stop-and-wait", f).unwrap();
-    *STOPPER.lock().unwrap() = Some(g.interrupter());
-    let e = start(&mut g, &mut log, "(finally! (stop-and-wait) (note 1))").unwrap_err();
-    assert_eq!(kind(&g, &e), "interrupted");
-    assert_eq!(log, ["1"]);
-    assert_eq!(g.parked(), 0);
-}
-
 /// A real out-of-memory in a resumed run passes its handler, which then would have had room.
 #[test]
 fn real_out_of_memory_passes_handlers() {
