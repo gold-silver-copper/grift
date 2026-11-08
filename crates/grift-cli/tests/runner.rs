@@ -163,6 +163,43 @@ fn memory_refused_to_a_read_is_a_limit() {
     }
 }
 
+/// Memory refused to a process's output is the same limit: the runner reads both of its pipes to
+/// their ends, so the process isn't left blocked on a full one, and waits for it to end.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_to_a_process_s_output_is_a_limit() {
+    let dir = scratch("process-refused");
+    let path = dir.join("big.grift");
+    let flood = "head -c 900000000 /dev/zero; echo err >&2; echo done > finished";
+    let src = format!(
+        "(catch! (finally! (run-process \"sh\" \"-c\" {flood:?}) (display \"cleanup\")) e (display \"caught\"))"
+    );
+    std::fs::write(&path, src).unwrap();
+    let out = Command::new("bash")
+        .args([
+            "-c",
+            "ulimit -c 0; ulimit -v 400000; exec \"$@\"",
+            "process-test",
+        ])
+        .arg(env!("CARGO_BIN_EXE_grift"))
+        .arg(&path)
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        (out.status.code(), &out.stdout[..]),
+        (Some(1), &b"cleanup"[..]),
+        "{err}"
+    );
+    assert!(err.contains("out-of-memory"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(dir.join("finished")).unwrap(),
+        "done\n"
+    );
+}
+
 #[test]
 fn standard_input_is_data_for_a_script() {
     let dir = scratch("standard-input");

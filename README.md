@@ -132,8 +132,8 @@ system's message), `encoding-error` (bytes that aren't UTF-8), `closed` (the pat
 ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can keep it going, each
 `finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
 program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
-success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading is the limit `out-of-memory`, except that `run-process`
-aborts the runner, since `std` buffers its output without asking.
+success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading, a process's output included, is the limit `out-of-memory`;
+`run-process` still reads both of the process's pipes to their ends and waits for it to end.
 
 ```lisp
 #!/usr/bin/env grift
