@@ -220,9 +220,8 @@ fn main() -> Result<(), Error> {
   gets the values as its operands, in a new empty context); `read(&str)` or
   `read_in(source, text)`, the list of forms, nothing evaluated. `read_in` keeps each
   combination's source and opening line for later evaluation. If `read_in` or `evaluate_in`
-  cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the
-  supplied source name as a symbol innermost in the trace. `read` and `evaluate` keep an empty
-  trace for unreadable text.
+  cannot read the text, the values of its `parse-error` are `(reason line column source)`, with
+  the source name a symbol. For `read` and `evaluate` they are `(reason line column)`.
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive: `symbol(name)` gives a `Symbol`, and one
@@ -253,9 +252,8 @@ fn main() -> Result<(), Error> {
   involved, never who failed: `(first 1)` gives `type-error 1`. Its trace lists the
   combinations of the program that were being evaluated, innermost first, each once, out to the
   top-level form; the library's code, read or built, is skipped, so `(if! 1 2 3)` fails at
-  `(if! 1 2 3)`, not inside `if!`. A call in tail position has finished, so it isn't listed. For unreadable
-  input to `read_in` or `evaluate_in`, the trace starts with the supplied source symbol; the
-  values stay `(reason line column)`. `position(&at)` (`Result<Option<_>, Error>`) is a
+  `(if! 1 2 3)`, not inside `if!`. A call in tail position has finished, so it isn't listed.
+  `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out)` writes the whole error for a person;
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one

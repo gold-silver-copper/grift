@@ -2299,8 +2299,8 @@ fn a_parse_error_says_why_and_where() {
             ("parse-error".into(), want.into()),
             "{text:?}"
         );
-        // Unnamed entries keep the bare reader error. Both named entries retain the source
-        // as the first trace entry, without adding to or rearranging (reason line column).
+        // Unnamed entries keep the bare reader error. Both named entries add the source after
+        // (reason line column), and a trace holds only combinations.
         assert_eq!(g.evaluate(&mut (), text).unwrap_err(), e);
         assert!(e.trace.is_empty());
         for entry in ["read_in", "evaluate_in"] {
@@ -2310,11 +2310,11 @@ fn a_parse_error_says_why_and_where() {
                 g.evaluate_in(&mut (), &g.top_level(), "broken.grift", text)
             }
             .unwrap_err();
-            assert_eq!((&named.kind, &named.values), (&e.kind, &e.values));
+            assert_eq!(named.kind, e.kind);
             let source = Value::Symbol(g.symbol("broken.grift").unwrap());
-            let trace = named.trace;
-            if trace != [source] {
-                missing_source.push(format!("{entry}: {want}: {trace:?}"));
+            let (values, trace) = (named.values, named.trace);
+            if values != [e.values.as_slice(), &[source]].concat() || !trace.is_empty() {
+                missing_source.push(format!("{entry}: {want}: {values:?} {trace:?}"));
             }
         }
         // More text after an unclosed form changes nothing.
@@ -2428,7 +2428,7 @@ fn named_parse_errors_stay_describable_after_collection() {
             for held in [&e, &again] {
                 let mut after = String::new();
                 let described = g.describe(held, &mut after);
-                let position = g.position(&held.trace[0]);
+                let position = g.position(&held.values[3]);
                 if described.is_err() || position != Ok(None) {
                     broken.push(format!(
                         "{entry}: describe={described:?}, position={position:?}"

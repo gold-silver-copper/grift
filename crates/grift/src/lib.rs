@@ -137,11 +137,8 @@ pub struct Error {
     /// once, ending with the top-level form. The library's code, read or built, is skipped, so
     /// `(if! 1 2 3)` fails at `(if! 1 2 3)`; a call in tail position has finished, so it isn't
     /// listed.
-    /// [`Grift::position`] gives each one's source and line. If input to [`Grift::read_in`] or
-    /// [`Grift::evaluate_in`] doesn't read, the trace starts with the supplied source name as a
-    /// [`Value::Symbol`]; its values remain `(reason line column)`. An outer evaluation can add
-    /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
-    /// doesn't read, its trace is empty. Checked as the values are when the error comes in.
+    /// [`Grift::position`] gives each one's source and line. Checked as the values are when the
+    /// error comes in.
     pub trace: Vec<Value>,
     /// Whether the host (a stop, a force, a host function that sets this) or the machine (out of
     /// memory) began this, so that no handler could catch it. Never so for what a program raises or
@@ -298,8 +295,8 @@ impl<T> Grift<T> {
     /// Reads every form in `src`, the text of `source` (a file's path, say), then evaluates them
     /// in order in `context`, as `evaluate` does at top level. Each combination read keeps its
     /// line, so an error's trace says where: [`Grift::position`], [`Grift::describe`]. If `src`
-    /// doesn't read, `parse-error` keeps `(reason line column)` in its values and `source` as
-    /// a symbol at the start of its trace, as [`Grift::read_in`] does.
+    /// doesn't read, the values of `parse-error` are `(reason line column source)`, as for
+    /// [`Grift::read_in`], with `source` a symbol.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -621,8 +618,8 @@ impl<T> Grift<T> {
         self.out(items)
     }
 
-    /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
-    /// the line and column: of the `(` or `"` left open, or of what didn't read.
+    /// Reads every form in `src` into a list, evaluating nothing. The values of a `parse-error`
+    /// are why and the line and column: of the `(` or `"` left open, or of what didn't read.
     /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
     /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
@@ -635,9 +632,8 @@ impl<T> Grift<T> {
     /// traces when evaluated later, including entry through native control flow. A tail
     /// evaluation of another named outer form replaces the finished form's trace boundary;
     /// the host's entry boundary stays. No forms gives `()`.
-    /// If `text` doesn't read, `parse-error` keeps `(reason line column)` in its values and
-    /// `source` as a symbol at the start of its trace, as [`Grift::evaluate_in`] does. Allocation
-    /// failure is `out-of-memory`.
+    /// If `text` doesn't read, the values of `parse-error` are `(reason line column source)`, as
+    /// for [`Grift::evaluate_in`], with `source` a symbol. Allocation failure is `out-of-memory`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;

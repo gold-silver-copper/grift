@@ -237,10 +237,10 @@ it, so the host reports `in (first x) at lib/table.grift:12`.
 Rust hosts can read such forms without evaluating them with `Grift::read_in(source, text)`, which
 returns the list of all forms, as `Grift::read(text)` does. `Grift::position` gives each combination's
 source and opening line, also after a loader evaluates it later. If `read_in` or `evaluate_in`
-cannot read the text, its `parse-error` keeps `(reason line column)` in the values and the supplied
-source name as a symbol innermost in the trace. `read` and `evaluate`, which take no source name,
-keep an empty trace for unreadable text. A loader can propagate the named error unchanged; the
-runner's loaded-file error starts with that path, followed by the outer load's combination.
+cannot read the text, the values of its `parse-error` are `(reason line column source)`, with the
+source name a symbol. For `read` and `evaluate`, which take no source name, they are
+`(reason line column)`. A loader can propagate the named error unchanged; the runner's loaded-file
+error names that path in its values, and its trace has the outer load's combination.
 When evaluation starts one of those named outer forms, including through a native branch or
 sequence, its trace retains a boundary for the form. A tail evaluation of another named outer
 form updates that boundary to the new form, so the finished one disappears and space stays
@@ -296,7 +296,7 @@ its cleanups do.
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the operands |
 | `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative exponent; a fill that isn't one byte | the operands; for `list-to-bytes`, the integer and its position |
 | `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
-| `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1; or the string |
+| `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1, then the source's name if the text was read under one; or the string |
 | `out-of-memory` | the allocator refused | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |

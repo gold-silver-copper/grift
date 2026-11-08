@@ -579,10 +579,10 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     "#;
     let (status, out, err) = script(&dir, program, &[], "");
     assert_eq!(status, Some(1));
-    // A file that doesn't read is innermost in the trace, by its path: the line and column are its.
+    // A file that doesn't read is named in the values, after its line and column; the trace has the load.
     assert_eq!(
         out,
-        "(first 2) 2 1 1 2 (unclosed-list 3 3)lib/bad.grift #true"
+        "(first 2) 2 1 1 2 (unclosed-list 3 3 lib/bad.grift)(load \"lib/bad.grift\") #true"
     );
     // Each combination in the trace says its file and line, the loaded file's and the script's.
     let path = dir.join("script.grift");
@@ -600,10 +600,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(status, Some(1));
     assert_eq!(
         err,
-        format!(
-            "{path}: parse-error unclosed-list 3 3 in lib/bad.grift\n  \
-             from (load d) at {path}:2\n"
-        )
+        format!("{path}: parse-error unclosed-list 3 3 lib/bad.grift in (load d) at {path}:2\n")
     );
 }
 
@@ -782,13 +779,13 @@ fn a_parse_error_says_where_the_form_opened() {
     let path = path.to_str().unwrap();
     assert_eq!(
         err,
-        format!("{path}: parse-error unclosed-list 2 1 in {path}\n")
+        format!("{path}: parse-error unclosed-list 2 1 {path}\n")
     );
     let error = run(&[], "(a\n  (b", Stdio::piped());
     assert_eq!(error.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(error.stderr).unwrap(),
-        "stdin: parse-error unclosed-list 2 3 in stdin\n"
+        "stdin: parse-error unclosed-list 2 3 stdin\n"
     );
 }
 
@@ -1013,7 +1010,7 @@ fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
         "{shown}"
     );
     assert!(
-        shown.contains("stdin: parse-error unmatched-parenthesis 5 1 in stdin\n"),
+        shown.contains("stdin: parse-error unmatched-parenthesis 5 1 stdin\n"),
         "{shown}"
     );
     assert!(shown.ends_with("> 5\n> "), "{shown}");
@@ -1079,13 +1076,13 @@ fn a_session_numbers_its_lines_from_its_start() {
     );
     let (_, shown) = at_a_terminal("1\n2\n)\n\x04");
     assert!(
-        shown.contains("stdin: parse-error unmatched-parenthesis 3 1 in stdin\n"),
+        shown.contains("stdin: parse-error unmatched-parenthesis 3 1 stdin\n"),
         "{shown}"
     );
     // So is input ending inside a form.
     let (_, shown) = at_a_terminal("1\n(add 1\n\x04");
     assert!(
-        shown.contains("stdin: parse-error unclosed-list 2 1 in stdin\n"),
+        shown.contains("stdin: parse-error unclosed-list 2 1 stdin\n"),
         "{shown}"
     );
 }

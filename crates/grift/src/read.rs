@@ -121,9 +121,11 @@ impl<T> Grift<T> {
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) =
             self.read_form(src, at, line, source).map_err(|mut e| {
-                // With no memory to spare the trace stays as it is, as for any location.
-                if let Some(source) = source {
-                    let _ = push(&mut e.trace, Value::Symbol(source));
+                // With no memory to spare the values stay as they are, as for any location.
+                if let Some(source) = source
+                    && e.kind == K::ParseError.into()
+                {
+                    let _ = push(&mut e.values, Value::Symbol(source));
                 }
                 e
             })?
