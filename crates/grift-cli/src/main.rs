@@ -16,7 +16,7 @@
 //! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
 //! `elapsed-nanoseconds` and `exit`.
 
-use grift::{Error, Grift, HostFunction, Value, WriteError};
+use grift::{Error, Grift, HostFunction, Value};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -30,15 +30,17 @@ const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, read
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
 
-/// A file a program opened: its path, and what is left of it until it is closed.
+/// A file a program opened: its path, and its stream.
 struct Opened {
     path: String,
-    file: Option<Stream>,
+    file: Stream,
 }
 
+/// A file is being read, being written, or closed, which is for good.
 enum Stream {
     Reading(Box<dyn BufRead>),
     Writing(Box<dyn Write>),
+    Closed,
 }
 
 /// The runner's state: the files opened, standard input, error and output first, and when the run
@@ -84,16 +86,17 @@ fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Er
     };
     let mut out = Sink { w, error: None };
     let printed = values.iter().try_for_each(|v| match g.as_str(v) {
-        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| WriteError::Output),
+        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| g.error("output-error", &[])),
         _ => g.write(v, &mut out),
     });
-    let wrote = match (printed, out.error) {
-        (Err(WriteError::Value(e)), _) => return Err(e),
-        (_, Some(e)) => Err(e),
-        (_, None) => out.w.flush(),
+    // The sink's own error first: it says what really failed, and `written` turns it into the
+    // runner's kinds.
+    let wrote = match (out.error, printed) {
+        (Some(e), _) => Err(e),
+        (None, Err(e)) => return Err(e),
+        (None, Ok(())) => out.w.flush(),
     };
-    let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, wrote)
+    written(g, path, wrote)
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
@@ -123,11 +126,14 @@ fn elapsed_nanoseconds(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Valu
     nanoseconds(g, args, Some(r.started.elapsed()))
 }
 
+/// The arguments of a host function that takes exactly `N`; `arity-error` for any other count.
+fn exactly<'a, const N: usize>(g: &mut G, args: &'a [Value]) -> Result<&'a [Value; N], Error> {
+    args.try_into().map_err(|_| g.error("arity-error", args))
+}
+
 /// A duration as an integer of nanoseconds; `range-error` before 1970 or after 2262.
 fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    let [] = exactly(g, args)?;
     match d.and_then(|d| i64::try_from(d.as_nanos()).ok()) {
         Some(n) => Ok(Value::Integer(n)),
         None => Err(g.error("range-error", &[])),
@@ -137,38 +143,39 @@ fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, 
 /// A copy of a string value's contents, `None` for anything else; a program that fills memory gets
 /// the limit `out-of-memory`, not an abort.
 fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
-    let Some(len) = g.as_str(v)?.map(str::len) else {
+    let Some(s) = g.as_str(v)? else {
         return Ok(None);
     };
     let mut copy = String::new();
-    if copy.try_reserve_exact(len).is_err() {
-        return Err(no_memory(g));
+    if copy.try_reserve_exact(s.len()).is_err() {
+        return Err(limit(g, "out-of-memory", &[]));
     }
-    copy.push_str(g.as_str(v)?.unwrap_or_default());
+    copy.push_str(s);
     Ok(Some(copy))
 }
 
 /// The one string argument, or a `type-error` or an `arity-error`.
 fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
-    match args {
-        [v] => match owned_string(g, v)? {
-            Some(s) => Ok(s),
-            None => Err(g.error("type-error", args)),
-        },
-        _ => Err(g.error("arity-error", args)),
+    let [v] = exactly(g, args)?;
+    match owned_string(g, v)? {
+        Some(s) => Ok(s),
+        None => Err(g.error("type-error", args)),
     }
 }
 
-/// Memory refused: the limit a real allocation failure is, wherever it happens.
-fn no_memory(g: &mut G) -> Error {
-    g.error("out-of-memory", &[]).as_limit()
+/// A limit of `kind`: the runner's are `out-of-memory`, `broken-pipe` and `exit`.
+fn limit(g: &mut G, kind: &str, values: &[Value]) -> Error {
+    Error {
+        limit: true,
+        ..g.error(kind, values)
+    }
 }
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
 /// aren't UTF-8, else `kind` with the system's message.
 fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::OutOfMemory {
-        return no_memory(g);
+        return limit(g, "out-of-memory", &[]);
     }
     let what = match g.string(what) {
         Ok(v) => v,
@@ -183,18 +190,6 @@ fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
     }
 }
 
-/// A failed write to the file `path`: a pipe no one reads is the limit that ends the run quietly, as
-/// [`exit_status`] says, and only a real write makes it.
-fn write_failed(g: &mut G, path: &str, e: &io::Error) -> Error {
-    if e.kind() != io::ErrorKind::BrokenPipe {
-        return failed(g, "file-error", path, e);
-    }
-    match g.string(path) {
-        Ok(path) => g.error("broken-pipe", &[path]).as_limit(),
-        Err(e) => e,
-    }
-}
-
 /// Opens a file as `open` does, and gives its number.
 fn opened(
     g: &mut G,
@@ -205,11 +200,8 @@ fn opened(
     let path = one_string(g, args)?;
     match open(&path) {
         Ok(file) => {
-            let id = i64::try_from(r.files.len()).map_err(|_| no_memory(g))?;
-            r.files.push(Opened {
-                path,
-                file: Some(file),
-            });
+            let id = i64::try_from(r.files.len()).map_err(|_| limit(g, "out-of-memory", &[]))?;
+            r.files.push(Opened { path, file });
             Ok(Value::Integer(id))
         }
         Err(e) => Err(failed(g, "file-error", &path, &e)),
@@ -237,12 +229,12 @@ fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mu
     match opened {
         Some(Opened {
             path,
-            file: Some(stream),
-        }) => Ok((path, stream)),
-        Some(Opened { path, file: None }) => {
+            file: Stream::Closed,
+        }) => {
             let path = g.string(path)?;
             Err(g.error("closed", &[path]))
         }
+        Some(Opened { path, file }) => Ok((path, file)),
         None => Err(g.error("type-error", std::slice::from_ref(id))),
     }
 }
@@ -254,9 +246,7 @@ fn reading(
     args: &[Value],
     read: fn(&mut dyn BufRead, &mut String) -> io::Result<usize>,
 ) -> Result<Value, Error> {
-    let [id] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id] = exactly(g, args)?;
     let (path, Stream::Reading(input)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
@@ -282,9 +272,7 @@ fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Err
 /// `#bytes()` at the end. It reads only as much as it gives, so a pipe that stays open answers as
 /// soon as `count` bytes have come.
 fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, count] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id, count] = exactly(g, args)?;
     let &Value::Integer(n) = count else {
         return Err(g.error("type-error", std::slice::from_ref(count)));
     };
@@ -302,7 +290,7 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
             Err(e) => return Err(failed(g, "file-error", path, &e)),
         };
         if bytes.try_reserve(chunk.len()).is_err() {
-            return Err(no_memory(g));
+            return Err(limit(g, "out-of-memory", &[]));
         }
         bytes.extend_from_slice(chunk);
         let used = chunk.len();
@@ -313,9 +301,7 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
 
 /// `(write data)` on a file: all of the bytes of a string or a bytes value.
 fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, data] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id, data] = exactly(g, args)?;
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
@@ -327,29 +313,26 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
         return Err(g.error("type-error", std::slice::from_ref(data)));
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
-    let wrote = wrote.map_err(|e| (e, path.to_owned()));
-    written(g, wrote)
+    written(g, path, wrote)
 }
 
-/// After a write: `#inert`, or the error with the file's path.
-fn written(g: &mut G, wrote: Result<(), (io::Error, String)>) -> Result<Value, Error> {
+/// After a write to the file `path`: `#inert`, or a `file-error`, except that a pipe no one reads
+/// is the limit that ends the run quietly, as [`exit_status`] says, and only a real write makes it.
+fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
-        Err((e, path)) => Err(write_failed(g, &path, &e)),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+            let path = g.string(path)?;
+            Err(limit(g, "broken-pipe", &[path]))
+        }
+        Err(e) => Err(failed(g, "file-error", path, &e)),
     }
 }
 
 /// `(close)` on a file: closes it; using it after this is the error `closed`.
 fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id] = args else {
-        return Err(g.error("arity-error", args));
-    };
-    file(g, r, id)?;
-    if let Value::Integer(n) = id
-        && let Some(opened) = usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i))
-    {
-        opened.file = None;
-    }
+    let [id] = exactly(g, args)?;
+    *file(g, r, id)?.1 = Stream::Closed;
     Ok(Value::Inert)
 }
 
@@ -376,21 +359,19 @@ fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Val
 /// keeps it, each `finally!` it leaves runs its cleanup forms, and [`exit_status`] reads it at the
 /// end.
 fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    match args {
-        [Value::Integer(n)] => {
-            u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
-            Err(g.error("exit", args).as_limit())
-        }
-        [_] => Err(g.error("type-error", args)),
-        _ => Err(g.error("arity-error", args)),
-    }
+    let [status] = exactly(g, args)?;
+    let &Value::Integer(n) = status else {
+        return Err(g.error("type-error", args));
+    };
+    u8::try_from(n).map_err(|_| g.error("range-error", args))?;
+    Err(limit(g, "exit", args))
 }
 
 /// The status a run ended with by the runner's own limits, which a program can't begin: what `exit`
 /// gave, or 141 for a pipe no one reads, as a shell says of a program SIGPIPE ended: `grift script |
 /// head` is quiet, and a run that ended this way never reports success.
 fn exit_status(g: &G, e: &Error) -> Option<u8> {
-    if !e.is_limit() {
+    if !e.limit {
         return None;
     }
     match (g.symbol_name(&e.kind).ok()?, e.values.as_slice()) {
@@ -471,7 +452,7 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
         .map_or(Value::Inert, |n| Value::Integer(i64::from(n)));
     // Refused memory is the limit, whichever output it was refused to, before either is text.
     let [Some(stderr), Some(stdout)] = outputs else {
-        return Err(no_memory(g));
+        return Err(limit(g, "out-of-memory", &[]));
     };
     let mut list = Value::EmptyList;
     for bytes in [stderr, stdout] {
@@ -512,18 +493,13 @@ struct Gathered<W: Write> {
 
 impl<W: Write> Write for Gathered<W> {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        if self.len + data.len() > self.text.len() {
+        if self.len == self.text.len() {
             self.flush()?;
-            if data.len() > self.text.len() {
-                return self.out.write(data);
-            }
         }
-        let end = self.len + data.len();
-        if let Some(room) = self.text.get_mut(self.len..end) {
-            room.copy_from_slice(data);
-            self.len = end;
-        }
-        Ok(data.len())
+        let mut room = self.text.get_mut(self.len..).unwrap_or_default();
+        let n = room.write(data)?;
+        self.len += n;
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -538,9 +514,7 @@ impl<W: Write> Write for Gathered<W> {
 /// any run's is, even one no `catch!` could stop, and the session goes on; `exit` or a pipe no one
 /// reads ends it.
 fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [thunk] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [thunk] = exactly(g, args)?;
     match g.call(r, thunk, &[]) {
         Err(e) if exit_status(g, &e).is_none() => {
             report(g, "stdin", &e);
@@ -575,9 +549,7 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
 
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
 fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [source, text] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [source, text] = exactly(g, args)?;
     let (Some(source), Some(text)) = (owned_string(g, source)?, owned_string(g, text)?) else {
         return Err(g.error("type-error", args));
     };
@@ -587,16 +559,13 @@ fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error>
 /// `(position form)`: the source and line of a combination `read-forms` or an evaluated text read,
 /// as a list; `()` for any other value.
 fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [form] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [form] = exactly(g, args)?;
     let Some((source, line)) = g.position(form)? else {
         return Ok(Value::EmptyList);
     };
     let source = source.to_owned();
     let source = g.string(&source)?;
-    let line = g.pair(Value::Integer(i64::from(line)), Value::EmptyList)?;
-    g.pair(source, line)
+    g.list(&[source, Value::Integer(i64::from(line))])
 }
 
 /// Evaluates `runner.grift` in a private context holding what it needs, so the operations it
@@ -650,29 +619,26 @@ fn main() -> ExitCode {
             }
         }
     }
-    let (script, arguments) = match words.split_first() {
-        Some((script, arguments)) => (Some(script.as_str()), arguments),
-        None => (None, &[][..]),
-    };
+    let script = words.first().map(String::as_str);
+    let arguments = words.get(1..).unwrap_or_default();
     let mut r = Runner {
         files: vec![
             Opened {
                 path: String::from("standard-input"),
-                file: Some(Stream::Reading(Box::new(BufReader::new(io::stdin())))),
+                file: Stream::Reading(Box::new(BufReader::new(io::stdin()))),
             },
             Opened {
                 path: String::from("standard-error"),
-                file: Some(Stream::Writing(Box::new(io::stderr()))),
+                file: Stream::Writing(Box::new(io::stderr())),
             },
             Opened {
                 path: String::from("standard-output"),
-                file: Some(Stream::Writing(Box::new(io::stdout()))),
+                file: Stream::Writing(Box::new(io::stdout())),
             },
         ],
         started: Instant::now(),
     };
-    let set = set_up(&mut g, &mut r, arguments, script.unwrap_or_default());
-    let session = match set {
+    let session = match set_up(&mut g, &mut r, arguments, script.unwrap_or_default()) {
         Ok(session) => session,
         Err(e) => return report(&g, "grift", &e),
     };

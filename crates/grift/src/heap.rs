@@ -1,11 +1,12 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
-//! sweep.
+//! sweep. A new slot first reserves its entry on the mark stack, so a collection needs no memory of
+//! its own.
 
-use crate::evaluate::{Machine, Native};
+use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasherDefault, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, Eq)]
@@ -20,12 +21,6 @@ impl PartialEq for Reference {
     fn eq(&self, other: &Reference) -> bool {
         crate::local::COMPARED.with(|n| n.set(n.get() + 1));
         self.idx == other.idx && self.generation == other.generation
-    }
-}
-
-impl Hash for Reference {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u32(self.idx);
     }
 }
 
@@ -45,26 +40,23 @@ pub(crate) struct Operative {
 pub(crate) enum Object {
     /// A free slot and the next free one.
     Free(u32),
-    Pair(Value, Value),
+    Pair(Value, Value, Origin),
     String(Box<str>),
     /// An optional parent and the bindings.
     Context(Option<Reference>, Bindings),
     Operative(Operative),
     Applicative(Value),
     Bytes(Vec<u8>),
-    /// A parked run's machine, none once it is taken up again: a vector, not a box, so that making
-    /// room for it can report failure. Only a kept entry refers to one, under a pair's reference
-    /// (marking follows a reference whatever its kind says): no program or host value ever holds it.
-    Fiber(Vec<Machine>),
 }
 
 /// A context's bindings.
 pub(crate) type Bindings = HashMap<Symbol, Value, BuildHasherDefault<IdHasher>>;
 
-/// A set of references, for checking in constant time whether one was met before.
-pub(crate) type Seen = HashSet<Reference, BuildHasherDefault<IdHasher>>;
+/// The slot numbers of a trace's combinations, for checking in constant time whether one was met
+/// before. The combinations in a trace are live, so a slot number identifies one.
+pub(crate) type Seen = HashSet<u32, BuildHasherDefault<IdHasher>>;
 
-/// Hashes a symbol or a reference by its id, a small integer: one multiplication spreads it over
+/// Hashes a symbol or a slot by its number, a small integer: one multiplication spreads it over
 /// the bits the table looks at.
 #[derive(Default)]
 pub(crate) struct IdHasher(u64);
@@ -84,10 +76,22 @@ impl Hasher for IdHasher {
 
 struct Slot {
     generation: u32,
-    marked: bool,
-    /// Made by the library: read from its text, or made by its code as it ran.
-    library: bool,
+    /// Set as a collection first reaches the slot, so it goes on the mark stack once at most.
+    marked: Cell<bool>,
     obj: Object,
+}
+
+// A pair's origin fits in the room an operative already needs.
+const _: () = assert!(size_of::<Slot>() == 72);
+
+/// Where a pair came from: the source and line it was read at, if under a name; whether the
+/// library made it, by reading its text or by running its code; and whether it is one of its
+/// source's outer forms.
+#[derive(Clone, Copy)]
+pub(crate) struct Origin {
+    pub place: Option<(Symbol, u32)>,
+    pub library: bool,
+    pub outer: bool,
 }
 
 const NONE: u32 = u32::MAX;
@@ -104,7 +108,6 @@ fn weight(obj: &Object) -> usize {
     match obj {
         Object::String(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
-        Object::Fiber(room) => 1 + room.iter().map(Machine::weight).sum::<usize>(),
         _ => 1,
     }
 }
@@ -112,18 +115,24 @@ fn weight(obj: &Object) -> usize {
 pub(crate) struct Heap {
     slots: Vec<Slot>,
     free: u32,
-    since_gc: Cell<usize>,
+    /// How much may be allocated before the next collection: collection sets it, allocation
+    /// spends it, and a refusal empties it.
+    until_gc: Cell<usize>,
+    /// The mark stack, empty between collections: every slot reserved its entry here when it was
+    /// made, so a collection never grows it.
+    marks: Vec<u32>,
+    /// What the last collection found alive, by weight, for tests of what a run keeps.
+    #[cfg(test)]
     live: usize,
-    marks: Vec<Reference>,
     /// Operatives made, for tests of what a form costs.
     #[cfg(test)]
     pub operatives: usize,
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
-    /// Refuse the mark stack room past this length, to test a collection with no memory to spare.
+    /// Refuse the kept table room past this length, to test a park with no memory to spare.
     #[cfg(test)]
-    pub mark_limit: usize,
+    pub kept_limit: usize,
     /// Collect at every safe point, to test what a collection could lose.
     #[cfg(test)]
     pub stress: bool,
@@ -145,15 +154,16 @@ impl Default for Heap {
         Heap {
             slots: Vec::new(),
             free: NONE,
-            since_gc: Cell::new(0),
-            live: 0,
+            until_gc: Cell::new(GC_MIN),
             marks: Vec::new(),
+            #[cfg(test)]
+            live: 0,
             #[cfg(test)]
             operatives: 0,
             #[cfg(test)]
             slot_limit: usize::MAX,
             #[cfg(test)]
-            mark_limit: usize::MAX,
+            kept_limit: usize::MAX,
             #[cfg(test)]
             stress: false,
             #[cfg(test)]
@@ -168,18 +178,6 @@ impl Default for Heap {
     }
 }
 
-fn reference(v: Value) -> Option<Reference> {
-    match v {
-        Value::Pair(r)
-        | Value::String(r)
-        | Value::Bytes(r)
-        | Value::Context(r)
-        | Value::Operative(r)
-        | Value::Applicative(r) => Some(r),
-        _ => None,
-    }
-}
-
 impl Reference {
     /// No object: a reference no slot has.
     pub(crate) const NONE: Reference = Reference {
@@ -191,14 +189,8 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
-        self.alloc_marked(obj, false)
-    }
-
-    /// A new object, marked as the library's if `library`: code it read or built.
-    #[inline]
-    pub fn alloc_marked(&mut self, obj: Object, library: bool) -> Result<Reference, Error> {
-        let since_gc = self.since_gc.get_mut();
-        *since_gc = since_gc.saturating_add(weight(&obj));
+        let until_gc = self.until_gc.get_mut();
+        *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -220,7 +212,6 @@ impl Heap {
         {
             self.free = next;
             slot.obj = obj;
-            slot.library = library;
             return Ok(Reference {
                 idx,
                 generation: slot.generation,
@@ -234,14 +225,22 @@ impl Heap {
             .ok()
             .filter(|&i| i != NONE)
             .ok_or_else(|| self.refused())?;
+        self.marks
+            .try_reserve(self.slots.len() + 1)
+            .map_err(|_| self.refused())?;
         let slot = Slot {
             generation: 0,
-            marked: false,
-            library,
+            marked: Cell::new(false),
             obj,
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
         Ok(Reference { idx, generation: 0 })
+    }
+
+    /// A new empty context.
+    #[inline]
+    pub fn context(&mut self, parent: Option<Reference>) -> Result<Reference, Error> {
+        self.alloc(Object::Context(parent, Bindings::default()))
     }
 
     /// No room for an object: collection comes next, at the machine's next safe point or as a
@@ -252,28 +251,12 @@ impl Heap {
         Error::oom()
     }
 
-    /// The object, and whether the library made it: read from its text, or made by its code.
-    #[inline]
-    pub fn get_code(&self, r: Reference) -> Result<(&Object, bool), Error> {
-        self.slot(r)
-            .map(|s| (&s.obj, s.library))
-            .ok_or_else(|| Error::new(K::StaleValue, &[]))
-    }
-
-    /// The slot `r` refers to, if it still holds that object: a slot freed since has another
-    /// generation.
-    #[inline]
-    fn slot(&self, r: Reference) -> Option<&Slot> {
-        self.slots
-            .get(r.idx as usize)
-            .filter(|s| s.generation == r.generation)
-    }
-
     #[inline]
     pub fn get(&self, r: Reference) -> Result<&Object, Error> {
-        self.slot(r)
-            .map(|s| &s.obj)
-            .ok_or_else(|| Error::new(K::StaleValue, &[]))
+        match self.slots.get(r.idx as usize) {
+            Some(s) if s.generation == r.generation => Ok(&s.obj),
+            _ => Err(Error::new(K::StaleValue, &[])),
+        }
     }
 
     #[inline]
@@ -293,7 +276,7 @@ impl Heap {
     /// Puts the next collection off, as if the last had just been.
     #[cfg(test)]
     pub fn not_due(&self) {
-        self.since_gc.set(0);
+        self.until_gc.set(self.live.max(GC_MIN));
     }
 
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
@@ -303,59 +286,35 @@ impl Heap {
         if self.stress {
             return true;
         }
-        self.since_gc.get() >= self.live.max(GC_MIN)
+        self.until_gc.get() == 0
     }
 
     /// The next safe point collects.
     pub fn request_collection(&self) {
-        self.since_gc.set(usize::MAX);
-    }
-
-    /// The mark stack's room, made with the interpreter and never given back, so a collection
-    /// needs no memory.
-    pub fn make_room(&mut self) -> Result<(), Error> {
-        self.marks.try_reserve(MARK_ROOM).map_err(|_| Error::oom())
+        self.until_gc.set(0);
     }
 
     /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
-    /// reference the mark stack has no room for is left, and passes over the heap find it again
-    /// as an unmarked child of a marked object. Each pass marks at least one more, the stack
-    /// being empty as each object's unmarked children go on it.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>) {
+    /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
+    /// reserved its entry as it was made. `parked` is the weight of what
+    /// outside the heap the next collection walks too, counted as live.
+    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, parked: usize) {
         #[cfg(test)]
         {
             self.collections += 1;
         }
-        #[cfg(test)]
-        let limit = self.mark_limit;
-        #[cfg(not(test))]
-        let limit = usize::MAX;
-        let mut marks = std::mem::take(&mut self.marks);
-        marks.clear();
-        let mut left = false;
-        for root in roots {
-            mark(&mut marks, root, &mut left, limit);
-            self.drain(&mut marks, &mut left, limit);
-        }
-        while std::mem::take(&mut left) {
-            for idx in 0..self.slots.len() {
-                if let Some(s) = self.slots.get(idx).filter(|s| s.marked) {
-                    let slots = &self.slots;
-                    children(&s.obj, |v| {
-                        if reference(v).is_some_and(|r| unmarked(slots, r)) {
-                            mark(&mut marks, v, &mut left, limit);
-                        }
-                    });
-                    self.drain(&mut marks, &mut left, limit);
-                }
+        let slots = &self.slots;
+        let marks = &mut self.marks;
+        roots.for_each(|v| mark(slots, marks, v));
+        while let Some(idx) = marks.pop() {
+            if let Some(s) = slots.get(idx as usize) {
+                children(&s.obj, |v| mark(slots, marks, v));
             }
         }
-        self.marks = marks;
-        self.live = 0;
+        let mut live = parked;
         for (idx, s) in (0..).zip(self.slots.iter_mut()) {
-            if s.marked {
-                s.marked = false;
-                self.live = self.live.saturating_add(weight(&s.obj));
+            if s.marked.take() {
+                live = live.saturating_add(weight(&s.obj));
             } else if !matches!(s.obj, Object::Free(_)) {
                 s.obj = Object::Free(self.free);
                 // A slot whose generations run out is retired, never reused: its last one, which
@@ -366,19 +325,10 @@ impl Heap {
                 }
             }
         }
-        *self.since_gc.get_mut() = 0;
-    }
-
-    /// Marks what is on the stack and everything reachable from it.
-    fn drain(&mut self, marks: &mut Vec<Reference>, left: &mut bool, limit: usize) {
-        while let Some(r) = marks.pop() {
-            match self.slots.get_mut(r.idx as usize) {
-                Some(s) if s.generation == r.generation && !s.marked => s.marked = true,
-                _ => continue,
-            }
-            if let Some(s) = self.slots.get(r.idx as usize) {
-                children(&s.obj, |v| mark(marks, v, left, limit));
-            }
+        *self.until_gc.get_mut() = live.max(GC_MIN);
+        #[cfg(test)]
+        {
+            self.live = live;
         }
     }
 
@@ -387,30 +337,29 @@ impl Heap {
         self.slots.len()
     }
 
-    /// The mark stack's room, for a test that it is made before any collection needs it.
+    /// The mark stack's room, for tests that every slot has an entry.
     #[cfg(test)]
     pub fn mark_room(&self) -> usize {
         self.marks.capacity()
     }
 }
 
-/// The room [`Heap::make_room`] makes: any is enough, more makes fewer passes.
-const MARK_ROOM: usize = 256;
-
-/// Whether `r`'s object is live and not yet marked.
-fn unmarked(slots: &[Slot], r: Reference) -> bool {
-    slots
-        .get(r.idx as usize)
-        .is_some_and(|s| s.generation == r.generation && !s.marked)
-}
-
-/// Puts `v`'s object on the mark stack; with no room, says one was `left`.
-fn mark(marks: &mut Vec<Reference>, v: Value, left: &mut bool, limit: usize) {
-    let Some(r) = reference(v) else { return };
-    if marks.len() < limit && marks.try_reserve(1).is_ok() {
-        marks.push(r);
-    } else {
-        *left = true;
+/// Puts `v`'s object on the mark stack, unless a collection already reached it.
+fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
+    let r = match v {
+        Value::Pair(r)
+        | Value::String(r)
+        | Value::Bytes(r)
+        | Value::Context(r)
+        | Value::Operative(r)
+        | Value::Applicative(r) => r,
+        _ => return,
+    };
+    if let Some(s) = slots.get(r.idx as usize)
+        && s.generation == r.generation
+        && !s.marked.replace(true)
+    {
+        marks.push(r.idx);
     }
 }
 
@@ -418,7 +367,7 @@ fn mark(marks: &mut Vec<Reference>, v: Value, left: &mut bool, limit: usize) {
 fn children(obj: &Object, mut f: impl FnMut(Value)) {
     match obj {
         Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
-        Object::Pair(a, d) => {
+        Object::Pair(a, d, _) => {
             f(*a);
             f(*d);
         }
@@ -434,6 +383,5 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
             f(Value::Context(op.context));
         }
         Object::Applicative(c) => f(*c),
-        Object::Fiber(room) => room.iter().flat_map(Machine::roots).for_each(f),
     }
 }

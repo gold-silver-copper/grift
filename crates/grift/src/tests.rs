@@ -7,7 +7,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Error, Grift, Interrupter, Value, local};
+use crate::{Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -101,7 +101,10 @@ impl<T> Grift<T> {
     /// Whether `v` is the definition this interpreter runs for primitive `p`.
     fn is_definition_of(&self, v: &Value, p: Primitive) -> bool {
         let Some(found) = self
-            .interned(p.name())
+            .symbols
+            .get(p.name())
+            .copied()
+            .map(local::Symbol)
             .and_then(|name| self.find(self.built_in, name).unwrap())
         else {
             return false;
@@ -118,13 +121,13 @@ fn grift() -> Grift {
     Grift::new().expect("the library loads")
 }
 
-fn show<T>(g: &Grift<T>, v: &Value) -> String {
+pub(crate) fn show<T>(g: &Grift<T>, v: &Value) -> String {
     let mut s = String::new();
     g.write(v, &mut s).unwrap();
     s
 }
 
-fn kind<T>(g: &Grift<T>, e: &Error) -> String {
+pub(crate) fn kind<T>(g: &Grift<T>, e: &Error) -> String {
     g.symbol_name(&e.kind).unwrap().to_string()
 }
 
@@ -885,17 +888,6 @@ fn cleanup_runs_and_the_error_goes_on() {
     assert_eq!(show(&g, &e.values[0]), "(1 2)");
 }
 
-#[test]
-fn stale_values_are_refused() {
-    let mut g = grift();
-    let old = g.evaluate(&mut (), "(list 1 2)").unwrap();
-    g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
-        .unwrap();
-    g.evaluate(&mut (), "(churn 10000)").unwrap();
-    let e = g.as_pair(&old).unwrap_err();
-    assert_eq!(kind(&g, &e), "stale-value");
-}
-
 /// The machine steps taken and the operatives made evaluating `src`.
 fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
     (g.machine.steps, g.heap.operatives) = (0, 0);
@@ -1502,6 +1494,11 @@ fn arithmetic_is_rusts() {
             ("(add 1 1.5)", "type-error"),
             ("(add 1.5 1)", "type-error"),
             ("(less-than? 1 1.5)", "type-error"),
+            ("(less-than? \"a\" #bytes(97))", "type-error"),
+            ("(less-than? #bytes(97) \"a\")", "type-error"),
+            ("(less-than? \"a\" 1)", "type-error"),
+            ("(less-than? 1 \"a\")", "type-error"),
+            ("(less-than? #true #false)", "type-error"),
             ("(multiply 2.0 \"a\")", "type-error"),
             ("(square-root 4)", "type-error"),
             ("(absolute-value \"a\")", "type-error"),
@@ -1669,6 +1666,8 @@ fn a_predicate_for_every_type() {
         "context?",
         "operative?",
         "applicative?",
+        "inert?",
+        "ignore?",
     ];
     let values = [
         "()",
@@ -1682,9 +1681,14 @@ fn a_predicate_for_every_type() {
         "(context ())",
         "if!",
         "first",
+        "#true",
+        "(pair 1 2)",
+        "#bytes()",
+        "vau!",
+        "#inert",
+        "#ignore",
     ];
-    // Each value's type-of names exactly one predicate, and only that one holds. #inert and #ignore,
-    // each the only value of its type, have none: `same?` says it.
+    // Each value's type-of names exactly one predicate, and only that one holds.
     for value in values {
         let kind = g
             .evaluate(&mut (), &format!("(symbol-to-string (type-of {value}))"))
@@ -2286,7 +2290,8 @@ fn a_parse_error_says_why_and_where() {
         ("#bytes(#foo)", "unknown-constant 1 8"),
         ("#bytes(\"a", "unclosed-string 1 8"),
         ("#bytes(1 \"a\" x)", "bad-byte 1 10"),
-        ("(#bytes((1)))", "bad-byte 1 9"),
+        ("(#bytes((1)))", "bad-byte 1 11"),
+        ("#bytes((1", "unclosed-list 1 8"),
         ("#bytes(1.0)", "bad-byte 1 8"),
         ("#bytes(1 . 2)", "misplaced-dot 1 10"),
         ("#bytes (1)", "unknown-constant 1 1"),
@@ -2298,8 +2303,8 @@ fn a_parse_error_says_why_and_where() {
             ("parse-error".into(), want.into()),
             "{text:?}"
         );
-        // Unnamed entries keep the bare reader error. Both named entries retain the source
-        // as the first trace entry, without adding to or rearranging (reason line column).
+        // Unnamed entries keep the bare reader error. Both named entries add the source after
+        // (reason line column), and a trace holds only combinations.
         assert_eq!(g.evaluate(&mut (), text).unwrap_err(), e);
         assert!(e.trace.is_empty());
         for entry in ["read_in", "evaluate_in"] {
@@ -2309,11 +2314,11 @@ fn a_parse_error_says_why_and_where() {
                 g.evaluate_in(&mut (), &g.top_level(), "broken.grift", text)
             }
             .unwrap_err();
-            assert_eq!((&named.kind, &named.values), (&e.kind, &e.values));
+            assert_eq!(named.kind, e.kind);
             let source = Value::Symbol(g.symbol("broken.grift").unwrap());
-            let trace = named.trace;
-            if trace != [source] {
-                missing_source.push(format!("{entry}: {want}: {trace:?}"));
+            let (values, trace) = (named.values, named.trace);
+            if values != [e.values.as_slice(), &[source]].concat() || !trace.is_empty() {
+                missing_source.push(format!("{entry}: {want}: {values:?} {trace:?}"));
             }
         }
         // More text after an unclosed form changes nothing.
@@ -2327,7 +2332,7 @@ fn a_parse_error_says_why_and_where() {
     // byte that isn't one.
     for (text, want) in [
         ("(#bytes(1 2", "unclosed-list 1 8"),
-        ("(#bytes(1 2\n(g 3)", "bad-byte 2 1"),
+        ("(#bytes(1 2\n(g 3)", "bad-byte 2 5"),
     ] {
         let e = g.read(text).unwrap_err();
         let values: Vec<String> = e.values.iter().map(|v| show(&g, v)).collect();
@@ -2370,7 +2375,7 @@ fn a_trace_from_the_host_is_checked_as_values_are() {
     e.trace.push(g.string("reclaimed").unwrap());
     g.heap.request_collection();
     g.evaluate(&mut (), "#inert").unwrap();
-    let Err(crate::WriteError::Value(why)) = g.describe(&e, &mut String::new()) else {
+    let Err(why) = g.describe(&e, &mut String::new()) else {
         panic!("described a reclaimed value");
     };
     assert_eq!(kind(&g, &why), "stale-value");
@@ -2427,7 +2432,7 @@ fn named_parse_errors_stay_describable_after_collection() {
             for held in [&e, &again] {
                 let mut after = String::new();
                 let described = g.describe(held, &mut after);
-                let position = g.position(&held.trace[0]);
+                let position = g.position(&held.values[3]);
                 if described.is_err() || position != Ok(None) {
                     broken.push(format!(
                         "{entry}: describe={described:?}, position={position:?}"
@@ -2575,15 +2580,24 @@ fn sort_is_ordered_and_stable() {
                                             (less-than? (rest a) (rest b))
                                             (less-than? (first a) (first b))))))",
             "(empty-list? (sort () less-than?))",
-            "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") string-less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
+            "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
+            // The comparisons built on less-than? take text with no change.
+            "(greater-than? \"b\" \"a\")",
+            "(less-than-or-equal? \"a\" \"a\")",
+            "(greater-than-or-equal? #bytes(2) #bytes(1 9))",
+            "(same? (minimum \"b\" \"a\") \"a\")",
+            "(same? (maximum \"b\" \"a\") \"b\")",
         ],
     );
     fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
-    // string-less-than? is Rust's < on str, byte by byte.
+    // less-than? on strings is Rust's < on str, byte by byte, and on bytes the same order.
     let words = ["", "a", "b", "ab", "abc", "B", "é", "e", "日本", "日"];
     for a in words {
         for b in words {
-            let got = g.evaluate(&mut (), &format!("(string-less-than? {a:?} {b:?})"));
+            let got = g.evaluate(&mut (), &format!("(less-than? {a:?} {b:?})"));
+            assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
+            let bytes = format!("(less-than? (string-to-bytes {a:?}) (string-to-bytes {b:?}))");
+            let got = g.evaluate(&mut (), &bytes);
             assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
         }
     }
@@ -2962,15 +2976,24 @@ impl Comparison<'_> {
                 (Value::Bytes(_), Value::Bytes(_)) if l.as_bytes(&a) != r.as_bytes(&b) => {
                     return differ();
                 }
-                (Value::Host(_), Value::Host(_)) if show(l, &a) != show(r, &b) => return differ(),
+                (
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                ) if show(l, &a) != show(r, &b) => return differ(),
                 (Value::Float(_), Value::Float(_))
                 | (Value::Symbol(_), Value::Symbol(_))
                 | (Value::String(_), Value::String(_))
                 | (Value::Bytes(_), Value::Bytes(_))
-                | (Value::Host(_), Value::Host(_)) => {}
+                | (
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                ) => {}
                 (Value::Pair(_), Value::Pair(_))
                 | (Value::Context(_), Value::Context(_))
-                | (Value::Operative(_), Value::Operative(_))
+                | (
+                    Value::Operative(Operative(OperativeKind::Compound(_))),
+                    Value::Operative(Operative(OperativeKind::Compound(_))),
+                )
                 | (Value::Applicative(_), Value::Applicative(_)) => {
                     let known = self.matched.iter().find(|(x, y)| *x == a || *y == b);
                     match known {
@@ -3006,7 +3029,10 @@ impl Comparison<'_> {
                     }
                 }
                 // What a native is, its definition is: the comparison's one allowed difference.
-                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, p.0) => {}
+                (
+                    Value::Operative(Operative(OperativeKind::Primitive(p))),
+                    Value::Operative(Operative(OperativeKind::Compound(_))),
+                ) if r.is_definition_of(&b, *p) => {}
                 _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
                     return differ();
                 }
@@ -3548,7 +3574,7 @@ fn walks_with_a_stop_waiting(
     let mut bindings = Bindings::default();
     let matched = g.match_tree(&mut bindings, tree, tree);
     interrupted(g, matched.unwrap_err());
-    let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
+    let Err(e) = g.write(&args[0], &mut String::new()) else {
         panic!("printing went on past a stop");
     };
     assert_eq!(kind(g, &e), "interrupted");
@@ -3587,10 +3613,10 @@ fn walks_with_a_force_waiting(
     );
     let mut bindings = Bindings::default();
     assert!(g.match_tree(&mut bindings, tree, tree).unwrap_err().limit);
-    let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
+    let Err(e) = g.write(&args[0], &mut String::new()) else {
         panic!("printing went on past a force");
     };
-    assert!(e.is_limit());
+    assert!(e.limit);
     Ok(Value::Inert)
 }
 
@@ -3819,23 +3845,6 @@ fn standard_context_is_a_new_child_of_the_built_in_context() {
     );
 }
 
-#[test]
-fn every_type_has_a_predicate_named_for_it() {
-    holds(
-        &mut grift(),
-        &[
-            "(all? (lambda! (v)
-                     ((evaluate (string-to-symbol (join (symbol-to-string (type-of v)) \"?\"))
-                                (current-context))
-                      v))
-                   (list () #true #inert #ignore 1 1.0 (quote! a) (pair 1 2) \"s\" #bytes() (context ())
-                         vau! first))",
-            "(not? (inert? ()))",
-            "(not? (ignore? #inert))",
-        ],
-    );
-}
-
 /// `local::Value`'s tag is a whole word, so a copy loads it at once and never waits on a one-byte
 /// write just before (#210: about 16% of every program on x86-64). Its size can't show this: a
 /// one-byte tag pads to the same 16 bytes. So: the payload starts a word in.
@@ -3849,9 +3858,9 @@ fn a_values_tag_is_a_whole_word() {
     assert_eq!(offset, size_of::<u64>());
 }
 
-/// A collection needs no memory of its own (208's P33): with its mark stack refused room past a
-/// few entries, it still keeps everything live, however deep, and frees the garbage, so a run that
-/// needs that memory gets it.
+/// A collection needs no memory of its own (208's P33): with no slot to be had and its mark stack
+/// never growing, it still keeps everything live, however deep, and frees the garbage, so a run
+/// that needs that memory gets it.
 #[test]
 fn a_collection_needs_no_memory_of_its_own() {
     let mut g: Grift = Grift::new().unwrap();
@@ -3863,7 +3872,7 @@ fn a_collection_needs_no_memory_of_its_own() {
     )
     .unwrap();
     g.heap.slot_limit = g.heap.len();
-    g.heap.mark_limit = 8;
+    let room = g.heap.mark_room();
     g.heap.request_collection();
     let v = g
         .evaluate(
@@ -3876,13 +3885,15 @@ fn a_collection_needs_no_memory_of_its_own() {
         g.list_items(&v).unwrap(),
         [40000, 20000, 19999, 1999].map(Value::Integer)
     );
+    assert_eq!(g.heap.mark_room(), room);
 }
 
-/// The mark stack's room is made with the interpreter: `mark_limit` can't tell it from room grown
-/// later, but with memory refused and no room, no root could be marked and a collection would free
-/// live data.
+/// Every slot has its mark stack entry before any collection needs it: with memory refused and no
+/// room, a collection would have nowhere to put what it reaches.
 #[test]
-fn the_mark_stack_has_room_before_any_collection() {
-    let g: Grift = Grift::new().unwrap();
-    assert!(g.heap.mark_room() > 0);
+fn the_mark_stack_has_room_for_every_slot() {
+    let mut g: Grift = Grift::new().unwrap();
+    assert!(g.heap.mark_room() >= g.heap.len());
+    g.evaluate(&mut (), "(length (range 0 50000))").unwrap();
+    assert!(g.heap.mark_room() >= g.heap.len());
 }

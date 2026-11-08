@@ -5,7 +5,9 @@
 //! at the top of the loop and before a host's evaluation or call needs its first slot, with that
 //! state, the root contexts and the new call's checked inputs as its roots. Allocation never
 //! collects: Rust locals stay valid until the next run entry or machine safe point. The loop
-//! checks for a stop just after each step.
+//! checks for a stop just after each step. A run is over when its frames are gone, and a run a
+//! host function starts inside a run is a machine of its own, the caller's waiting whole, a root
+//! of the collector, until it ends.
 //!
 //! A run ends one way: an error unwinds it. An error the host or the machine began is a limit,
 //! whatever its kind is called, and two things follow: handlers pass it, and when a new error meets
@@ -16,12 +18,12 @@
 //! flagged, and run in Rust when their operands have the shape the twin handles; any other shape
 //! runs the operative's body, so what a program sees never differs.
 
-use crate::heap::{Bindings, Object, Operative, Reference};
+use crate::heap::{Bindings, Object, Operative, Origin, Reference};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::parked::{Answer, Hosted};
 use crate::read::float_name;
-use crate::{Grift, collected};
+use crate::{Entry, Grift, collected, context_kind};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -167,7 +169,7 @@ const _: () = {
     const fn words(what: &What) -> bool {
         match what {
             What::Forms { rest } | What::Body { rest } => whole(rest),
-            What::Combine { operands, maker } => whole(operands) && whole(maker),
+            What::Combine { operands, base } => whole(operands) && whole(base),
             What::Arguments {
                 combiner,
                 rest,
@@ -183,9 +185,9 @@ const _: () = {
             What::Finish | What::Form => true,
         }
     }
-    let (v, maker, base) = (Value::Inert, Maker::Program, Base(0));
+    let (v, base) = (Value::Inert, Base(0));
     assert!(words(&What::Forms { rest: v }) && words(&What::Body { rest: v }));
-    assert!(words(&What::Combine { operands: v, maker }));
+    assert!(words(&What::Combine { operands: v, base }));
     assert!(words(&What::Arguments {
         combiner: v,
         rest: v,
@@ -211,8 +213,9 @@ const _: () = {
 enum What {
     /// Evaluate the remaining forms of one `evaluate` call; with none left, pass the value on.
     Forms { rest: Value },
-    /// The value is the combiner of a combination with these operands, which `maker` made.
-    Combine { operands: Value, maker: Maker },
+    /// The value is the combiner of a combination with these operands; `base` says whether the
+    /// library made the combination.
+    Combine { operands: Value, base: Base },
     /// The value is an argument of `combiner`; arguments so far are on the argument stack from
     /// `base`'s height, and `base` says whether the library made the combination.
     Arguments {
@@ -237,25 +240,6 @@ enum What {
     Body { rest: Value },
     /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
     Form,
-}
-
-/// Who made a combination, as a whole word: a frame holding a one-byte flag is read back whole,
-/// which waits for the narrow write to land.
-#[derive(Clone, Copy, PartialEq)]
-#[repr(u64)]
-enum Maker {
-    Program,
-    Library,
-}
-
-impl Maker {
-    fn of(library: bool) -> Maker {
-        if library {
-            Maker::Library
-        } else {
-            Maker::Program
-        }
-    }
 }
 
 /// An argument stack's height and whether the library made the combination, in one word. Written
@@ -300,8 +284,9 @@ impl Frame {
     }
 }
 
-/// A run's state, all of it: a run that parks moves this into the heap, and what belongs to a run
-/// but lives anywhere else stays behind when it does. An interpreter has one, empty between runs.
+/// A run's state, all of it: a run that parks moves this into the kept table, a run under a nested
+/// one waits whole in `Grift::suspended`, and what belongs to a run but lives anywhere else stays
+/// behind when it does. An interpreter has one current, empty between runs.
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     arguments: Vec<Value>,
@@ -318,21 +303,27 @@ pub(crate) struct Machine {
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
     pub request: Value,
+    /// Whether this run may park: only an outer run the host asked to, for a run inside a host call
+    /// has that call's Rust frames under it, which can't be set aside.
+    pub(crate) may_park: bool,
     /// Steps taken, for tests of what a form costs.
     #[cfg(test)]
     pub steps: u64,
 }
 
+/// What an ending holds for the collector: its value, or its error's values and trace.
+pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
+    let (value, values, trace) = match ending {
+        Ok(v) => (Some(*v), &[][..], &[][..]),
+        Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
+    };
+    value.into_iter().chain(values.iter().chain(trace).copied())
+}
+
 impl Machine {
     /// What this machine holds for the collector, running or parked.
     pub(crate) fn roots(&self) -> impl Iterator<Item = Value> {
-        let waiting = self.waiting.iter().flat_map(|ending| {
-            let (value, values, trace) = match ending {
-                Ok(v) => (Some(*v), &[][..], &[][..]),
-                Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
-            };
-            value.into_iter().chain(values.iter().chain(trace).copied())
-        });
+        let waiting = self.waiting.iter().flat_map(ending_values);
         self.frames
             .iter()
             .flat_map(|f| f.values())
@@ -349,11 +340,12 @@ impl Machine {
         self.here = Reference::NONE;
         self.library = false;
         self.request = Value::Inert;
+        self.may_park = false;
     }
 
     /// How many objects a parked machine counts as, for when to collect: every collection walks it.
     pub(crate) fn weight(&self) -> usize {
-        self.frames.len() + self.arguments.len() + self.waiting.len()
+        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
     }
 }
 
@@ -380,6 +372,7 @@ impl Default for Machine {
             library: false,
             work: Vec::new(),
             request: Value::Inert,
+            may_park: false,
             #[cfg(test)]
             steps: 0,
         }
@@ -404,7 +397,7 @@ pub(crate) fn type_error(v: Value) -> Error {
 
 impl<T> Grift<T> {
     /// Evaluates the list `forms` in `context`, in order. Reentrant: a host function may call
-    /// `evaluate`, which runs on top of the current frames and leaves them as it found them.
+    /// `evaluate`, which is a machine of its own while the caller's waits.
     pub(crate) fn evaluate_forms(
         &mut self,
         state: Option<&mut T>,
@@ -413,7 +406,7 @@ impl<T> Grift<T> {
         parks: bool,
     ) -> Result<Value, Error> {
         let top = What::Forms { rest: forms };
-        self.enter(state, &[(top, context)], Mode::Return(Value::Inert), parks)
+        self.enter(state, top, context, Mode::Return(Value::Inert), parks)
     }
 
     /// [`Grift::call`], on this interpreter's values.
@@ -430,59 +423,42 @@ impl<T> Grift<T> {
         };
         self.settled();
         let operands = self.list_local(arguments)?;
-        let context = self
-            .heap
-            .alloc(Object::Context(None, Bindings::default()))?;
+        let context = self.heap.context(None)?;
+        // The run's own machine, whose argument stack starts empty.
         let call = What::Combine {
             operands,
-            maker: Maker::Program,
+            base: Base::new(0, false),
         };
-        self.enter(state, &[(call, context)], Mode::Return(f), parks)
+        self.enter(state, call, context, Mode::Return(f), parks)
     }
 
-    /// Runs the machine on top of the current frames from `mode`, with `frames` pushed, until
-    /// they are all gone; then everything is as it was, whatever the outcome. The first frame
-    /// pushed holds where the machine was, so the collector sees it until it is restored. An
-    /// outer run gets its number, for stops. Only an outer run may park, if the host asked for
-    /// that: a run inside a host call has that call's Rust frames under it, which can't be set
-    /// aside.
+    /// Runs a machine from `mode` with one frame until its frames are gone. An outer run uses the
+    /// interpreter's, and gets its number, for stops. A nested run sets the caller's machine aside
+    /// and has a new one, and only a run an outer host asked for may park.
     fn enter(
         &mut self,
         state: Option<&mut T>,
-        frames: &[(What, Reference)],
+        what: What,
+        context: Reference,
         mode: Mode,
         parks: bool,
     ) -> Result<Value, Error> {
         let outer = self.begin_run();
-        let around = std::mem::replace(&mut self.may_park, outer && parks);
-        let m = &mut self.machine;
-        let (base, arguments, waiting, here, library) = (
-            m.frames.len(),
-            m.arguments.len(),
-            m.waiting.len(),
-            m.here,
-            m.library,
-        );
-        let held = What::Forms {
-            rest: Value::EmptyList,
-        };
-        let result = self.frame(held, Reference::NONE, here).and_then(|()| {
-            frames
-                .iter()
-                .try_for_each(|&(what, context)| self.frame(what, context, Reference::NONE))
-        });
-        let result = result.and_then(|()| self.run(state, mode, base + 1));
-        // A machine that parked or was given up has nothing left to restore: these do nothing.
-        let m = &mut self.machine;
-        m.here = here;
-        m.library = library;
-        m.frames.truncate(base);
-        m.arguments.truncate(arguments);
-        m.waiting.truncate(waiting);
         if outer {
-            self.end_run();
+            self.machine.may_park = parks;
         } else {
-            self.may_park = around;
+            self.suspended.try_reserve(1).map_err(|_| Error::oom())?;
+            self.suspended.push(std::mem::take(&mut self.machine));
+        }
+        let result = self
+            .frame(what, context, Reference::NONE)
+            .and_then(|()| self.run(state, mode));
+        // A machine that parked or was given up has nothing to go back to.
+        if outer {
+            self.machine.clear();
+            self.control.end();
+        } else if let Some(caller) = self.suspended.pop() {
+            self.machine = caller;
         }
         result
     }
@@ -497,38 +473,32 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         self.machine = machine;
         self.machine.request = Value::Inert;
-        // The frame `enter` pushed first, holding where the machine was, stays under the run.
-        let floor = 1;
-        let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e, floor));
-        let result = mode.and_then(|mode| self.run(state, mode, floor));
+        let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e));
+        let result = mode.and_then(|mode| self.run(state, mode));
         self.machine = Machine::default();
-        self.end_run();
+        self.control.end();
         result
     }
 
-    /// Sets the run in progress aside: its whole machine moves into a new heap object, which a
-    /// kept entry holds, and this interpreter's machine is empty again. Everything that can fail
-    /// comes first, so a run that can't park goes on where it was, with the error, and that it
-    /// was asked to stop is the last of those. Its kept name is left for [`Grift::ran`].
+    /// Sets the run in progress aside: its whole machine moves into a kept entry, and this
+    /// interpreter's machine is empty again. Everything that can fail comes first, so a run that
+    /// can't park goes on where it was, with the error, and that it was asked to stop is the last
+    /// of those; filling the entry comes after them all, so there is nothing to undo. Its kept
+    /// name is left for [`Grift::ran`].
     fn park(&mut self, request: Value) -> Result<(), Error> {
-        if !self.may_park {
+        if !self.machine.may_park {
             return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
         room.try_reserve_exact(1).map_err(|_| Error::oom())?;
-        self.kept_free.try_reserve(1).map_err(|_| Error::oom())?;
+        let name = self.free_name()?;
         self.room_to_forget()?;
-        let fiber = self.heap.alloc(Object::Fiber(room))?;
-        let name = self.keep_local(Value::Pair(fiber))?;
         if !self.control.parks() {
-            self.clear_kept(name);
             return Err(Error::interrupted());
         }
         self.machine.request = request;
-        let machine = std::mem::take(&mut self.machine);
-        if let Object::Fiber(room) = self.heap.get_mut(fiber)? {
-            room.push(machine);
-        }
+        room.push(std::mem::take(&mut self.machine));
+        self.fill_kept(name, Entry::Run(room));
         self.parked_as = Some(name);
         Ok(())
     }
@@ -537,19 +507,14 @@ impl<T> Grift<T> {
         push(&mut self.machine.frames, Frame { what, context, at })
     }
 
-    fn run(
-        &mut self,
-        mut state: Option<&mut T>,
-        mut mode: Mode,
-        floor: usize,
-    ) -> Result<Value, Error> {
+    fn run(&mut self, mut state: Option<&mut T>, mut mode: Mode) -> Result<Value, Error> {
         loop {
             #[cfg(test)]
             {
                 self.machine.steps += 1;
             }
             if let Mode::Return(v) = mode
-                && self.machine.frames.len() <= floor
+                && self.machine.frames.is_empty()
             {
                 return Ok(v);
             }
@@ -562,10 +527,10 @@ impl<T> Grift<T> {
             mode = match next {
                 _ if self.control.asked() => {
                     self.control.acted();
-                    self.unwind(Error::interrupted(), floor)?
+                    self.unwind(Error::interrupted())?
                 }
                 Ok(mode) => mode,
-                Err(e) => self.unwind(e, floor)?,
+                Err(e) => self.unwind(e)?,
             };
         }
     }
@@ -591,24 +556,19 @@ impl<T> Grift<T> {
         Ok(match mode {
             Mode::Evaluate(Value::Symbol(s), context) => Mode::Return(self.value_of(context, s)?),
             Mode::Evaluate(Value::Pair(r), context) => {
-                let (combiner, operands, library) = match self.heap.get_code(r)? {
-                    (Object::Pair(a, b), library) => (*a, *b, library),
-                    _ => return Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
+                let Object::Pair(combiner, operands, origin) = *self.heap.get(r)? else {
+                    return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
                 };
                 // A combination is the program's unless the library made it.
-                if !library {
+                if !origin.library {
                     self.machine.here = r;
-                    if self
-                        .positions
-                        .get(&r.idx)
-                        .is_some_and(|p| p.generation == r.generation && p.outer)
-                    {
+                    if origin.outer {
                         self.hold_form(r)?;
                     }
                 }
                 let combine = What::Combine {
                     operands,
-                    maker: Maker::of(library),
+                    base: Base::new(self.machine.arguments.len(), origin.library),
                 };
                 self.frame(combine, context, self.machine.here)?;
                 Mode::Evaluate(combiner, context)
@@ -624,7 +584,7 @@ impl<T> Grift<T> {
                     } => {
                         let (form, rest) = self.pair_at(r)?;
                         let at = match form {
-                            Value::Pair(f) if !self.heap.get_code(f)?.1 => f,
+                            Value::Pair(f) if !self.origin_at(f)?.library => f,
                             _ => Reference::NONE,
                         };
                         self.frame(What::Forms { rest }, context, at)?;
@@ -632,9 +592,9 @@ impl<T> Grift<T> {
                         Mode::Evaluate(form, context)
                     }
                     What::Forms { .. } | What::Form => Mode::Return(v),
-                    What::Combine { operands, maker } => {
+                    What::Combine { operands, base } => {
                         self.machine.here = at;
-                        self.machine.library = maker == Maker::Library;
+                        self.machine.library = base.library();
                         self.combine(v, operands, context)?
                     }
                     What::Arguments {
@@ -703,24 +663,28 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    /// An error stops the evaluation at `here`. Frames above `floor` are dropped down to the
-    /// innermost cleanup or handler, adding where each was to the error's trace. A cleanup then
+    /// An error stops the evaluation at `here`. Frames are dropped down to the innermost cleanup
+    /// or handler, adding where each was to the error's trace. A cleanup then
     /// runs, the error waiting until it is done; a handler, unless the error is a limit, is called
     /// with it instead. What can't be called fails there like any call, with that error, and the
     /// next frame goes on from it. With neither left, the error goes to the caller.
-    pub(crate) fn unwind(&mut self, mut e: Error, floor: usize) -> Result<Mode, Error> {
+    /// An error that began as refused memory: the next safe point collects, and the spare room is
+    /// given up for what reports it. Once: whoever acts on it clears the mark.
+    fn acting_on_refusal(&mut self, e: &mut Error) {
+        if std::mem::take(&mut e.refused) {
+            self.heap.request_collection();
+            self.spare = Vec::new();
+        }
+    }
+
+    pub(crate) fn unwind(&mut self, mut e: Error) -> Result<Mode, Error> {
         // The garbage is what the cleanups will run on, and the host's next run: the next safe
         // point collects, with the frames dropped here let go of. Once: what is left to free comes
         // a level at a time, and a collection walks all the levels left. A cleanup refused memory
         // is a new refusal, and asks again.
-        if std::mem::take(&mut e.refused) {
-            self.heap.request_collection();
-        }
+        self.acting_on_refusal(&mut e);
         locate(&mut e, self.machine.here);
-        while self.machine.frames.len() > floor {
-            let Some(Frame { what, context, at }) = self.machine.frames.pop() else {
-                break;
-            };
+        while let Some(Frame { what, context, at }) = self.machine.frames.pop() {
             match what {
                 What::Cleanup { cleanup, base } => {
                     locate(&mut e, at);
@@ -733,7 +697,8 @@ impl<T> Grift<T> {
                     self.machine.here = at;
                     match self.handle(&e, handler, context) {
                         Ok(mode) => return Ok(mode),
-                        Err(failed) => {
+                        Err(mut failed) => {
+                            self.acting_on_refusal(&mut failed);
                             e = failed;
                             locate(&mut e, at);
                         }
@@ -781,7 +746,7 @@ impl<T> Grift<T> {
         });
         let call = What::Combine {
             operands: Value::EmptyList,
-            maker: Maker::Program,
+            base: Base::new(self.machine.arguments.len(), false),
         };
         self.frame(call, context, at)?;
         Ok(Mode::Return(cleanup))
@@ -813,14 +778,17 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection, never suspended runs.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) {
-        let kept = self.kept.iter().flatten().copied();
+        let parked = self.kept.iter().map(Entry::weight).sum();
+        let kept = self.kept.iter().flat_map(Entry::roots);
+        let waiting = self.suspended.iter().flat_map(Machine::roots);
         let roots = self
             .machine
             .roots()
+            .chain(waiting)
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
-        self.heap.collect(roots)
+        self.heap.collect(roots, parked)
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -832,11 +800,7 @@ impl<T> Grift<T> {
         };
         // The arguments stay on the argument stack, rooted, while the host runs.
         let given = self.machine.arguments.get(base..).unwrap_or_default();
-        let mut arguments = Vec::new();
-        arguments
-            .try_reserve_exact(given.len())
-            .map_err(|_| Error::oom())?;
-        arguments.extend(given.iter().map(|&v| self.export(v)));
+        let arguments = collected(given.iter().map(|&v| self.export(v)))?;
         let run = self.control.run();
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
         let v = match f {
@@ -850,8 +814,8 @@ impl<T> Grift<T> {
             .as_ref()
             .is_some_and(|c| Arc::ptr_eq(c, &self.control) && c.run() == run);
         if !same {
-            self.machine.clear();
-            self.end_run();
+            self.control.end();
+            self.settled();
             return Err(Error::new(K::ForeignValue, &[]));
         }
         hosting.0 = None;
@@ -969,24 +933,15 @@ impl<T> Grift<T> {
         operands: Value,
         context: Reference,
     ) -> Result<Mode, Error> {
-        let stale = || Error::new(K::StaleValue, &[Value::Operative(r)]);
         let op = match self.heap.get(r)? {
-            Object::Operative(op) => match op.native {
-                Some(native) => Err(native),
-                _ => Ok(*op),
-            },
-            _ => return Err(stale()),
+            Object::Operative(op) => *op,
+            _ => return Err(Error::new(K::StaleValue, &[Value::Operative(r)])),
         };
-        let op = match op {
-            Ok(op) => op,
-            Err(native) => match self.native(native, operands, context)? {
-                Some(mode) => return Ok(mode),
-                None => match self.heap.get(r)? {
-                    Object::Operative(op) => *op,
-                    _ => return Err(stale()),
-                },
-            },
-        };
+        if let Some(native) = op.native
+            && let Some(mode) = self.native(native, operands, context)?
+        {
+            return Ok(mode);
+        }
         // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
         bindings
@@ -1056,13 +1011,8 @@ impl<T> Grift<T> {
             let found = self
                 .intern(name)
                 .and_then(|s| self.find(self.built_in, s))?;
-            let found = match found {
-                Some(Value::Applicative(r)) => self.unwrapped(r)?,
-                Some(v) => v,
-                None => Value::Inert,
-            };
-            let Value::Operative(r) = found else {
-                return Err(Error::new(K::TypeError, &[found]));
+            let Some(Value::Operative(r)) = found else {
+                return Err(Error::new(K::TypeError, &[found.unwrap_or(Value::Inert)]));
             };
             if let Object::Operative(op) = self.heap.get_mut(r)? {
                 op.native = Some(native);
@@ -1128,28 +1078,19 @@ impl<T> Grift<T> {
                 Value::Applicative(r) => self.unwrapped(r)?,
                 _ => return Err(type_error(x)),
             },
-            P::Evaluate => match y {
-                Value::Context(c) => return Ok(Mode::Evaluate(x, c)),
-                _ => return Err(type_error(y)),
-            },
+            P::Evaluate => return Ok(Mode::Evaluate(x, context_kind(y)?)),
             P::Context => {
                 let parent = match x {
                     Value::Context(c) => Some(c),
                     Value::EmptyList => None,
                     _ => return Err(type_error(x)),
                 };
-                Value::Context(
-                    self.heap
-                        .alloc(Object::Context(parent, Bindings::default()))?,
-                )
+                Value::Context(self.heap.context(parent)?)
             }
-            P::Bind => match x {
-                Value::Context(c) => {
-                    self.bind_tree(c, y, z)?;
-                    Value::Inert
-                }
-                _ => return Err(type_error(x)),
-            },
+            P::Bind => {
+                self.bind_tree(context_kind(x)?, y, z)?;
+                Value::Inert
+            }
             P::Unbind | P::Lookup => {
                 let (Value::Context(c), Value::Symbol(s)) = (x, y) else {
                     let bad = if matches!(x, Value::Context(_)) { y } else { x };
@@ -1160,10 +1101,7 @@ impl<T> Grift<T> {
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
-            P::Names => match x {
-                Value::Context(c) => self.names_list(c)?,
-                _ => return Err(type_error(x)),
-            },
+            P::Names => self.names_list(context_kind(x)?)?,
             P::Pair => self.pair_local(x, y)?,
             P::First | P::Rest => match x {
                 Value::Pair(r) => {
@@ -1180,7 +1118,7 @@ impl<T> Grift<T> {
             },
             P::TypeOf => Value::Symbol(type_of(x).into()),
             P::Add | P::Subtract | P::Multiply | P::Divide | P::Remainder | P::LessThan => {
-                arithmetic(p, x, y)?
+                self.arithmetic(p, x, y)?
             }
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
@@ -1204,9 +1142,7 @@ impl<T> Grift<T> {
                 return Err(type_error(z));
             }
             P::EvaluateWithCleanup | P::EvaluateWithHandler => {
-                let Value::Context(c) = y else {
-                    return Err(type_error(y));
-                };
+                let c = context_kind(y)?;
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
                     self.frame(What::Handler { handler: z, base }, c, at)?;
@@ -1287,9 +1223,7 @@ impl<T> Grift<T> {
     #[cold]
     #[inline(never)]
     fn arity_error(&mut self, base: usize) -> Error {
-        let given = self.machine.arguments.get(base..).unwrap_or_default();
-        let made = collected(given.iter().copied()).and_then(|operands| self.list_local(&operands));
-        match made {
+        match self.arguments_list(base) {
             Ok(operands) => Error::new(K::ArityError, &[operands]),
             Err(e) => e,
         }
@@ -1449,16 +1383,12 @@ impl<T> Grift<T> {
             return Err(bad());
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
-        let (values, trace) = (self.items(values, bad)?, self.items(trace, bad)?);
+        let (values, trace) = (self.items(values, e)?, self.items(trace, e)?);
         Error::from_parts(kind, values, trace)
     }
 
-    /// The elements of a proper list; `bad()` for anything else.
-    pub(crate) fn items(
-        &self,
-        mut list: Value,
-        bad: impl Fn() -> Error,
-    ) -> Result<Vec<Value>, Error> {
+    /// The elements of a proper list; anything else is a `type-error` naming `culprit`.
+    pub(crate) fn items(&self, mut list: Value, culprit: Value) -> Result<Vec<Value>, Error> {
         let mut v = Vec::new();
         while let Value::Pair(r) = list {
             let (x, rest) = self.pair_at(r)?;
@@ -1468,7 +1398,7 @@ impl<T> Grift<T> {
         if list == Value::EmptyList {
             Ok(v)
         } else {
-            Err(bad())
+            Err(type_error(culprit))
         }
     }
 
@@ -1481,6 +1411,47 @@ impl<T> Grift<T> {
             (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
             _ => x == y,
         })
+    }
+
+    /// Arithmetic and comparison, as Rust has them, on two integers or two floats, and `less-than?`
+    /// on two strings or two bytes values, in byte order. Integer arithmetic is checked: `divide` and
+    /// `remainder` are Rust's `/` and `%`, truncating, and fail where Rust's would panic. Float
+    /// arithmetic is IEEE.
+    #[inline]
+    fn arithmetic(&self, p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
+        use Primitive as P;
+        let r = match (x, y) {
+            (Value::Integer(a), Value::Integer(b)) => match p {
+                P::Add => a.checked_add(b),
+                P::Subtract => a.checked_sub(b),
+                P::Multiply => a.checked_mul(b),
+                P::Divide | P::Remainder if b == 0 => {
+                    return Err(Error::new(K::DivisionByZero, &[x, y]));
+                }
+                P::Divide => a.checked_div(b),
+                P::Remainder => a.checked_rem(b),
+                _ => return Ok(Value::Boolean(a < b)),
+            },
+            (Value::Float(a), Value::Float(b)) => {
+                return Ok(Value::Float(match p {
+                    P::Add => a + b,
+                    P::Subtract => a - b,
+                    P::Multiply => a * b,
+                    P::Divide => a / b,
+                    P::Remainder => a % b,
+                    _ => return Ok(Value::Boolean(a < b)),
+                }));
+            }
+            (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(y)),
+            (Value::String(_), Value::String(_)) | (Value::Bytes(_), Value::Bytes(_))
+                if p == P::LessThan =>
+            {
+                return Ok(Value::Boolean(self.octets(x)? < self.octets(y)?));
+            }
+            _ => return Err(type_error(x)),
+        };
+        r.map(Value::Integer)
+            .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
     }
 
     /// The contents of string `v`, or a type error.
@@ -1522,10 +1493,12 @@ impl<T> Grift<T> {
 
     /// A new pair, the library's if the combination being combined is.
     pub(crate) fn pair_local(&mut self, a: Value, b: Value) -> Result<Value, Error> {
-        let pair = Object::Pair(a, b);
-        Ok(Value::Pair(
-            self.heap.alloc_marked(pair, self.machine.library)?,
-        ))
+        let origin = Origin {
+            place: None,
+            library: self.machine.library,
+            outer: false,
+        };
+        Ok(Value::Pair(self.heap.alloc(Object::Pair(a, b, origin))?))
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
@@ -1665,7 +1638,14 @@ impl<T> Grift<T> {
 
     pub(crate) fn pair_at(&self, r: Reference) -> Result<(Value, Value), Error> {
         match self.heap.get(r)? {
-            Object::Pair(a, b) => Ok((*a, *b)),
+            Object::Pair(a, b, _) => Ok((*a, *b)),
+            _ => Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
+        }
+    }
+
+    pub(crate) fn origin_at(&self, r: Reference) -> Result<Origin, Error> {
+        match self.heap.get(r)? {
+            Object::Pair(_, _, origin) => Ok(*origin),
             _ => Err(Error::new(K::StaleValue, &[Value::Pair(r)])),
         }
     }
@@ -1684,7 +1664,7 @@ fn locate(e: &mut Error, r: Reference) {
     if r != Reference::NONE
         && e.seen.try_reserve(1).is_ok()
         && e.trace.try_reserve(1).is_ok()
-        && e.seen.insert(r)
+        && e.seen.insert(r.idx)
     {
         e.trace.push(Value::Pair(r));
     }
@@ -1736,10 +1716,7 @@ fn float_of(v: Value) -> Result<f64, Error> {
 
 #[inline]
 fn is_combiner(v: Value) -> bool {
-    matches!(
-        v,
-        Value::Operative(_) | Value::Applicative(_) | Value::Primitive(_) | Value::Host(_)
-    )
+    matches!(type_of(v), K::Operative | K::Applicative)
 }
 
 fn type_of(v: Value) -> K {
@@ -1758,39 +1735,4 @@ fn type_of(v: Value) -> K {
         Value::Operative(_) | Value::Primitive(_) | Value::Host(_) => K::Operative,
         Value::Applicative(_) => K::Applicative,
     }
-}
-
-/// Arithmetic and comparison, as Rust has them, on two integers or two floats. Integer
-/// arithmetic is checked: `divide` and `remainder` are Rust's `/` and `%`, truncating, and fail
-/// where Rust's would panic. Float arithmetic is IEEE.
-#[inline]
-fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
-    use Primitive as P;
-    let r = match (x, y) {
-        (Value::Integer(a), Value::Integer(b)) => match p {
-            P::Add => a.checked_add(b),
-            P::Subtract => a.checked_sub(b),
-            P::Multiply => a.checked_mul(b),
-            P::Divide | P::Remainder if b == 0 => {
-                return Err(Error::new(K::DivisionByZero, &[x, y]));
-            }
-            P::Divide => a.checked_div(b),
-            P::Remainder => a.checked_rem(b),
-            _ => return Ok(Value::Boolean(a < b)),
-        },
-        (Value::Float(a), Value::Float(b)) => {
-            return Ok(Value::Float(match p {
-                P::Add => a + b,
-                P::Subtract => a - b,
-                P::Multiply => a * b,
-                P::Divide => a / b,
-                P::Remainder => a % b,
-                _ => return Ok(Value::Boolean(a < b)),
-            }));
-        }
-        (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(y)),
-        _ => return Err(type_error(x)),
-    };
-    r.map(Value::Integer)
-        .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
 }

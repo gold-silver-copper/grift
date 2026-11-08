@@ -3,96 +3,57 @@
 
 use crate::Grift;
 use crate::heap::Object;
-use crate::local::{Error, Growing, K, Value};
+use crate::local::{Error, Growing, K, Value, push};
 use std::fmt::{self, Write};
 
 enum Item {
-    /// What's left of an operative's body: its forms, then the closing bracket.
-    Body(Value),
     Value(Value),
-    /// The rest of a list after its first element.
-    Tail(Value),
-    Text(&'static str),
-}
-
-/// Why printing stopped.
-pub(crate) enum Unprinted {
-    /// The output refused the text.
-    Output,
-    /// A stop, or no memory for the printer's own stack.
-    Value(Error),
-}
-
-impl From<fmt::Error> for Unprinted {
-    fn from(_: fmt::Error) -> Unprinted {
-        Unprinted::Output
-    }
-}
-
-impl From<Error> for Unprinted {
-    fn from(e: Error) -> Unprinted {
-        Unprinted::Value(e)
-    }
+    /// The rest of a sequence after its first element, and the text written after it.
+    Tail(Value, &'static str),
 }
 
 impl<T> Grift<T> {
     /// A new string of the text [`Grift::write`] writes for `v`.
     pub(crate) fn printed(&mut self, v: Value) -> Result<Value, Error> {
         let mut s = Growing::default();
-        self.print(v, &mut s).map_err(|why| match why {
-            Unprinted::Output => Error::oom(),
-            Unprinted::Value(e) => e,
+        // All this output can refuse for is memory to grow.
+        self.print(v, &mut s).map_err(|e| {
+            if e.kind == K::OutputError.into() {
+                Error::oom()
+            } else {
+                e
+            }
         })?;
         self.string_local(&s.0)
     }
 
     /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in.
-    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Unprinted> {
+    pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Error> {
         let mut todo = Vec::new();
-        let push = |todo: &mut Vec<Item>, it| {
-            todo.try_reserve(1).map_err(|_| Error::oom())?;
-            todo.push(it);
-            Ok::<(), Error>(())
-        };
         // The first item is held outside the stack, so writing an atom allocates nothing and an
         // `out-of-memory` error can still be printed.
         let mut first = Some(Item::Value(v));
         let mut walked = 0;
         while let Some(item) = first.take().or_else(|| todo.pop()) {
             if self.walk_stopped(&mut walked) {
-                return Err(Error::interrupted().into());
+                return Err(Error::interrupted());
             }
-            let opens = matches!(item, Item::Value(Value::Pair(_)));
             let v = match item {
-                Item::Text(s) => {
-                    out.write_str(s)?;
+                Item::Tail(Value::EmptyList, text) => {
+                    out.write_str(text)?;
                     continue;
                 }
-                Item::Tail(Value::EmptyList) => {
-                    out.write_char(')')?;
-                    continue;
-                }
-                Item::Tail(Value::Pair(r)) => {
+                Item::Tail(Value::Pair(r), text) => {
+                    let (element, rest) = self.pair_at(r)?;
                     out.write_char(' ')?;
-                    Value::Pair(r)
+                    push(&mut todo, Item::Tail(rest, text))?;
+                    push(&mut todo, Item::Value(element))?;
+                    continue;
                 }
-                Item::Tail(v) => {
+                Item::Tail(v, text) => {
                     out.write_str(" . ")?;
-                    push(&mut todo, Item::Text(")"))?;
+                    push(&mut todo, Item::Tail(Value::EmptyList, text))?;
                     v
-                }
-                Item::Body(Value::Pair(r)) => {
-                    let Ok(Object::Pair(form, rest)) = self.heap.get(r) else {
-                        return Err(fmt::Error.into());
-                    };
-                    out.write_char(' ')?;
-                    push(&mut todo, Item::Body(*rest))?;
-                    push(&mut todo, Item::Value(*form))?;
-                    continue;
-                }
-                Item::Body(_) => {
-                    out.write_char(']')?;
-                    continue;
                 }
                 Item::Value(v) => v,
             };
@@ -132,11 +93,9 @@ impl<T> Grift<T> {
                 | Value::Operative(r)
                 | Value::Applicative(r) => {
                     match self.heap.get(r) {
-                        Ok(Object::Pair(a, b)) => {
-                            if opens {
-                                out.write_char('(')?;
-                            }
-                            push(&mut todo, Item::Tail(*b))?;
+                        Ok(Object::Pair(a, b, _)) => {
+                            out.write_char('(')?;
+                            push(&mut todo, Item::Tail(*b, ")"))?;
                             push(&mut todo, Item::Value(*a))?;
                         }
                         Ok(Object::String(s)) => write_string(s, out)?,
@@ -153,17 +112,17 @@ impl<T> Grift<T> {
                         }
                         Ok(Object::Operative(op)) => {
                             out.write_str("#[operative ")?;
-                            push(&mut todo, Item::Body(op.body))?;
+                            push(&mut todo, Item::Tail(op.body, "]"))?;
                             push(&mut todo, Item::Value(op.context_parameter))?;
-                            push(&mut todo, Item::Text(" "))?;
+                            push(&mut todo, Item::Tail(Value::EmptyList, " "))?;
                             push(&mut todo, Item::Value(op.parameters))?;
                         }
                         Ok(Object::Applicative(c)) => {
                             out.write_str("#[applicative ")?;
-                            push(&mut todo, Item::Text("]"))?;
+                            push(&mut todo, Item::Tail(Value::EmptyList, "]"))?;
                             push(&mut todo, Item::Value(*c))?;
                         }
-                        _ => return Err(Error::new(K::StaleValue, &[v]).into()),
+                        _ => return Err(Error::new(K::StaleValue, &[v])),
                     }
                 }
             }

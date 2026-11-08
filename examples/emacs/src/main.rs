@@ -346,14 +346,14 @@ impl Runs {
 
 /// Whether a run ended with this host's own limit for giving it up.
 fn given_up(g: &G, e: &Error) -> bool {
-    e.is_limit() && g.symbol_name(&e.kind).is_ok_and(|k| k == "abandoned")
+    e.limit && g.symbol_name(&e.kind).is_ok_and(|k| k == "abandoned")
 }
 
 /// Gives a parked run up: its waiting call answers a limit, which nothing catches, so its cleanups
 /// run. That it was abandoned is no news; anything else that cut a cleanup is. A cleanup that waits
 /// comes back, waiting.
 fn abandon(g: &mut G, h: &mut Host, parked: Parked) -> Option<Parked> {
-    let ending = g.error("abandoned", &[]).as_limit();
+    let ending = grift::Error { limit: true, ..g.error("abandoned", &[]) };
     h.inbox.arm(g.interrupter());
     let ResumeError { error, parked } = match g.resume(h, parked, Err(ending)) {
         Ok(Ran::Parked(again)) => return Some(again),

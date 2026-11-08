@@ -12,7 +12,7 @@
     clippy::indexing_slicing
 )]
 
-use grift::{Error, Grift, Interrupter, Value, WriteError};
+use grift::{Error, Grift, Interrupter, Value};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -82,6 +82,26 @@ fn kind(g: &G, e: &Error) -> String {
         .to_string()
 }
 
+/// An output that takes nothing.
+struct Refusing;
+
+impl std::fmt::Write for Refusing {
+    fn write_str(&mut self, _: &str) -> std::fmt::Result {
+        Err(std::fmt::Error)
+    }
+}
+
+#[test]
+fn an_output_that_refuses_is_an_output_error() {
+    let mut g = grift();
+    let e = g.error("mine", &[]);
+    let written = g.write(&Value::Integer(1), &mut Refusing).unwrap_err();
+    let described = g.describe(&e, &mut Refusing).unwrap_err();
+    for e in [written, described] {
+        assert_eq!((kind(&g, &e), e.limit), ("output-error".into(), false));
+    }
+}
+
 fn outcome(g: &G, r: Result<Value, Error>) -> String {
     match r {
         Ok(v) => {
@@ -126,7 +146,9 @@ fn primitives(g: &mut G) -> Vec<(String, Value)> {
         let Value::Symbol(s) = &name else { panic!() };
         let text = g.symbol_name(s).unwrap().to_string();
         let v = evaluate(g, &format!("(catch! (unwrap {text}) #ignore #inert)"));
-        if matches!(v, Value::Primitive(_)) {
+        let mut written = String::new();
+        g.write(&v, &mut written).unwrap();
+        if written.starts_with("#[primitive") {
             found.push((text, v));
         }
     }
@@ -199,7 +221,7 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
     let described = g.describe(&e, &mut String::new());
     for (entry, r) in [("write", written), ("describe", described)] {
         let got = match r {
-            Err(WriteError::Value(e)) => kind(g, &e),
+            Err(e) => kind(g, &e),
             r => format!("{r:?}"),
         };
         check(entry.into(), got);
@@ -249,7 +271,7 @@ fn a_reclaimed_value_is_stale_value_everywhere() {
     let mut broken = Vec::new();
     for (what, v) in &old {
         // The host function is no heap object: it can't go stale.
-        if !matches!(v, Value::Host(_)) {
+        if *what != "host function" {
             broken.extend(every_entry_refuses(&mut g, what, v, "stale-value"));
         }
     }
@@ -707,7 +729,6 @@ fn retagged(v: &Value) -> Vec<Value> {
         | Value::String(r)
         | Value::Bytes(r)
         | Value::Context(r)
-        | Value::Operative(r)
         | Value::Applicative(r) => r.clone(),
         _ => return Vec::new(),
     };
@@ -716,7 +737,6 @@ fn retagged(v: &Value) -> Vec<Value> {
         Value::String(r.clone()),
         Value::Bytes(r.clone()),
         Value::Context(r.clone()),
-        Value::Operative(r.clone()),
         Value::Applicative(r),
     ];
     all.into_iter()
@@ -821,7 +841,7 @@ fn a_watchdog_over_many_jobs_needs_no_lock() {
         let src = if runaway { "(spin)" } else { "(count 300000)" };
         let result = g.evaluate(&mut (), src);
         over.store(true, Ordering::Relaxed);
-        ended.push(result.map_err(|e| e.is_limit()));
+        ended.push(result.map_err(|e| e.limit));
     }
     drop(jobs);
     watchdog.join().unwrap();

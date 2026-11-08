@@ -7,9 +7,10 @@ use crate::evaluate::Primitive;
 use crate::heap::{Reference, Seen};
 use std::fmt;
 
-/// A value of this interpreter. The variants are the public [`Value`](crate::Value)'s. A whole word
-/// for the tag, so writing one writes its first word at once: a copy loads it whole, and a load
-/// can't take its data from a one-byte write just before. About 16% off every program on x86-64.
+/// A value of this interpreter: the language's types, as the public [`Value`](crate::Value) shows
+/// them, and for an operative also how it is implemented. A whole word for the tag, so writing one
+/// writes its first word at once: a copy loads it whole, and a load can't take its data from a
+/// one-byte write just before. About 16% off every program on x86-64.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[repr(u64)]
 pub(crate) enum Value {
@@ -92,7 +93,7 @@ known_symbols! {
     NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
-    RangeError "range-error" CannotPark "cannot-park"
+    RangeError "range-error" CannotPark "cannot-park" OutputError "output-error"
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
@@ -126,7 +127,7 @@ impl Error {
         let mut seen = Seen::default();
         seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
         seen.extend(trace.iter().filter_map(|v| match v {
-            Value::Pair(r) => Some(*r),
+            Value::Pair(r) => Some(r.idx),
             _ => None,
         }));
         Ok(Error {
@@ -157,6 +158,13 @@ impl Error {
             limit: true,
             ..Error::new(K::Interrupted, &[])
         }
+    }
+}
+
+/// The output refused the text.
+impl From<fmt::Error> for Error {
+    fn from(_: fmt::Error) -> Error {
+        Error::new(K::OutputError, &[])
     }
 }
 

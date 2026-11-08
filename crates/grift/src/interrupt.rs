@@ -1,53 +1,55 @@
-//! Stopping a run from another thread. An interpreter and its interrupters share one word: the run
-//! in progress, 0 for none, and two bits a run is asked to stop by. Every handle names one run, the
-//! one it was taken for, and everything here is one atomic operation on that word, so nothing can
-//! come between looking at the run and asking it: a handle reaches its run while that run is in
-//! progress, and never another. A new run overwrites the word, bits and all. The machine reads the
-//! word once a step and clears only [`STOP`], so a later stop asks again and a force, which it
-//! never clears, is found by every check to the end of its run. No other memory is published
-//! through the word, so every ordering is relaxed.
+//! Stopping a run from another thread. An interpreter and its interrupters share one word: the
+//! number of the run in progress or else of the next to begin, whether it is in progress, and two
+//! bits a run is asked to stop by. Every handle names one run, the one it was taken for, and
+//! everything here is one atomic operation on that word, so nothing can come between looking at
+//! the run and asking it: a handle reaches its run while that run is in progress, and never
+//! another. Ending a run moves to the next number and clears the rest. The machine reads the word
+//! once a step and clears only [`STOP`], so a later stop asks again and a force, which it never
+//! clears, is found by every check to the end of its run. No other memory is published through
+//! the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]: never repeated, at a
+//! run a nanosecond they wrap after seventy years.
 
-use std::collections::TryReserveError;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 const STOP: u64 = 1;
 const FORCE: u64 = 2;
 const ASKED: u64 = STOP | FORCE;
+const RUNNING: u64 = 4;
+const NEXT: u64 = 8;
+
+/// The word that ends the run `word` is, or is the number of.
+fn after(word: u64) -> u64 {
+    (word & !(ASKED | RUNNING)).wrapping_add(NEXT)
+}
 
 /// What an interpreter shares with its interrupters. Its allocation is also the interpreter's
 /// identity: the values it hands out point to it.
 #[derive(Default)]
 pub(crate) struct Control {
     word: AtomicU64,
-    /// The last run's number, a multiple of 4 that leaves the two bits free. Never repeated: at a
-    /// run a nanosecond it wraps after a century.
-    runs: AtomicU64,
     /// The kept names of parked runs whose handles were dropped, for the host to find again.
     forgotten: Mutex<Vec<u32>>,
 }
 
 impl Control {
     pub fn begin(&self) {
-        let run = self.runs.fetch_add(ASKED + 1, Relaxed);
-        self.word.store(run.wrapping_add(ASKED + 1), Relaxed);
+        self.word.fetch_or(RUNNING, Relaxed);
     }
 
+    /// Ends the run in progress, if one is: a run already over keeps the number the next will have.
     pub fn end(&self) {
-        self.word.store(0, Relaxed);
+        self.update(|word| (word & RUNNING != 0).then(|| after(word)));
     }
 
-    /// The run in progress, 0 for none.
+    /// Whether a run is in progress.
+    pub fn running(&self) -> bool {
+        self.word.load(Relaxed) & RUNNING != 0
+    }
+
+    /// The run in progress, or the number of the next: it changes when a run ends.
     pub fn run(&self) -> u64 {
         self.word.load(Relaxed) & !ASKED
-    }
-
-    /// The run a handle taken now is for: the one in progress, else the next to begin.
-    fn meant(&self) -> u64 {
-        match self.run() {
-            0 => self.runs.load(Relaxed).wrapping_add(ASKED + 1),
-            run => run,
-        }
     }
 
     /// Whether the run in progress is asked to stop. Read at every step.
@@ -56,19 +58,21 @@ impl Control {
         self.word.load(Relaxed) & ASKED != 0
     }
 
-    /// Sets `bit`, in one atomic step, if `run` is in progress; whether it was.
-    fn ask(&self, bit: u64, run: u64) -> bool {
+    /// Replaces the word as `change` says, in one atomic step; whether it said to.
+    fn update(&self, change: impl Fn(u64) -> Option<u64>) -> bool {
         let mut word = self.word.load(Relaxed);
-        while word & !ASKED == run {
-            match self
-                .word
-                .compare_exchange_weak(word, word | bit, Relaxed, Relaxed)
-            {
+        while let Some(new) = change(word) {
+            match self.word.compare_exchange_weak(word, new, Relaxed, Relaxed) {
                 Ok(_) => return true,
                 Err(now) => word = now,
             }
         }
         false
+    }
+
+    /// Sets `bit`, in one atomic step, if `run` is in progress; whether it was.
+    fn ask(&self, bit: u64, run: u64) -> bool {
+        self.update(|word| (word & !ASKED == run).then_some(word | bit))
     }
 
     /// The machine acts on the stops asked so far: they count as one.
@@ -77,22 +81,14 @@ impl Control {
         self.word.fetch_and(!STOP, Relaxed);
     }
 
-    /// Unpublishes the run to park it, unless it was asked to stop.
+    /// Ends the run to park it, unless it was asked to stop.
     pub fn parks(&self) -> bool {
-        let run = self.run();
-        self.word.compare_exchange(run, 0, Relaxed, Relaxed).is_ok()
+        self.update(|word| (word & ASKED == 0).then(|| after(word)))
     }
 
     /// The parked runs no handle holds. Nothing panics under the lock.
     pub fn forgotten(&self) -> MutexGuard<'_, Vec<u32>> {
         self.forgotten.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
-    /// Room for `runs` in that queue, so that adding one up to there needs no memory.
-    pub fn room_to_forget(&self, runs: usize) -> Result<(), TryReserveError> {
-        let mut forgotten = self.forgotten();
-        let more = runs.saturating_sub(forgotten.len());
-        forgotten.try_reserve(more)
     }
 }
 
@@ -139,7 +135,8 @@ impl Interrupter {
     pub(crate) fn new(control: &Arc<Control>) -> Interrupter {
         Interrupter {
             control: Arc::clone(control),
-            run: control.meant(),
+            // The run in progress, else the next to begin.
+            run: control.run() | RUNNING,
         }
     }
 
@@ -153,10 +150,10 @@ impl Interrupter {
     /// whether it was. No stop need come first. Each cleanup it meets is cut before its first form,
     /// at every level of the run, nothing a host function then evaluates runs past the one
     /// primitive it may call directly, and the run ends with `interrupted`, whatever else fails on
-    /// the way. `true` doesn't say it acted, as for a stop. [`Error::is_limit`] says the ending is
+    /// the way. `true` doesn't say it acted, as for a stop. [`Error::limit`] says the ending is
     /// real.
     ///
-    /// [`Error::is_limit`]: crate::Error::is_limit
+    /// [`Error::limit`]: crate::Error::limit
     pub fn force(&mut self) -> bool {
         self.control.ask(FORCE, self.run)
     }

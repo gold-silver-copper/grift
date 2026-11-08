@@ -4,10 +4,9 @@ What grift is, and the decisions behind it. [`LANGUAGE.md`](LANGUAGE.md) is the 
 [`DECISIONS.md`](../DECISIONS.md) records each decision and why.
 
 ## Purpose
-grift is a Lisp built entirely on fexprs: `vau!` is its one primitive operative, and there are no
-macros and no other special forms. Everything else, `if!` included, is a grift definition you can
-read and redefine. It is both an extension language for Rust programs, reshaped by their users
-while they run, and a general scripting language with a Unix runner.
+One small idea, a Lisp built entirely on fexprs, used two ways: as an extension language that users
+of a Rust program reshape while it runs, and as a scripting language with a Unix runner. The
+[README](../README.md) says how to run it and embed it.
 
 ## Nothing guessed
 grift is meant to be worked with without reading its source, by people and by agents alike: every
@@ -97,13 +96,8 @@ limit being a thread that stops the run. Every value the host holds says which i
 belongs to, and every reference which object it was, so a value from another interpreter or one
 the collector reclaimed is an error, never read as another. A value the host keeps across runs is
 a binding the interpreter owns, released by the host.
-An evaluation or call can collect before it needs its first heap slot, with its checked inputs
-kept live. After out-of-memory, the host can start one to let discarded allocations be reclaimed;
-allocation itself never collects.
-`read_in` reads a named text without evaluating it, keeping each combination's source and line;
-the host or a loader written in grift chooses when and where to evaluate those forms. Parse errors
-keep their reason, line and column; named reading and evaluation retain the supplied source in
-the trace too.
+Reading is separate from evaluating, so the host or a loader written in grift chooses when and
+where a form runs.
 Bare-metal targets are not a goal; WebAssembly works wherever `std` does. grift does not isolate
 code from the host or from other code in the same interpreter; an embedder running untrusted code
 isolates it itself, for example in its own process.
@@ -126,17 +120,13 @@ the primitives and the library and which no program can reach or change; `built-
 its names.
 
 ## The host boundary
-A host resource (a buffer, a file, a socket) appears in grift as a context of operations on it.
-Its operations call host functions bound only in a private context, so a program can't forge one
-from an id. Closing is explicit (no finalizers), and using it after that is the error `closed`.
+A host resource appears in grift as a context of operations on it, never as a number, so a program
+can't forge one; the [README](../README.md) shows how.
 
 ## The runner
-The `grift` runner is a Unix tool: it runs a script or stdin, prints data to stdout and diagnostics
-to stderr, and exits 0, 1 on an error, 141 on a write to a pipe no one reads, or the status the
-program gave `exit`. It gives programs a small, fixed set of
-host operations: reading stdin as data, writing to stderr, files (as contexts of operations, as
-text or as bytes), loading another file's forms, the command-line arguments and the script's
-path, environment variables, two clocks, the exit status, and running processes.
+The `grift` runner is a Unix tool that gives programs a small, fixed set of host operations, so the
+core does no I/O of its own. The [README](../README.md) lists them, and its streams and exit
+statuses.
 
 ## Implementation
 The implementation stays small and uniform: one evaluation step for every kind of form, one
@@ -152,17 +142,12 @@ definition as its meaning and a test that no program can tell the two apart, but
 prints.
 
 ## Errors
-An error has a kind (a symbol such as `type-error`), the values involved, and a trace: the program
-combinations it happened in, innermost first, each with its source and line when it was read from a
-named text, so the host says `at config.grift:12`. `(error kind value ...)` makes an error and `raise`
-raises it: `(raise (error (quote! type-error) x))`. `finally!` runs cleanup as an error passes and
-lets it go on, unless the cleanup fails or a limit cuts it (`LANGUAGE.md` has each case).
-`catch!` catches: cleanups run first, then the handler receives the error as a context with no parent, binding `kind`, `values` and `trace`; `(raise e)` passes a caught error on,
-keeping its trace. What a program raises can be caught; limits the host or the machine began,
-never, and they always reach the host. Early exit is `catch!` with
-an error kind of your own; there is no other escape. (Unlike Common Lisp's `catch`, which is a
-non-error escape, grift's `catch!` catches errors.) Under them are two primitives,
-`evaluate-with-handler` and `evaluate-with-cleanup`.
+An error says what went wrong: a kind, the values involved, and the combinations it happened in, so
+nothing has to be guessed at. What a program raises can be caught; limits the host or the machine
+began, never, and they always reach the host, so a `catch!` in a loop can't swallow a stop. Early
+exit is `catch!` with an error kind of your own; there is no other escape. (Unlike Common Lisp's
+`catch`, which is a non-error escape, grift's `catch!` catches errors.)
+[`LANGUAGE.md`](LANGUAGE.md) has each case.
 
 ## No continuations
 Generators and backtracking are closures or lazy streams; a language built on grift that wants
@@ -177,14 +162,10 @@ Cleanups keep their meaning because a run left waiting is the host's to resume, 
 limit that ends it, and a run under a host call can't be set aside at all.
 
 ## Printing
-Every value prints as text that reads back where it can. A combiner prints its source: its
-parameters, its context parameter and its body (not the context it was made in, so two combiners
-can print alike and differ). A context prints as its own names, sorted
-(`#[context close path read-all read-line]`), never its values, which may reach the context
-again. An error, a context, prints its names; the host reports its kind, its values and its trace.
-A symbol prints as its spelling, whatever it is, so one made by `string-to-symbol` may not read
-back as itself: `"a b"` prints as two symbols, `"#true"` as a boolean, `"1"` as an integer. A
-host writes its own text as a string literal by making a string and writing it.
+Every value prints as text that reads back where it can. A combiner prints its source and not the
+context it was made in, so two combiners can print alike and differ. A context prints as its own
+names, never its values, which may reach the context again. A symbol prints as its spelling,
+whatever it is, so one made by `string-to-symbol` may not read back as itself.
 
 ## Terms
 - **Symbol:** a value that is a name; a symbol names a value in a context.
@@ -229,14 +210,14 @@ host writes its own text as a string literal by making a string and writing it.
    or can't be used.
 
 ## What complete means
-grift is complete when a closed list of programs runs well on it, each with no blocker in its
-friction log: the Emacs-style editor in `examples/emacs` and the programs in `programs/`, which the
+grift is complete when a closed list of programs runs well on it, with no blocker found in using
+them: the Emacs-style editor in `examples/emacs` and the programs in `programs/`, which the
 gate runs. "Well" means the program's own test passes and its hot path is acceptable for what it
 does. Adding a program to the list is a decision, recorded like any other.
 
 ## How grift grows
-A feature enters only with evidence from real programs (a friction entry with a reproduction: one
-blocker, or the same cost in more than one program) and a recorded decision. Library grift comes
+A feature enters only with evidence from real programs (a reproduction of one blocker, or of the
+same cost in more than one program) and a recorded decision. Library grift comes
 before a primitive; a primitive only when the library version can't exist or is measured to be
 unusable. Decisions are append-only and reopened only with new evidence from use. Removing things
 is welcome: grift is pre-release, so old code is deleted, never deprecated.

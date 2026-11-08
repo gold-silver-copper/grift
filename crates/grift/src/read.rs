@@ -1,9 +1,9 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
+use crate::Grift;
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
 use crate::local::{Error, K, Symbol, Value, push};
-use crate::{Grift, Position};
 use std::ops::Range;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
@@ -103,7 +103,7 @@ pub(crate) fn float_name(token: &str) -> Option<f64> {
 
 impl<T> Grift<T> {
     /// Reads every form in `src` into a list: the library's code if `library`, else the program's.
-    /// Under a `source` name, each combination's line goes in the positions table.
+    /// Under a `source` name, each combination's first pair says its source and line.
     pub(crate) fn read_local(
         &mut self,
         src: &str,
@@ -121,18 +121,15 @@ impl<T> Grift<T> {
         let (mut at, mut line) = (0, 1);
         while let Some((form, place, after)) =
             self.read_form(src, at, line, source).map_err(|mut e| {
-                // With no memory to spare the trace stays as it is, as for any location.
-                if let Some(source) = source {
-                    let _ = push(&mut e.trace, Value::Symbol(source));
+                // With no memory to spare the values stay as they are, as for any location.
+                if let Some(source) = source
+                    && e.kind == K::ParseError.into()
+                {
+                    let _ = push(&mut e.values, Value::Symbol(source));
                 }
                 e
             })?
         {
-            if let (Some(_), Value::Pair(r)) = (source, form)
-                && let Some(position) = self.positions.get_mut(&r.idx)
-            {
-                position.outer = true;
-            }
             self.add(&mut forms, form)?;
             (at, line) = (place.end, after);
         }
@@ -160,7 +157,6 @@ impl<T> Grift<T> {
             cur.skip_space();
             let begin = cur.at;
             let fail = |reason| parse_error(src, begin, reason);
-            let in_bytes = open.last().is_some_and(|list| list.bytes.is_some());
             let Some(c) = cur.next() else {
                 return match open.last() {
                     None => Ok(None),
@@ -168,7 +164,6 @@ impl<T> Grift<T> {
                 };
             };
             let datum = match c {
-                '(' if in_bytes => return Err(fail(K::BadByte)),
                 '(' => {
                     push(&mut open, List::new(begin, cur.line))?;
                     continue;
@@ -178,8 +173,11 @@ impl<T> Grift<T> {
                         bytes: Some(bytes), ..
                     }) => self.bytes_local(bytes)?,
                     Some(list) if list.dot != Dot::Tail => {
-                        if let (Some(source), Value::Pair(r)) = (source, list.head) {
-                            self.place(r, source, list.line)?;
+                        if let (Some(source), Value::Pair(r)) = (source, list.head)
+                            && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
+                        {
+                            origin.place = Some((source, list.line));
+                            origin.outer = open.is_empty();
                         }
                         list.head
                     }
@@ -202,9 +200,6 @@ impl<T> Grift<T> {
                         }
                     }
                     if token == "#bytes" && cur.peek() == Some('(') {
-                        if in_bytes {
-                            return Err(fail(K::BadByte));
-                        }
                         let list = List {
                             bytes: Some(Vec::new()),
                             ..List::new(cur.at, cur.line)
@@ -213,12 +208,7 @@ impl<T> Grift<T> {
                         cur.next();
                         continue;
                     }
-                    let reason = if token.starts_with('#') {
-                        K::UnknownConstant
-                    } else {
-                        K::BadNumber
-                    };
-                    self.atom(token).ok_or_else(|| fail(reason))??
+                    self.atom(token, fail)?
                 }
             };
             let Some(list) = open.last_mut() else {
@@ -258,40 +248,26 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    /// Records that combination `r` was read from `source` at `line`; a reused slot's entry is
-    /// replaced, so the table stays within the heap's size.
-    fn place(&mut self, r: Reference, source: Symbol, line: u32) -> Result<(), Error> {
-        self.positions.try_reserve(1).map_err(|_| Error::oom())?;
-        self.positions.insert(
-            r.idx,
-            Position {
-                generation: r.generation,
-                source,
-                line,
-                outer: false,
-            },
-        );
-        Ok(())
-    }
-
     /// Sets the rest of a pair the reader made and nobody else has seen yet.
     fn set_rest(&mut self, r: Reference, v: Value) -> Result<(), Error> {
-        if let Object::Pair(_, d) = self.heap.get_mut(r)? {
+        if let Object::Pair(_, d, _) = self.heap.get_mut(r)? {
             *d = v;
         }
         Ok(())
     }
 
-    /// An atom: a constant, a number or a symbol. `None` for a token that is none of them. A
-    /// number starts with a digit, after an optional sign: an integer if it is one, else a float
-    /// if it has a `.` or an exponent, as Rust reads them.
-    fn atom(&mut self, token: &str) -> Option<Result<Value, Error>> {
+    /// An atom: a constant, a number or a symbol. `fail` makes the error for a token that is none
+    /// of them. A number starts with a digit, after an optional sign: an integer if it is one, else
+    /// a float if it has a `.` or an exponent, as Rust reads them.
+    fn atom(&mut self, token: &str, fail: impl Fn(K) -> Error) -> Result<Value, Error> {
         let v = match token {
             "#true" => Value::Boolean(true),
             "#false" => Value::Boolean(false),
             "#inert" => Value::Inert,
             "#ignore" => Value::Ignore,
-            _ if token.starts_with('#') => Value::Float(float_name(token)?),
+            _ if token.starts_with('#') => {
+                Value::Float(float_name(token).ok_or_else(|| fail(K::UnknownConstant))?)
+            }
             _ if token
                 .strip_prefix(['+', '-'])
                 .unwrap_or(token)
@@ -299,49 +275,48 @@ impl<T> Grift<T> {
             {
                 match token.parse() {
                     Ok(n) => Value::Integer(n),
-                    Err(_) if token.contains(['.', 'e', 'E']) => Value::Float(token.parse().ok()?),
-                    Err(_) => return None,
+                    Err(_) if token.contains(['.', 'e', 'E']) => {
+                        Value::Float(token.parse().map_err(|_| fail(K::BadNumber))?)
+                    }
+                    Err(_) => return Err(fail(K::BadNumber)),
                 }
             }
-            _ => return Some(self.intern(token).map(Value::Symbol)),
+            _ => Value::Symbol(self.intern(token)?),
         };
-        Some(Ok(v))
+        Ok(v)
     }
 
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,
     /// `\r`, `\t` and `\xHEX;` (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor, start: usize) -> Result<Value, Error> {
+        let src = cur.src;
+        let unclosed = || parse_error(src, start, K::UnclosedString);
         let mut s = String::new();
         loop {
             let escape = cur.at;
-            let c = match cur.next() {
-                Some('"') => break,
-                Some('\\') => match cur.next() {
-                    Some('\\') => '\\',
-                    Some('"') => '"',
-                    Some('n') => '\n',
-                    Some('r') => '\r',
-                    Some('t') => '\t',
-                    Some('x') => {
+            let c = match cur.next().ok_or_else(unclosed)? {
+                '"' => break,
+                '\\' => match cur.next().ok_or_else(unclosed)? {
+                    '\\' => '\\',
+                    '"' => '"',
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    'x' => {
                         let begin = cur.at;
                         while cur.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
                             cur.next();
                         }
-                        let hex = cur.src.get(begin..cur.at).unwrap_or_default();
+                        let hex = src.get(begin..cur.at).unwrap_or_default();
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
-                        match (cur.next(), c) {
-                            (Some(';'), Some(c)) => c,
-                            (None, _) => {
-                                return Err(parse_error(cur.src, start, K::UnclosedString));
-                            }
-                            _ => return Err(parse_error(cur.src, escape, K::BadEscape)),
+                        match (cur.next().ok_or_else(unclosed)?, c) {
+                            (';', Some(c)) => c,
+                            _ => return Err(parse_error(src, escape, K::BadEscape)),
                         }
                     }
-                    Some(_) => return Err(parse_error(cur.src, escape, K::BadEscape)),
-                    None => return Err(parse_error(cur.src, start, K::UnclosedString)),
+                    _ => return Err(parse_error(src, escape, K::BadEscape)),
                 },
-                Some(c) => c,
-                None => return Err(parse_error(cur.src, start, K::UnclosedString)),
+                c => c,
             };
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);

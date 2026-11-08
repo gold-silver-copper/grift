@@ -50,20 +50,19 @@
         (display (value-to-string (last (map (lambda! (form) (evaluate form top)) forms))) "\n")))))
 ; The session at a terminal: a line at a time from standard input, which a program it runs reads
 ; too, until a whole input has come. The host reports what goes wrong with an input and the session
-; goes on. Standard input ending inside a form is that form's error, and ends the session. `before`
-; holds a newline for each line of the inputs before this one, so lines are numbered from the
+; goes on. Standard input ending inside a form is that form's error, and ends the session. `text`
+; starts with a newline for each line of the inputs before this one, so lines are numbered from the
 ; session's start, as a file's are.
 (define! session
-  (lambda! (text prompt before)
+  (lambda! (text prompt)
     (display-error prompt)
     (let! ((line (read-line-host 0))
-           (text (join text line))
-           (all (join before text)))
+           (text (join text line)))
       (conditional!
-        ((same? line "") (read-forms "stdin" all) #inert)
-        ((unfinished? all) (session text "  " before))
-        (#true (report-host (lambda! () (evaluate-and-print all)))
-               (session "" "> " (string-repeat "\n" (subtract (length (string-split all "\n")) 1))))))))
+        ((same? line "") (read-forms "stdin" text) #inert)
+        ((unfinished? text) (session text "  "))
+        (#true (report-host (lambda! () (evaluate-and-print text)))
+               (session (string-repeat "\n" (subtract (length (string-split text "\n")) 1)) "> "))))))
 
 (define! here (current-context))
 (for-each (lambda! (name) (bind top name (evaluate name here)))
@@ -73,4 +72,4 @@
                    run-process load)))
 
 ; What main.rs calls when stdin is a terminal.
-(lambda! () (session "" "> " ""))
+(lambda! () (session "" "> "))

@@ -1,5 +1,5 @@
 //! How a host ends a run: `cargo run -p grift --example stops`. A stop runs the cleanups, a force
-//! cuts them, `is_limit` tells what the host began from what a program named the same, and a parked
+//! cuts them, `limit` tells what the host began from what a program named the same, and a parked
 //! run is given up by answering its wait with a limit.
 
 use grift::{Answer, Grift, Interrupter, Ran, ResumeError, Value};
@@ -47,9 +47,7 @@ pub fn main() -> Result<(), grift::Error> {
     let src = "(catch! (finally! (sequence! (watch) (spin)) (close)) #ignore 0)";
     let ended = g.evaluate(&mut host, src);
     assert!(
-        ended.is_err_and(
-            |e| e.is_limit() && g.symbol_name(&e.kind).is_ok_and(|k| k == "interrupted")
-        )
+        ended.is_err_and(|e| e.limit && g.symbol_name(&e.kind).is_ok_and(|k| k == "interrupted"))
     );
     assert_eq!(g.evaluate(&mut host, "closed")?, Value::Integer(1));
     println!("stop: interrupted, and the cleanup ran");
@@ -58,18 +56,16 @@ pub fn main() -> Result<(), grift::Error> {
     host.force = true;
     let src = "(finally! (finally! (sequence! (watch) (spin)) (spin)) (close))";
     let ended = g.evaluate(&mut host, src);
-    assert!(ended.is_err_and(|e| e.is_limit()));
+    assert!(ended.is_err_and(|e| e.limit));
     assert_eq!(g.evaluate(&mut host, "closed")?, Value::Integer(1));
     println!("force: interrupted, and no cleanup past it ran");
 
     // A name makes nothing real: a program's own `interrupted` is data, and a `catch!` catches it.
     let forged = g.evaluate(&mut host, "(raise (error (quote! interrupted)))");
     assert!(
-        forged.is_err_and(
-            |e| g.symbol_name(&e.kind).is_ok_and(|k| k == "interrupted") && !e.is_limit()
-        )
+        forged.is_err_and(|e| g.symbol_name(&e.kind).is_ok_and(|k| k == "interrupted") && !e.limit)
     );
-    println!("is_limit: a program's own interrupted is not one");
+    println!("limit: a program's own interrupted is not one");
 
     // A run that waits holds its cleanups. Other runs go on; a limit as the answer ends it.
     let top = g.top_level();
@@ -79,7 +75,10 @@ pub fn main() -> Result<(), grift::Error> {
     };
     assert_eq!(g.parked(), 1);
     assert_eq!(g.evaluate(&mut host, "(add 2 2)")?, Value::Integer(4));
-    let ending = g.error("given-up", &[]).as_limit();
+    let ending = grift::Error {
+        limit: true,
+        ..g.error("given-up", &[])
+    };
     let Err(ResumeError {
         error,
         parked: None,
@@ -87,7 +86,7 @@ pub fn main() -> Result<(), grift::Error> {
     else {
         return Err(g.error("it-went-on", &[]));
     };
-    assert!(error.is_limit() && g.symbol_name(&error.kind)? == "given-up");
+    assert!(error.limit && g.symbol_name(&error.kind)? == "given-up");
     assert_eq!(g.evaluate(&mut host, "closed")?, Value::Integer(2));
     assert_eq!(g.parked(), 0);
     println!("parked: given up with a limit, and its cleanup ran");

@@ -579,10 +579,10 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     "#;
     let (status, out, err) = script(&dir, program, &[], "");
     assert_eq!(status, Some(1));
-    // A file that doesn't read is innermost in the trace, by its path: the line and column are its.
+    // A file that doesn't read is named in the values, after its line and column; the trace has the load.
     assert_eq!(
         out,
-        "(first 2) 2 1 1 2 (unclosed-list 3 3)lib/bad.grift #true"
+        "(first 2) 2 1 1 2 (unclosed-list 3 3 lib/bad.grift)(load \"lib/bad.grift\") #true"
     );
     // Each combination in the trace says its file and line, the loaded file's and the script's.
     let path = dir.join("script.grift");
@@ -600,10 +600,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(status, Some(1));
     assert_eq!(
         err,
-        format!(
-            "{path}: parse-error unclosed-list 3 3 in lib/bad.grift\n  \
-             from (load d) at {path}:2\n"
-        )
+        format!("{path}: parse-error unclosed-list 3 3 lib/bad.grift in (load d) at {path}:2\n")
     );
 }
 
@@ -782,13 +779,13 @@ fn a_parse_error_says_where_the_form_opened() {
     let path = path.to_str().unwrap();
     assert_eq!(
         err,
-        format!("{path}: parse-error unclosed-list 2 1 in {path}\n")
+        format!("{path}: parse-error unclosed-list 2 1 {path}\n")
     );
     let error = run(&[], "(a\n  (b", Stdio::piped());
     assert_eq!(error.status.code(), Some(1));
     assert_eq!(
         String::from_utf8(error.stderr).unwrap(),
-        "stdin: parse-error unclosed-list 2 3 in stdin\n"
+        "stdin: parse-error unclosed-list 2 3 stdin\n"
     );
 }
 
@@ -831,35 +828,6 @@ fn closed_pipe() -> std::io::PipeWriter {
     std::io::pipe().unwrap().1
 }
 
-#[test]
-fn a_closed_stdout_ends_the_run_whatever_catches_the_write() {
-    let dir = scratch("closed-stdout");
-    for write in ["display", "(evaluate-in! write standard-output)"] {
-        let path = dir.join("script.grift");
-        let loop_ = format!(
-            "(define! go (lambda! () (catch! ({write} \"y\\n\") e 0) (go)))
-             (catch! (go) e 0)
-             (display-error \"went on\")
-             (first 1)"
-        );
-        std::fs::write(&path, loop_).unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
-            .arg(&path)
-            .stdin(Stdio::null())
-            .stdout(closed_pipe())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let start = std::time::Instant::now();
-        while child.try_wait().unwrap().is_none() && start.elapsed().as_secs() < 10 {
-            std::thread::yield_now();
-        }
-        let _ = child.kill();
-        let out = child.wait_with_output().unwrap();
-        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
-    }
-}
-
 /// A pipe no one reads ends the run quietly, with 141 as a shell says of a program SIGPIPE ended,
 /// so `grift script | head` is quiet and a run never reports a success it didn't have.
 #[test]
@@ -878,6 +846,11 @@ fn a_closed_pipe_is_a_limit_on_any_file() {
                 .unwrap()
         };
         let out = run(&format!("({write} \"y\")"));
+        assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
+        // No `catch!` keeps it going: what follows the one that caught the write never runs.
+        let out = run(&format!(
+            "(catch! ({write} \"y\") e 0) (display-error \"went on\")"
+        ));
         assert_eq!((out.status.code(), &out.stderr[..]), (Some(141), &b""[..]));
         // Its cleanups run, and a program's error in one doesn't replace it.
         let out = run(&format!(
@@ -1013,7 +986,7 @@ fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
         "{shown}"
     );
     assert!(
-        shown.contains("stdin: parse-error unmatched-parenthesis 5 1 in stdin\n"),
+        shown.contains("stdin: parse-error unmatched-parenthesis 5 1 stdin\n"),
         "{shown}"
     );
     assert!(shown.ends_with("> 5\n> "), "{shown}");
@@ -1079,13 +1052,13 @@ fn a_session_numbers_its_lines_from_its_start() {
     );
     let (_, shown) = at_a_terminal("1\n2\n)\n\x04");
     assert!(
-        shown.contains("stdin: parse-error unmatched-parenthesis 3 1 in stdin\n"),
+        shown.contains("stdin: parse-error unmatched-parenthesis 3 1 stdin\n"),
         "{shown}"
     );
     // So is input ending inside a form.
     let (_, shown) = at_a_terminal("1\n(add 1\n\x04");
     assert!(
-        shown.contains("stdin: parse-error unclosed-list 2 1 in stdin\n"),
+        shown.contains("stdin: parse-error unclosed-list 2 1 stdin\n"),
         "{shown}"
     );
 }

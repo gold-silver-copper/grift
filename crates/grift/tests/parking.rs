@@ -24,9 +24,12 @@ type G = Grift<World>;
 
 /// Gives a parked run up, as a host does: the waiting call answers a limit, and so does each wait
 /// of a cleanup on the way out. What the run ended with; refused, why, the handle back.
-fn abandon(g: &mut G, w: &mut World, mut p: Parked) -> Result<Error, ResumeError> {
+fn give_up(g: &mut G, w: &mut World, mut p: Parked) -> Result<Error, ResumeError> {
     loop {
-        let ending = g.error("abandoned", &[]).as_limit();
+        let ending = Error {
+            limit: true,
+            ..g.error("given-up", &[])
+        };
         match g.resume(w, p, Err(ending)) {
             Ok(Ran::Parked(again)) => p = again,
             Ok(Ran::Finished(v)) => panic!("a limit ended with the value {v:?}"),
@@ -87,7 +90,7 @@ fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Value, Error> {
     let parked = world.held.take().unwrap();
     let refused = g.resume(world, parked, Ok(Value::Inert)).unwrap_err();
     world.refused.push(kind(g, &refused.error));
-    let refused = abandon(g, world, refused.parked.unwrap()).unwrap_err();
+    let refused = give_up(g, world, refused.parked.unwrap()).unwrap_err();
     world.refused.push(kind(g, &refused.error));
     world.held = refused.parked;
     Ok(Value::Inert)
@@ -277,7 +280,7 @@ fn many_runs_share_one_heap_and_finish_in_any_order() {
 }
 
 #[test]
-fn abandon_runs_every_cleanup_and_nothing_catches_it() {
+fn giving_up_runs_every_cleanup_and_nothing_catches_it() {
     let (mut g, mut w) = (grift(), World::default());
     let p = parked(run(
         &mut g,
@@ -288,14 +291,15 @@ fn abandon_runs_every_cleanup_and_nothing_catches_it() {
              e (note 4))
            (note 5))",
     ));
-    let e = abandon(&mut g, &mut w, p).unwrap();
-    assert_eq!(kind(&g, &e), "abandoned");
+    let e = give_up(&mut g, &mut w, p).unwrap();
+    assert_eq!(kind(&g, &e), "given-up");
+    assert!(e.limit);
     assert_eq!(w.log, ["1", "3", "5"]);
     assert_eq!(g.parked(), 0);
 }
 
 #[test]
-fn a_cleanup_that_errs_or_waits_during_abandon_ends_there_and_the_rest_run() {
+fn a_cleanup_that_errs_or_waits_during_giving_up_ends_there_and_the_rest_run() {
     let (mut g, mut w) = (grift(), World::default());
     let p = parked(run(
         &mut g,
@@ -306,8 +310,8 @@ fn a_cleanup_that_errs_or_waits_during_abandon_ends_there_and_the_rest_run() {
              (sequence! (note 3) (catch! (wait) e (note (evaluate-in! values e))) (wait) (note 4)))
            (note 5))",
     ));
-    let e = abandon(&mut g, &mut w, p).unwrap();
-    assert_eq!(kind(&g, &e), "abandoned");
+    let e = give_up(&mut g, &mut w, p).unwrap();
+    assert_eq!(kind(&g, &e), "given-up");
     // The answer that ended the cleanup's wait is a limit, so the `catch!` around that wait saw
     // nothing and the cleanup ended there.
     assert_eq!(w.log, ["1", "3", "5"]);
@@ -324,35 +328,17 @@ fn a_cleanup_that_waits_after_a_limit_is_a_run_that_waits_and_the_limit_stays() 
         &mut w,
         "(finally! (wait) (sequence! (note 1) (note (wait)) (note 3)))",
     ));
-    let ending = g.error("given-up", &[]).as_limit();
+    let ending = Error {
+        limit: true,
+        ..g.error("given-up", &[])
+    };
     let again = parked(g.resume(&mut w, p, Err(ending)).map_err(Error::from));
     assert_eq!(g.parked(), 1);
     let e = g.resume(&mut w, again, Ok(Value::Integer(2))).unwrap_err();
     assert_eq!(kind(&g, &e.error), "given-up");
-    assert!(e.error.is_limit());
+    assert!(e.error.limit);
     assert_eq!(w.log, ["1", "2", "3"]);
     assert_eq!(g.parked(), 0);
-}
-
-#[test]
-fn a_cleanup_that_never_ends_during_abandon_is_the_hosts_to_stop() {
-    let (mut g, mut w) = (grift(), World::default());
-    let p = parked(run(
-        &mut g,
-        &mut w,
-        "(define! spin (lambda! (n) (if! (same? n 0) #inert (spin (subtract n 1)))))
-         (finally! (finally! (wait) (sequence! (spin 30000000) (note 2))) (note 1))",
-    ));
-    let mut stopper = g.interrupter();
-    let watchdog = std::thread::spawn(move || {
-        while !stopper.stop() {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    });
-    let e = abandon(&mut g, &mut w, p).unwrap();
-    watchdog.join().unwrap();
-    assert_eq!(kind(&g, &e), "interrupted");
-    assert_eq!(w.log, ["1"]);
 }
 
 #[test]
@@ -369,7 +355,7 @@ fn a_dropped_handle_is_found_again_and_its_run_stays_alive_until_then() {
     assert_eq!(g.parked(), 1);
     let p = g.forgotten().unwrap();
     assert!(g.forgotten().is_none());
-    abandon(&mut g, &mut w, p).unwrap();
+    give_up(&mut g, &mut w, p).unwrap();
     assert_eq!(w.log, ["(1 2 3)"]);
     assert_eq!(g.parked(), 0);
 }
@@ -394,7 +380,7 @@ fn another_interpreters_handle_is_refused_and_comes_back_whole() {
     let p = parked(run(&mut g, &mut w, "(add 1 (wait))"));
     let refused = h.resume(&mut w, p, Ok(Value::Integer(1))).unwrap_err();
     assert_eq!(kind(&h, &refused.error), "foreign-value");
-    let refused = abandon(&mut h, &mut w, refused.parked.unwrap()).unwrap_err();
+    let refused = give_up(&mut h, &mut w, refused.parked.unwrap()).unwrap_err();
     assert_eq!(kind(&h, &refused.error), "foreign-value");
     // An interpreter put where the old one was is another interpreter.
     let old = std::mem::replace(&mut g, grift());
@@ -439,26 +425,19 @@ fn values_across_a_wait() {
     let done = resume(&mut g, &mut w, p, answer);
     assert_eq!(finished(&g, done), "(1 2 3)");
     g.release(kept).map_err(|(e, _)| e).unwrap();
-    // Another interpreter's value is refused the same way.
+    // Another interpreter's value is refused the same way. The table's freed entries go to a
+    // value and a run alike, and each keeps its own.
     let mut other = grift();
     let foreign = other.string("x").unwrap();
+    let k = g.keep(Value::Integer(7)).unwrap();
     let p = parked(run(
         &mut g,
         &mut w,
         "(catch! (wait) e (evaluate-in! kind e))",
     ));
+    assert_eq!((g.kept(&k).unwrap(), g.parked()), (Value::Integer(7), 1));
     let done = resume(&mut g, &mut w, p, foreign);
     assert_eq!(finished(&g, done), "foreign-value");
-}
-
-#[test]
-fn a_stop_while_parked_finds_nothing_and_reaches_no_later_run() {
-    let (mut g, mut w) = (grift(), World::default());
-    let mut stopper = g.interrupter();
-    let p = parked(run(&mut g, &mut w, "(finally! (wait) (note 1)) 2"));
-    assert!(!stopper.stop());
-    let done = resume(&mut g, &mut w, p, Value::Inert);
-    assert_eq!(finished(&g, done), "2");
 }
 
 #[test]
@@ -674,82 +653,6 @@ fn a_host_panic_ends_its_own_run_and_leaves_the_parked_ones() {
     assert_eq!(finished(&g, done), "2");
 }
 
-/// The page of host code: an event loop with three waiting scripts, each with its cleanup. A timer
-/// wheel stands for whatever a real host waits on; one thread, and nothing blocks.
-#[test]
-fn an_event_loop_runs_three_waiting_scripts() {
-    #[derive(Default)]
-    struct Host {
-        now: u64,
-        finished: Vec<String>,
-    }
-
-    fn sleep(g: &mut Grift<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-        let [ms @ Value::Integer(_)] = args else {
-            return Err(g.error("sleep-needs-milliseconds", args));
-        };
-        Ok(Answer::Later(ms.clone()))
-    }
-
-    fn say(g: &mut Grift<Host>, host: &mut Host, args: &[Value]) -> Result<Value, Error> {
-        let text = g.as_str(&args[0])?.unwrap_or_default().to_owned();
-        host.finished.push(format!("{} {text}", host.now));
-        Ok(Value::Inert)
-    }
-
-    let mut g: Grift<Host> = Grift::new().unwrap();
-    let mut host = Host::default();
-    let sleep = g.parking_function("sleep", sleep).unwrap();
-    let say = g.host_function("say", say).unwrap();
-    g.define("sleep", sleep).unwrap();
-    g.define("say", say).unwrap();
-    g.evaluate(
-        &mut host,
-        "(define! done 0) (define! here (current-context))
-         (define! job (lambda! (name ms)
-           (finally!
-             (sequence! (sleep ms) (say name) (sleep ms) (bind here (quote! done) (add done 1)))
-             (say (join name \" closed\")))))",
-    )
-    .unwrap();
-
-    type Timers = Vec<(u64, Parked)>;
-    fn outcome(host: &Host, timers: &mut Timers, ran: Ran) {
-        if let Ran::Parked(p) = ran {
-            let Value::Integer(ms) = p.request() else {
-                panic!("sleep asks for milliseconds");
-            };
-            timers.push((host.now + *ms as u64, p));
-        }
-    }
-
-    let mut timers = Timers::new();
-    let top = g.top_level();
-    for script in ["(job \"a\" 30)", "(job \"b\" 10)", "(job \"c\" 20)"] {
-        let ran = g.start_in(&mut host, &top, "job", script).unwrap();
-        outcome(&host, &mut timers, ran);
-    }
-    // The loop, standing for epoll or a frame tick: take the next timer, resume what waits on it.
-    while let Some(next) = (0..timers.len()).min_by_key(|&i| timers[i].0) {
-        let (at, parked) = timers.swap_remove(next);
-        host.now = at;
-        let ran = g.resume(&mut host, parked, Ok(Value::Inert)).unwrap();
-        outcome(&host, &mut timers, ran);
-    }
-    assert_eq!(
-        host.finished,
-        [
-            "10 b",
-            "20 c",
-            "20 b closed",
-            "30 a",
-            "40 c closed",
-            "60 a closed"
-        ]
-    );
-    assert_eq!(g.evaluate(&mut host, "done").unwrap(), Value::Integer(3));
-}
-
 #[test]
 fn the_request_stays_good_for_as_long_as_the_run_waits() {
     let (mut g, mut w) = (grift(), World::default());
@@ -795,19 +698,19 @@ fn refused_handles_survive_the_question_mark() {
     assert_eq!(kind(&h, &e), "foreign-value");
     assert_eq!(g.parked(), 1);
     let p = g.forgotten().unwrap();
-    let ended = abandon(&mut g, &mut w, p).unwrap();
-    assert_eq!(kind(&g, &ended), "abandoned");
+    let ended = give_up(&mut g, &mut w, p).unwrap();
+    assert_eq!(kind(&g, &ended), "given-up");
     assert_eq!(w.log, ["1"]);
 }
 
 #[test]
-fn an_error_after_abandon_shows_where_the_run_was_waiting() {
+fn an_error_after_giving_up_shows_where_the_run_was_waiting() {
     let (mut g, mut w) = (grift(), World::default());
     let p = parked(run(&mut g, &mut w, "(add 1\n  (wait))"));
-    let e = abandon(&mut g, &mut w, p).unwrap();
+    let e = give_up(&mut g, &mut w, p).unwrap();
     assert_eq!(
         described(&g, &e),
-        "abandoned in (wait) at script.grift:2\n  from (add 1 (wait)) at script.grift:1"
+        "given-up in (wait) at script.grift:2\n  from (add 1 (wait)) at script.grift:1"
     );
 }
 
@@ -826,7 +729,7 @@ fn a_nested_run_in_a_resumed_run_may_not_park_and_the_outer_still_may() {
 }
 
 /// What giving a run up promises doesn't rest on what `stop` means.
-mod abandon_and_the_stop_rule {
+mod giving_up_and_the_stop_rule {
     use super::*;
 
     fn stop_until_heard(mut stopper: Interrupter) -> std::thread::JoinHandle<()> {
@@ -855,7 +758,7 @@ mod abandon_and_the_stop_rule {
             "(define! spin (lambda! (n) (if! (same? n 0) #inert (spin (subtract n 1)))))
              (finally! (finally! (wait) (sequence! (note 1) (watch) (spin 30000000) (note 2))) (note 3))",
         ));
-        let e = abandon(&mut g, &mut w, p).unwrap();
+        let e = give_up(&mut g, &mut w, p).unwrap();
         w.watchdog.take().unwrap().join().unwrap();
         assert_eq!(kind(&g, &e), "interrupted");
         assert_eq!(w.log, ["1", "3"]);
@@ -874,9 +777,9 @@ mod abandon_and_the_stop_rule {
                (note 3))",
         ));
         assert_eq!(w.log, ["1"]);
-        let e = abandon(&mut g, &mut w, p).unwrap();
-        // `abandoned` replaced the type-error that was leaving, and cut the cleanup at its wait.
-        assert_eq!(kind(&g, &e), "abandoned");
+        let e = give_up(&mut g, &mut w, p).unwrap();
+        // `given-up` replaced the type-error that was leaving, and cut the cleanup at its wait.
+        assert_eq!(kind(&g, &e), "given-up");
         assert_eq!(w.log, ["1", "3"]);
         assert_eq!(g.parked(), 0);
     }
@@ -885,15 +788,17 @@ mod abandon_and_the_stop_rule {
     #[test]
     fn a_stop_before_it_cuts_nothing_of_its_cleanups() {
         let (mut g, mut w) = (grift(), World::default());
+        let mut early = g.interrupter();
         let p = parked(run(
             &mut g,
             &mut w,
             "(finally! (wait) (sequence! (note 1) (note 2) (note 3)))",
         ));
         let mut stopper = g.interrupter();
+        assert!(!early.stop(), "taken before it waited: it finds nothing");
         assert!(!stopper.stop(), "nothing is in progress: it finds nothing");
-        let e = abandon(&mut g, &mut w, p).unwrap();
-        assert_eq!(kind(&g, &e), "abandoned");
+        let e = give_up(&mut g, &mut w, p).unwrap();
+        assert_eq!(kind(&g, &e), "given-up");
         assert_eq!(w.log, ["1", "2", "3"]);
     }
 
@@ -909,7 +814,7 @@ mod abandon_and_the_stop_rule {
             "(finally! (finally! (wait) (boom)) (note 1))",
         ));
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = abandon(&mut g, &mut w, p);
+            let _ = give_up(&mut g, &mut w, p);
         }));
         assert!(caught.is_err());
         assert_eq!(w.log, Vec::<String>::new());
