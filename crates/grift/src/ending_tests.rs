@@ -371,7 +371,7 @@ fn a_cleanups_install_makes_the_room_its_start_needs() {
 fn memory_refused_outside_the_heap_asks_for_a_collection() {
     let (mut g, _) = host();
     g.heap.not_due();
-    let _ = g.unwind(crate::local::Error::oom(), 0);
+    let _ = g.unwind(crate::local::Error::oom());
     assert!(g.heap.due());
     g.heap.not_due();
     let _ = g.export_error(crate::local::Error::oom());
@@ -448,7 +448,14 @@ fn what_a_host_keeps_comes_back_what_it_was() {
 #[test]
 fn a_handle_reaches_only_the_run_it_was_taken_for() {
     let mut g: Grift<Vec<Interrupter>> = Grift::new().unwrap();
-    let functions: [(&str, crate::HostFunction<Vec<Interrupter>>); 4] = [
+    let functions: [(&str, crate::HostFunction<Vec<Interrupter>>); 6] = [
+        ("panics", |_, _, _| panic!("a host function's bug")),
+        ("rescue", |g, s, _| {
+            let nested = std::panic::AssertUnwindSafe(|| g.evaluate(s, "(panics)"));
+            assert!(std::panic::catch_unwind(nested).is_err());
+            s.push(g.interrupter());
+            Ok(Value::Inert)
+        }),
         ("take", |g, s, _| {
             s.push(g.interrupter());
             Ok(Value::Inert)
@@ -514,4 +521,11 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
         .evaluate(&mut s, "(take) (stop-each) (add 1 2)")
         .unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
+    // A run given up under a nested one leaves no machine behind and ends once, so one taken after
+    // it is for the next run.
+    let e = g.evaluate(&mut s, "(rescue)").unwrap_err();
+    assert_eq!(kind(&g, &e), "foreign-value");
+    assert!(g.suspended.is_empty());
+    let e = g.evaluate(&mut s, "(stop-each)").unwrap_err();
+    assert_eq!(kind(&g, &e), "interrupted");
 }

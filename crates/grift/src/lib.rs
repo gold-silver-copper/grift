@@ -254,11 +254,11 @@ pub struct Grift<T = ()> {
     /// The kept name of the run that has just parked, for whoever began or resumed it.
     parked_as: Option<u32>,
     machine: evaluate::Machine,
+    /// The machines of the runs under a nested run, whose host functions are waiting for it.
+    suspended: Vec<evaluate::Machine>,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
-    /// Whether the run in progress may park.
-    may_park: bool,
     /// Where each combination read under a name is, by its slot's index.
     positions: HashMap<u32, Position, BuildHasherDefault<IdHasher>>,
 }
@@ -277,8 +277,8 @@ impl<T> Grift<T> {
             kept_free: None,
             parked_as: None,
             machine: evaluate::Machine::default(),
+            suspended: Vec::new(),
             control: Arc::new(Control::default()),
-            may_park: false,
             positions: HashMap::default(),
         };
         let loaded = g.load();
@@ -856,9 +856,9 @@ impl<T> Grift<T> {
         *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
     }
 
-    /// Starts an outer run, unless one is in progress; whether it did, which [`Grift::end_run`]
-    /// then ends. What a host function left behind when it panicked or replaced the interpreter is
-    /// over: its machine goes here.
+    /// Starts an outer run, unless one is in progress; whether it did, which `Control::end` then
+    /// ends. What a host function left behind when it panicked or replaced the interpreter is
+    /// over: its machines go here.
     pub(crate) fn begin_run(&mut self) -> bool {
         let outer = self.settled();
         if outer {
@@ -867,20 +867,16 @@ impl<T> Grift<T> {
         outer
     }
 
-    /// Whether no run is in progress; if none is, what a host function left on the machine when
+    /// Whether no run is in progress; if none is, what a host function left on the machines when
     /// it panicked or replaced the interpreter is over, so nothing the host makes now takes its
-    /// mark. A machine is empty between runs.
+    /// mark. A machine is empty between runs, and none is suspended.
     pub(crate) fn settled(&mut self) -> bool {
-        let none = self.control.run() == 0;
+        let none = !self.control.running();
         if none {
             self.machine.clear();
+            self.suspended.clear();
         }
         none
-    }
-
-    pub(crate) fn end_run(&mut self) {
-        self.control.end();
-        self.may_park = false;
     }
 
     /// The context `v` is, or a `type-error`.

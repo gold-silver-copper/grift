@@ -1,7 +1,7 @@
 //! Runs that wait. A host function answers "not yet", the run is set aside, and the host's loop goes
 //! on until it resumes the run once, with a value or an error.
 //!
-//! An interpreter has one machine. Parking moves that whole machine into a kept entry, so the
+//! A run in progress has the interpreter's machine. Parking moves that whole machine into a kept entry, so the
 //! collector sees a parked run's frames and arguments as it sees any kept value; the interpreter's
 //! machine is then empty, for whatever runs next. Taking a run up moves the machine back. The [`Parked`] handle says which: it is linear, so a run goes on at most
 //! once by the type, and it carries its interpreter's identity as every value does.
@@ -265,7 +265,6 @@ impl<T> Grift<T> {
             }
         };
         parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
-        self.may_park = true;
         let done = self.wake(Some(state), machine, answer);
         self.ran(done).map_err(|e| ResumeError {
             error: self.export_error(e),
@@ -282,7 +281,7 @@ impl<T> Grift<T> {
         if !self.owns(&parked.owner) {
             return Err(local::Error::new(K::ForeignValue, &[]));
         }
-        if self.control.run() != 0 {
+        if self.control.running() {
             return Err(local::Error::new(K::CannotPark, &[]));
         }
         let (value, error, trace) = match answer {
@@ -304,7 +303,7 @@ impl<T> Grift<T> {
     /// Whether a [`ParkingFunction`] called now may answer [`Answer::Later`]: not under
     /// [`Grift::evaluate`] or [`Grift::call`], and not in any run inside a host call.
     pub fn can_park(&self) -> bool {
-        self.may_park
+        self.machine.may_park
     }
 
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
