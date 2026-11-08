@@ -484,15 +484,52 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 
 /// Prints an error to stderr as its source, then its kind followed by its values and where it happened, the
 /// innermost combination on the error's line and each one around it on a line of its own.
+/// A report up to 4 KiB is one write, so output sharing its pipe can't land inside it.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
-        w: io::stderr().lock(),
+        w: Gathered {
+            out: io::stderr().lock(),
+            text: [0; 4096],
+            len: 0,
+        },
         error: None,
     };
     let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     let _ = g.describe(e, &mut err);
     let _ = fmt::Write::write_str(&mut err, "\n");
+    let _ = err.w.flush();
     ExitCode::FAILURE
+}
+
+/// Writes gathered on the stack and passed on when it is full or flushed: no memory to be refused.
+struct Gathered<W: Write> {
+    out: W,
+    text: [u8; 4096],
+    len: usize,
+}
+
+impl<W: Write> Write for Gathered<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if self.len + data.len() > self.text.len() {
+            self.flush()?;
+            if data.len() > self.text.len() {
+                return self.out.write(data);
+            }
+        }
+        let end = self.len + data.len();
+        if let Some(room) = self.text.get_mut(self.len..end) {
+            room.copy_from_slice(data);
+            self.len = end;
+        }
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let gathered = self.text.get(..self.len).unwrap_or_default();
+        self.len = 0;
+        self.out.write_all(gathered)?;
+        self.out.flush()
+    }
 }
 
 /// `(report-host thunk)`: calls `thunk` as a run of its own. An error that ends it is reported as
