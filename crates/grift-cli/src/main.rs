@@ -622,10 +622,8 @@ fn main() -> ExitCode {
             }
         }
     }
-    let (script, arguments) = match words.split_first() {
-        Some((script, arguments)) => (Some(script.as_str()), arguments),
-        None => (None, &[][..]),
-    };
+    let script = words.first().map(String::as_str);
+    let arguments = words.get(1..).unwrap_or_default();
     let mut r = Runner {
         files: vec![
             Opened {
@@ -643,8 +641,7 @@ fn main() -> ExitCode {
         ],
         started: Instant::now(),
     };
-    let set = set_up(&mut g, &mut r, arguments, script.unwrap_or_default());
-    let session = match set {
+    let session = match set_up(&mut g, &mut r, arguments, script.unwrap_or_default()) {
         Ok(session) => session,
         Err(e) => return report(&g, "grift", &e),
     };
