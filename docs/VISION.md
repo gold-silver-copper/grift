@@ -12,7 +12,8 @@ while they run, and a general scripting language with a Unix runner.
 ## Nothing guessed
 grift is meant to be worked with without reading its source, by people and by agents alike: every
 definition can be listed and printed, nothing is a made-up default, and every error says what went
-wrong, with the values involved and where. That is ordinary good language design, not a separate
+wrong, with the values involved and where: the combinations it happened in (an error outside any,
+such as a bare symbol at top level, has none to name). That is ordinary good language design, not a separate
 mode; grift adds nothing special for agents.
 
 ## Kernel
