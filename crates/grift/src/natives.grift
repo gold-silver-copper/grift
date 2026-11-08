@@ -1,8 +1,7 @@
 ; What the native primitives mean: each one's grift definition, which the tests run in place of
 ; the Rust to show no program tells them apart (tests.rs, natives_are_their_definitions). Each is
 ; an operative given the arguments, checking them in the primitive's order and raising its errors,
-; which carry the values involved and no name. Every combiner here is made as this file loads, so
-; none is made through a definition that is running.
+; which carry the values involved and no name.
 
 ; Branching under select, which if! stands on: a boolean names one of two bindings by its printed
 ; text, so nothing up to `select`'s meaning branches by select.
