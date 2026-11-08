@@ -171,7 +171,8 @@ impl<T> Grift<T> {
     /// and a wait in it is `cannot-park`, since that call's Rust frames can't be set aside: a host
     /// function queues work that waits for its host's loop.
     pub fn start(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Ran, Error> {
-        self.parkable(|g| g.run_call(state, f, arguments, true))
+        let done = self.run_call(state, f, arguments, true);
+        self.ran(done)
     }
 
     /// [`Grift::evaluate_in`], in a run that may park, as [`Grift::start`] is.
@@ -182,22 +183,15 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Ran, Error> {
-        self.parkable(|g| g.run_text(state, context, source, src, false, true))
-    }
-
-    fn parkable(
-        &mut self,
-        go: impl FnOnce(&mut Self) -> Result<local::Value, local::Error>,
-    ) -> Result<Ran, Error> {
-        let done = go(self);
-        self.ran(done).map_err(|e| self.export_error(e))
+        let done = self.run_text(state, context, source, src, false, true);
+        self.ran(done)
     }
 
     /// What a run came to: parked, if it left its kept name, or else what it returned.
-    fn ran(&mut self, done: Result<local::Value, local::Error>) -> Result<Ran, local::Error> {
+    fn ran(&mut self, done: Result<local::Value, local::Error>) -> Result<Ran, Error> {
         match self.parked_as.take() {
             Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
-            None => done.map(|v| Ran::Finished(self.export(v))),
+            None => self.exported(done).map(Ran::Finished),
         }
     }
 
@@ -266,8 +260,8 @@ impl<T> Grift<T> {
         };
         parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
         let done = self.wake(Some(state), machine, answer);
-        self.ran(done).map_err(|e| ResumeError {
-            error: self.export_error(e),
+        self.ran(done).map_err(|error| ResumeError {
+            error,
             parked: None,
         })
     }
