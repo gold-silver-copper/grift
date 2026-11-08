@@ -326,6 +326,9 @@ pub struct Grift<T = ()> {
 
 impl<T> Grift<T> {
     /// Builds the built-in context, evaluates the library in it and makes an empty top level.
+    /// Memory refused is `out-of-memory`, but for one allocation, the first: the interpreter's
+    /// shared control block, which its interrupters and values point to, is an `Arc::new`, and so
+    /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
         let mut g = Grift {
             heap: Heap::default(),
