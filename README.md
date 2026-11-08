@@ -60,22 +60,8 @@ built-in-names                              ; every primitive and library name
 (bytes-to-string #bytes(104 105))           ; => "hi"; bytes that aren't UTF-8 are encoding-error
 ```
 
-The Rust primitives are `vau! wrap unwrap evaluate evaluate-with-cleanup evaluate-with-handler raise
-context bind unbind lookup names pair first rest same? select type-of add subtract multiply divide
-remainder less-than? bitwise-and bitwise-or bitwise-exclusive-or shift-left shift-right
-square-root sine cosine tangent exponential natural-logarithm floor ceiling round truncate
-integer-to-float float-to-integer byte-length byte-at slice search join
-code-point-to-string string-to-symbol integer-to-string string-to-integer string-to-float read-form
-value-to-string string-to-bytes bytes-to-string
-list-to-bytes bytes-to-list`. The library adds `define! quote! list if! lambda! sequence! when! conditional!
-let! finally! catch! catch-kind! current-context evaluate-in! not? empty-list? inert? ignore? boolean? integer?
-float? symbol? pair? string? bytes? context? operative? applicative? and!? or!? apply any? all? map
-for-each record error length append reverse equal? greater-than? less-than-or-equal?
-greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
-symbol-to-string float-to-string filter fold range sort element-at second third last take drop
-string-starts-with? string-ends-with? string-split string-join string-trim
-string-repeat string-pad-left string-pad-right string-to-lowercase
-bindings standard-context built-in-names`.
+`built-in-names` lists every name; [`docs/LANGUAGE.md`](docs/LANGUAGE.md) explains each, the Rust
+primitives first and then the library, whose source is [`library.grift`](crates/grift/src/library.grift).
 
 ## The runner
 
