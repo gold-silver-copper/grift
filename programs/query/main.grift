@@ -204,12 +204,12 @@
 (define! value-less-than?
   (lambda! (a b)
     (if! (same? (type-of a) (type-of b))
-      (if! (string? a)
-        (string-less-than? a b)
-        (if! (number? a) (less-than? a b) (string-less-than? (value-to-string a) (value-to-string b))))
+      (if! (or!? (string? a) (number? a))
+        (less-than? a b)
+        (less-than? (value-to-string a) (value-to-string b)))
       (if! (number? a)
         (if! (number? b) (less-than? (to-float a) (to-float b)) #true)
-        (if! (number? b) #false (string-less-than? (value-to-string a) (value-to-string b)))))))
+        (if! (number? b) #false (less-than? (value-to-string a) (value-to-string b)))))))
 
 (define! number-add
   (lambda! (a b)

@@ -74,7 +74,7 @@ for-each record error length append reverse equal? greater-than? less-than-or-eq
 greater-than-or-equal? minimum maximum absolute-value power find-association member? binds?
 symbol-to-string float-to-string filter fold range sort element-at second third last take drop
 string-starts-with? string-ends-with? string-split string-join string-trim
-string-less-than? string-repeat string-pad-left string-pad-right string-to-lowercase
+string-repeat string-pad-left string-pad-right string-to-lowercase
 bindings standard-context built-in-names`.
 
 ## The runner

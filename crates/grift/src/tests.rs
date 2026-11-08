@@ -1502,6 +1502,11 @@ fn arithmetic_is_rusts() {
             ("(add 1 1.5)", "type-error"),
             ("(add 1.5 1)", "type-error"),
             ("(less-than? 1 1.5)", "type-error"),
+            ("(less-than? \"a\" #bytes(97))", "type-error"),
+            ("(less-than? #bytes(97) \"a\")", "type-error"),
+            ("(less-than? \"a\" 1)", "type-error"),
+            ("(less-than? 1 \"a\")", "type-error"),
+            ("(less-than? #true #false)", "type-error"),
             ("(multiply 2.0 \"a\")", "type-error"),
             ("(square-root 4)", "type-error"),
             ("(absolute-value \"a\")", "type-error"),
@@ -2576,15 +2581,24 @@ fn sort_is_ordered_and_stable() {
                                             (less-than? (rest a) (rest b))
                                             (less-than? (first a) (first b))))))",
             "(empty-list? (sort () less-than?))",
-            "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") string-less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
+            "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
+            // The comparisons built on less-than? take text with no change.
+            "(greater-than? \"b\" \"a\")",
+            "(less-than-or-equal? \"a\" \"a\")",
+            "(greater-than-or-equal? #bytes(2) #bytes(1 9))",
+            "(same? (minimum \"b\" \"a\") \"a\")",
+            "(same? (maximum \"b\" \"a\") \"b\")",
         ],
     );
     fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
-    // string-less-than? is Rust's < on str, byte by byte.
+    // less-than? on strings is Rust's < on str, byte by byte, and on bytes the same order.
     let words = ["", "a", "b", "ab", "abc", "B", "é", "e", "日本", "日"];
     for a in words {
         for b in words {
-            let got = g.evaluate(&mut (), &format!("(string-less-than? {a:?} {b:?})"));
+            let got = g.evaluate(&mut (), &format!("(less-than? {a:?} {b:?})"));
+            assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
+            let bytes = format!("(less-than? (string-to-bytes {a:?}) (string-to-bytes {b:?}))");
+            let got = g.evaluate(&mut (), &bytes);
             assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
         }
     }

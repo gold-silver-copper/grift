@@ -226,13 +226,13 @@
            (if! (float? b) (equal-floats? a b) #false)
            (same? a b)))))))
 
-; The comparisons above less-than? (12.5.3, Kernel's <? and the rest), of two integers or two
-; floats; mixing them is a type-error, as it is for less-than?.
+; The comparisons above less-than? (12.5.3, Kernel's <? and the rest), of two values of one kind
+; it orders; mixing kinds is a type-error, as it is for less-than?.
 (define! greater-than? (lambda! (a b) (less-than? b a)))
 (define! less-than-or-equal? (lambda! (a b) (if! (less-than? a b) #true (equal? a b))))
 (define! greater-than-or-equal? (lambda! (a b) (less-than-or-equal? b a)))
 
-; minimum and maximum (12.5.13, min and max), of two integers or two floats.
+; minimum and maximum (12.5.13, min and max), of two values of one kind less-than? orders.
 (define! minimum (lambda! (a b) (if! (less-than? b a) b a)))
 (define! maximum (lambda! (a b) (if! (less-than? a b) b a)))
 
@@ -439,21 +439,6 @@
      (lambda! (s)
        (let! ((end (byte-length s)) (start (start-of s 0 end)))
          (slice s start (end-of s start end)))))))
-
-; string-less-than?: whether a is before b in byte order, as Rust's < on str: at the first byte
-; where they differ, or the shorter first when one starts the other.
-(define! string-less-than?
-  ((lambda! ()
-     (define! from
-       (lambda! (a b at a-end b-end)
-         (if! (same? at b-end)
-           #false
-           (if! (same? at a-end)
-             #true
-             (if! (same? (byte-at a at) (byte-at b at))
-               (from a b (add at 1) a-end b-end)
-               (less-than? (byte-at a at) (byte-at b at)))))))
-     (lambda! (a b) (from a b 0 (byte-length a) (byte-length b))))))
 
 ; string-repeat: s count times; a count below 1 is no copies.
 (define! string-repeat

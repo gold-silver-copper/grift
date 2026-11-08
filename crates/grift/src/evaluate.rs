@@ -1180,7 +1180,7 @@ impl<T> Grift<T> {
             },
             P::TypeOf => Value::Symbol(type_of(x).into()),
             P::Add | P::Subtract | P::Multiply | P::Divide | P::Remainder | P::LessThan => {
-                arithmetic(p, x, y)?
+                self.arithmetic(p, x, y)?
             }
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
@@ -1483,6 +1483,47 @@ impl<T> Grift<T> {
         })
     }
 
+    /// Arithmetic and comparison, as Rust has them, on two integers or two floats, and `less-than?`
+    /// on two strings or two bytes values, in byte order. Integer arithmetic is checked: `divide` and
+    /// `remainder` are Rust's `/` and `%`, truncating, and fail where Rust's would panic. Float
+    /// arithmetic is IEEE.
+    #[inline]
+    fn arithmetic(&self, p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
+        use Primitive as P;
+        let r = match (x, y) {
+            (Value::Integer(a), Value::Integer(b)) => match p {
+                P::Add => a.checked_add(b),
+                P::Subtract => a.checked_sub(b),
+                P::Multiply => a.checked_mul(b),
+                P::Divide | P::Remainder if b == 0 => {
+                    return Err(Error::new(K::DivisionByZero, &[x, y]));
+                }
+                P::Divide => a.checked_div(b),
+                P::Remainder => a.checked_rem(b),
+                _ => return Ok(Value::Boolean(a < b)),
+            },
+            (Value::Float(a), Value::Float(b)) => {
+                return Ok(Value::Float(match p {
+                    P::Add => a + b,
+                    P::Subtract => a - b,
+                    P::Multiply => a * b,
+                    P::Divide => a / b,
+                    P::Remainder => a % b,
+                    _ => return Ok(Value::Boolean(a < b)),
+                }));
+            }
+            (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(y)),
+            (Value::String(_), Value::String(_)) | (Value::Bytes(_), Value::Bytes(_))
+                if p == P::LessThan =>
+            {
+                return Ok(Value::Boolean(self.octets(x)? < self.octets(y)?));
+            }
+            _ => return Err(type_error(x)),
+        };
+        r.map(Value::Integer)
+            .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
+    }
+
     /// The contents of string `v`, or a type error.
     pub(crate) fn text(&self, v: Value) -> Result<&str, Error> {
         match v {
@@ -1758,39 +1799,4 @@ fn type_of(v: Value) -> K {
         Value::Operative(_) | Value::Primitive(_) | Value::Host(_) => K::Operative,
         Value::Applicative(_) => K::Applicative,
     }
-}
-
-/// Arithmetic and comparison, as Rust has them, on two integers or two floats. Integer
-/// arithmetic is checked: `divide` and `remainder` are Rust's `/` and `%`, truncating, and fail
-/// where Rust's would panic. Float arithmetic is IEEE.
-#[inline]
-fn arithmetic(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
-    use Primitive as P;
-    let r = match (x, y) {
-        (Value::Integer(a), Value::Integer(b)) => match p {
-            P::Add => a.checked_add(b),
-            P::Subtract => a.checked_sub(b),
-            P::Multiply => a.checked_mul(b),
-            P::Divide | P::Remainder if b == 0 => {
-                return Err(Error::new(K::DivisionByZero, &[x, y]));
-            }
-            P::Divide => a.checked_div(b),
-            P::Remainder => a.checked_rem(b),
-            _ => return Ok(Value::Boolean(a < b)),
-        },
-        (Value::Float(a), Value::Float(b)) => {
-            return Ok(Value::Float(match p {
-                P::Add => a + b,
-                P::Subtract => a - b,
-                P::Multiply => a * b,
-                P::Divide => a / b,
-                P::Remainder => a % b,
-                _ => return Ok(Value::Boolean(a < b)),
-            }));
-        }
-        (Value::Integer(_) | Value::Float(_), _) => return Err(type_error(y)),
-        _ => return Err(type_error(x)),
-    };
-    r.map(Value::Integer)
-        .ok_or_else(|| Error::new(K::Overflow, &[x, y]))
 }

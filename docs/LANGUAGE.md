@@ -108,7 +108,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(select b x y)` | `x` if `b` is `#true`, `y` if `#false`; a `type-error` otherwise. Both are evaluated; `if!` uses it to pick an expression. |
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
 | `(add a b)`, `(subtract a b)`, `(multiply a b)`, `(divide a b)`, `(remainder a b)` | Of two integers or two floats; mixing them is a `type-error`. On integers, Rust's checked arithmetic: `divide` and `remainder` are Rust's `/` and `%`, truncating toward zero, so `(remainder -7 2)` is `-1`; dividing by 0 is `division-by-zero`, and a result beyond 64 bits, `(divide -9223372036854775808 -1)` included, is `overflow`. On floats, IEEE: `(divide 1.0 0.0)` is `#infinity`. |
-| `(less-than? a b)` | Whether `a < b`, of two integers or two floats; with `#not-a-number`, `#false`. |
+| `(less-than? a b)` | Whether `a < b`, of two integers, two floats, two strings or two bytes values; mixing kinds is a `type-error`. With `#not-a-number`, `#false`. Strings and bytes compare in byte order, as Rust's `<` on `str`: at the first byte where they differ, or the shorter first when one starts the other. |
 | `(bitwise-and a b)` `(bitwise-or a b)` `(bitwise-exclusive-or a b)` `(shift-left a n)` `(shift-right a n)` | Rust's `&` `\|` `^` `<<` `>>` on two integers: the bits shifted out are lost, as in Rust, and `shift-right` keeps the sign (`(shift-right -8 1)` is `-4`). A shift by an amount outside 0 to 63, where Rust's checked shift gives none, is `overflow`. |
 | `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) and `trunc`, of floats only. Results may differ slightly between platforms, as in Rust. `absolute-value` and `power` are the library's, below. |
 | `(integer-to-float n)`, `(float-to-integer x)` | Rust's `as`: the nearest float; the integer part, saturating at the ends of the 64-bit range, and 0 for `#not-a-number`. |
@@ -148,7 +148,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(filter a list)` | The elements for which `a` gives `#true`, in order; `a` must give booleans (6.3.5). |
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
-| `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words string-less-than?)`. 10,000 integers sort in about 0.3 s, 10,000 short strings by `string-less-than?` in about 0.9 s. |
+| `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words less-than?)`. 10,000 integers sort in about 0.3 s, and so do 10,000 short strings by `less-than?`. |
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the operands, the list and the index or count: `(element-at (list 1) 3)` gives `range-error (1) 3`, `(second (list 1))` `range-error (1) 1`, and `(last ())` `range-error ()`. An index that isn't an integer is a `type-error`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
@@ -163,7 +163,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(length list)`, `(append list ...)`, `(reverse list)` | List length; concatenation, sharing the last list; the elements in the opposite order (6.3.1, 6.3.3). |
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
 | `(greater-than? a b)`, `(less-than-or-equal? a b)`, `(greater-than-or-equal? a b)` | The rest of the comparisons, as Rust's `>`, `<=`, `>=` (12.5.3). |
-| `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two integers or two floats (12.5.13). |
+| `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two values of one kind `less-than?` orders (12.5.13). |
 | `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.12, 12.9.6). |
 | `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
 | `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. It is `lookup` with a value no program holds as `otherwise`, so its `type-error` is `lookup`'s. |
@@ -172,7 +172,6 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(string-starts-with? s prefix)`, `(string-ends-with? s suffix)` | Whether `s` starts or ends with those bytes. |
 | `(string-split text separator)`, `(string-join strings separator)` | The parts of `text` between the separators, empty ones too, so `(string-split "a,,b" ",")` is `("a" "" "b")` and `(string-split "" ",")` is `("")`; an empty separator is a `range-error`. The strings with the separator between them. `string-join` undoes `string-split`. |
 | `(string-trim s)` | `s` without the ASCII whitespace at either end (space, tab, newline, form feed, return), as Rust's `trim_ascii`. |
-| `(string-less-than? a b)` | Whether `a` comes before `b` in byte order, as Rust's `<` on `str`: at the first byte where they differ, or the shorter first when one starts the other. |
 | `(string-repeat s count)` | `s` `count` times; a count below 1 is no copies, `""`. |
 | `(string-pad-left s width fill)`, `(string-pad-right s width fill)` | `s` with copies of `fill`, a string of one byte, before it, after it, up to `width` bytes; `s` itself if it is that long already: `(string-pad-left "7" 2 "0")` is `"07"`. A `fill` of any other length is a `range-error`. |
 | `(string-to-lowercase s)` | `s` with `A` to `Z` made `a` to `z` and every other byte as it is, as Rust's `to_ascii_lowercase`. |
@@ -363,9 +362,10 @@ had died. The README's embedding section gives the host's side.
 - **Binary arithmetic and comparison.** `add`, `multiply`, `less-than?`, `minimum` and the rest
   take two operands; Kernel's take any number. The type predicates take one value.
 - **Bytes beside strings.** Bytes are a value of their own, never a string, with their own
-  literal; `same?` compares them by content, as strings. Both are sequences of bytes, so one
-  vocabulary serves both, as `add` serves integers and floats: `byte-length`, `byte-at`, `slice`,
-  `join` and `search` take either and answer the kind they were given.
+  literal; `same?` compares them by content and `less-than?` orders them by byte, as strings. Both
+  are sequences of bytes, so one vocabulary serves both, as `add` serves integers and floats:
+  `byte-length`, `byte-at`, `slice`, `join` and `search` take either and answer the kind they were
+  given.
 - **Strings are immutable,** and `same?` compares them by content, like integers. R-1RK has no
   strings; grift's offsets count bytes of UTF-8, so `byte-at` is O(1), and there is no
   character type: a code point is an integer.
