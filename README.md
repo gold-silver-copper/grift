@@ -291,43 +291,37 @@ fn main() -> Result<(), Error> {
 
 ### A watchdog
 
-A deadline per job is a thread holding an interrupter and the loop's record of which job is
-running. The watchdog stops only while that record names its job, under the record's lock; the
-loop clears the record under the same lock as the run returns, so a late stop can't reach the next
-job. `stop()` says `false` while no run is in progress, as when the deadline passes before the job
-has begun, so the watchdog asks again until the job runs or is over.
+A deadline per job is a thread holding the job's interrupter, taken just before the job begins.
+`stop()` says `false` until the job begins and after it ends, so the watchdog asks until it is
+stopped or the loop says it is over, and needs no lock: a late stop reaches nothing.
 
 ```rust
-use grift::{Error, Grift};
-use std::sync::{Arc, Mutex, mpsc};
+use grift::{Error, Grift, Interrupter};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Error> {
     let mut g: Grift = Grift::new()?;
-    let running = Arc::new(Mutex::new(None::<u32>)); // the job on the CPU, by the loop's count
-    let (deadlines, due) = mpsc::channel::<(u32, Duration)>();
-    let (mut handle, watched) = (g.interrupter(), Arc::clone(&running));
+    // Each job's handle, taken as the job is about to begin, its deadline, and whether it is over.
+    let (deadlines, due) = mpsc::channel::<(Interrupter, Duration, Arc<AtomicBool>)>();
     let watchdog = thread::spawn(move || {
-        for (job, after) in due {
+        for (mut handle, after, over) in due {
             thread::sleep(after);
-            loop {
-                let now = watched.lock().unwrap();
-                if *now != Some(job) || handle.stop() {
-                    break; // the job is over, or stopped
-                }
-                drop(now);
+            while !over.load(Ordering::Relaxed) && !handle.stop() {
                 thread::yield_now(); // not begun yet: ask again
             }
         }
     });
     let jobs = ["(define! spin (lambda! () (spin)))", "(spin)", "(add 1 2)"];
     let mut ended = Vec::new();
-    for (job, src) in (0..).zip(jobs) {
-        *running.lock().unwrap() = Some(job);
-        deadlines.send((job, Duration::from_millis(20))).unwrap();
+    for src in jobs {
+        let over = Arc::new(AtomicBool::new(false));
+        let deadline = Duration::from_millis(20);
+        deadlines.send((g.interrupter(), deadline, Arc::clone(&over))).unwrap();
         let result = g.evaluate(&mut (), src);
-        *running.lock().unwrap() = None; // before the next job begins
+        over.store(true, Ordering::Relaxed); // a stop after this reaches nothing
         ended.push(result.map_err(|e| e.is_limit()));
     }
     drop(deadlines);
@@ -337,8 +331,8 @@ fn main() -> Result<(), Error> {
 }
 ```
 
-A force after a grace period goes in the same place: the watchdog sleeps again and, if the record
-still names its job, calls `force()` under the lock.
+A force after a grace period goes in the same place: the watchdog sleeps again and calls `force()`
+with the same handle.
 
 ### Waiting: pausable runs
 
