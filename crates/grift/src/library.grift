@@ -246,14 +246,9 @@
      ; exponent is left, so nothing overflows unless the result does.
      (define! raised
        (lambda! (product base exponent)
-         (if! (same? exponent 0)
-           product
-           (power-of (if! (same? (remainder exponent 2) 0) product (multiply product base))
-                     base
-                     (divide exponent 2)))))
-     (define! power-of
-       (lambda! (product base exponent)
-         (if! (same? exponent 0) product (raised product (multiply base base) exponent))))
+         (let! ((result (if! (same? (remainder exponent 2) 0) product (multiply product base)))
+                (left (divide exponent 2)))
+           (if! (same? left 0) result (raised result (multiply base base) left)))))
      (list
        (lambda! (x)
          (if! (integer? x) (if! (less-than? x 0) (subtract 0 x) x) (float-absolute x)))
