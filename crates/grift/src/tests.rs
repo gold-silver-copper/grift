@@ -1674,6 +1674,8 @@ fn a_predicate_for_every_type() {
         "context?",
         "operative?",
         "applicative?",
+        "inert?",
+        "ignore?",
     ];
     let values = [
         "()",
@@ -1687,9 +1689,14 @@ fn a_predicate_for_every_type() {
         "(context ())",
         "if!",
         "first",
+        "#true",
+        "(pair 1 2)",
+        "#bytes()",
+        "vau!",
+        "#inert",
+        "#ignore",
     ];
-    // Each value's type-of names exactly one predicate, and only that one holds. #inert and #ignore,
-    // each the only value of its type, have none: `same?` says it.
+    // Each value's type-of names exactly one predicate, and only that one holds.
     for value in values {
         let kind = g
             .evaluate(&mut (), &format!("(symbol-to-string (type-of {value}))"))
@@ -3842,23 +3849,6 @@ fn standard_context_is_a_new_child_of_the_built_in_context() {
             "(same? (names c) ())",
             "(same? (bind c (quote! map) 5) #inert)",
             "(applicative? (evaluate (quote! map) (standard-context)))",
-        ],
-    );
-}
-
-#[test]
-fn every_type_has_a_predicate_named_for_it() {
-    holds(
-        &mut grift(),
-        &[
-            "(all? (lambda! (v)
-                     ((evaluate (string-to-symbol (join (symbol-to-string (type-of v)) \"?\"))
-                                (current-context))
-                      v))
-                   (list () #true #inert #ignore 1 1.0 (quote! a) (pair 1 2) \"s\" #bytes() (context ())
-                         vau! first))",
-            "(not? (inert? ()))",
-            "(not? (ignore? #inert))",
         ],
     );
 }
