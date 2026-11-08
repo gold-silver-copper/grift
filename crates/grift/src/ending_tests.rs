@@ -136,29 +136,6 @@ fn parked(g: &mut Grift<Interrupter>, s: &mut Interrupter, src: &str) -> Parked 
 }
 
 #[test]
-fn abandoning_passes_handlers_runs_cleanups_and_the_host_can_tell() {
-    let (mut g, mut s) = host();
-    g.evaluate(&mut s, LOG).unwrap();
-    let p = parked(
-        &mut g,
-        &mut s,
-        "(catch! (finally! (wait) (note 1)) #ignore (note 2))",
-    );
-    let e = abandon(&mut g, &mut s, p);
-    assert_eq!((kind(&g, &e).as_str(), e.limit), ("abandoned", true));
-    assert_eq!(log(&mut g, &mut s), "(1)");
-}
-
-#[test]
-fn a_nested_runs_stop_stays_the_hosts_through_a_host_function() {
-    let (mut g, mut s) = host();
-    let e = g
-        .evaluate(&mut s, r#"(catch! (nested "(stop) (add 1 2)") #ignore 0)"#)
-        .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
-}
-
-#[test]
 fn a_nested_runs_stop_stays_the_hosts_even_if_it_can_no_longer_come_in() {
     let (mut g, mut s) = host();
     let e = g.evaluate(&mut s, "(catch! (late) #ignore 0)").unwrap_err();

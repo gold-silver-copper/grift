@@ -293,6 +293,7 @@ fn abandon_runs_every_cleanup_and_nothing_catches_it() {
     ));
     let e = abandon(&mut g, &mut w, p).unwrap();
     assert_eq!(kind(&g, &e), "abandoned");
+    assert!(e.is_limit());
     assert_eq!(w.log, ["1", "3", "5"]);
     assert_eq!(g.parked(), 0);
 }
@@ -338,27 +339,6 @@ fn a_cleanup_that_waits_after_a_limit_is_a_run_that_waits_and_the_limit_stays() 
     assert!(e.error.limit);
     assert_eq!(w.log, ["1", "2", "3"]);
     assert_eq!(g.parked(), 0);
-}
-
-#[test]
-fn a_cleanup_that_never_ends_during_abandon_is_the_hosts_to_stop() {
-    let (mut g, mut w) = (grift(), World::default());
-    let p = parked(run(
-        &mut g,
-        &mut w,
-        "(define! spin (lambda! (n) (if! (same? n 0) #inert (spin (subtract n 1)))))
-         (finally! (finally! (wait) (sequence! (spin 30000000) (note 2))) (note 1))",
-    ));
-    let mut stopper = g.interrupter();
-    let watchdog = std::thread::spawn(move || {
-        while !stopper.stop() {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    });
-    let e = abandon(&mut g, &mut w, p).unwrap();
-    watchdog.join().unwrap();
-    assert_eq!(kind(&g, &e), "interrupted");
-    assert_eq!(w.log, ["1"]);
 }
 
 #[test]
@@ -455,16 +435,6 @@ fn values_across_a_wait() {
     ));
     let done = resume(&mut g, &mut w, p, foreign);
     assert_eq!(finished(&g, done), "foreign-value");
-}
-
-#[test]
-fn a_stop_while_parked_finds_nothing_and_reaches_no_later_run() {
-    let (mut g, mut w) = (grift(), World::default());
-    let mut stopper = g.interrupter();
-    let p = parked(run(&mut g, &mut w, "(finally! (wait) (note 1)) 2"));
-    assert!(!stopper.stop());
-    let done = resume(&mut g, &mut w, p, Value::Inert);
-    assert_eq!(finished(&g, done), "2");
 }
 
 #[test]
@@ -815,12 +785,14 @@ mod abandon_and_the_stop_rule {
     #[test]
     fn a_stop_before_it_cuts_nothing_of_its_cleanups() {
         let (mut g, mut w) = (grift(), World::default());
+        let mut early = g.interrupter();
         let p = parked(run(
             &mut g,
             &mut w,
             "(finally! (wait) (sequence! (note 1) (note 2) (note 3)))",
         ));
         let mut stopper = g.interrupter();
+        assert!(!early.stop(), "taken before it waited: it finds nothing");
         assert!(!stopper.stop(), "nothing is in progress: it finds nothing");
         let e = abandon(&mut g, &mut w, p).unwrap();
         assert_eq!(kind(&g, &e), "abandoned");

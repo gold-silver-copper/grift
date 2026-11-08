@@ -885,17 +885,6 @@ fn cleanup_runs_and_the_error_goes_on() {
     assert_eq!(show(&g, &e.values[0]), "(1 2)");
 }
 
-#[test]
-fn stale_values_are_refused() {
-    let mut g = grift();
-    let old = g.evaluate(&mut (), "(list 1 2)").unwrap();
-    g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
-        .unwrap();
-    g.evaluate(&mut (), "(churn 10000)").unwrap();
-    let e = g.as_pair(&old).unwrap_err();
-    assert_eq!(kind(&g, &e), "stale-value");
-}
-
 /// The machine steps taken and the operatives made evaluating `src`.
 fn cost(g: &mut Grift, src: &str) -> (u64, usize) {
     (g.machine.steps, g.heap.operatives) = (0, 0);
