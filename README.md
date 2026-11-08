@@ -92,7 +92,7 @@ goes on past an error, where a program's `read-line` takes the next line typed, 
 ended by `exit` ends with status 0, or 1 if its input ends inside a form or standard input or error
 fails or is closed. Data goes
 to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the combinations it happened in, each with its
-file and line: `stdin: type-error #[primitive select] 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
+file and line: `stdin: type-error 1 in (if! 1 2 3) at stdin:1`. It exits with 0, 1 on a grift error, a
 failed write (`file-error`) or a script it can't read, 141 on a write to a pipe no one reads, or the
 status the program gave `exit`. A script path or argument that isn't UTF-8 is refused before anything
 runs, as `grift: encoding-error` with its bytes: text can't hold it, and a lossy copy would name another
