@@ -791,11 +791,7 @@ impl<T> Grift<T> {
         };
         // The arguments stay on the argument stack, rooted, while the host runs.
         let given = self.machine.arguments.get(base..).unwrap_or_default();
-        let mut arguments = Vec::new();
-        arguments
-            .try_reserve_exact(given.len())
-            .map_err(|_| Error::oom())?;
-        arguments.extend(given.iter().map(|&v| self.export(v)));
+        let arguments = collected(given.iter().map(|&v| self.export(v)))?;
         let run = self.control.run();
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
         let v = match f {
