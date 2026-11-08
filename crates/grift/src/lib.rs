@@ -228,6 +228,9 @@ impl Entry {
     }
 }
 
+/// Enough for a report's trace, the copy of it a report checks, and the printer's stack.
+const SPARE: usize = 64 * 1024;
+
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
 /// top-level context, a child of the built-in one, where programs define things. `T` is the
 /// host's state, which the host lends to each [`Grift::evaluate`] and [`Grift::call`] and which
@@ -246,6 +249,9 @@ pub struct Grift<T = ()> {
     /// The kept name of the run that has just parked, for whoever began or resumed it.
     parked_as: Option<u32>,
     machine: evaluate::Machine,
+    /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
+    /// unwinds, when small allocations may have only scraps left, and taken again by the next run.
+    spare: Vec<u8>,
     /// The machines of the runs under a nested run, whose host functions are waiting for it.
     suspended: Vec<evaluate::Machine>,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
@@ -267,6 +273,7 @@ impl<T> Grift<T> {
             kept_free: None,
             parked_as: None,
             machine: evaluate::Machine::default(),
+            spare: Vec::new(),
             suspended: Vec::new(),
             control: Arc::new(Control::default()),
         };
@@ -839,6 +846,8 @@ impl<T> Grift<T> {
     /// ends. What a host function left behind when it panicked or replaced the interpreter is
     /// over: its machines go here.
     pub(crate) fn begin_run(&mut self) -> bool {
+        // Refused, this run goes without: an `out-of-memory` trace can miss places.
+        let _ = self.spare.try_reserve_exact(SPARE);
         let outer = self.settled();
         if outer {
             self.control.begin();

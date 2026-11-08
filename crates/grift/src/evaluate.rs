@@ -675,6 +675,7 @@ impl<T> Grift<T> {
         // is a new refusal, and asks again.
         if std::mem::take(&mut e.refused) {
             self.heap.request_collection();
+            self.spare = Vec::new();
         }
         locate(&mut e, self.machine.here);
         while let Some(Frame { what, context, at }) = self.machine.frames.pop() {
