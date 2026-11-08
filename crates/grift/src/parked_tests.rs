@@ -90,7 +90,10 @@ fn dropping_a_handle_asks_for_no_memory() {
 /// of a cleanup on the way out. What the run ended with.
 pub(crate) fn abandon<T>(g: &mut Grift<T>, state: &mut T, mut p: Parked) -> Error {
     loop {
-        let ending = g.error("abandoned", &[]).as_limit();
+        let ending = Error {
+            limit: true,
+            ..g.error("abandoned", &[])
+        };
         match g.resume(state, p, Err(ending)) {
             Ok(Ran::Parked(again)) => p = again,
             Ok(Ran::Finished(v)) => panic!("a limit ended with the value {v:?}"),
@@ -212,7 +215,10 @@ fn a_cleanup_whose_first_step_is_refused_is_passed_over_for_the_next() {
                 "(finally! (finally! (sequence! (wait) (first 0)) (note 1)) (note 2))",
             ));
             let answer = match given_up {
-                true => Err(g.error("given-up", &[]).as_limit()),
+                true => Err(Error {
+                    limit: true,
+                    ..g.error("given-up", &[])
+                }),
                 false => Ok(Value::Inert),
             };
             g.heap.refuse_in = Some(refuse_in);
@@ -379,7 +385,7 @@ fn real_out_of_memory_passes_handlers() {
     g.heap.refuse_once = true;
     let e = g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err().error;
     assert_eq!(kind(&g, &e), "out-of-memory");
-    assert!(e.is_limit());
+    assert!(e.limit);
     assert!(log.is_empty(), "{log:?}");
 }
 
@@ -596,7 +602,10 @@ mod generated {
             w.log(format!("${id}"));
         }
         w.call(g);
-        Err(g.error("host-limit", args).as_limit())
+        Err(Error {
+            limit: true,
+            ..g.error("host-limit", args)
+        })
     }
 
     fn g_wait(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
@@ -666,7 +675,7 @@ mod generated {
                 Outcome {
                     kind: Some(kind(g, e)),
                     text,
-                    limit: e.is_limit(),
+                    limit: e.limit,
                 }
             }
         }
@@ -988,7 +997,10 @@ mod generated {
                     touched[run].abandoned = true;
                     let at = w.logs[run].len();
                     touched[run].clean_until.get_or_insert(at);
-                    let ending = g.error("abandoned", &[]).as_limit();
+                    let ending = Error {
+                        limit: true,
+                        ..g.error("abandoned", &[])
+                    };
                     let done = g.resume(&mut w, parked, Err(ending)).map_err(|e| {
                         assert!(e.parked.is_none(), "{:?}\n{context}", e.error);
                         e.error

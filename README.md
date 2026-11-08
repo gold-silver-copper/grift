@@ -270,13 +270,13 @@ fn main() -> Result<(), Error> {
   count as one; a later stop stops the run again, even in a cleanup that doesn't end. `force()` ends
   the handle's run however its cleanups behave, with no stop needed first: each is cut before its first
   form, at every level, and the run ends with `interrupted`, whatever else fails on the way.
-  `examples/stops.rs` shows stop, force, `is_limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
+  `examples/stops.rs` shows stop, force, `limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.
-- **Limits.** `e.is_limit()` says the host or the machine began an error, not a program: handlers
+- **Limits.** `e.limit` says the host or the machine began an error, not a program: handlers
   pass it, a program's error in a cleanup doesn't replace it, and it stays one through nested runs.
-  A host function makes its own with `g.error(kind, values).as_limit()`, and reads `e.kind` and
+  A host function makes its own with `Error { limit: true, ..g.error(kind, values) }`, and reads `e.kind` and
   `e.values` when the run has ended: the runner's `exit` carries its status this way. It says the host
   began the ending, not that your stop did: a newer limit in a cleanup replaces it, so a host that gives
   scripts a function making limits trusts its own record of what it asked for. A host function that
@@ -324,7 +324,7 @@ fn main() -> Result<(), Error> {
         deadlines.send((g.interrupter(), deadline, Arc::clone(&over))).unwrap();
         let result = g.evaluate(&mut (), src);
         over.store(true, Ordering::Relaxed); // a stop after this reaches nothing
-        ended.push(result.map_err(|e| e.is_limit()));
+        ended.push(result.map_err(|e| e.limit));
     }
     drop(deadlines);
     watchdog.join().unwrap();
@@ -405,7 +405,7 @@ fn main() -> Result<(), Error> {
     // that waits comes back as `Ran::Parked`; dropped, it is found again in the next turn.
     drop(g.start_in(&mut said, &top, "job", "(job \"d\" 10)")?);
     while let Some(parked) = g.forgotten() {
-        let given_up = g.error("given-up", &[]).as_limit();
+        let given_up = grift::Error { limit: true, ..g.error("given-up", &[]) };
         let _ = g.resume(&mut said, parked, Err(given_up));
     }
     assert_eq!((said.last().map(String::as_str), g.parked()), (Some("d closed"), 0));
@@ -415,7 +415,7 @@ fn main() -> Result<(), Error> {
 
 - **One shot, by the type.** `Parked` is neither `Copy` nor `Clone`, and `resume` takes it by value,
   so a second resume doesn't compile.
-- **Giving a run up** is an answer like any other: `resume(state, parked, Err(g.error("given-up", &[]).as_limit()))`.
+- **Giving a run up** is an answer like any other: `resume(state, parked, Err(grift::Error { limit: true, ..g.error("given-up", &[]) }))`.
   Nothing catches a limit, every `finally!` runs, and the run ends with it, or with another limit
   that replaced it. A cleanup that errors ends there, and the next one out runs. A cleanup that
   waits comes back as `Ran::Parked`, a run that waits like any other: answer it with a value and it
@@ -450,7 +450,7 @@ fn main() -> Result<(), Error> {
   step, and a cleanup refused memory all the same is passed over for the next, which that new refusal
   collects for. And a kind's name
   means nothing: a program's own `interrupted` or `out-of-memory` is caught like any error, and only
-  `is_limit()` says one is real.
+  `limit` says one is real.
 - **`resume`'s error** says which: `parked: Some(handle)` if nothing happened, `None` if the run
   went on and ended with this error. `?` turns it into the plain `Error`, a returned handle going
   where a dropped one goes.
@@ -473,12 +473,12 @@ fn main() -> Result<(), grift::Error> {
     g.evaluate(&mut false, "(define! chain (lambda! () (finally! (wait) (chain))))")?;
     let top = g.top_level();
     let Ran::Parked(p) = g.start_in(&mut false, &top, "job", "(chain)")? else { unreachable!() };
-    let given_up = g.error("given-up", &[]).as_limit();
+    let given_up = grift::Error { limit: true, ..g.error("given-up", &[]) };
     let Ok(Ran::Parked(p)) = g.resume(&mut false, p, Err(given_up)) else { unreachable!() };
     // Given up, its cleanup waits again, and would each time. Forced at the wait, it ends.
-    let given_up = g.error("given-up", &[]).as_limit();
+    let given_up = grift::Error { limit: true, ..g.error("given-up", &[]) };
     let Err(ended) = g.resume(&mut true, p, Err(given_up)) else { unreachable!() };
-    assert!(ended.parked.is_none() && ended.error.is_limit());
+    assert!(ended.parked.is_none() && ended.error.limit);
     assert_eq!(g.symbol_name(&ended.error.kind)?, "interrupted");
     assert_eq!(g.parked(), 0);
     Ok(())

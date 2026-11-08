@@ -163,7 +163,10 @@ fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
 
 /// Memory refused: the limit a real allocation failure is, wherever it happens.
 fn no_memory(g: &mut G) -> Error {
-    g.error("out-of-memory", &[]).as_limit()
+    Error {
+        limit: true,
+        ..g.error("out-of-memory", &[])
+    }
 }
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
@@ -318,7 +321,10 @@ fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error>
         Ok(()) => Ok(Value::Inert),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
             let path = g.string(path)?;
-            Err(g.error("broken-pipe", &[path]).as_limit())
+            Err(Error {
+                limit: true,
+                ..g.error("broken-pipe", &[path])
+            })
         }
         Err(e) => Err(failed(g, "file-error", path, &e)),
     }
@@ -357,7 +363,10 @@ fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     match args {
         [Value::Integer(n)] => {
             u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
-            Err(g.error("exit", args).as_limit())
+            Err(Error {
+                limit: true,
+                ..g.error("exit", args)
+            })
         }
         [_] => Err(g.error("type-error", args)),
         _ => Err(g.error("arity-error", args)),
@@ -368,7 +377,7 @@ fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 /// gave, or 141 for a pipe no one reads, as a shell says of a program SIGPIPE ended: `grift script |
 /// head` is quiet, and a run that ended this way never reports success.
 fn exit_status(g: &G, e: &Error) -> Option<u8> {
-    if !e.is_limit() {
+    if !e.limit {
         return None;
     }
     match (g.symbol_name(&e.kind).ok()?, e.values.as_slice()) {

@@ -26,7 +26,10 @@ type G = Grift<World>;
 /// of a cleanup on the way out. What the run ended with; refused, why, the handle back.
 fn abandon(g: &mut G, w: &mut World, mut p: Parked) -> Result<Error, ResumeError> {
     loop {
-        let ending = g.error("abandoned", &[]).as_limit();
+        let ending = Error {
+            limit: true,
+            ..g.error("abandoned", &[])
+        };
         match g.resume(w, p, Err(ending)) {
             Ok(Ran::Parked(again)) => p = again,
             Ok(Ran::Finished(v)) => panic!("a limit ended with the value {v:?}"),
@@ -324,12 +327,15 @@ fn a_cleanup_that_waits_after_a_limit_is_a_run_that_waits_and_the_limit_stays() 
         &mut w,
         "(finally! (wait) (sequence! (note 1) (note (wait)) (note 3)))",
     ));
-    let ending = g.error("given-up", &[]).as_limit();
+    let ending = Error {
+        limit: true,
+        ..g.error("given-up", &[])
+    };
     let again = parked(g.resume(&mut w, p, Err(ending)).map_err(Error::from));
     assert_eq!(g.parked(), 1);
     let e = g.resume(&mut w, again, Ok(Value::Integer(2))).unwrap_err();
     assert_eq!(kind(&g, &e.error), "given-up");
-    assert!(e.error.is_limit());
+    assert!(e.error.limit);
     assert_eq!(w.log, ["1", "2", "3"]);
     assert_eq!(g.parked(), 0);
 }

@@ -146,45 +146,34 @@ pub struct Error {
     /// combinations after that name. If unnamed input to [`Grift::read`] or [`Grift::evaluate`]
     /// doesn't read, its trace is empty. Checked as the values are when the error comes in.
     pub trace: Vec<Value>,
-    /// Read with [`Error::is_limit`].
-    limit: bool,
-}
-
-impl Error {
-    /// Whether the host (a stop, a force, [`Error::as_limit`]) or the machine (out of memory) began
-    /// this, so that no handler could catch it. Never so for what a program raises or a host
-    /// function makes with [`Grift::error`], whatever its kind is called (unless memory is refused to
-    /// make it: that is the limit `out-of-memory`), and an error passing
-    /// through a nested run or a host function stays what it was. Its kind then says which limit it is, or, if
-    /// the host handed one in after its values were reclaimed, `stale-value`.
+    /// Whether the host (a stop, a force, a host function that sets this) or the machine (out of
+    /// memory) began this, so that no handler could catch it. Never so for what a program raises or
+    /// a host function makes with [`Grift::error`], whatever its kind is called (unless memory is
+    /// refused to make it: that is the limit `out-of-memory`), and an error passing through a
+    /// nested run or a host function stays what it was. Its kind then says which limit it is, or,
+    /// if the host handed one in after its values were reclaimed, `stale-value`.
     ///
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let forged = g.evaluate(&mut (), "(raise (error (quote! interrupted)))").unwrap_err();
-    /// assert!(g.symbol_name(&forged.kind)? == "interrupted" && !forged.is_limit());
+    /// assert!(g.symbol_name(&forged.kind)? == "interrupted" && !forged.limit);
     /// # Ok::<(), grift::Error>(())
     /// ```
-    pub fn is_limit(&self) -> bool {
-        self.limit
-    }
-
-    /// This error as a limit: a host function that returns it ends the run, past every handler,
-    /// through every cleanup, as a stop does, and it keeps its kind and values for the host to
-    /// read when the run has ended.
+    ///
+    /// A host function that returns an error with this set ends the run, past every handler,
+    /// through every cleanup, as a stop does, and the error keeps its kind and values for the host
+    /// to read when the run has ended.
     ///
     /// ```
-    /// use grift::{Grift, Value};
+    /// use grift::{Error, Grift, Value};
     /// let mut g: Grift = Grift::new()?;
-    /// let quit = g.host_function("quit", |g, _, args| Err(g.error("quit", args).as_limit()))?;
+    /// let quit = g.host_function("quit", |g, _, args| Err(Error { limit: true, ..g.error("quit", args) }))?;
     /// g.define("quit", quit)?;
     /// let e = g.evaluate(&mut (), "(catch! (quit 3) e 0) (add 1 2)").unwrap_err();
     /// assert!(g.symbol_name(&e.kind)? == "quit" && e.values == [Value::Integer(3)]);
     /// # Ok::<(), grift::Error>(())
     /// ```
-    pub fn as_limit(mut self) -> Error {
-        self.limit = true;
-        self
-    }
+    pub limit: bool,
 }
 
 /// Why [`Grift::write`] or [`Grift::describe`] stopped.

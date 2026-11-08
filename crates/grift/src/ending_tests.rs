@@ -92,7 +92,7 @@ fn a_program_or_a_host_function_can_only_make_what_is_caught() {
             // Not caught, it reaches the host as what it is: data with that name.
             let e = g.evaluate(&mut s, &raised).unwrap_err();
             assert!(
-                g.symbol_name(&e.kind).unwrap() == name && !e.is_limit(),
+                g.symbol_name(&e.kind).unwrap() == name && !e.limit,
                 "{raised}"
             );
         }
@@ -105,7 +105,7 @@ fn a_stop_passes_handlers_and_the_host_can_tell() {
     let e = g
         .evaluate(&mut s, "(catch! (sequence! (stop) (add 1 2)) #ignore 0)")
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
 }
 
 #[test]
@@ -123,10 +123,7 @@ fn running_out_of_memory_passes_handlers_and_the_host_can_tell() {
             "(catch! (grow ()) #ignore (bind (current-context) (quote! caught) #true))",
         )
         .unwrap_err();
-    assert_eq!(
-        (kind(&g, &e).as_str(), e.is_limit()),
-        ("out-of-memory", true)
-    );
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("out-of-memory", true));
     assert_eq!(g.evaluate(&mut s, "caught"), Ok(Value::Boolean(false)));
 }
 
@@ -148,7 +145,7 @@ fn abandoning_passes_handlers_runs_cleanups_and_the_host_can_tell() {
         "(catch! (finally! (wait) (note 1)) #ignore (note 2))",
     );
     let e = abandon(&mut g, &mut s, p);
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("abandoned", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("abandoned", true));
     assert_eq!(log(&mut g, &mut s), "(1)");
 }
 
@@ -158,14 +155,14 @@ fn a_nested_runs_stop_stays_the_hosts_through_a_host_function() {
     let e = g
         .evaluate(&mut s, r#"(catch! (nested "(stop) (add 1 2)") #ignore 0)"#)
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
 }
 
 #[test]
 fn a_nested_runs_stop_stays_the_hosts_even_if_it_can_no_longer_come_in() {
     let (mut g, mut s) = host();
     let e = g.evaluate(&mut s, "(catch! (late) #ignore 0)").unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("stale-value", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("stale-value", true));
 }
 
 #[test]
@@ -179,7 +176,7 @@ fn a_program_in_a_cleanup_cannot_replace_what_the_host_began() {
         let src = format!("(catch! (finally! (stop) {raised}) #ignore 0)");
         let e = g.evaluate(&mut s, &src).unwrap_err();
         assert_eq!(
-            (kind(&g, &e).as_str(), e.is_limit()),
+            (kind(&g, &e).as_str(), e.limit),
             ("interrupted", true),
             "{raised}"
         );
@@ -187,7 +184,7 @@ fn a_program_in_a_cleanup_cannot_replace_what_the_host_began() {
         let p = parked(&mut g, &mut s, &src);
         let e = abandon(&mut g, &mut s, p);
         assert_eq!(
-            (kind(&g, &e).as_str(), e.is_limit()),
+            (kind(&g, &e).as_str(), e.limit),
             ("abandoned", true),
             "{raised}"
         );
@@ -220,7 +217,7 @@ fn forced(g: &mut Grift<Interrupter>, s: &mut Interrupter, src: &str) {
         .unwrap();
     g.define("watch", watch).unwrap();
     let e = g.evaluate(s, src).unwrap_err();
-    assert_eq!((kind(g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(log(g, s), "()", "a cleanup finished or began");
 }
 
@@ -280,7 +277,7 @@ fn a_parked_runs_cleanups_under_abandon_end_at_a_force() {
     let watchdog = stop_then_force(g.interrupter());
     let e = abandon(&mut g, &mut s, p);
     watchdog.join().unwrap();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
@@ -297,10 +294,7 @@ fn memory_the_frames_held_is_there_for_the_nearest_cleanup() {
     let e = g
         .evaluate(&mut s, "(finally! (finally! (down 0) (note 1)) (note 2))")
         .unwrap_err();
-    assert_eq!(
-        (kind(&g, &e).as_str(), e.is_limit()),
-        ("out-of-memory", true)
-    );
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("out-of-memory", true));
     g.heap.slot_limit = usize::MAX;
     assert_eq!(log(&mut g, &mut s), "(2 1)");
 }
@@ -318,7 +312,10 @@ fn an_error_named_out_of_memory_collects_nothing() {
     // A limit that says so is still only named so: no memory was refused.
     let quit = g
         .host_function("quit", |g, _, _| {
-            Err(g.error("out-of-memory", &[]).as_limit())
+            Err(Error {
+                limit: true,
+                ..g.error("out-of-memory", &[])
+            })
         })
         .unwrap();
     g.define("quit", quit).unwrap();
@@ -338,7 +335,7 @@ fn a_stale_limit_given_to_resume_stays_a_limit() {
     g.heap.request_collection();
     g.evaluate(&mut s, "#inert").unwrap();
     let ended = g.resume(&mut s, p, Err(e)).unwrap_err().error;
-    assert!(ended.is_limit());
+    assert!(ended.limit);
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
@@ -368,7 +365,7 @@ fn a_force_needs_no_stop_before_it() {
     let e = g
         .evaluate(&mut s, "(finally! (force) (note 1))")
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
@@ -419,7 +416,7 @@ fn a_force_names_the_ending_whatever_memory_refuses_next() {
     let e = g
         .evaluate(&mut s, "(finally! (sequence! (refuse) (force)) (note 1))")
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
@@ -434,7 +431,7 @@ fn a_host_function_that_swallows_a_force_ends_with_it_all_the_same() {
             r#"(finally! (sequence! (swallow "(force)") (note 1)) (note 2))"#,
         )
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
 }
 
@@ -512,7 +509,7 @@ fn what_a_host_keeps_comes_back_what_it_was() {
     g.evaluate(&mut s, LOG).unwrap();
     let mut limit = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
     // Its trace's combinations are garbage once the run is over: a collection before it comes back
-    // would make it stale-value, as `Error::is_limit` says. The kind and the limit are the point.
+    // would make it stale-value, as `Error::limit` says. The kind and the limit are the point.
     limit.trace.clear();
     let p = parked(
         &mut g,
@@ -520,7 +517,7 @@ fn what_a_host_keeps_comes_back_what_it_was() {
         "(catch! (wait) #ignore (note (quote! caught)))",
     );
     let e = g.resume(&mut s, p, Err(limit.clone())).unwrap_err().error;
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     let ordinary = g
         .evaluate(&mut s, "(raise (error (quote! ordinary) 123))")
         .unwrap_err();
@@ -583,11 +580,11 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
             "(finally! (force-each) (bind (current-context) (quote! cleaned) 1))",
         )
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(g.evaluate(&mut s, "cleaned"), Ok(Value::Integer(0)));
     // One taken inside a run reaches that run.
     let e = g
         .evaluate(&mut s, "(take) (stop-each) (add 1 2)")
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
 }

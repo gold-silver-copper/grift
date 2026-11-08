@@ -235,7 +235,7 @@ impl<T> Grift<T> {
     /// the little it does need, the run waits still and the handle is back in
     /// [`ResumeError::parked`], as that type says.
     ///
-    /// To give a run up, answer with a limit ([`Error::as_limit`]): nothing catches it, every
+    /// To give a run up, answer with a limit ([`Error::limit`]): nothing catches it, every
     /// `finally!` runs on the way out, and it is what the run ends with. A cleanup that waits is
     /// a run that waits like any other, which this same answer ends in turn.
     ///
@@ -252,11 +252,11 @@ impl<T> Grift<T> {
     /// let Ran::Parked(parked) = g.start_in(&mut (), &top, "script", src)? else {
     ///     panic!("it waits");
     /// };
-    /// let ending = g.error("given-up", &[]).as_limit();
+    /// let ending = grift::Error { limit: true, ..g.error("given-up", &[]) };
     /// let Err(ResumeError { error, parked: None }) = g.resume(&mut (), parked, Err(ending)) else {
     ///     panic!("it ends");
     /// };
-    /// assert!(error.is_limit() && g.symbol_name(&error.kind)? == "given-up");
+    /// assert!(error.limit && g.symbol_name(&error.kind)? == "given-up");
     /// assert_eq!(g.evaluate(&mut (), "closed")?, Value::Boolean(true));
     /// # Ok::<(), grift::Error>(())
     /// ```

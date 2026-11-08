@@ -821,7 +821,7 @@ fn a_watchdog_over_many_jobs_needs_no_lock() {
         let src = if runaway { "(spin)" } else { "(count 300000)" };
         let result = g.evaluate(&mut (), src);
         over.store(true, Ordering::Relaxed);
-        ended.push(result.map_err(|e| e.is_limit()));
+        ended.push(result.map_err(|e| e.limit));
     }
     drop(jobs);
     watchdog.join().unwrap();

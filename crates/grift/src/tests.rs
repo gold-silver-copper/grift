@@ -3590,7 +3590,7 @@ fn walks_with_a_force_waiting(
     let Err(crate::WriteError::Value(e)) = g.write(&args[0], &mut String::new()) else {
         panic!("printing went on past a force");
     };
-    assert!(e.is_limit());
+    assert!(e.limit);
     Ok(Value::Inert)
 }
 
