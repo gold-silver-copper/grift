@@ -469,11 +469,12 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let status = status
         .code()
         .map_or(Value::Inert, |n| Value::Integer(i64::from(n)));
+    // Refused memory is the limit, whichever output it was refused to, before either is text.
+    let [Some(stderr), Some(stdout)] = outputs else {
+        return Err(no_memory(g));
+    };
     let mut list = Value::EmptyList;
-    for bytes in outputs {
-        let Some(bytes) = bytes else {
-            return Err(no_memory(g));
-        };
+    for bytes in [stderr, stdout] {
         let Ok(text) = String::from_utf8(bytes) else {
             return Err(g.error("encoding-error", args));
         };

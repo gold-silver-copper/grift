@@ -171,34 +171,38 @@ fn memory_refused_to_a_read_is_a_limit() {
 fn memory_refused_to_a_process_s_output_is_a_limit() {
     let dir = scratch("process-refused");
     let path = dir.join("big.grift");
-    let flood = "head -c 900000000 /dev/zero; echo $? > finished; echo err >&2";
-    let src = format!(
-        "(catch! (finally! (run-process \"sh\" \"-c\" {flood:?}) (display \"cleanup\")) e (display \"caught\"))"
-    );
-    std::fs::write(&path, src).unwrap();
-    let out = Command::new("bash")
-        .args([
-            "-c",
-            "ulimit -c 0; ulimit -v 400000; exec \"$@\"",
-            "process-test",
-        ])
-        .arg(env!("CARGO_BIN_EXE_grift"))
-        .arg(&path)
-        .current_dir(&dir)
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(
-        (out.status.code(), &out.stdout[..]),
-        (Some(1), &b"cleanup"[..]),
-        "{err}"
-    );
-    assert!(err.contains("out-of-memory"), "{err}");
-    assert_eq!(
-        std::fs::read_to_string(dir.join("finished")).unwrap(),
-        "0\n"
-    );
+    // Refused stdout is the limit even when stderr isn't text, which alone is catchable.
+    for before in ["", "printf '\\377' >&2; "] {
+        let flood =
+            format!("{before}head -c 900000000 /dev/zero; echo $? > finished; echo err >&2");
+        let src = format!(
+            "(catch! (finally! (run-process \"sh\" \"-c\" {flood:?}) (display \"cleanup\")) e (display \"caught\"))"
+        );
+        std::fs::write(&path, src).unwrap();
+        let out = Command::new("bash")
+            .args([
+                "-c",
+                "ulimit -c 0; ulimit -v 400000; exec \"$@\"",
+                "process-test",
+            ])
+            .arg(env!("CARGO_BIN_EXE_grift"))
+            .arg(&path)
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            (out.status.code(), &out.stdout[..]),
+            (Some(1), &b"cleanup"[..]),
+            "{before}: {err}"
+        );
+        assert!(err.contains("out-of-memory"), "{before}: {err}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("finished")).unwrap(),
+            "0\n"
+        );
+    }
 }
 
 #[test]
