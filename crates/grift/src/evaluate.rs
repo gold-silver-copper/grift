@@ -23,7 +23,7 @@ use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::parked::{Answer, Hosted};
 use crate::read::float_name;
-use crate::{Entry, Grift, collected};
+use crate::{Entry, Grift, collected, context_kind};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -1074,10 +1074,7 @@ impl<T> Grift<T> {
                 Value::Applicative(r) => self.unwrapped(r)?,
                 _ => return Err(type_error(x)),
             },
-            P::Evaluate => match y {
-                Value::Context(c) => return Ok(Mode::Evaluate(x, c)),
-                _ => return Err(type_error(y)),
-            },
+            P::Evaluate => return Ok(Mode::Evaluate(x, context_kind(y)?)),
             P::Context => {
                 let parent = match x {
                     Value::Context(c) => Some(c),
@@ -1089,13 +1086,10 @@ impl<T> Grift<T> {
                         .alloc(Object::Context(parent, Bindings::default()))?,
                 )
             }
-            P::Bind => match x {
-                Value::Context(c) => {
-                    self.bind_tree(c, y, z)?;
-                    Value::Inert
-                }
-                _ => return Err(type_error(x)),
-            },
+            P::Bind => {
+                self.bind_tree(context_kind(x)?, y, z)?;
+                Value::Inert
+            }
             P::Unbind | P::Lookup => {
                 let (Value::Context(c), Value::Symbol(s)) = (x, y) else {
                     let bad = if matches!(x, Value::Context(_)) { y } else { x };
@@ -1106,10 +1100,7 @@ impl<T> Grift<T> {
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
-            P::Names => match x {
-                Value::Context(c) => self.names_list(c)?,
-                _ => return Err(type_error(x)),
-            },
+            P::Names => self.names_list(context_kind(x)?)?,
             P::Pair => self.pair_local(x, y)?,
             P::First | P::Rest => match x {
                 Value::Pair(r) => {
@@ -1150,9 +1141,7 @@ impl<T> Grift<T> {
                 return Err(type_error(z));
             }
             P::EvaluateWithCleanup | P::EvaluateWithHandler => {
-                let Value::Context(c) = y else {
-                    return Err(type_error(y));
-                };
+                let c = context_kind(y)?;
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
                     self.frame(What::Handler { handler: z, base }, c, at)?;
