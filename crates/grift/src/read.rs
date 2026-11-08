@@ -130,11 +130,6 @@ impl<T> Grift<T> {
                 e
             })?
         {
-            if let (Some(_), Value::Pair(r)) = (source, form)
-                && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
-            {
-                origin.outer = true;
-            }
             self.add(&mut forms, form)?;
             (at, line) = (place.end, after);
         }
@@ -182,6 +177,7 @@ impl<T> Grift<T> {
                             && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
                         {
                             origin.place = Some((source, list.line));
+                            origin.outer = open.is_empty();
                         }
                         list.head
                     }
