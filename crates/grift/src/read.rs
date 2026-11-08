@@ -290,37 +290,34 @@ impl<T> Grift<T> {
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,
     /// `\r`, `\t` and `\xHEX;` (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor, start: usize) -> Result<Value, Error> {
+        let src = cur.src;
+        let unclosed = || parse_error(src, start, K::UnclosedString);
         let mut s = String::new();
         loop {
             let escape = cur.at;
-            let c = match cur.next() {
-                Some('"') => break,
-                Some('\\') => match cur.next() {
-                    Some('\\') => '\\',
-                    Some('"') => '"',
-                    Some('n') => '\n',
-                    Some('r') => '\r',
-                    Some('t') => '\t',
-                    Some('x') => {
+            let c = match cur.next().ok_or_else(unclosed)? {
+                '"' => break,
+                '\\' => match cur.next().ok_or_else(unclosed)? {
+                    '\\' => '\\',
+                    '"' => '"',
+                    'n' => '\n',
+                    'r' => '\r',
+                    't' => '\t',
+                    'x' => {
                         let begin = cur.at;
                         while cur.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
                             cur.next();
                         }
-                        let hex = cur.src.get(begin..cur.at).unwrap_or_default();
+                        let hex = src.get(begin..cur.at).unwrap_or_default();
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
-                        match (cur.next(), c) {
-                            (Some(';'), Some(c)) => c,
-                            (None, _) => {
-                                return Err(parse_error(cur.src, start, K::UnclosedString));
-                            }
-                            _ => return Err(parse_error(cur.src, escape, K::BadEscape)),
+                        match (cur.next().ok_or_else(unclosed)?, c) {
+                            (';', Some(c)) => c,
+                            _ => return Err(parse_error(src, escape, K::BadEscape)),
                         }
                     }
-                    Some(_) => return Err(parse_error(cur.src, escape, K::BadEscape)),
-                    None => return Err(parse_error(cur.src, start, K::UnclosedString)),
+                    _ => return Err(parse_error(src, escape, K::BadEscape)),
                 },
-                Some(c) => c,
-                None => return Err(parse_error(cur.src, start, K::UnclosedString)),
+                c => c,
             };
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
             s.push(c);
