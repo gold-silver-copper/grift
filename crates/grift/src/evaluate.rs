@@ -1002,13 +1002,8 @@ impl<T> Grift<T> {
             let found = self
                 .intern(name)
                 .and_then(|s| self.find(self.built_in, s))?;
-            let found = match found {
-                Some(Value::Applicative(r)) => self.unwrapped(r)?,
-                Some(v) => v,
-                None => Value::Inert,
-            };
-            let Value::Operative(r) = found else {
-                return Err(Error::new(K::TypeError, &[found]));
+            let Some(Value::Operative(r)) = found else {
+                return Err(Error::new(K::TypeError, &[found.unwrap_or(Value::Inert)]));
             };
             if let Object::Operative(op) = self.heap.get_mut(r)? {
                 op.native = Some(native);
