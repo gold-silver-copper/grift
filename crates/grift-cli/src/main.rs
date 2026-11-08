@@ -495,18 +495,13 @@ struct Gathered<W: Write> {
 
 impl<W: Write> Write for Gathered<W> {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        if self.len + data.len() > self.text.len() {
+        if self.len == self.text.len() {
             self.flush()?;
-            if data.len() > self.text.len() {
-                return self.out.write(data);
-            }
         }
-        let end = self.len + data.len();
-        if let Some(room) = self.text.get_mut(self.len..end) {
-            room.copy_from_slice(data);
-            self.len = end;
-        }
-        Ok(data.len())
+        let mut room = self.text.get_mut(self.len..).unwrap_or_default();
+        let n = room.write(data)?;
+        self.len += n;
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {
