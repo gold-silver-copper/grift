@@ -3848,3 +3848,16 @@ fn every_type_has_a_predicate_named_for_it() {
         ],
     );
 }
+
+/// `local::Value`'s tag is a whole word, so a copy loads it at once and never waits on a one-byte
+/// write just before (#210: about 16% of every program on x86-64). Its size can't show this: a
+/// one-byte tag pads to the same 16 bytes. So: the payload starts a word in.
+#[test]
+fn a_values_tag_is_a_whole_word() {
+    let v = local::Value::Boolean(true);
+    let local::Value::Boolean(b) = &v else {
+        panic!("a boolean")
+    };
+    let offset = std::ptr::from_ref(b).addr() - std::ptr::from_ref(&v).addr();
+    assert_eq!(offset, size_of::<u64>());
+}

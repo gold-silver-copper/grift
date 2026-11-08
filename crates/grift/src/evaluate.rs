@@ -148,8 +148,64 @@ struct Frame {
     at: Reference,
 }
 
-// Every step pushes or pops a frame: a bigger one costs every program.
-const _: () = assert!(size_of::<Frame>() == 56);
+// The machine loop's data shape, checked as it compiles. Every step pushes or pops a frame and
+// copies a mode, and a frame written field by field is read back whole: a bigger frame costs every
+// program, and a field narrower than a word beside another narrow one makes the read wait for both
+// writes to land (a store-forwarding stall: +21% on every program once, when `Base` was a `u32`
+// and a `bool`). These catch a change of size or field width only. Code layout, inlining, branch
+// shape and what the optimizer does with the loop they can't see: a speed run is the check for
+// those.
+const _: () = {
+    // A frame: a `What`, its context and its combination, no padding.
+    assert!(size_of::<Frame>() == 56 && align_of::<Frame>() == 8);
+    assert!(size_of::<What>() == 40 && align_of::<What>() == 8);
+    // Every field of every `What` is whole words: written whole, read back whole. A new variant or
+    // field doesn't compile until `words` names it; a new variant then goes in the list below.
+    const fn whole<T>(_: &T) -> bool {
+        size_of::<T>().is_multiple_of(size_of::<usize>())
+    }
+    const fn words(what: &What) -> bool {
+        match what {
+            What::Forms { rest } | What::Body { rest } => whole(rest),
+            What::Combine { operands, maker } => whole(operands) && whole(maker),
+            What::Arguments {
+                combiner,
+                rest,
+                base,
+            } => whole(combiner) && whole(rest) && whole(base),
+            What::Cleanup { cleanup: v, base } | What::Handler { handler: v, base } => {
+                whole(v) && whole(base)
+            }
+            What::Branch {
+                consequent,
+                alternative,
+            } => whole(consequent) && whole(alternative),
+            What::Finish | What::Form => true,
+        }
+    }
+    let (v, maker, base) = (Value::Inert, Maker::Program, Base(0));
+    assert!(words(&What::Forms { rest: v }) && words(&What::Body { rest: v }));
+    assert!(words(&What::Combine { operands: v, maker }));
+    assert!(words(&What::Arguments {
+        combiner: v,
+        rest: v,
+        base,
+    }));
+    assert!(words(&What::Cleanup {
+        cleanup: v,
+        base: 0
+    }));
+    assert!(words(&What::Handler {
+        handler: v,
+        base: 0
+    }));
+    assert!(words(&What::Branch {
+        consequent: v,
+        alternative: v,
+    }));
+    // A mode is a value and a context, its tag in the value's spare tag values.
+    assert!(size_of::<Mode>() == 24);
+};
 
 #[derive(Clone, Copy)]
 enum What {
