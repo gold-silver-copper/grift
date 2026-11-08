@@ -1,12 +1,9 @@
 //! How a run ends: who began the unwinding decides what may catch it, never what its kind is called.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use crate::parked_tests::abandon;
-use crate::{Answer, Error, Grift, Interrupter, Parked, Ran, Value};
-
-fn kind<T>(g: &Grift<T>, e: &Error) -> String {
-    g.symbol_name(&e.kind).unwrap().to_string()
-}
+use crate::parked_tests::{give_up, parked, start};
+use crate::tests::kind;
+use crate::{Answer, Grift, Interrupter, Ran, Value};
 
 /// A host whose program can stop its own run and force it, with a run that waits.
 fn host() -> (Grift<Interrupter>, Interrupter) {
@@ -127,14 +124,6 @@ fn running_out_of_memory_passes_handlers_and_the_host_can_tell() {
     assert_eq!(g.evaluate(&mut s, "caught"), Ok(Value::Boolean(false)));
 }
 
-fn parked(g: &mut Grift<Interrupter>, s: &mut Interrupter, src: &str) -> Parked {
-    let top = g.top_level();
-    match g.start_in(s, &top, "test", src) {
-        Ok(Ran::Parked(p)) => p,
-        other => panic!("{other:?}"),
-    }
-}
-
 #[test]
 fn a_nested_runs_stop_stays_the_hosts_even_if_it_can_no_longer_come_in() {
     let (mut g, mut s) = host();
@@ -158,11 +147,11 @@ fn a_program_in_a_cleanup_cannot_replace_what_the_host_began() {
             "{raised}"
         );
         let src = format!("(catch! (finally! (wait) {raised}) #ignore 0)");
-        let p = parked(&mut g, &mut s, &src);
-        let e = abandon(&mut g, &mut s, p);
+        let p = parked(start(&mut g, &mut s, &src));
+        let e = give_up(&mut g, &mut s, p);
         assert_eq!(
             (kind(&g, &e).as_str(), e.limit),
-            ("abandoned", true),
+            ("given-up", true),
             "{raised}"
         );
     }
@@ -223,16 +212,16 @@ fn a_force_cuts_a_cleanup_that_never_ends_in_a_nested_run() {
 }
 
 #[test]
-fn a_parked_runs_cleanups_under_abandon_end_at_a_force() {
+fn a_parked_runs_cleanups_under_giving_up_end_at_a_force() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
-    let p = parked(
+    let p = parked(start(
         &mut g,
         &mut s,
         "(finally! (finally! (wait) (spin 100000000) (note 1)) (spin 100000000) (note 2))",
-    );
+    ));
     let watchdog = stop_then_force(g.interrupter());
-    let e = abandon(&mut g, &mut s, p);
+    let e = give_up(&mut g, &mut s, p);
     watchdog.join().unwrap();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     assert_eq!(log(&mut g, &mut s), "()");
@@ -288,7 +277,11 @@ fn a_stale_limit_given_to_resume_stays_a_limit() {
     let (mut g, mut s) = host();
     g.evaluate(&mut s, LOG).unwrap();
     let e = g.evaluate(&mut s, "(stop) (add 1 2)").unwrap_err();
-    let p = parked(&mut g, &mut s, "(catch! (wait) e (note (quote! caught)))");
+    let p = parked(start(
+        &mut g,
+        &mut s,
+        "(catch! (wait) e (note (quote! caught)))",
+    ));
     g.heap.request_collection();
     g.evaluate(&mut s, "#inert").unwrap();
     let ended = g.resume(&mut s, p, Err(e)).unwrap_err().error;
@@ -425,21 +418,21 @@ fn what_a_host_keeps_comes_back_what_it_was() {
     // Its trace's combinations are garbage once the run is over: a collection before it comes back
     // would make it stale-value, as `Error::limit` says. The kind and the limit are the point.
     limit.trace.clear();
-    let p = parked(
+    let p = parked(start(
         &mut g,
         &mut s,
         "(catch! (wait) #ignore (note (quote! caught)))",
-    );
+    ));
     let e = g.resume(&mut s, p, Err(limit.clone())).unwrap_err().error;
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     let ordinary = g
         .evaluate(&mut s, "(raise (error (quote! ordinary) 123))")
         .unwrap_err();
-    let p = parked(
+    let p = parked(start(
         &mut g,
         &mut s,
         "(catch! (wait) e (list (evaluate-in! kind e) (evaluate-in! values e)))",
-    );
+    ));
     let Ran::Finished(v) = g.resume(&mut s, p, Err(ordinary)).unwrap() else {
         panic!("it finishes");
     };
@@ -515,7 +508,7 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
     let e = g
         .evaluate(&mut s, "(take) (force-clones) (add 1 2)")
         .unwrap_err();
-    assert_eq!((kind(&g, &e).as_str(), e.is_limit()), ("interrupted", true));
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     // One taken inside a run reaches that run.
     let e = g
         .evaluate(&mut s, "(take) (stop-each) (add 1 2)")

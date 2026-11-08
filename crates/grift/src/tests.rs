@@ -118,13 +118,13 @@ fn grift() -> Grift {
     Grift::new().expect("the library loads")
 }
 
-fn show<T>(g: &Grift<T>, v: &Value) -> String {
+pub(crate) fn show<T>(g: &Grift<T>, v: &Value) -> String {
     let mut s = String::new();
     g.write(v, &mut s).unwrap();
     s
 }
 
-fn kind<T>(g: &Grift<T>, e: &Error) -> String {
+pub(crate) fn kind<T>(g: &Grift<T>, e: &Error) -> String {
     g.symbol_name(&e.kind).unwrap().to_string()
 }
 

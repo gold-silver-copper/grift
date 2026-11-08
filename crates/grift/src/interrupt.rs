@@ -153,10 +153,10 @@ impl Interrupter {
     /// whether it was. No stop need come first. Each cleanup it meets is cut before its first form,
     /// at every level of the run, nothing a host function then evaluates runs past the one
     /// primitive it may call directly, and the run ends with `interrupted`, whatever else fails on
-    /// the way. `true` doesn't say it acted, as for a stop. [`Error::is_limit`] says the ending is
+    /// the way. `true` doesn't say it acted, as for a stop. [`Error::limit`] says the ending is
     /// real.
     ///
-    /// [`Error::is_limit`]: crate::Error::is_limit
+    /// [`Error::limit`]: crate::Error::limit
     pub fn force(&mut self) -> bool {
         self.control.ask(FORCE, self.run)
     }
