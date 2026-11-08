@@ -392,12 +392,15 @@ fn main() -> Result<(), Error> {
     for script in ["(job \"a\" 30)", "(job \"b\" 10)", "(job \"c\" 20)"] {
         wake_at(now, g.start_in(&mut said, &top, "job", script)?, &mut timers);
     }
+    let mut woke = Vec::new();
     while let Some(next) = (0..timers.len()).min_by_key(|&i| timers[i].0) {
         let (at, parked) = timers.swap_remove(next);
         now = at;
+        woke.push(now);
         wake_at(now, g.resume(&mut said, parked, Ok(Value::Inert))?, &mut timers);
     }
     assert_eq!(said, ["b", "c", "b closed", "a", "c closed", "a closed"]);
+    assert_eq!(woke, [10, 20, 20, 30, 40, 60]);
 
     // A run whose handle was dropped is found again and given up, its cleanups run. A cleanup
     // that waits comes back as `Ran::Parked`; dropped, it is found again in the next turn.
