@@ -55,19 +55,6 @@ const CORE: &[&str] = &[
 ];
 
 impl<T> Grift<T> {
-    /// The elements of a proper list, by `as_pair`, as a host reads one.
-    pub(crate) fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
-        let (mut items, mut rest) = (Vec::new(), list.clone());
-        while let Some((x, more)) = self.as_pair(&rest)? {
-            items.push(x);
-            rest = more;
-        }
-        match rest {
-            Value::EmptyList => Ok(items),
-            _ => Err(self.export_error(local::Error::new(local::K::TypeError, &[]))),
-        }
-    }
-
     /// From now on the natives are their grift definitions: each bound in the built-in context,
     /// where the library looks it up, wrapped if the native is, and no library form runs a native
     /// twin. As the library's own code, what this loads is skipped by traces.

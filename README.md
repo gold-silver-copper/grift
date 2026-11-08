@@ -195,8 +195,8 @@ fn main() -> Result<(), Error> {
     assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.pair(hi.clone(), Value::EmptyList)?; // a list is pairs, built from its end
-    assert_eq!(g.as_pair(&list)?, Some((hi, Value::EmptyList)));
+    let list = g.list(&[hi.clone(), Value::Integer(1)])?; // or pair by pair, from its end
+    assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]); // or as_pair, from its start
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = String::new();
     g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
@@ -231,11 +231,13 @@ fn main() -> Result<(), Error> {
   `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
   grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
   as grift's own: traces skip it. Code a program reads or builds is the program's.
-- **Values:** `string`, `bytes(&[u8])`, `pair`, `symbol`; read with `as_str`, `as_bytes`,
-  `as_pair`, `symbol_name`, each `Result<Option<_>, Error>` or `Result<_, Error>`, so a reclaimed
-  value is `stale-value`, never a wrong answer; `write(&v, out)`. A list is built with `pair` from
-  its end and read with `as_pair` from its start. Host text is written as a string literal the
-  same way: `string`, then `write`. A `Value::Primitive` is opaque: a host compares and writes it,
+- **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
+  `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
+  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)`.
+  A list is built whole with `list` or with `pair` from its end, and read whole with `list_items` or
+  with `as_pair` from its start. Host text is written as a string literal either with `string`
+  then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an
+  interpreter or allocation; it returns `std::fmt::Result`. A `Value::Primitive` is opaque: a host compares and writes it,
   and can't name or make one.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.

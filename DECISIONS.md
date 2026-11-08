@@ -1813,3 +1813,6 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
     The owner chose explicit provenance, and its cost in lines is what it takes to carry the mark without a speed loss.
   - **A bug found and fixed:** code a host built with `pair` right after catching a panic from library code (or after
     swapping interpreters) was marked as the library's until the next run. Evidence: `a_run_its_host_function_left_is_over`.
+- **G-174. The owner restores `Grift::list`, `Grift::list_items` and public `write_string`** (2026-11-07, Job 5
+  update), replacing U82 and U90 in G-173. Why: owner's call. A host may build and read a list whole or pair by pair,
+  and write text as a literal with `write_string` or with `string` then `write`.

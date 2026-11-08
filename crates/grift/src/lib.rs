@@ -24,6 +24,7 @@ use std::sync::{Arc, Weak};
 
 pub use interrupt::Interrupter;
 pub use parked::{Answer, Parked, ParkingFunction, Ran, ResumeError};
+pub use print::write_string;
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
@@ -592,6 +593,38 @@ impl<T> Grift<T> {
             _ => Ok(None),
         });
         self.out(p.map(|p| p.map(|(a, b)| (self.export(a), self.export(b)))))
+    }
+
+    /// A new list of `values`, as `pair` builds one from its end.
+    pub fn list(&mut self, values: &[Value]) -> Result<Value, Error> {
+        let made = values
+            .iter()
+            .rev()
+            .try_fold(local::Value::EmptyList, |list, v| {
+                let v = self.import(v)?;
+                self.pair_local(v, list)
+            });
+        self.exported(made)
+    }
+
+    /// The elements of a proper list, as `as_pair` reads them; a `type-error` carrying anything else.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// let keys = g.evaluate(&mut (), "(list \"C-b\" \"v\")")?;
+    /// let keys: Vec<String> = g.list_items(&keys)?.iter().filter_map(|k| g.as_str(k).ok()?.map(String::from)).collect();
+    /// assert_eq!(keys, ["C-b", "v"]);
+    /// let dotted = g.evaluate(&mut (), "(pair 1 2)")?;
+    /// let e = g.list_items(&dotted).unwrap_err();
+    /// assert_eq!(g.symbol_name(&e.kind)?, "type-error");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
+        let items = self
+            .import(list)
+            .and_then(|l| self.items(l, || local::Error::new(K::TypeError, &[l])));
+        let items = items.and_then(|items| collected(items.into_iter().map(|v| self.export(v))));
+        self.out(items)
     }
 
     /// Reads every form in `src` into a list, evaluating nothing. A `parse-error` carries why and
