@@ -409,14 +409,10 @@
 
 ; string-join: the strings with the separator between them.
 (define! string-join
-  ((lambda! ()
-     (define! between
-       (lambda! (xs separator)
-         (if! (same? xs ())
-           ()
-           (pair separator (pair (first xs) (between (rest xs) separator))))))
-     (lambda! (strings separator)
-       (if! (same? strings ()) "" (apply join (rest (between strings separator))))))))
+  (lambda! (strings separator)
+    (if! (same? strings ())
+      ""
+      (apply join (rest (apply append (map (lambda! (s) (list separator s)) strings)))))))
 
 ; string-trim: without the ASCII whitespace at either end, as Rust's trim_ascii.
 (define! string-trim
