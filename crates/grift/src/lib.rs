@@ -783,24 +783,20 @@ impl<T> Grift<T> {
 
     /// The value `k` keeps.
     pub fn kept(&self, k: &Kept) -> Result<Value, Error> {
-        let found = match self.owns(&k.owner) {
-            true => match self.kept.get(k.name as usize) {
+        let found = self
+            .owns(&k.owner)
+            .and_then(|()| match self.kept.get(k.name as usize) {
                 Some(Entry::Value(v)) => Ok(*v),
                 _ => Err(local::Error::new(K::StaleValue, &[])),
-            },
-            false => Err(local::Error::new(K::ForeignValue, &[])),
-        };
+            });
         self.exported(found)
     }
 
     /// Clears the value `k` keeps, so it can be collected. Another interpreter's `Kept` is the
     /// error `foreign-value`, and comes back with it, to be released in its own.
     pub fn release(&mut self, k: Kept) -> Result<(), (Error, Kept)> {
-        if !self.owns(&k.owner) {
-            return Err((
-                self.export_error(local::Error::new(K::ForeignValue, &[])),
-                k,
-            ));
+        if let Err(e) = self.owns(&k.owner) {
+            return Err((self.export_error(e), k));
         }
         self.clear_kept(k.name);
         Ok(())
@@ -875,8 +871,13 @@ impl<T> Grift<T> {
         Owner(Arc::downgrade(&self.control))
     }
 
-    fn owns(&self, owner: &Owner) -> bool {
-        std::ptr::eq(owner.0.as_ptr(), Arc::as_ptr(&self.control))
+    /// The one check that something is this interpreter's: `foreign-value` if it isn't.
+    fn owns(&self, owner: &Owner) -> Result<(), local::Error> {
+        if std::ptr::eq(owner.0.as_ptr(), Arc::as_ptr(&self.control)) {
+            Ok(())
+        } else {
+            Err(local::Error::new(K::ForeignValue, &[]))
+        }
     }
 
     /// `v` as this interpreter's own: `foreign-value` if another made it, `stale-value` if it was
@@ -886,12 +887,12 @@ impl<T> Grift<T> {
         use local::Value as L;
         // The object must be live and of the kind the variant says: a reference put in another
         // variant is no value of this interpreter's.
-        let live = |r: &Reference, kind: fn(&Object) -> bool| match self.owns(&r.owner) {
-            true => match self.heap.get(r.local)? {
+        let live = |r: &Reference, kind: fn(&Object) -> bool| {
+            self.owns(&r.owner)?;
+            match self.heap.get(r.local)? {
                 o if kind(o) => Ok(r.local),
                 _ => Err(local::Error::new(K::StaleValue, &[])),
-            },
-            false => Err(local::Error::new(K::ForeignValue, &[])),
+            }
         };
         Ok(match v {
             Value::EmptyList => L::EmptyList,
@@ -910,10 +911,10 @@ impl<T> Grift<T> {
                     L::Operative(live(r, |o| matches!(o, Object::Operative(_)))?)
                 }
                 OperativeKind::Primitive(p) => L::Primitive(*p),
-                OperativeKind::Host(owner, index) if self.owns(owner) => {
+                OperativeKind::Host(owner, index) => {
+                    self.owns(owner)?;
                     L::Host(local::Host(*index))
                 }
-                OperativeKind::Host(..) => return Err(local::Error::new(K::ForeignValue, &[])),
             },
             Value::Applicative(r) => {
                 L::Applicative(live(r, |o| matches!(o, Object::Applicative(_)))?)
@@ -922,10 +923,8 @@ impl<T> Grift<T> {
     }
 
     fn import_symbol(&self, s: &Symbol) -> Result<local::Symbol, local::Error> {
-        match self.owns(&s.owner) {
-            true => Ok(local::Symbol(s.index)),
-            false => Err(local::Error::new(K::ForeignValue, &[])),
-        }
+        self.owns(&s.owner)?;
+        Ok(local::Symbol(s.index))
     }
 
     /// An error a host function returned, as this interpreter's.

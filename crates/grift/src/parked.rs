@@ -278,9 +278,7 @@ impl<T> Grift<T> {
         parked: &Parked,
         answer: &Result<local::Value, local::Error>,
     ) -> Result<Machine, local::Error> {
-        if !self.owns(&parked.owner) {
-            return Err(local::Error::new(K::ForeignValue, &[]));
-        }
+        self.owns(&parked.owner)?;
         if self.control.running() {
             return Err(local::Error::new(K::CannotPark, &[]));
         }
