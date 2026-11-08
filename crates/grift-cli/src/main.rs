@@ -148,7 +148,7 @@ fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
     };
     let mut copy = String::new();
     if copy.try_reserve_exact(len).is_err() {
-        return Err(no_memory(g));
+        return Err(limit(g, "out-of-memory", &[]));
     }
     copy.push_str(g.as_str(v)?.unwrap_or_default());
     Ok(Some(copy))
@@ -163,11 +163,11 @@ fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
     }
 }
 
-/// Memory refused: the limit a real allocation failure is, wherever it happens.
-fn no_memory(g: &mut G) -> Error {
+/// A limit of `kind`: the runner's are `out-of-memory`, `broken-pipe` and `exit`.
+fn limit(g: &mut G, kind: &str, values: &[Value]) -> Error {
     Error {
         limit: true,
-        ..g.error("out-of-memory", &[])
+        ..g.error(kind, values)
     }
 }
 
@@ -175,7 +175,7 @@ fn no_memory(g: &mut G) -> Error {
 /// aren't UTF-8, else `kind` with the system's message.
 fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::OutOfMemory {
-        return no_memory(g);
+        return limit(g, "out-of-memory", &[]);
     }
     let what = match g.string(what) {
         Ok(v) => v,
@@ -200,7 +200,7 @@ fn opened(
     let path = one_string(g, args)?;
     match open(&path) {
         Ok(file) => {
-            let id = i64::try_from(r.files.len()).map_err(|_| no_memory(g))?;
+            let id = i64::try_from(r.files.len()).map_err(|_| limit(g, "out-of-memory", &[]))?;
             r.files.push(Opened { path, file });
             Ok(Value::Integer(id))
         }
@@ -290,7 +290,7 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
             Err(e) => return Err(failed(g, "file-error", path, &e)),
         };
         if bytes.try_reserve(chunk.len()).is_err() {
-            return Err(no_memory(g));
+            return Err(limit(g, "out-of-memory", &[]));
         }
         bytes.extend_from_slice(chunk);
         let used = chunk.len();
@@ -323,10 +323,7 @@ fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error>
         Ok(()) => Ok(Value::Inert),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
             let path = g.string(path)?;
-            Err(Error {
-                limit: true,
-                ..g.error("broken-pipe", &[path])
-            })
+            Err(limit(g, "broken-pipe", &[path]))
         }
         Err(e) => Err(failed(g, "file-error", path, &e)),
     }
@@ -365,10 +362,7 @@ fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     match args {
         [Value::Integer(n)] => {
             u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
-            Err(Error {
-                limit: true,
-                ..g.error("exit", args)
-            })
+            Err(limit(g, "exit", args))
         }
         [_] => Err(g.error("type-error", args)),
         _ => Err(g.error("arity-error", args)),
@@ -460,7 +454,7 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
         .map_or(Value::Inert, |n| Value::Integer(i64::from(n)));
     // Refused memory is the limit, whichever output it was refused to, before either is text.
     let [Some(stderr), Some(stdout)] = outputs else {
-        return Err(no_memory(g));
+        return Err(limit(g, "out-of-memory", &[]));
     };
     let mut list = Value::EmptyList;
     for bytes in [stderr, stdout] {
