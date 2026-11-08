@@ -4,8 +4,9 @@
 //! `encoding-error` before anything runs. Data goes to stdout, diagnostics to stderr. Exit status:
 //! 0, 1 on a grift error (a script that can't be read, or failed output, is one), or what the
 //! program gave `exit`. Errors shown at a terminal don't count: a session ends 0 unless the program
-//! calls `exit`, input ends inside a form, or standard input or error fails or is closed, which is
-//! the session's own error and ends it with 1. A write to a pipe no one reads, on any file, ends
+//! calls `exit`, input ends inside a form, or standard input or error fails or a program closes it,
+//! which is the session's own error and ends it with 1. One the shell closed is `/dev/null` by
+//! then: Rust's runtime opens it there before `main`. A write to a pipe no one reads, on any file, ends
 //! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 141, the status a
 //! shell gives a program that SIGPIPE ended.
 //!
