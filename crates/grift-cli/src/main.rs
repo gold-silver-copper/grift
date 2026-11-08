@@ -30,15 +30,17 @@ const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, read
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
 
-/// A file a program opened: its path, and what is left of it until it is closed.
+/// A file a program opened: its path, and its stream.
 struct Opened {
     path: String,
-    file: Option<Stream>,
+    file: Stream,
 }
 
+/// A file is being read, being written, or closed, which is for good.
 enum Stream {
     Reading(Box<dyn BufRead>),
     Writing(Box<dyn Write>),
+    Closed,
 }
 
 /// The runner's state: the files opened, standard input, error and output first, and when the run
@@ -194,10 +196,7 @@ fn opened(
     match open(&path) {
         Ok(file) => {
             let id = i64::try_from(r.files.len()).map_err(|_| no_memory(g))?;
-            r.files.push(Opened {
-                path,
-                file: Some(file),
-            });
+            r.files.push(Opened { path, file });
             Ok(Value::Integer(id))
         }
         Err(e) => Err(failed(g, "file-error", &path, &e)),
@@ -225,12 +224,12 @@ fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mu
     match opened {
         Some(Opened {
             path,
-            file: Some(stream),
-        }) => Ok((path, stream)),
-        Some(Opened { path, file: None }) => {
+            file: Stream::Closed,
+        }) => {
             let path = g.string(path)?;
             Err(g.error("closed", &[path]))
         }
+        Some(Opened { path, file }) => Ok((path, file)),
         None => Err(g.error("type-error", std::slice::from_ref(id))),
     }
 }
@@ -328,12 +327,7 @@ fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error>
 /// `(close)` on a file: closes it; using it after this is the error `closed`.
 fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id] = exactly(g, args)?;
-    file(g, r, id)?;
-    if let Value::Integer(n) = id
-        && let Some(opened) = usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i))
-    {
-        opened.file = None;
-    }
+    *file(g, r, id)?.1 = Stream::Closed;
     Ok(Value::Inert)
 }
 
@@ -636,15 +630,15 @@ fn main() -> ExitCode {
         files: vec![
             Opened {
                 path: String::from("standard-input"),
-                file: Some(Stream::Reading(Box::new(BufReader::new(io::stdin())))),
+                file: Stream::Reading(Box::new(BufReader::new(io::stdin()))),
             },
             Opened {
                 path: String::from("standard-error"),
-                file: Some(Stream::Writing(Box::new(io::stderr()))),
+                file: Stream::Writing(Box::new(io::stderr())),
             },
             Opened {
                 path: String::from("standard-output"),
-                file: Some(Stream::Writing(Box::new(io::stdout()))),
+                file: Stream::Writing(Box::new(io::stdout())),
             },
         ],
         started: Instant::now(),
