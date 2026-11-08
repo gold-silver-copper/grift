@@ -223,7 +223,7 @@ impl<T> Grift<T> {
             _ => None,
         };
         Parked {
-            owner: self.identity.clone(),
+            owner: self.owner(),
             name,
             request: self.export(request.unwrap_or(local::Value::Inert)),
         }

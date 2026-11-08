@@ -239,7 +239,6 @@ pub struct Grift<T = ()> {
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
-    identity: Owner,
     /// Whether the run in progress may park.
     may_park: bool,
     /// Where each combination read under a name is, by its slot's index.
@@ -260,12 +259,10 @@ impl<T> Grift<T> {
             kept_free: Vec::new(),
             parked_as: None,
             machine: evaluate::Machine::default(),
-            identity: Owner(Weak::new()),
             control: Arc::new(Control::default()),
             may_park: false,
             positions: HashMap::default(),
         };
-        g.identity = Owner(Arc::downgrade(&g.control));
         let loaded = g.load();
         g.out(loaded).map(|()| g)
     }
@@ -733,7 +730,7 @@ impl<T> Grift<T> {
         let kept = self.import(&v).and_then(|v| self.keep_local(v));
         match kept {
             Ok(name) => Ok(Kept {
-                owner: self.identity.clone(),
+                owner: self.owner(),
                 name,
             }),
             Err(e) => Err(self.export_error(e)),
@@ -862,6 +859,11 @@ impl<T> Grift<T> {
         context_kind(self.import(v)?)
     }
 
+    /// What a value handed out holds: this interpreter's identity.
+    fn owner(&self) -> Owner {
+        Owner(Arc::downgrade(&self.control))
+    }
+
     fn owns(&self, owner: &Owner) -> bool {
         std::ptr::eq(owner.0.as_ptr(), Arc::as_ptr(&self.control))
     }
@@ -966,7 +968,7 @@ impl<T> Grift<T> {
     pub(crate) fn export(&self, v: local::Value) -> Value {
         use local::Value as L;
         let reference = |local| Reference {
-            owner: self.identity.clone(),
+            owner: self.owner(),
             local,
         };
         match v {
@@ -985,7 +987,7 @@ impl<T> Grift<T> {
             L::Operative(r) => Value::Operative(reference(r)),
             L::Applicative(r) => Value::Applicative(reference(r)),
             L::Host(h) => Value::Host(Host {
-                owner: self.identity.clone(),
+                owner: self.owner(),
                 index: h.0,
             }),
         }
@@ -993,7 +995,7 @@ impl<T> Grift<T> {
 
     fn export_symbol(&self, s: local::Symbol) -> Symbol {
         Symbol {
-            owner: self.identity.clone(),
+            owner: self.owner(),
             index: s.0,
         }
     }
