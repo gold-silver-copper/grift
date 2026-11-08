@@ -200,7 +200,7 @@ fn collect(g: &mut G, w: &mut World) {
 
 fn described(g: &G, e: &Error) -> String {
     let mut s = String::new();
-    g.describe(e, &mut s).unwrap();
+    g.describe(e, &mut s, 4096).unwrap();
     s
 }
 
@@ -231,7 +231,7 @@ fn a_run_parks_and_takes_a_value_or_an_error_once() {
     let e = failed(done);
     assert_eq!(
         described(&g, &e),
-        "timed-out 7 in (wait) at script.grift:1\n  from (add 1 (wait)) at script.grift:1"
+        "timed-out at script.grift:1 7 in (wait)\n  from (add 1 ...) at script.grift:1"
     );
 }
 
@@ -572,9 +572,9 @@ fn a_trace_after_a_resume_shows_the_whole_path_through_a_load() {
     assert_eq!(w.log, ["loaded", "closed"]);
     assert_eq!(
         described(&g, &e),
-        "type-error 1 in (first from-file) at inner.grift:3
+        "type-error at inner.grift:3 1 in (first from-file)
   from (for-each (lambda! (form) (evaluate form caller)) (read-forms-host path))
-  from (finally! (for-each (lambda! (form) (evaluate form caller)) (read-forms-host path)) (note (quote! closed)))
+  from (finally! ... (note (quote! closed)))
   from (load \"inner.grift\") at script.grift:2"
     );
 }
@@ -590,7 +590,7 @@ fn a_trace_keeps_a_built_combination_only_the_parked_run_still_holds() {
     collect(&mut g, &mut w);
     let e = g.error("timed-out", &[]);
     let done = went_on(g.resume(&mut w, p, Err(e)));
-    assert!(described(&g, &failed(done)).starts_with("timed-out in (wait)"));
+    assert!(described(&g, &failed(done)).starts_with("timed-out at script.grift:1 in (wait)"));
 }
 
 /// A run begun inside a host call is refused, by name, and the run that made the call can still
@@ -601,7 +601,7 @@ fn a_run_inside_a_host_call_is_refused_by_name_and_the_outer_one_still_parks() {
     let e = failed(run(&mut g, &mut w, "(nest \"(wait)\")"));
     assert_eq!(
         described(&g, &e),
-        "cannot-nest in (nest \"(wait)\") at script.grift:1"
+        "cannot-nest at script.grift:1 in (nest \"(wait)\")"
     );
     let p = parked(run(&mut g, &mut w, "(catch! (nest \"(wait)\") e (wait))"));
     let done = resume(&mut g, &mut w, p, Value::Integer(5));
@@ -705,7 +705,7 @@ fn an_error_after_giving_up_shows_where_the_run_was_waiting() {
     let e = give_up(&mut g, &mut w, p).unwrap();
     assert_eq!(
         described(&g, &e),
-        "given-up in (wait) at script.grift:2\n  from (add 1 (wait)) at script.grift:1"
+        "given-up at script.grift:2 in (wait)\n  from (add 1 ...) at script.grift:1"
     );
 }
 

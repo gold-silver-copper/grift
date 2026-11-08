@@ -184,13 +184,14 @@ fn main() -> Result<(), Error> {
     let list = g.list(&[hi.clone(), Value::Integer(1)])?; // or pair by pair, from its end
     assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]); // or as_pair, from its start
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
-    let mut s = String::new();
-    g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
-    assert_eq!(s, "((f 1) (first 1))");
+    let mut s = grift::TextBuffer::new(); // or any std::fmt::Write
+    g.write(&forms, &mut s)?;
+    assert_eq!(s.as_str(), "((f 1) (first 1))");
     let e = g.evaluate_in(&mut board, &top, "user.grift", "\n(f (quote! x))").unwrap_err();
-    let mut text = String::new();
-    g.describe(&e, &mut text).unwrap(); // innermost first, with the source and line
-    assert_eq!(text, "type-error x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
+    let mut text = grift::TextBuffer::new(); // grows fallibly, where a String aborts
+    let status = g.describe(&e, &mut text, 4096)?; // in at most 4096 bytes, innermost first
+    assert_eq!(status, grift::ReportStatus::Complete);
+    assert_eq!(text.as_str(), "type-error at init.grift:1 x in (add x 1)\n  from (twice ...) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
     let kept = g.keep(f)?; // alive across evaluations until released
     g.release(kept).map_err(|(e, _)| e)?;
     Ok(())
@@ -218,9 +219,10 @@ fn main() -> Result<(), Error> {
   as grift's own: traces skip it. Code a program reads or builds is the program's.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
-  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out)`,
+  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out, bytes)`,
   which fail with an `Error` too: an `out` that refuses the text is kind `output-error`, and a host
-  that wants to know why keeps the reason in its `out`.
+  that wants to know why keeps the reason in its `out`. `TextBuffer` is an `out` that refuses
+  instead of aborting when it has no memory to grow, as a `String` would; `as_str` reads it.
   A list is built whole with `list` or with `pair` from its end, and read whole with `list_items` or
   with `as_pair` from its start. Host text is written as a string literal either with `string`
   then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an
@@ -250,7 +252,10 @@ fn main() -> Result<(), Error> {
   top-level form; the library's code, read or built, is skipped, so `(if! 1 2 3)` fails at
   `(if! 1 2 3)`, not inside `if!`. A call in tail position has finished, so it isn't listed.
   `position(&at)` (`Result<Option<_>, Error>`) is a
-  combination's source and line; `describe(&e, out)` writes the whole error for a person;
+  combination's source and line; `describe(&e, out, bytes)` writes the error for a person in at
+  most `bytes` bytes, the kind and innermost place first, each line writing the line before's
+  combination as `...`, and says whether that cut it, `ReportStatus::Complete` or `Truncated`
+  (grift has no number of its own: the runner gives 4096);
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one
   run: the run in progress when it is taken, or, taken between runs, the next to begin; a clone is

@@ -177,18 +177,6 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     Ok(b.into_boxed_str())
 }
 
-/// A string to format into, failing when it can't grow instead of aborting.
-#[derive(Default)]
-pub(crate) struct Growing(pub String);
-
-impl fmt::Write for Growing {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.0.try_reserve(s.len()).map_err(|_| fmt::Error)?;
-        self.0.push_str(s);
-        Ok(())
-    }
-}
-
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
 pub(crate) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), Error> {
     v.try_reserve(1).map_err(|_| Error::oom())?;

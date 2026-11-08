@@ -137,7 +137,7 @@ fn parking_inside_a_native_twin_cannot_be_told_from_its_definition() {
             let mut text = String::new();
             match ran {
                 Ok(Ran::Finished(v)) => text = show(&g, &v),
-                Err(e) => g.describe(&e, &mut text).unwrap(),
+                Err(e) => g.describe(&e, &mut text, 4096).map(drop).unwrap(),
                 Ok(Ran::Parked(_)) => panic!("the loop took these"),
             }
             seen.push((waits, text, log));
@@ -642,7 +642,7 @@ mod generated {
             },
             Err(e) => {
                 let mut text = String::new();
-                g.describe(e, &mut text).unwrap();
+                g.describe(e, &mut text, 4096).unwrap();
                 Outcome {
                     kind: Some(kind(g, e)),
                     text,

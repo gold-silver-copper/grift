@@ -97,7 +97,7 @@ fn an_output_that_refuses_is_an_output_error() {
     let mut g = grift();
     let e = g.error("mine", &[]);
     let written = g.write(&Value::Integer(1), &mut Refusing).unwrap_err();
-    let described = g.describe(&e, &mut Refusing).unwrap_err();
+    let described = g.describe(&e, &mut Refusing, 4096).unwrap_err();
     for e in [written, described] {
         assert_eq!((kind(&g, &e), e.limit), ("output-error".into(), false));
     }
@@ -219,7 +219,7 @@ fn every_entry_refuses(g: &mut G, what: &str, bad: &Value, want: &str) -> Vec<St
     // Written, and in an error described.
     let written = g.write(bad, &mut String::new());
     let e = g.error("mine", std::slice::from_ref(bad));
-    let described = g.describe(&e, &mut String::new());
+    let described = g.describe(&e, &mut String::new(), 4096).map(drop);
     for (entry, r) in [("write", written), ("describe", described)] {
         let got = match r {
             Err(e) => kind(g, &e),

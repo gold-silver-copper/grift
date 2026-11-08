@@ -18,7 +18,6 @@ mod jobs;
 
 use grift::{Answer, Error, Grift, HostFunction, Kept, Parked, Ran, ResumeError, Value};
 use jobs::{Event, Inbox, JobEvent};
-use std::fmt;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -222,28 +221,13 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> 
     }
 }
 
-/// A `fmt::Write` into a string of one line that stops at `ERROR_TEXT_MAX` bytes, then adds `...`.
-struct Capped(String);
-
-impl fmt::Write for Capped {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for c in s.chars() {
-            if self.0.len() + c.len_utf8() > ERROR_TEXT_MAX {
-                self.0.push_str("...");
-                return Err(fmt::Error);
-            }
-            self.0.push(if c == '\n' { ' ' } else { c });
-        }
-        Ok(())
-    }
-}
-
-/// An error as its kind, values and trace, written out now: the values may be collected by
-/// the next `evaluate`.
+/// An error as its kind, place, values and trace, on one line of at most `ERROR_TEXT_MAX` bytes,
+/// with `...` if that cut it, written out now: the values may be collected by the next `evaluate`.
 fn describe(g: &G, e: &Error) -> String {
-    let mut out = Capped(String::new());
-    let _ = g.describe(e, &mut out);
-    out.0
+    let mut text = grift::TextBuffer::new();
+    let whole = g.describe(e, &mut text, ERROR_TEXT_MAX) == Ok(grift::ReportStatus::Complete);
+    let line = text.as_str().replace('\n', " ");
+    if whole { line } else { line + "..." }
 }
 
 /// Calls the editor's function `name` with string arguments (`None` for `()`).

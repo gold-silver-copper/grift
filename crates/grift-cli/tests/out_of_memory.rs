@@ -60,10 +60,10 @@ fn an_out_of_memory_report_is_whole_with_nothing_left_to_allocate() {
         let mut text = String::with_capacity(4096);
         LIMIT.set(LIVE.get() + budget);
         let done = g.evaluate(&mut (), "(define! f (lambda! (n) (add 1 (f n))))\n(f 1)");
-        let written = done.as_ref().err().map(|e| g.describe(e, &mut text));
+        let written = done.as_ref().err().map(|e| g.describe(e, &mut text, 4096));
         LIMIT.set(usize::MAX);
         assert!(written.is_some(), "the program needs more than {budget}");
-        if text != "out-of-memory in (f n)\n  from (add 1 (f n))\n  from (f 1)" {
+        if text != "out-of-memory in (f n)\n  from (add 1 ...)\n  from (f 1)" {
             short.push((budget, text));
         }
     }
@@ -73,4 +73,43 @@ fn an_out_of_memory_report_is_whole_with_nothing_left_to_allocate() {
         short.len(),
         &short[..short.len().min(6)]
     );
+}
+
+/// A report of an out-of-memory ending needs memory for its own text and the printer's work, not
+/// for the program's trace or for a context in it: a 4 KiB report has 16 KiB to spare, at a depth
+/// of 2,000 and with a context of 10,000 names in the trace.
+#[test]
+fn an_out_of_memory_report_needs_memory_for_its_text_alone() {
+    let hog = "(define! hog (lambda! (xs n) (hog (pair n xs) (add n 1))))\n";
+    let deep = format!(
+        "{hog}{}(hog () 0){}",
+        "(add 1 ".repeat(2000),
+        ")".repeat(2000)
+    );
+    let context = format!(
+        "(define! c (context (current-context)))
+         (define! fill (lambda! (i) (if! (less-than? i 10000)
+           (sequence! (bind c (string-to-symbol (integer-to-string i)) 0) (fill (add i 1))) #inert)))
+         (fill 0)
+         {hog}(evaluate (list add c (list hog () 0)) (current-context))"
+    );
+    for program in [deep, context] {
+        let mut g: Grift = Grift::new().unwrap();
+        LIMIT.set(LIVE.get() + (32 << 20));
+        let e = g.evaluate(&mut (), &program).unwrap_err();
+        LIMIT.set(usize::MAX);
+        let mut text = grift::TextBuffer::new();
+        LIMIT.set(LIVE.get() + (16 << 10));
+        let written = g.describe(&e, &mut text, 4096);
+        LIMIT.set(usize::MAX);
+        let why = written
+            .as_ref()
+            .err()
+            .map(|w| g.symbol_name(&w.kind).map(String::from));
+        assert!(
+            written.is_ok() && text.as_str().starts_with("out-of-memory in ("),
+            "{why:?} {:?}",
+            &text.as_str()[..text.as_str().len().min(80)]
+        );
+    }
 }

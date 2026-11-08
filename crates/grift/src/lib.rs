@@ -24,7 +24,7 @@ use std::sync::{Arc, Weak};
 
 pub use interrupt::Interrupter;
 pub use parked::{Parked, Ran, ResumeError};
-pub use print::write_string;
+pub use print::{ReportStatus, TextBuffer, write_string};
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
@@ -295,7 +295,7 @@ impl Entry {
     }
 }
 
-/// Enough for a report's trace, the copy of it a report checks, and the printer's stack.
+/// Enough for an `out-of-memory` trace, and for a report of it: its text and the printer's stack.
 const SPARE: usize = 64 * 1024;
 
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
@@ -384,9 +384,9 @@ impl<T> Grift<T> {
     /// let keys = g.context(Some(&g.top_level()))?;
     /// let e = g.evaluate_in(&mut (), &keys, "keys.grift", "(define! a 1)\n(first a)").unwrap_err();
     /// assert_eq!(g.position(&e.trace[0])?, Some(("keys.grift", 2)));
-    /// let mut text = String::new();
-    /// g.describe(&e, &mut text).unwrap();
-    /// assert_eq!(text, "type-error 1 in (first a) at keys.grift:2");
+    /// let mut text = grift::TextBuffer::new();
+    /// g.describe(&e, &mut text, 4096)?;
+    /// assert_eq!(text.as_str(), "type-error at keys.grift:2 1 in (first a)");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn evaluate_in(
@@ -409,10 +409,10 @@ impl<T> Grift<T> {
     /// let top = g.top_level();
     /// g.evaluate_library_in(&mut (), &top, "prelude.grift", "(define! head (lambda! (xs) (first xs)))")?;
     /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(head 9)").unwrap_err();
-    /// let mut text = String::new();
-    /// g.describe(&e, &mut text).unwrap();
+    /// let mut text = grift::TextBuffer::new();
+    /// g.describe(&e, &mut text, 4096)?;
     /// // The prelude's (first xs) is skipped: the error is the config's line.
-    /// assert_eq!(text, "type-error 9 in (head 9) at config.grift:2");
+    /// assert_eq!(text.as_str(), "type-error at config.grift:2 9 in (head 9)");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn evaluate_library_in(
@@ -734,9 +734,9 @@ impl<T> Grift<T> {
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let v = g.evaluate(&mut (), "(list 1.0 \"a\\rb\" (quote! x))")?;
-    /// let mut text = String::new();
-    /// g.write(&v, &mut text).unwrap();
-    /// assert_eq!(text, "(1.0 \"a\\rb\" x)");
+    /// let mut text = grift::TextBuffer::new(); // grows fallibly, where a String aborts
+    /// g.write(&v, &mut text)?;
+    /// assert_eq!(text.as_str(), "(1.0 \"a\\rb\" x)");
     /// g.evaluate(&mut (), "(length (map list (range 0 100000)))")?; // collects v
     /// let e = g.write(&v, &mut text).unwrap_err();
     /// assert_eq!(g.symbol_name(&e.kind)?, "stale-value");
@@ -747,31 +747,41 @@ impl<T> Grift<T> {
         self.out(written)
     }
 
-    /// Writes an error for a person: its kind and values, then each combination of its trace,
-    /// with its source and line where it has one: `type-error 1 in (first a)
-    /// at keys.grift:2`, then `\n  from (f) at keys.grift:3` for each one around it. It fails as
-    /// [`Grift::write`] does.
-    pub fn describe(&self, error: &Error, out: &mut dyn fmt::Write) -> Result<(), Error> {
-        let written = self
-            .import_error(error)
-            .and_then(|e| self.write_error(&e, out));
-        self.out(written)
-    }
-
-    fn write_error(&self, e: &local::Error, out: &mut dyn fmt::Write) -> Result<(), local::Error> {
-        self.print(local::Value::Symbol(e.kind), out)?;
-        for &v in &e.values {
-            out.write_char(' ')?;
-            self.print(v, out)?;
-        }
-        for (i, &at) in e.trace.iter().enumerate() {
-            out.write_str(if i == 0 { " in " } else { "\n  from " })?;
-            self.print(at, out)?;
-            if let Some((source, line)) = self.position_local(at) {
-                write!(out, " at {source}:{line}")?;
-            }
-        }
-        Ok(())
+    /// Writes an error for a person, in at most `bytes` bytes of `out`: its kind and the innermost
+    /// place its trace has, `type-error at keys.grift:2`, then its values, then each combination
+    /// of its trace, the first after ` in ` and each one around it on a line of its own, `\n  from
+    /// (f ...) at keys.grift:3`, where `...` is the line before's combination, so each piece of
+    /// source is written once. The kind and the source's name get at most a quarter of `bytes`
+    /// each, cut with `...`, so a cut report begins with both from 30 bytes up. A context is
+    /// written as its count of names, `#[context 3 names]`, where [`Grift::write`] lists them, and
+    /// a name's control characters are escaped as in a string literal, so only the report begins
+    /// a line. Nothing is copied: past its text, a report needs only the printer's work.
+    ///
+    /// [`ReportStatus::Truncated`] says the report was cut. A [`TextBuffer`] holds the text
+    /// fallibly. A value of the error that is stale or another interpreter's fails it before
+    /// anything is written, a stop that reaches it is `interrupted`, and an `out` that refuses the
+    /// text `output-error`.
+    ///
+    /// ```
+    /// use grift::{Grift, ReportStatus, TextBuffer};
+    /// let mut g: Grift = Grift::new()?;
+    /// let top = g.top_level();
+    /// let e = g.evaluate_in(&mut (), &top, "keys.grift", "(define! f (lambda! (x) (first x)))\n(f 1)").unwrap_err();
+    /// let mut text = TextBuffer::new();
+    /// assert_eq!(g.describe(&e, &mut text, 4096)?, ReportStatus::Complete);
+    /// assert_eq!(text.as_str(), "type-error at keys.grift:1 1 in (first x)\n  from (f 1) at keys.grift:2");
+    /// let mut text = TextBuffer::new();
+    /// assert_eq!(g.describe(&e, &mut text, 40)?, ReportStatus::Truncated);
+    /// assert_eq!(text.as_str(), "type-error at keys.grift:1 1 in (first x");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn describe(
+        &self,
+        error: &Error,
+        out: &mut dyn fmt::Write,
+        bytes: usize,
+    ) -> Result<ReportStatus, Error> {
+        self.out(self.report(error, out, bytes))
     }
 
     /// The source and line of a combination read by [`Grift::read_in`] or [`Grift::evaluate_in`],

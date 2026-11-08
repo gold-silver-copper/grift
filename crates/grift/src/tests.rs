@@ -2387,7 +2387,7 @@ fn a_trace_from_the_host_is_checked_as_values_are() {
     e.trace.push(g.string("reclaimed").unwrap());
     g.heap.request_collection();
     g.evaluate(&mut (), "#inert").unwrap();
-    let Err(why) = g.describe(&e, &mut String::new()) else {
+    let Err(why) = g.describe(&e, &mut String::new(), 4096) else {
         panic!("described a reclaimed value");
     };
     assert_eq!(kind(&g, &why), "stale-value");
@@ -2433,7 +2433,7 @@ fn named_parse_errors_stay_describable_after_collection() {
         }
         .unwrap_err();
         let mut before = String::new();
-        g.describe(&e, &mut before).unwrap();
+        g.describe(&e, &mut before, 4096).unwrap();
         for _ in 0..2 {
             // A second error with the same name must not invalidate the one the host holds.
             let again = g.read_in("config.grift", "(").unwrap_err();
@@ -2443,7 +2443,7 @@ fn named_parse_errors_stay_describable_after_collection() {
             assert_eq!(kind(&g, &g.as_str(&garbage).unwrap_err()), "stale-value");
             for held in [&e, &again] {
                 let mut after = String::new();
-                let described = g.describe(held, &mut after);
+                let described = g.describe(held, &mut after, 4096);
                 let position = g.position(&held.values[3]);
                 if described.is_err() || position != Ok(None) {
                     broken.push(format!(
@@ -4038,4 +4038,87 @@ fn printing_finds_a_stop_by_the_bytes_it_writes() {
         let r = g.evaluate(&mut stop, &src);
         assert_eq!(kind(&g, &r.unwrap_err()), "interrupted", "{value}");
     }
+}
+
+fn report(g: &Grift, e: &Error, bytes: usize) -> (crate::ReportStatus, String) {
+    let mut text = crate::TextBuffer::new();
+    let status = g.describe(e, &mut text, bytes).unwrap();
+    (status, text.as_str().to_owned())
+}
+
+/// A report is never longer than its budget, and a cut one still begins with the kind and the
+/// innermost place, each in at most a quarter of it, whatever the program made long: its nesting,
+/// its kind, its source's name, or a value that shares itself. Each line writes the line before's
+/// combination as `...`, so each piece of source is printed once, and only grift starts a line.
+#[test]
+fn a_report_fits_its_budget_and_begins_with_kind_and_place() {
+    use crate::ReportStatus::{Complete, Truncated};
+    let mut g = grift();
+    let top = g.top_level();
+    let e = g
+        .evaluate_in(&mut (), &top, "keys.grift", "(define! a 1)\n(first a)")
+        .unwrap_err();
+    let complete = (
+        Complete,
+        "type-error at keys.grift:2 1 in (first a)".to_owned(),
+    );
+    assert_eq!(report(&g, &e, 4096), complete);
+    let nested = |depth| format!("{}(first 1){}", "(add 1 ".repeat(depth), ")".repeat(depth));
+    let e = g
+        .evaluate_in(&mut (), &top, "deep.grift", &nested(300))
+        .unwrap_err();
+    let (status, text) = report(&g, &e, 1 << 20);
+    assert_eq!((status, text.matches("(add 1 ").count()), (Complete, 300));
+    assert!(text.starts_with("type-error at deep.grift:1 1 in (first 1)\n  from (add 1 ...) at"));
+    let long_kind = format!(
+        "(raise (error (string-to-symbol \"{}\") 1))",
+        "k".repeat(5000)
+    );
+    let long_source = "s".repeat(5000);
+    g.evaluate(&mut (), "(define! x 1)").unwrap();
+    for _ in 0..40 {
+        g.evaluate(&mut (), "(define! x (pair x x))").unwrap();
+    }
+    for (source, program, begins) in [
+        (
+            "deep.grift",
+            nested(2000),
+            "type-error at deep.grift:2 1 in (first 1)\n",
+        ),
+        ("long.grift", long_kind, "kkk"),
+        (
+            long_source.as_str(),
+            "(first 1)".to_owned(),
+            "type-error at sss",
+        ),
+        (
+            "shared.grift",
+            "(raise (error (quote! mine) x))".to_owned(),
+            "mine at shared.grift:2 (((",
+        ),
+    ] {
+        let e = g
+            .evaluate_in(&mut (), &top, source, &format!("\n{program}"))
+            .unwrap_err();
+        let (status, text) = report(&g, &e, 4096);
+        let place = text.find(" at ").unwrap();
+        assert!(
+            status == Truncated
+                && text.len() <= 4096
+                && text.starts_with(begins)
+                && place <= 1024
+                && text[place..].contains(":2"),
+            "{status:?} {} bytes: {:?}",
+            text.len(),
+            &text[..text.len().min(80)]
+        );
+    }
+    let e = g
+        .evaluate(
+            &mut (),
+            "(raise (error (string-to-symbol \"a\\nb\") (quote! c)))",
+        )
+        .unwrap_err();
+    let (_, text) = report(&g, &e, 4096);
+    assert_eq!(text.lines().count(), 1, "{text:?}");
 }
