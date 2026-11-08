@@ -1,5 +1,6 @@
 //! The heap: a growable vector of slots, reused through a free list and reclaimed by mark and
-//! sweep.
+//! sweep. A new slot first reserves its entry on the mark stack, so a collection needs no memory of
+//! its own.
 
 use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
@@ -80,7 +81,8 @@ impl Hasher for IdHasher {
 
 struct Slot {
     generation: u32,
-    marked: bool,
+    /// Set as a collection first reaches the slot, so it goes on the mark stack once at most.
+    marked: Cell<bool>,
     /// Made by the library: read from its text, or made by its code as it ran.
     library: bool,
     obj: Object,
@@ -110,7 +112,9 @@ pub(crate) struct Heap {
     /// How much may be allocated before the next collection: collection sets it, allocation
     /// spends it, and a refusal empties it.
     until_gc: Cell<usize>,
-    marks: Vec<Reference>,
+    /// The mark stack, empty between collections: every slot reserved its entry here when it was
+    /// made, so a collection never grows it.
+    marks: Vec<u32>,
     /// What the last collection found alive, by weight, for tests of what a run keeps.
     #[cfg(test)]
     live: usize,
@@ -120,9 +124,6 @@ pub(crate) struct Heap {
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
-    /// Refuse the mark stack room past this length, to test a collection with no memory to spare.
-    #[cfg(test)]
-    pub mark_limit: usize,
     /// Refuse the kept table room past this length, to test a park with no memory to spare.
     #[cfg(test)]
     pub kept_limit: usize,
@@ -155,8 +156,6 @@ impl Default for Heap {
             operatives: 0,
             #[cfg(test)]
             slot_limit: usize::MAX,
-            #[cfg(test)]
-            mark_limit: usize::MAX,
             #[cfg(test)]
             kept_limit: usize::MAX,
             #[cfg(test)]
@@ -239,9 +238,12 @@ impl Heap {
             .ok()
             .filter(|&i| i != NONE)
             .ok_or_else(|| self.refused())?;
+        self.marks
+            .try_reserve(self.slots.len() + 1)
+            .map_err(|_| self.refused())?;
         let slot = Slot {
             generation: 0,
-            marked: false,
+            marked: Cell::new(false),
             library,
             obj,
         };
@@ -316,51 +318,26 @@ impl Heap {
         self.until_gc.set(0);
     }
 
-    /// The mark stack's room, made with the interpreter and never given back, so a collection
-    /// needs no memory.
-    pub fn make_room(&mut self) -> Result<(), Error> {
-        self.marks.try_reserve(MARK_ROOM).map_err(|_| Error::oom())
-    }
-
     /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
-    /// reference the mark stack has no room for is left, and passes over the heap find it again
-    /// as an unmarked child of a marked object. Each pass marks at least one more, the stack
-    /// being empty as each object's unmarked children go on it. `parked` is the weight of what
+    /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
+    /// reserved its entry as it was made. `parked` is the weight of what
     /// outside the heap the next collection walks too, counted as live.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>, parked: usize) {
         #[cfg(test)]
         {
             self.collections += 1;
         }
-        #[cfg(test)]
-        let limit = self.mark_limit;
-        #[cfg(not(test))]
-        let limit = usize::MAX;
-        let mut marks = std::mem::take(&mut self.marks);
-        marks.clear();
-        let mut left = false;
-        for root in roots {
-            mark(&mut marks, root, &mut left, limit);
-            self.drain(&mut marks, &mut left, limit);
-        }
-        while std::mem::take(&mut left) {
-            for idx in 0..self.slots.len() {
-                if let Some(s) = self.slots.get(idx).filter(|s| s.marked) {
-                    let slots = &self.slots;
-                    children(&s.obj, |v| {
-                        if reference(v).is_some_and(|r| unmarked(slots, r)) {
-                            mark(&mut marks, v, &mut left, limit);
-                        }
-                    });
-                    self.drain(&mut marks, &mut left, limit);
-                }
+        let slots = &self.slots;
+        let marks = &mut self.marks;
+        roots.for_each(|v| mark(slots, marks, v));
+        while let Some(idx) = marks.pop() {
+            if let Some(s) = slots.get(idx as usize) {
+                children(&s.obj, |v| mark(slots, marks, v));
             }
         }
-        self.marks = marks;
         let mut live = parked;
         for (idx, s) in (0..).zip(self.slots.iter_mut()) {
-            if s.marked {
-                s.marked = false;
+            if s.marked.take() {
                 live = live.saturating_add(weight(&s.obj));
             } else if !matches!(s.obj, Object::Free(_)) {
                 s.obj = Object::Free(self.free);
@@ -379,48 +356,26 @@ impl Heap {
         }
     }
 
-    /// Marks what is on the stack and everything reachable from it.
-    fn drain(&mut self, marks: &mut Vec<Reference>, left: &mut bool, limit: usize) {
-        while let Some(r) = marks.pop() {
-            match self.slots.get_mut(r.idx as usize) {
-                Some(s) if s.generation == r.generation && !s.marked => s.marked = true,
-                _ => continue,
-            }
-            if let Some(s) = self.slots.get(r.idx as usize) {
-                children(&s.obj, |v| mark(marks, v, left, limit));
-            }
-        }
-    }
-
     #[cfg(test)]
     pub fn len(&self) -> usize {
         self.slots.len()
     }
 
-    /// The mark stack's room, for a test that it is made before any collection needs it.
+    /// The mark stack's room, for tests that every slot has an entry.
     #[cfg(test)]
     pub fn mark_room(&self) -> usize {
         self.marks.capacity()
     }
 }
 
-/// The room [`Heap::make_room`] makes: any is enough, more makes fewer passes.
-const MARK_ROOM: usize = 256;
-
-/// Whether `r`'s object is live and not yet marked.
-fn unmarked(slots: &[Slot], r: Reference) -> bool {
-    slots
-        .get(r.idx as usize)
-        .is_some_and(|s| s.generation == r.generation && !s.marked)
-}
-
-/// Puts `v`'s object on the mark stack; with no room, says one was `left`.
-fn mark(marks: &mut Vec<Reference>, v: Value, left: &mut bool, limit: usize) {
+/// Puts `v`'s object on the mark stack, unless a collection already reached it.
+fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
     let Some(r) = reference(v) else { return };
-    if marks.len() < limit && marks.try_reserve(1).is_ok() {
-        marks.push(r);
-    } else {
-        *left = true;
+    if let Some(s) = slots.get(r.idx as usize)
+        && s.generation == r.generation
+        && !s.marked.replace(true)
+    {
+        marks.push(r.idx);
     }
 }
 

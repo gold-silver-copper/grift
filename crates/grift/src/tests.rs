@@ -3855,9 +3855,9 @@ fn a_values_tag_is_a_whole_word() {
     assert_eq!(offset, size_of::<u64>());
 }
 
-/// A collection needs no memory of its own (208's P33): with its mark stack refused room past a
-/// few entries, it still keeps everything live, however deep, and frees the garbage, so a run that
-/// needs that memory gets it.
+/// A collection needs no memory of its own (208's P33): with no slot to be had and its mark stack
+/// never growing, it still keeps everything live, however deep, and frees the garbage, so a run
+/// that needs that memory gets it.
 #[test]
 fn a_collection_needs_no_memory_of_its_own() {
     let mut g: Grift = Grift::new().unwrap();
@@ -3869,7 +3869,7 @@ fn a_collection_needs_no_memory_of_its_own() {
     )
     .unwrap();
     g.heap.slot_limit = g.heap.len();
-    g.heap.mark_limit = 8;
+    let room = g.heap.mark_room();
     g.heap.request_collection();
     let v = g
         .evaluate(
@@ -3882,13 +3882,15 @@ fn a_collection_needs_no_memory_of_its_own() {
         g.list_items(&v).unwrap(),
         [40000, 20000, 19999, 1999].map(Value::Integer)
     );
+    assert_eq!(g.heap.mark_room(), room);
 }
 
-/// The mark stack's room is made with the interpreter: `mark_limit` can't tell it from room grown
-/// later, but with memory refused and no room, no root could be marked and a collection would free
-/// live data.
+/// Every slot has its mark stack entry before any collection needs it: with memory refused and no
+/// room, a collection would have nowhere to put what it reaches.
 #[test]
-fn the_mark_stack_has_room_before_any_collection() {
-    let g: Grift = Grift::new().unwrap();
-    assert!(g.heap.mark_room() > 0);
+fn the_mark_stack_has_room_for_every_slot() {
+    let mut g: Grift = Grift::new().unwrap();
+    assert!(g.heap.mark_room() >= g.heap.len());
+    g.evaluate(&mut (), "(length (range 0 50000))").unwrap();
+    assert!(g.heap.mark_room() >= g.heap.len());
 }

@@ -286,7 +286,6 @@ impl<T> Grift<T> {
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
-        self.heap.make_room()?;
         let context =
             |heap: &mut Heap, parent| heap.alloc(Object::Context(parent, Bindings::default()));
         self.built_in = context(&mut self.heap, None)?;
