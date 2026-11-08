@@ -3,7 +3,7 @@
 
 use crate::Grift;
 use crate::heap::Object;
-use crate::local::{Error, Growing, K, Value};
+use crate::local::{Error, Growing, K, Value, push};
 use std::fmt::{self, Write};
 
 enum Item {
@@ -47,11 +47,6 @@ impl<T> Grift<T> {
     /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in.
     pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Unprinted> {
         let mut todo = Vec::new();
-        let push = |todo: &mut Vec<Item>, it| {
-            todo.try_reserve(1).map_err(|_| Error::oom())?;
-            todo.push(it);
-            Ok::<(), Error>(())
-        };
         // The first item is held outside the stack, so writing an atom allocates nothing and an
         // `out-of-memory` error can still be printed.
         let mut first = Some(Item::Value(v));
