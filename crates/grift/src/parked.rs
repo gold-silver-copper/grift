@@ -148,8 +148,8 @@ pub struct ResumeError {
     /// What went wrong.
     pub error: Error,
     /// The handle, if nothing was done and the run still waits: it was another interpreter's
-    /// (`foreign-value`), this was inside a host call (`cannot-park`), or there was no memory to
-    /// begin (`out-of-memory`). `None` if the run went on and ended with this error.
+    /// (`foreign-value`), or this was inside a host call (`cannot-park`). `None` if the run went
+    /// on and ended with this error.
     pub parked: Option<Parked>,
 }
 
@@ -210,9 +210,8 @@ impl<T> Grift<T> {
 
     /// Takes up a parked run: the waiting call answers `answer` as a host function's return does,
     /// so a stale value or an error is raised there, and the run goes on until it ends or parks
-    /// again. Each resume is a run of its own for stops. It makes no heap object to begin; refused
-    /// the little it does need, the run waits still and the handle is back in
-    /// [`ResumeError::parked`], as that type says.
+    /// again. Each resume is a run of its own for stops. Beginning needs no memory; a refused
+    /// resume leaves the run waiting and the handle in [`ResumeError::parked`], as that type says.
     ///
     /// To give a run up, answer with a limit ([`Error::limit`]): nothing catches it, every
     /// `finally!` runs on the way out, and it is what the run ends with. A cleanup that waits is

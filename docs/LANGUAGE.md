@@ -76,7 +76,7 @@ with space and comments between them, and `)`. A bytes value prints so, every by
 `byte-at` gives for it, and reads back as the same bytes; there is no text and no hex in it, so
 bytes never look like a string. Inside, a token is read as anywhere: one that doesn't read is its
 own `parse-error` (`bad-number`, `unknown-constant`, `unclosed-string`) and one that reads as anything
-but an integer 0 to 255 is `bad-byte`, at it, and a list at its `)`. A `.` is `misplaced-dot`, and a missing `)` is
+but an integer 0 to 255 is `bad-byte`, at it, and a list or a nested `#bytes(` at its `)`. A `.` is `misplaced-dot`, and a missing `)` is
 `unclosed-list` at the `(`; `#bytes` with no `(` after it is `unknown-constant`. `display` prints bytes as their literal: they leave as they are only through
 a file's `write`.
 `;` starts a comment to the end of the line, and so does `#!` wherever a token can start.
@@ -298,6 +298,7 @@ its cleanups do.
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
+| `output-error` | a host's output refused what `write` or `describe` wrote: a host may pass it on | none |
 | any symbol | a program raised an error it made | the values given |
 
 A text that doesn't read says why, as a symbol, and where: `unclosed-list` and `unclosed-string`

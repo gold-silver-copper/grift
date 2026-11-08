@@ -668,15 +668,21 @@ impl<T> Grift<T> {
     /// runs, the error waiting until it is done; a handler, unless the error is a limit, is called
     /// with it instead. What can't be called fails there like any call, with that error, and the
     /// next frame goes on from it. With neither left, the error goes to the caller.
+    /// An error that began as refused memory: the next safe point collects, and the spare room is
+    /// given up for what reports it. Once: whoever acts on it clears the mark.
+    fn acting_on_refusal(&mut self, e: &mut Error) {
+        if std::mem::take(&mut e.refused) {
+            self.heap.request_collection();
+            self.spare = Vec::new();
+        }
+    }
+
     pub(crate) fn unwind(&mut self, mut e: Error) -> Result<Mode, Error> {
         // The garbage is what the cleanups will run on, and the host's next run: the next safe
         // point collects, with the frames dropped here let go of. Once: what is left to free comes
         // a level at a time, and a collection walks all the levels left. A cleanup refused memory
         // is a new refusal, and asks again.
-        if std::mem::take(&mut e.refused) {
-            self.heap.request_collection();
-            self.spare = Vec::new();
-        }
+        self.acting_on_refusal(&mut e);
         locate(&mut e, self.machine.here);
         while let Some(Frame { what, context, at }) = self.machine.frames.pop() {
             match what {
@@ -691,7 +697,8 @@ impl<T> Grift<T> {
                     self.machine.here = at;
                     match self.handle(&e, handler, context) {
                         Ok(mode) => return Ok(mode),
-                        Err(failed) => {
+                        Err(mut failed) => {
+                            self.acting_on_refusal(&mut failed);
                             e = failed;
                             locate(&mut e, at);
                         }
