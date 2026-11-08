@@ -101,7 +101,10 @@ impl<T> Grift<T> {
     /// Whether `v` is the definition this interpreter runs for primitive `p`.
     fn is_definition_of(&self, v: &Value, p: Primitive) -> bool {
         let Some(found) = self
-            .interned(p.name())
+            .symbols
+            .get(p.name())
+            .copied()
+            .map(local::Symbol)
             .and_then(|name| self.find(self.built_in, name).unwrap())
         else {
             return false;

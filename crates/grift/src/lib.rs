@@ -806,7 +806,7 @@ impl<T> Grift<T> {
 
     /// Interns `name`.
     pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
-        if let Some(symbol) = self.interned(name) {
+        if let Some(symbol) = self.symbols.get(name).copied().map(local::Symbol) {
             return Ok(symbol);
         }
         let id = u32::try_from(self.names.len()).map_err(|_| local::Error::oom())?;
@@ -819,11 +819,6 @@ impl<T> Grift<T> {
         self.names.push(spelling);
         self.symbols.insert(key, id);
         Ok(local::Symbol(id))
-    }
-
-    /// The symbol named `name`, if it was ever interned.
-    pub(crate) fn interned(&self, name: &str) -> Option<local::Symbol> {
-        self.symbols.get(name).copied().map(local::Symbol)
     }
 
     /// The name of symbol `s`.
