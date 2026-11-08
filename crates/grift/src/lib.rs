@@ -428,8 +428,7 @@ impl<T> Grift<T> {
     /// g.evaluate(&mut (), "(define! list 0)")?; // a program redefines list
     /// let private = g.private_context()?;
     /// let made = g.evaluate_in(&mut (), &private, "prelude.grift", "(list 1 2)")?;
-    /// let (one, _) = g.as_pair(&made)?.unwrap();
-    /// assert_eq!(one, grift::Value::Integer(1));
+    /// assert_eq!(g.list_items(&made)?, [grift::Value::Integer(1), grift::Value::Integer(2)]);
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn private_context(&mut self) -> Result<Value, Error> {
@@ -461,8 +460,7 @@ impl<T> Grift<T> {
     /// let fields = g.read("(id title)")?; // a list of one form
     /// let (fields, _) = g.as_pair(&fields)?.unwrap();
     /// let title = g.string("sh")?;
-    /// let values = g.pair(title, grift::Value::EmptyList)?;
-    /// let values = g.pair(grift::Value::Integer(3), values)?;
+    /// let values = g.list(&[grift::Value::Integer(3), title])?;
     /// g.bind(&record, &fields, values)?;
     /// let id = g.symbol("id")?;
     /// assert_eq!(g.lookup(&record, &id)?, Some(grift::Value::Integer(3)));

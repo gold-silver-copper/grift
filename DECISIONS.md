@@ -1814,8 +1814,12 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   - **A bug found and fixed:** code a host built with `pair` right after catching a panic from library code (or after
     swapping interpreters) was marked as the library's until the next run. Evidence: `a_run_its_host_function_left_is_over`.
 - **G-174. The owner restores `Grift::list`, `Grift::list_items` and public `write_string`** (2026-11-07, Job 5
-  update), replacing U82 and U90 in G-173. Why: owner's call. A host may build and read a list whole or pair by pair,
-  and write text as a literal with `write_string` or with `string` then `write`.
+  update), replacing U82 and U90 in G-173. A host may build and read a list whole or pair by pair, and write text as a
+  literal with `write_string` or with `string` then `write`. Why: the owner's call on the fux port to master `38803b4`
+  (`lowlevel-2026-11-07/port-friction.md`, entries 1, 2 and 4). fux used `list` and `list_items` at 38 sites and had to
+  carry its own copies (in its bridge and again in its tests), each deciding for itself what an improper list is. fux
+  quotes text where it has no interpreter, such as config lines it generates, so it carried a copy of `write_string`
+  too, and a copy drifts from the reader if grift's escapes change, with no test in either repo to notice.
 - **G-175. Before 3.0.0: what the independent testers found, and three loose ends** (owner, Job 5, 2026-11-07).
   - **A handle names one run** (replaces G-170's "force on a handle that never stopped anything forces the run in
     progress" and its fresh-handle hazard): an `Interrupter` is for the run in progress when it is taken, or else the
