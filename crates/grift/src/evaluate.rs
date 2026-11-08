@@ -1233,9 +1233,7 @@ impl<T> Grift<T> {
     #[cold]
     #[inline(never)]
     fn arity_error(&mut self, base: usize) -> Error {
-        let given = self.machine.arguments.get(base..).unwrap_or_default();
-        let made = collected(given.iter().copied()).and_then(|operands| self.list_local(&operands));
-        match made {
+        match self.arguments_list(base) {
             Ok(operands) => Error::new(K::ArityError, &[operands]),
             Err(e) => e,
         }
