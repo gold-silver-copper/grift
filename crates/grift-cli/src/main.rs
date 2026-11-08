@@ -359,14 +359,12 @@ fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Val
 /// keeps it, each `finally!` it leaves runs its cleanup forms, and [`exit_status`] reads it at the
 /// end.
 fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    match args {
-        [Value::Integer(n)] => {
-            u8::try_from(*n).map_err(|_| g.error("range-error", args))?;
-            Err(limit(g, "exit", args))
-        }
-        [_] => Err(g.error("type-error", args)),
-        _ => Err(g.error("arity-error", args)),
-    }
+    let [status] = exactly(g, args)?;
+    let &Value::Integer(n) = status else {
+        return Err(g.error("type-error", args));
+    };
+    u8::try_from(n).map_err(|_| g.error("range-error", args))?;
+    Err(limit(g, "exit", args))
 }
 
 /// The status a run ended with by the runner's own limits, which a program can't begin: what `exit`
