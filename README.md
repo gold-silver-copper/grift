@@ -237,8 +237,8 @@ fn main() -> Result<(), Error> {
   A list is built whole with `list` or with `pair` from its end, and read whole with `list_items` or
   with `as_pair` from its start. Host text is written as a string literal either with `string`
   then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an
-  interpreter or allocation; it returns `std::fmt::Result`. A `Value::Primitive` is opaque: a host compares and writes it,
-  and can't name or make one.
+  interpreter or allocation; it returns `std::fmt::Result`. A `Value::Operative` is opaque: a host compares and writes it,
+  which shows how it was made, and can't look inside or make one.
 - `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
   evaluated arguments and may call `evaluate` or `call` itself.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a

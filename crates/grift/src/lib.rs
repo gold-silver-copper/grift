@@ -63,24 +63,28 @@ pub enum Value {
     Bytes(Reference),
     /// A context.
     Context(Reference),
-    /// A compound operative made by `vau!`.
-    Operative(Reference),
+    /// An operative, however it was made.
+    Operative(Operative),
     /// An applicative: a wrapped combiner.
     Applicative(Reference),
-    /// A Rust primitive, as an operative (the library binds most of them wrapped).
-    Primitive(Primitive),
-    /// A host function, as an operative ([`Grift::host_function`] wraps it).
-    Host(Host),
 }
 
-/// A Rust primitive, opaque: a host holds one, compares it and writes it (`#[primitive add]`),
-/// but can't name or construct one, so adding or moving a primitive changes no host's code.
-///
-/// ```compile_fail
-/// let add = grift::Primitive::Add;
-/// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Primitive(evaluate::Primitive);
+/// An operative, opaque: a host holds one, compares it and writes it, which shows how it was made
+/// (`#[operative (x) #ignore x]`, `#[primitive add]`, `#[host name]`), but can't look inside or
+/// make one, so adding or moving a primitive changes no host's code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Operative(OperativeKind);
+
+/// How an operative was made.
+#[derive(Clone, Debug, PartialEq)]
+enum OperativeKind {
+    /// By `vau!`: an object in the heap of one [`Grift`].
+    Compound(Reference),
+    /// A Rust primitive, the same in every interpreter (the library binds most of them wrapped).
+    Primitive(evaluate::Primitive),
+    /// A host function registered with one [`Grift`], which [`Grift::host_function`] wraps.
+    Host(Owner, u32),
+}
 
 /// An interned symbol of one [`Grift`]; its name is [`Grift::symbol_name`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -94,13 +98,6 @@ pub struct Symbol {
 pub struct Reference {
     owner: Owner,
     local: heap::Reference,
-}
-
-/// A host function registered with one [`Grift`].
-#[derive(Clone, Debug, PartialEq)]
-pub struct Host {
-    owner: Owner,
-    index: u32,
 }
 
 /// The interpreter a value belongs to: its control's allocation. Two are the same only if the
@@ -902,18 +899,24 @@ impl<T> Grift<T> {
             Value::Ignore => L::Ignore,
             Value::Integer(n) => L::Integer(*n),
             Value::Float(f) => L::Float(*f),
-            Value::Primitive(p) => L::Primitive(p.0),
             Value::Symbol(s) => L::Symbol(self.import_symbol(s)?),
             Value::Pair(r) => L::Pair(live(r, |o| matches!(o, Object::Pair(..)))?),
             Value::String(r) => L::String(live(r, |o| matches!(o, Object::String(_)))?),
             Value::Bytes(r) => L::Bytes(live(r, |o| matches!(o, Object::Bytes(_)))?),
             Value::Context(r) => L::Context(live(r, |o| matches!(o, Object::Context(..)))?),
-            Value::Operative(r) => L::Operative(live(r, |o| matches!(o, Object::Operative(_)))?),
+            Value::Operative(Operative(kind)) => match kind {
+                OperativeKind::Compound(r) => {
+                    L::Operative(live(r, |o| matches!(o, Object::Operative(_)))?)
+                }
+                OperativeKind::Primitive(p) => L::Primitive(*p),
+                OperativeKind::Host(owner, index) if self.owns(owner) => {
+                    L::Host(local::Host(*index))
+                }
+                OperativeKind::Host(..) => return Err(local::Error::new(K::ForeignValue, &[])),
+            },
             Value::Applicative(r) => {
                 L::Applicative(live(r, |o| matches!(o, Object::Applicative(_)))?)
             }
-            Value::Host(h) if self.owns(&h.owner) => L::Host(local::Host(h.index)),
-            Value::Host(_) => return Err(local::Error::new(K::ForeignValue, &[])),
         })
     }
 
@@ -962,7 +965,7 @@ impl<T> Grift<T> {
             | Value::String(r)
             | Value::Bytes(r)
             | Value::Context(r)
-            | Value::Operative(r)
+            | Value::Operative(Operative(OperativeKind::Compound(r)))
             | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
             _ => None,
         });
@@ -984,6 +987,7 @@ impl<T> Grift<T> {
             owner: self.owner(),
             local,
         };
+        let operative = |kind| Value::Operative(Operative(kind));
         match v {
             L::EmptyList => Value::EmptyList,
             L::Boolean(b) => Value::Boolean(b),
@@ -991,18 +995,15 @@ impl<T> Grift<T> {
             L::Ignore => Value::Ignore,
             L::Integer(n) => Value::Integer(n),
             L::Float(f) => Value::Float(f),
-            L::Primitive(p) => Value::Primitive(Primitive(p)),
+            L::Primitive(p) => operative(OperativeKind::Primitive(p)),
             L::Symbol(s) => Value::Symbol(self.export_symbol(s)),
             L::Pair(r) => Value::Pair(reference(r)),
             L::String(r) => Value::String(reference(r)),
             L::Bytes(r) => Value::Bytes(reference(r)),
             L::Context(r) => Value::Context(reference(r)),
-            L::Operative(r) => Value::Operative(reference(r)),
+            L::Operative(r) => operative(OperativeKind::Compound(reference(r))),
             L::Applicative(r) => Value::Applicative(reference(r)),
-            L::Host(h) => Value::Host(Host {
-                owner: self.owner(),
-                index: h.0,
-            }),
+            L::Host(h) => operative(OperativeKind::Host(self.owner(), h.0)),
         }
     }
 

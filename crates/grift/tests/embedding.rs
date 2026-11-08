@@ -126,7 +126,9 @@ fn primitives(g: &mut G) -> Vec<(String, Value)> {
         let Value::Symbol(s) = &name else { panic!() };
         let text = g.symbol_name(s).unwrap().to_string();
         let v = evaluate(g, &format!("(catch! (unwrap {text}) #ignore #inert)"));
-        if matches!(v, Value::Primitive(_)) {
+        let mut written = String::new();
+        g.write(&v, &mut written).unwrap();
+        if written.starts_with("#[primitive") {
             found.push((text, v));
         }
     }
@@ -249,7 +251,7 @@ fn a_reclaimed_value_is_stale_value_everywhere() {
     let mut broken = Vec::new();
     for (what, v) in &old {
         // The host function is no heap object: it can't go stale.
-        if !matches!(v, Value::Host(_)) {
+        if *what != "host function" {
             broken.extend(every_entry_refuses(&mut g, what, v, "stale-value"));
         }
     }
@@ -707,7 +709,6 @@ fn retagged(v: &Value) -> Vec<Value> {
         | Value::String(r)
         | Value::Bytes(r)
         | Value::Context(r)
-        | Value::Operative(r)
         | Value::Applicative(r) => r.clone(),
         _ => return Vec::new(),
     };
@@ -716,7 +717,6 @@ fn retagged(v: &Value) -> Vec<Value> {
         Value::String(r.clone()),
         Value::Bytes(r.clone()),
         Value::Context(r.clone()),
-        Value::Operative(r.clone()),
         Value::Applicative(r),
     ];
     all.into_iter()

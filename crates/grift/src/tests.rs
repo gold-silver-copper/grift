@@ -7,7 +7,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Error, Grift, Interrupter, Value, local};
+use crate::{Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -2962,15 +2962,24 @@ impl Comparison<'_> {
                 (Value::Bytes(_), Value::Bytes(_)) if l.as_bytes(&a) != r.as_bytes(&b) => {
                     return differ();
                 }
-                (Value::Host(_), Value::Host(_)) if show(l, &a) != show(r, &b) => return differ(),
+                (
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                ) if show(l, &a) != show(r, &b) => return differ(),
                 (Value::Float(_), Value::Float(_))
                 | (Value::Symbol(_), Value::Symbol(_))
                 | (Value::String(_), Value::String(_))
                 | (Value::Bytes(_), Value::Bytes(_))
-                | (Value::Host(_), Value::Host(_)) => {}
+                | (
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                    Value::Operative(Operative(OperativeKind::Host(..))),
+                ) => {}
                 (Value::Pair(_), Value::Pair(_))
                 | (Value::Context(_), Value::Context(_))
-                | (Value::Operative(_), Value::Operative(_))
+                | (
+                    Value::Operative(Operative(OperativeKind::Compound(_))),
+                    Value::Operative(Operative(OperativeKind::Compound(_))),
+                )
                 | (Value::Applicative(_), Value::Applicative(_)) => {
                     let known = self.matched.iter().find(|(x, y)| *x == a || *y == b);
                     match known {
@@ -3006,7 +3015,10 @@ impl Comparison<'_> {
                     }
                 }
                 // What a native is, its definition is: the comparison's one allowed difference.
-                (Value::Primitive(p), Value::Operative(_)) if r.is_definition_of(&b, p.0) => {}
+                (
+                    Value::Operative(Operative(OperativeKind::Primitive(p))),
+                    Value::Operative(Operative(OperativeKind::Compound(_))),
+                ) if r.is_definition_of(&b, *p) => {}
                 _ if std::mem::discriminant(&a) != std::mem::discriminant(&b) || a != b => {
                     return differ();
                 }
