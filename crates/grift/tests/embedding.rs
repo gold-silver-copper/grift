@@ -478,13 +478,18 @@ fn a_run_its_host_function_left_is_over() {
         let r = g.evaluate(s, "(add 1 2)");
         assert_eq!(r, Ok(Value::Integer(3)), "{}", kind(g, &r));
     };
-    // `(first 1)` built by the host with pair is the program's: an error in it names it.
-    let program_s = |g: &mut Grift<Leaving>, s: &mut Leaving, when: &str| {
+    // `(first 1)` built by the host with pair, or with list, is the program's: an error in it
+    // names it.
+    let program_s = |g: &mut Grift<Leaving>, s: &mut Leaving, by_list: bool, when: &str| {
         let top = g.top_level();
         let name = g.symbol("first").unwrap();
         let first = g.lookup(&top, &name).unwrap().unwrap();
-        let one = g.pair(Value::Integer(1), Value::EmptyList).unwrap();
-        let form = g.pair(first, one).unwrap();
+        let form = if by_list {
+            g.list(&[first, Value::Integer(1)]).unwrap()
+        } else {
+            let one = g.pair(Value::Integer(1), Value::EmptyList).unwrap();
+            g.pair(first, one).unwrap()
+        };
         g.define("form", form).unwrap();
         let e = g
             .evaluate(s, "(evaluate form (current-context))")
@@ -501,26 +506,28 @@ fn a_run_its_host_function_left_is_over() {
     }));
     assert!(caught.is_err());
     quiet(&mut g, &mut s);
-    // A panic inside library code leaves no mark on what the host builds, before the next run
-    // or after it.
-    let mut g = leaving();
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        g.evaluate(&mut s, "(map panics (list 1))")
-    }));
-    assert!(caught.is_err());
-    program_s(&mut g, &mut s, "right after the panic");
-    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        g.evaluate(&mut s, "(map panics (list 1))")
-    }));
-    assert!(caught.is_err());
-    quiet(&mut g, &mut s);
-    program_s(&mut g, &mut s, "after the next run");
-    // Nor does library code that swapped the interpreter out, on the one swapped out.
-    let mut g = leaving();
-    let r = g.evaluate(&mut s, "(map swap-out (list 1))");
-    assert_eq!(kind(&g, &r), "foreign-value");
-    let mut parked = s.saved.take().unwrap();
-    program_s(&mut parked, &mut s, "swapped out by library code");
+    for by_list in [false, true] {
+        // A panic inside library code leaves no mark on what the host builds, before the next
+        // run or after it.
+        let mut g = leaving();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            g.evaluate(&mut s, "(map panics (list 1))")
+        }));
+        assert!(caught.is_err());
+        program_s(&mut g, &mut s, by_list, "right after the panic");
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            g.evaluate(&mut s, "(map panics (list 1))")
+        }));
+        assert!(caught.is_err());
+        quiet(&mut g, &mut s);
+        program_s(&mut g, &mut s, by_list, "after the next run");
+        // Nor does library code that swapped the interpreter out, on the one swapped out.
+        let mut g = leaving();
+        let r = g.evaluate(&mut s, "(map swap-out (list 1))");
+        assert_eq!(kind(&g, &r), "foreign-value");
+        let mut parked = s.saved.take().unwrap();
+        program_s(&mut parked, &mut s, by_list, "swapped out by library code");
+    }
     // The arguments call lists are the program's too: here they are evaluated as a combination.
     let mut g = leaving();
     let f = g

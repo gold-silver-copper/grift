@@ -577,12 +577,8 @@ impl<T> Grift<T> {
     /// The new pair `(a . b)`.
     pub fn pair(&mut self, a: Value, b: Value) -> Result<Value, Error> {
         let made = self
-            .import(&a)
-            .and_then(|a| Ok((a, self.import(&b)?)))
-            .and_then(|(a, b)| {
-                self.settled();
-                self.pair_local(a, b)
-            });
+            .import(&b)
+            .and_then(|b| self.pairs(std::slice::from_ref(&a), b));
         self.exported(made)
     }
 
@@ -597,14 +593,18 @@ impl<T> Grift<T> {
 
     /// A new list of `values`, as `pair` builds one from its end.
     pub fn list(&mut self, values: &[Value]) -> Result<Value, Error> {
-        let made = values
-            .iter()
-            .rev()
-            .try_fold(local::Value::EmptyList, |list, v| {
-                let v = self.import(v)?;
-                self.pair_local(v, list)
-            });
+        let made = self.pairs(values, local::Value::EmptyList);
         self.exported(made)
+    }
+
+    /// `heads` in front of `tail`, built by the host: what a run a host function left behind
+    /// marked is over first, so the pairs are the program's.
+    fn pairs(&mut self, heads: &[Value], tail: local::Value) -> Result<local::Value, local::Error> {
+        self.settled();
+        heads.iter().rev().try_fold(tail, |rest, v| {
+            let v = self.import(v)?;
+            self.pair_local(v, rest)
+        })
     }
 
     /// The elements of a proper list, as `as_pair` reads them; a `type-error` carrying anything else.
