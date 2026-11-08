@@ -3861,3 +3861,32 @@ fn a_values_tag_is_a_whole_word() {
     let offset = std::ptr::from_ref(b).addr() - std::ptr::from_ref(&v).addr();
     assert_eq!(offset, size_of::<u64>());
 }
+
+/// A collection needs no memory of its own (208's P33): with its mark stack refused room past a
+/// few entries, it still keeps everything live, however deep, and frees the garbage, so a run that
+/// needs that memory gets it.
+#[test]
+fn a_collection_needs_no_memory_of_its_own() {
+    let mut g: Grift = Grift::new().unwrap();
+    g.evaluate(
+        &mut (),
+        "(define! keep (range 0 20000))
+         (define! tree (map (lambda! (n) (list n (list n))) (range 0 2000)))
+         (length (range 0 50000))",
+    )
+    .unwrap();
+    g.heap.slot_limit = g.heap.len();
+    g.heap.mark_limit = 8;
+    g.heap.request_collection();
+    let v = g
+        .evaluate(
+            &mut (),
+            "(list (length (range 0 40000)) (length keep) (first (reverse keep))
+                   (first (second (first (reverse tree)))))",
+        )
+        .unwrap();
+    assert_eq!(
+        g.list_items(&v).unwrap(),
+        [40000, 20000, 19999, 1999].map(Value::Integer)
+    );
+}

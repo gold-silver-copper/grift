@@ -581,7 +581,7 @@ impl<T> Grift<T> {
                 Mode::Return(v) => [v, Value::EmptyList],
                 Mode::Host(..) => [Value::EmptyList, Value::EmptyList],
             };
-            self.collect(current.into_iter())?;
+            self.collect(current.into_iter());
         }
         Ok(())
     }
@@ -805,14 +805,14 @@ impl<T> Grift<T> {
     /// with its checked inputs and the suspended machine as roots; never during allocation.
     pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         if self.heap.due() {
-            self.collect(current)?;
+            self.collect(current);
         }
         Ok(())
     }
 
     // Root iterators and marking temporaries belong only to collection, never suspended runs.
     #[inline(never)]
-    fn collect(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
+    fn collect(&mut self, current: impl Iterator<Item = Value>) {
         let kept = self.kept.iter().flatten().copied();
         let roots = self
             .machine
