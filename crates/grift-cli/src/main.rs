@@ -123,11 +123,14 @@ fn elapsed_nanoseconds(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Valu
     nanoseconds(g, args, Some(r.started.elapsed()))
 }
 
+/// The arguments of a host function that takes exactly `N`; `arity-error` for any other count.
+fn exactly<'a, const N: usize>(g: &mut G, args: &'a [Value]) -> Result<&'a [Value; N], Error> {
+    args.try_into().map_err(|_| g.error("arity-error", args))
+}
+
 /// A duration as an integer of nanoseconds; `range-error` before 1970 or after 2262.
 fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    let [] = exactly(g, args)?;
     match d.and_then(|d| i64::try_from(d.as_nanos()).ok()) {
         Some(n) => Ok(Value::Integer(n)),
         None => Err(g.error("range-error", &[])),
@@ -150,12 +153,10 @@ fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
 
 /// The one string argument, or a `type-error` or an `arity-error`.
 fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
-    match args {
-        [v] => match owned_string(g, v)? {
-            Some(s) => Ok(s),
-            None => Err(g.error("type-error", args)),
-        },
-        _ => Err(g.error("arity-error", args)),
+    let [v] = exactly(g, args)?;
+    match owned_string(g, v)? {
+        Some(s) => Ok(s),
+        None => Err(g.error("type-error", args)),
     }
 }
 
@@ -254,9 +255,7 @@ fn reading(
     args: &[Value],
     read: fn(&mut dyn BufRead, &mut String) -> io::Result<usize>,
 ) -> Result<Value, Error> {
-    let [id] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id] = exactly(g, args)?;
     let (path, Stream::Reading(input)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
@@ -282,9 +281,7 @@ fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Err
 /// `#bytes()` at the end. It reads only as much as it gives, so a pipe that stays open answers as
 /// soon as `count` bytes have come.
 fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, count] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id, count] = exactly(g, args)?;
     let &Value::Integer(n) = count else {
         return Err(g.error("type-error", std::slice::from_ref(count)));
     };
@@ -313,9 +310,7 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
 
 /// `(write data)` on a file: all of the bytes of a string or a bytes value.
 fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, data] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id, data] = exactly(g, args)?;
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
@@ -341,9 +336,7 @@ fn written(g: &mut G, wrote: Result<(), (io::Error, String)>) -> Result<Value, E
 
 /// `(close)` on a file: closes it; using it after this is the error `closed`.
 fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [id] = exactly(g, args)?;
     file(g, r, id)?;
     if let Value::Integer(n) = id
         && let Some(opened) = usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i))
@@ -538,9 +531,7 @@ impl<W: Write> Write for Gathered<W> {
 /// any run's is, even one no `catch!` could stop, and the session goes on; `exit` or a pipe no one
 /// reads ends it.
 fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [thunk] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [thunk] = exactly(g, args)?;
     match g.call(r, thunk, &[]) {
         Err(e) if exit_status(g, &e).is_none() => {
             report(g, "stdin", &e);
@@ -575,9 +566,7 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
 
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
 fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [source, text] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [source, text] = exactly(g, args)?;
     let (Some(source), Some(text)) = (owned_string(g, source)?, owned_string(g, text)?) else {
         return Err(g.error("type-error", args));
     };
@@ -587,9 +576,7 @@ fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error>
 /// `(position form)`: the source and line of a combination `read-forms` or an evaluated text read,
 /// as a list; `()` for any other value.
 fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [form] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [form] = exactly(g, args)?;
     let Some((source, line)) = g.position(form)? else {
         return Ok(Value::EmptyList);
     };
