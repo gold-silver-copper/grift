@@ -480,16 +480,14 @@ runner, so the local suite and CI both exercise the corpus.
 
 ## Inside
 
-One crate, about 3,000 lines of Rust: values and a heap that is a growable `Vec` of slots
+The `grift` crate holds values and a heap that is a growable `Vec` of slots
 (`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
-loop and before a host's evaluation or call needs its first heap slot. The machine's frames,
-argument stack, endings waiting for a cleanup, current expression and checked call inputs are its
-roots. Allocation never collects, and a collection needs no memory: its mark stack's room is made
-with the interpreter, and what doesn't fit there is found by passes over the heap, so a heap full of
-garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
+loop and before a host's evaluation or call needs its first heap slot. Allocation never collects,
+and a collection needs no memory, so a heap full of garbage with nothing left to allocate is
+reclaimed all the same. A run then needs only what its own
 work needs: heap slots, which that frees, and a little besides (a new name, a source's line
 numbers, a host function's copy of its arguments). An object the heap has no room for makes a collection due, before
 the next run needs room to read its input or build its call context, as does any memory refused

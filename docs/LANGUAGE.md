@@ -148,7 +148,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(filter a list)` | The elements for which `a` gives `#true`, in order; `a` must give booleans (6.3.5). |
 | `(fold a value list)` | `a` on the value so far and each element in turn, from the left, starting from `value`: `(fold add 0 list)` is a sum. Rust's `Iterator::fold`. |
 | `(range start end)` | The list of the integers from `start` up to, not including, `end`, as Rust's `start..end`; `()` if `start` isn't below `end`. |
-| `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words less-than?)`. 10,000 integers sort in about 0.3 s, and so do 10,000 short strings by `less-than?`. |
+| `(sort list before?)` | The elements in the order `before?` gives, an applicative of two giving a boolean: stable, so equal elements keep their order, and `n log n` calls of `before?` (a merge sort). `(sort words less-than?)`. |
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the operands, the list and the index or count: `(element-at (list 1) 3)` gives `range-error (1) 3`, `(second (list 1))` `range-error (1) 1`, and `(last ())` `range-error ()`. An index that isn't an integer is a `type-error`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
@@ -207,14 +207,11 @@ lookup whatever the number of cases, where `conditional!` tests its clauses in o
 the same operative, run in Rust when its operands are the shape it handles (three for `if!`, a
 proper list for `sequence!`), and by its body otherwise, so what a program sees, its errors and
 traces included, is the library's. The other forms with a body walk
-their operands in grift, so in a loop run per byte or per node each costs a few calls. Measured with
-the runner's `elapsed-nanoseconds` (release, one run of 200,000 turns, at this version), on top of a
-loop of one `if!` and a call, 0.32 µs a turn: another `if!` 0.05 µs, `sequence!` of two forms
-0.07 µs, `let!` of one binding 1.95 µs, `and!?` of two 1.19 µs, making a `lambda!` 1.0 µs, and
-`conditional!` of three clauses, the last one true, 2.1 µs more than the same choice in nested
-`if!`s. A library combiner such as `second` costs a few calls, as it checks the list's length to
-say what is wrong, where `(first (rest x))` costs 0.1 µs. Nested `if!`s are the cheapest branch; the other forms read better where speed
-doesn't matter.
+their operands in grift, so in a loop run per byte or per node each costs a few calls. From cheapest
+to dearest: `if!`, `sequence!`, making a `lambda!`, `and!?`, `let!`, and `conditional!`, which costs
+more than the same choice in nested `if!`s. A library combiner such as `second` costs a few calls,
+as it checks the list's length to say what is wrong, where `(first (rest x))` costs far less. Nested
+`if!`s are the cheapest branch; the other forms read better where speed doesn't matter.
 
 ## Errors
 

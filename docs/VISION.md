@@ -210,14 +210,14 @@ whatever it is, so one made by `string-to-symbol` may not read back as itself.
    or can't be used.
 
 ## What complete means
-grift is complete when a closed list of programs runs well on it, each with no blocker in its
-friction log: the Emacs-style editor in `examples/emacs` and the programs in `programs/`, which the
+grift is complete when a closed list of programs runs well on it, with no blocker found in using
+them: the Emacs-style editor in `examples/emacs` and the programs in `programs/`, which the
 gate runs. "Well" means the program's own test passes and its hot path is acceptable for what it
 does. Adding a program to the list is a decision, recorded like any other.
 
 ## How grift grows
-A feature enters only with evidence from real programs (a friction entry with a reproduction: one
-blocker, or the same cost in more than one program) and a recorded decision. Library grift comes
+A feature enters only with evidence from real programs (a reproduction of one blocker, or of the
+same cost in more than one program) and a recorded decision. Library grift comes
 before a primitive; a primitive only when the library version can't exist or is measured to be
 unusable. Decisions are append-only and reopened only with new evidence from use. Removing things
 is welcome: grift is pre-release, so old code is deleted, never deprecated.
