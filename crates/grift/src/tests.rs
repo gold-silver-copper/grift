@@ -1953,6 +1953,11 @@ fn a_catch_and_raise_at_every_level_copies_no_trace() {
     }
     let (e, _, collections, _) = work(&mut g, &src);
     let e = e.unwrap_err();
+    // The re-raised trace is the caught list itself, with the new places in front.
+    let shared = "(define! here (current-context)) (define! inner ())
+        (catch! (catch! (first 1) e (sequence! (bind here (quote! inner) (evaluate-in! trace e)) (raise e)))
+                e (same? (rest (evaluate-in! trace e)) inner))";
+    assert_eq!(g.evaluate(&mut (), shared).unwrap(), Value::Boolean(true));
     assert_eq!(e.trace.len(), 3002);
     assert_eq!(show(&g, &e.trace[0]), "(first 1)");
     assert!(collections < 20, "{collections} collections");
@@ -3944,9 +3949,9 @@ fn a_values_tag_is_a_whole_word() {
     assert_eq!(offset, size_of::<u64>());
 }
 
-/// A collection needs no memory of its own (208's P33): with no slot to be had and its mark stack
-/// never growing, it still keeps everything live, however deep, and frees the garbage, so a run
-/// that needs that memory gets it.
+/// A collection needs no memory of its own (208's P33): with fewer new slots to be had than the
+/// run makes and its mark stack never growing, it still keeps everything live, however deep, and
+/// frees the garbage, so a run that needs that memory gets it.
 #[test]
 fn a_collection_needs_no_memory_of_its_own() {
     let mut g: Grift = Grift::new().unwrap();
@@ -3957,9 +3962,9 @@ fn a_collection_needs_no_memory_of_its_own() {
          (length (range 0 50000))",
     )
     .unwrap();
-    // Pacing pays for the frames a deep build walks with room beyond the slots of the moment,
-    // which a collection may have given back; past that, no slot can be made.
-    g.heap.slot_limit = g.heap.len() + 100_000;
+    // Pacing pays for the frames a deep build walks with room beyond the slots of the moment, so
+    // some new slots are allowed, but fewer than the 62,000 the run makes: it needs the garbage's.
+    g.heap.slot_limit = g.heap.len() + 50_000;
     g.heap.request_collection();
     let v = g
         .evaluate(
@@ -4313,4 +4318,53 @@ fn unreachable_symbols_are_reclaimed_but_reachable_names_keep_identity() {
         panic!("{:?}", parked.request())
     };
     assert_eq!(g.symbol_name(asked).unwrap(), "asked-name");
+}
+
+/// Bindings a context grows by bring the next collection nearer as their storage, as a new
+/// context's do: 200 contexts that each come to bind 2,000 names hold about 180,000 slots' worth,
+/// though the host's binds allocate nothing else.
+#[test]
+fn a_context_that_grows_brings_collection_nearer() {
+    let mut g = grift();
+    let names: Vec<Value> = (0..2000)
+        .map(|i| Value::Symbol(g.symbol(&format!("n{i}")).unwrap()))
+        .collect();
+    let contexts = g
+        .evaluate(
+            &mut (),
+            "(define! cs (map (lambda! (#ignore) (record () ())) (range 0 200))) cs",
+        )
+        .unwrap();
+    let contexts = g.list_items(&contexts).unwrap();
+    g.heap.request_collection();
+    g.evaluate(&mut (), "#inert").unwrap();
+    let before = g.heap.collections;
+    for c in &contexts {
+        for n in &names {
+            g.bind(c, n, Value::Inert).unwrap();
+        }
+    }
+    g.evaluate(&mut (), "#inert").unwrap();
+    assert!(
+        g.heap.collections > before,
+        "the bindings brought no collection"
+    );
+}
+
+/// The table of names a host holds gives its room back once the host lets them go, so later
+/// collections don't walk it.
+#[test]
+fn names_a_host_let_go_leave_no_walk_behind() {
+    let mut g = grift();
+    let held: Vec<_> = (0..200_000)
+        .map(|i| g.symbol(&format!("h{i}")).unwrap())
+        .collect();
+    drop(held);
+    g.heap.request_collection();
+    g.evaluate(&mut (), "#inert").unwrap();
+    let room = g.control.handles().symbols.capacity();
+    assert!(
+        room < 4096,
+        "an empty table of held names has room for {room}"
+    );
 }

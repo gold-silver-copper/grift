@@ -6,7 +6,7 @@ use crate::evaluate::Native;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasherDefault, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 
 /// A reference to a heap slot. The generation tells a live object from a reclaimed one.
 #[derive(Clone, Copy, Debug, Eq)]
@@ -98,8 +98,10 @@ pub(crate) struct Origin {
 const NONE: u32 = u32::MAX;
 
 /// A collection pays for itself: the next one starts once as much was allocated as the largest
-/// part of what this one walked, at least this much. It walks what survived, the roots outside the
-/// heap (the running machine, the kept table and its parked runs) and every slot, so the next waits
+/// part of what this one walked, at least this much, about 1.2 MB of slots: a small program's
+/// collections walk the library each time, so fewer of them cost less. It walks what survived,
+/// the roots outside the heap (the running machine, the kept table and its parked runs, the names
+/// a host holds and the spelling index) and every slot, so the next waits
 /// for the largest of those three, the slots counted as half the free ones: that many take free
 /// slots without the heap growing, and as the lowest go first the top stays free. The heap stays
 /// within about twice the larger of the live data, those roots and the slots it already has; a
@@ -117,9 +119,7 @@ fn weight(obj: &Object) -> usize {
     match obj {
         Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
-        Object::Context(_, b) => {
-            1 + (b.capacity() * size_of::<(Symbol, Value)>()).div_ceil(size_of::<Slot>())
-        }
+        Object::Context(_, b) => 1 + bindings_weight(b),
         _ => 1,
     }
 }
@@ -268,6 +268,27 @@ impl Heap {
         }
     }
 
+    /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
+    /// next collection nearer, as a new object's weight does.
+    pub fn room_in(&mut self, r: Reference, more: usize) -> Result<&mut Bindings, Error> {
+        let bindings = match self.slots.get_mut(r.idx as usize) {
+            Some(s) if s.generation == r.generation => match &mut s.obj {
+                Object::Context(_, bindings) => bindings,
+                _ => return Err(Error::new(K::StaleValue, &[Value::Context(r)])),
+            },
+            _ => return Err(Error::new(K::StaleValue, &[])),
+        };
+        let before = bindings_weight(bindings);
+        bindings.try_reserve(more).map_err(|_| Error::oom())?;
+        let grown = bindings_weight(bindings).saturating_sub(before);
+        self.until_gc.set(self.until_gc.get().saturating_sub(grown));
+        #[cfg(test)]
+        {
+            self.work.0 += grown;
+        }
+        Ok(bindings)
+    }
+
     /// A new empty context.
     #[inline]
     pub fn context(&mut self, parent: Option<Reference>) -> Result<Reference, Error> {
@@ -329,8 +350,8 @@ impl Heap {
     /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
     /// reserved its entry as it was made. `walked` is how much outside the heap the collection
     /// walks too. The free list is made again from the top down, so the lowest slots are reused
-    /// first and the top empties, to be given back.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, walked: usize) {
+    /// first and the top empties, to be given back. Says whether it freed a name.
+    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, walked: usize) -> bool {
         #[cfg(test)]
         {
             self.collections += 1;
@@ -348,7 +369,7 @@ impl Heap {
         }
         #[cfg(test)]
         assert_eq!(marks.capacity(), room, "marking grew the mark stack");
-        let (mut live, mut free, mut top) = (0usize, 0, None);
+        let (mut live, mut free, mut top, mut names_freed) = (0usize, 0, None, false);
         self.free = NONE;
         for (idx, s) in (0..NONE).zip(self.slots.iter_mut()).rev() {
             if s.marked.take() {
@@ -367,7 +388,13 @@ impl Heap {
                 top = top.or(Some(idx));
                 live = live.saturating_add(1);
             } else {
-                s.obj = Object::Free(self.free);
+                match &mut s.obj {
+                    Object::Free(next) => *next = self.free,
+                    obj => {
+                        names_freed |= matches!(obj, Object::Symbol(_));
+                        *obj = Object::Free(self.free);
+                    }
+                }
                 self.free = idx;
                 free += 1;
             }
@@ -379,6 +406,7 @@ impl Heap {
         {
             self.live = live.saturating_add(walked);
         }
+        names_freed
     }
 
     /// Gives back the free slots above `used`, when they are at least a third of all, and says
@@ -387,14 +415,22 @@ impl Heap {
     /// starts past their generations, unless those ran so far that it couldn't.
     fn give_back(&mut self, used: usize) -> usize {
         let top = self.slots.get(used..).unwrap_or_default();
+        if top.len() < GC_MIN || top.len() < self.slots.len() / 3 {
+            return 0;
+        }
+        // New slots all start past this, so one slot reused billions of times would make every
+        // new one retire soon: past half their generations, nothing is given back.
         let past = top.iter().map(|s| s.generation).max().unwrap_or(0);
-        if top.len() < GC_MIN || top.len() < self.slots.len() / 3 || past >= u32::MAX - 1 {
+        if past >= u32::MAX / 2 {
             return 0;
         }
         let given = top.len();
         self.fresh = self.fresh.max(past);
         self.slots.truncate(used);
-        // The last free slot below now ends the list.
+        // The last free slot below now ends the list, or the list is empty.
+        if self.free as usize >= used {
+            self.free = NONE;
+        }
         if let Some(Slot {
             obj: Object::Free(next),
             ..
@@ -422,6 +458,31 @@ impl Heap {
     #[cfg(test)]
     pub fn mark_room(&self) -> usize {
         self.marks.capacity()
+    }
+}
+
+/// How many objects a context's bindings count as: the slots their storage would fill.
+fn bindings_weight(b: &Bindings) -> usize {
+    (b.capacity() * size_of::<(Symbol, Value)>()).div_ceil(size_of::<Slot>())
+}
+
+/// Gives back the storage of a table each collection walks, the kept table, once under a quarter
+/// of it is used, so the walk costs what it holds. [`tidy_map`] is the same for a map.
+pub(crate) fn tidy_vec<X>(v: &mut Vec<X>) {
+    if v.capacity() / 4 > v.len() {
+        shrink(v);
+    }
+}
+
+/// [`tidy_vec`] for a map: the spelling index and the names a host holds.
+pub(crate) fn tidy_map<K: Eq + Hash, V>(m: &mut HashMap<K, V>) {
+    if m.capacity() / 4 > m.len() {
+        let mut smaller = HashMap::new();
+        if smaller.try_reserve(m.len()).is_ok() {
+            // It has room for all, so this allocates nothing.
+            smaller.extend(m.drain());
+            *m = smaller;
+        }
     }
 }
 

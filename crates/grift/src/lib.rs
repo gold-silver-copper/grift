@@ -920,9 +920,7 @@ impl<T> Grift<T> {
     pub(crate) fn tidy_kept(&mut self) {
         let used = self.kept.iter().rposition(|e| !matches!(e, Entry::Free(_)));
         self.kept.truncate(used.map_or(0, |i| i + 1));
-        if self.kept.capacity() / 4 > self.kept.len() {
-            heap::shrink(&mut self.kept);
-        }
+        heap::tidy_vec(&mut self.kept);
         self.kept_free = None;
         for (name, entry) in (0..u32::MAX).zip(self.kept.iter_mut()).rev() {
             if let Entry::Free(next) = entry {
@@ -937,14 +935,7 @@ impl<T> Grift<T> {
     pub(crate) fn tidy_symbols(&mut self) {
         let heap = &self.heap;
         self.symbols.retain(|_, id| heap.symbol_name(*id).is_some());
-        if self.symbols.capacity() / 4 > self.symbols.len() {
-            let mut smaller = HashMap::new();
-            if smaller.try_reserve(self.symbols.len()).is_ok() {
-                // It has room for all, so this allocates nothing.
-                smaller.extend(self.symbols.drain());
-                self.symbols = smaller;
-            }
-        }
+        heap::tidy_map(&mut self.symbols);
     }
 
     /// The value `k` keeps.

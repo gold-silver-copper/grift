@@ -802,17 +802,20 @@ impl<T> Grift<T> {
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
         // Names live as heap objects: the known ones, host functions' and those a host holds are
         // roots too, and the spelling index, which the collection walks, keeps only live ones.
-        let handles = self.control.handles();
+        // Maps are walked, and counted, by their room, not their entries.
+        let mut handles = self.control.handles();
         let held = &handles.symbols;
         let known = (0..).zip(K_NAMES).map(|(id, _)| Symbol(id));
         let hosts = self.hosts.iter().map(|&(name, _)| name);
         let names = known.chain(held.keys().map(|&id| Symbol(id))).chain(hosts);
-        let walked = walked + self.symbols.capacity() + held.len() + self.hosts.len();
-        self.heap
-            .collect(roots.chain(names.map(Value::Symbol)), walked);
+        let walked = walked + self.symbols.capacity() + held.capacity() + self.hosts.len();
+        let names_freed = (self.heap).collect(roots.chain(names.map(Value::Symbol)), walked);
+        crate::heap::tidy_map(&mut handles.symbols);
         drop(handles);
         self.tidy_kept();
-        self.tidy_symbols();
+        if names_freed {
+            self.tidy_symbols();
+        }
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -1168,7 +1171,7 @@ impl<T> Grift<T> {
                     return Err(type_error(bad));
                 };
                 match p {
-                    P::Unbind => Value::Boolean(self.bindings_mut(c)?.remove(&s).is_some()),
+                    P::Unbind => Value::Boolean(self.heap.room_in(c, 0)?.remove(&s).is_some()),
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
@@ -1647,11 +1650,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut matched = Bindings::default();
         self.match_tree(&mut matched, tree, value)?;
-        let bindings = self.bindings_mut(c)?;
-        bindings
-            .try_reserve(matched.len())
-            .map_err(|_| Error::oom())?;
-        bindings.extend(matched);
+        self.heap.room_in(c, matched.len())?.extend(matched);
         Ok(())
     }
 
@@ -1662,17 +1661,8 @@ impl<T> Grift<T> {
         s: Symbol,
         v: Value,
     ) -> Result<(), Error> {
-        let bindings = self.bindings_mut(context)?;
-        bindings.try_reserve(1).map_err(|_| Error::oom())?;
-        bindings.insert(s, v);
+        self.heap.room_in(context, 1)?.insert(s, v);
         Ok(())
-    }
-
-    pub(crate) fn bindings_mut(&mut self, context: Reference) -> Result<&mut Bindings, Error> {
-        match self.heap.get_mut(context)? {
-            Object::Context(_, bindings) => Ok(bindings),
-            _ => Err(Error::new(K::StaleValue, &[Value::Context(context)])),
-        }
     }
 
     pub(crate) fn context_at(
