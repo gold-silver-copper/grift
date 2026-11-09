@@ -387,11 +387,7 @@ impl Machine {
 
     /// How many objects a parked machine counts as, for when to collect: every collection walks it.
     pub(crate) fn weight(&self) -> usize {
-        let waiting = self.waiting.iter().map(|w| match w {
-            Ok(_) => 1,
-            Err(e) => e.values.len() + e.trace.weight(),
-        });
-        1 + self.frames.len() + self.arguments.len() + waiting.sum::<usize>()
+        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
     }
 }
 

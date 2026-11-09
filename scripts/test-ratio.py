@@ -2,9 +2,10 @@
 """Test size per production size in crates/, held to a ratchet.
 
 What counts as test: every file under crates/*/tests/ (fixtures and .grift programs included),
-crates/*/src/*tests.rs, and any item in crates/*/src/ under an attribute that names `test` without
+crates/*/src/*tests.rs, any item in crates/*/src/ under an attribute that names `test` without
 `not(test)`: #[cfg(test)], #[cfg(any(test, feature = ...))], #[cfg_attr(test, ...)] counts only its
-own line. Production: the rest of crates/*/src/ (.rs and .grift). programs/ and examples/ are
+own line, and a .grift file in crates/*/src/ that no production code includes (`include_str!`).
+Production: the rest of crates/*/src/ (.rs and .grift). programs/ and examples/ are
 neither: they are programs the corpus test runs, not the interpreter.
 
 What is counted: non-blank characters outside comments, so packing or spreading code changes nothing.
@@ -53,17 +54,23 @@ def split(path):
 
 def measure(by_lines=False):
     prod = test = 0
+    parts = {}
     for path in sorted(glob.glob("crates/*/**/*", recursive=True)):
         ext = os.path.splitext(path)[1]
         if not os.path.isfile(path) or ext not in COMMENT:
             continue
         lines = open(path, encoding="utf-8").read().split("\n")
         if "/tests/" in path or path.endswith("tests.rs"):
-            test += size(lines, ext, by_lines)
+            parts[path] = ext, [], lines
         elif "/src/" in path:
-            p, t = split(path) if ext == ".rs" else (lines, [])
-            prod += size(p, ext, by_lines)
-            test += size(t, ext, by_lines)
+            parts[path] = (ext, *split(path)) if ext == ".rs" else (ext, lines, [])
+    # A .grift file only test code includes is test code.
+    included = {m for ext, p, _ in parts.values() if ext == ".rs" for m in re.findall(r'include_str!\("([^"]+)"\)', "\n".join(p))}
+    for path, (ext, p, t) in parts.items():
+        if ext == ".grift" and "/src/" in path and os.path.basename(path) not in included:
+            p, t = [], p
+        prod += size(p, ext, by_lines)
+        test += size(t, ext, by_lines)
     return test, prod
 
 

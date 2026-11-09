@@ -32,8 +32,7 @@ pub(crate) enum Value {
 }
 
 // Two words, and aligned to one: every step copies values, so a bigger one costs every program.
-// The size can't show the tag's width (a one-byte tag pads to the same 16 bytes):
-// `a_values_tag_is_a_whole_word` checks that.
+// The size can't show the tag's width: a one-byte tag pads to the same 16 bytes.
 const _: () = assert!(size_of::<Value>() == 16 && align_of::<Value>() == 8);
 
 /// An interned symbol: its index among the names.
@@ -80,7 +79,9 @@ pub(crate) struct Error {
 /// first, shared and never copied, then the places added since. Nothing copies it: a handler gets
 /// the added places put on the list's front ([`Trace::onto`]), raising the list it got takes it
 /// back whole ([`Trace::handed`]), and only the host's export reads all of it ([`Trace::parts`]).
-/// So a catch and raise at every level costs only the places each level adds.
+/// So a catch and raise at every level costs only the places each level adds. Only the last
+/// handler's list is remembered: a handler that catches another error before raising its own
+/// raises a list given back, which is walked once.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Trace {
     shared: Value,
@@ -152,11 +153,6 @@ impl Trace {
     /// The values a collection must keep for it.
     pub fn roots(&self) -> impl Iterator<Item = Value> {
         std::iter::once(self.shared).chain(self.added.iter().copied())
-    }
-
-    /// How many objects it counts as outside the heap, for when to collect.
-    pub fn weight(&self) -> usize {
-        1 + self.added.len()
     }
 }
 
