@@ -267,7 +267,7 @@ fn main() -> Result<(), Error> {
   for the same run. Reading, printing and binding the host asks for between runs (`read`, `read_in`,
   `write`, `describe`, `bind`) are each a run of their own, and reading the text an `evaluate` is given
   is part of its run. `stop()` from any thread stops that run at its next step, inside a long walk of a
-  tree or a text, or as its last host call returns, with the error `interrupted`, and says whether it was in
+  tree, between the items of a text, or as its last host call returns, with the error `interrupted`, and says whether it was in
   progress. `true` doesn't say the stop acted: a run about to end can still return its value.
   `interrupted` runs cleanups on its way out as any error does, but a stop can also land in a cleanup
   that has begun, and cut it, even before its first form. Before its run begins, after it ends, and
