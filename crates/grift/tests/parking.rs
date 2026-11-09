@@ -1025,3 +1025,24 @@ fn a_wait_inside_the_runners_load_goes_on_with_the_rest_of_the_file() {
     assert_eq!(w.log, ["17", "99"]);
     assert_eq!(g.evaluate(&mut w, "loaded").unwrap(), Value::Integer(17));
 }
+
+/// `(call-then f then)`: calls `f` on the machine, then `then` with its value.
+fn call_then(_: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    Ok(Answer::Call {
+        function: args[0].clone(),
+        arguments: Vec::new(),
+        then: Some((args[1].clone(), Vec::new())),
+    })
+}
+
+/// A call and its `then` are each called as `Grift::call` calls, in a new empty context of its
+/// own: what the call binds in its caller's context the `then` doesn't see.
+#[test]
+fn a_call_and_its_then_each_get_a_context_of_their_own() {
+    let (mut g, mut w) = (grift(), World::default());
+    let f = g.host_function("call-then", call_then).unwrap();
+    g.define("call-then", f).unwrap();
+    let src = "(call-then (wrap (vau! () e (bind e (quote! x) 1)))
+                          (wrap (vau! (v) e (lookup e (quote! x) #false))))";
+    assert_eq!(g.evaluate(&mut w, src).unwrap(), Value::Boolean(false));
+}

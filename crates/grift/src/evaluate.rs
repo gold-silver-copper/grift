@@ -840,7 +840,8 @@ impl<T> Grift<T> {
         }
     }
 
-    /// [`Answer::Call`]: the frames of a call of `function`, as [`Grift::call_local`] builds them.
+    /// [`Answer::Call`]: the frames of a call of `function`, as [`Grift::call_local`] builds them,
+    /// and of `then`, each in a new empty context of its own.
     /// The frame of an argument still to come is all a `then` needs: the saved values are the
     /// arguments so far and the call's value is the last, so the machine has no new kind of frame.
     fn call_on_machine(
@@ -851,10 +852,10 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         let function = self.combiner_of(function)?;
         let operands = self.list_local(arguments)?;
-        let context = self.heap.context(None)?;
         let at = self.machine.here;
         if let Some((then, saved)) = then {
             let combiner = self.combiner_of(then)?;
+            let context = self.heap.context(None)?;
             let base = Base::new(self.machine.arguments.len(), false);
             for v in saved {
                 push(&mut self.machine.arguments, v)?;
@@ -870,6 +871,7 @@ impl<T> Grift<T> {
                 at,
             )?;
         }
+        let context = self.heap.context(None)?;
         let base = Base::new(self.machine.arguments.len(), false);
         self.frame(What::Combine { operands, base }, context, at)?;
         Ok(Mode::Return(function))
