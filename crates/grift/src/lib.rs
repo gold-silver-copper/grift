@@ -875,6 +875,25 @@ impl<T> Grift<T> {
         Some(held)
     }
 
+    /// Gives back the free entries at the end of the kept table, and their storage once it is
+    /// under a quarter used, and makes the free list again from the bottom up, so the lowest names
+    /// are reused first and the end empties. Each collection walks the whole table, and this once
+    /// more.
+    pub(crate) fn tidy_kept(&mut self) {
+        let used = self.kept.iter().rposition(|e| !matches!(e, Entry::Free(_)));
+        self.kept.truncate(used.map_or(0, |i| i + 1));
+        if self.kept.capacity() / 4 > self.kept.len() {
+            heap::shrink(&mut self.kept);
+        }
+        self.kept_free = None;
+        for (name, entry) in (0..u32::MAX).zip(self.kept.iter_mut()).rev() {
+            if let Entry::Free(next) = entry {
+                *next = self.kept_free;
+                self.kept_free = Some(name);
+            }
+        }
+    }
+
     /// The value `k` keeps.
     pub fn kept(&self, k: &Kept) -> Result<Value, Error> {
         let found = self

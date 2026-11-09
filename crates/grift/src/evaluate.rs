@@ -340,9 +340,14 @@ impl Machine {
         self.may_park = false;
     }
 
-    /// How many objects a parked machine counts as, for when to collect: every collection walks it.
+    /// How many objects a machine counts as, for when to collect: every collection walks it,
+    /// running or parked.
     pub(crate) fn weight(&self) -> usize {
-        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
+        let waiting = self.waiting.iter().map(|w| match w {
+            Ok(_) => 1,
+            Err(e) => 1 + e.values.len() + e.trace.len(),
+        });
+        1 + self.frames.len() + self.arguments.len() + waiting.sum::<usize>()
     }
 }
 
@@ -772,7 +777,9 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) {
-        let parked = self.kept.iter().map(Entry::weight).sum();
+        // What the collection walks outside the heap: this machine, and the whole kept table.
+        let parked: usize = self.kept.iter().map(Entry::weight).sum();
+        let walked = parked + self.kept.len() + self.machine.weight();
         let kept = self.kept.iter().flat_map(Entry::roots);
         let roots = self
             .machine
@@ -780,7 +787,8 @@ impl<T> Grift<T> {
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
-        self.heap.collect(roots, parked)
+        self.heap.collect(roots, walked);
+        self.tidy_kept();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping

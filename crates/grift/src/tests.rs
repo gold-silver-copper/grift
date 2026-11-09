@@ -475,6 +475,57 @@ fn tail_calls_run_in_constant_space() {
     assert_eq!(high[0], high[1], "evaluating named forms kept tail frames");
 }
 
+/// Collection costs a constant factor of allocation, whatever a program did before or holds
+/// around it: after a dropped peak, deep in a stack of frames that hold nothing new, and after a
+/// host kept and released many values. The slots a peak left are given back, and a value the host
+/// held from it stays stale when a new slot takes its place.
+#[test]
+fn collection_pays_for_what_it_walks() {
+    let mut g = grift();
+    let spin = "(define! spin (lambda! (n) (if! (same? n 0) 0 (sequence! (pair 1 2) (spin (subtract n 1))))))";
+    g.evaluate(&mut (), spin).unwrap();
+    let paid = |g: &mut Grift, case: &str, run: &mut dyn FnMut(&mut Grift)| {
+        g.heap.work = (0, 0);
+        run(g);
+        let (allocated, walked) = g.heap.work;
+        assert!(
+            walked <= 8 * allocated,
+            "{case}: walked {walked} for {allocated} allocated"
+        );
+    };
+    let old = g
+        .evaluate(&mut (), "(define! big (range 0 200000)) big")
+        .unwrap();
+    g.evaluate(&mut (), "(define! big 0)").unwrap();
+    paid(&mut g, "after a peak", &mut |g| {
+        g.evaluate(&mut (), "(spin 300000)").unwrap();
+    });
+    // A run's source holds the slots it was read into, wherever the free ones were; a collection
+    // between runs finds no source.
+    g.heap.request_collection();
+    g.evaluate(&mut (), "#inert").unwrap();
+    assert!(g.heap.len() < 150_000, "kept {} slots", g.heap.len());
+    g.evaluate(&mut (), "(define! big (range 0 200000))")
+        .unwrap();
+    assert_eq!(kind(&g, &g.list_items(&old).unwrap_err()), "stale-value");
+    g.evaluate(&mut (), "(define! big 0)").unwrap();
+    g.evaluate(
+        &mut (),
+        "(define! c (current-context)) (define! d 0)
+         (define! body (quote! (if! (same? d 50000) (spin 100000)
+           (add 1 (sequence! (bind c (quote! d) (add d 1)) (evaluate body c))))))",
+    )
+    .unwrap();
+    paid(&mut g, "deep", &mut |g| {
+        g.evaluate(&mut (), "(evaluate body c)").unwrap();
+    });
+    let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
+    kept.into_iter().for_each(|k| g.release(k).unwrap());
+    paid(&mut g, "after keeping", &mut |g| {
+        g.evaluate(&mut (), "(spin 100000)").unwrap();
+    });
+}
+
 #[test]
 fn deep_nesting_needs_no_rust_stack() {
     let mut g = grift();
@@ -3887,8 +3938,9 @@ fn a_collection_needs_no_memory_of_its_own() {
          (length (range 0 50000))",
     )
     .unwrap();
-    g.heap.slot_limit = g.heap.len();
-    let room = g.heap.mark_room();
+    // Pacing pays for the frames a deep build walks with room beyond the slots of the moment,
+    // which a collection may have given back; past that, no slot can be made.
+    g.heap.slot_limit = g.heap.len() + 100_000;
     g.heap.request_collection();
     let v = g
         .evaluate(
@@ -3901,7 +3953,8 @@ fn a_collection_needs_no_memory_of_its_own() {
         g.list_items(&v).unwrap(),
         [40000, 20000, 19999, 1999].map(Value::Integer)
     );
-    assert_eq!(g.heap.mark_room(), room);
+    // Every collection checks that marking took no room (`Heap::collect`).
+    assert!(g.heap.mark_room() >= g.heap.len());
 }
 
 /// Every slot has its mark stack entry before any collection needs it: with memory refused and no

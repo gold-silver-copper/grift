@@ -96,10 +96,18 @@ pub(crate) struct Origin {
 
 const NONE: u32 = u32::MAX;
 
-/// Collections start once this many objects were allocated since the last one, or as many as
-/// survived it if that is more, so the heap stays within about twice the live data. A string or
-/// bytes value counts as many objects as its storage would fill slots, so large chunks dropped one
-/// after another bring the next collection nearer as their size, not their number, says.
+/// A collection pays for itself: the next one starts once as much was allocated as the largest
+/// part of what this one walked, at least this much. It walks what survived, the roots outside the
+/// heap (the running machine, the kept table and its parked runs) and every slot, so the next waits
+/// for the largest of those three, the slots counted as half the free ones: that many take free
+/// slots without the heap growing, and as the lowest go first the top stays free. The heap stays
+/// within about twice the larger of the live data, those roots and the slots it already has; a
+/// free third at the top of the slots is given back, so a past peak leaves no walking behind. Its
+/// memory goes back only down to the highest slot still alive: objects never move, so one
+/// long-lived object made after a peak keeps the slots below it, never more than the peak. A
+/// retired slot counts as live. A string, bytes value or context counts as many objects as its
+/// storage would fill slots, so large chunks dropped one after another bring the next collection
+/// nearer as their size, not their number, says.
 const GC_MIN: usize = 4096;
 
 /// How many objects `obj` counts as, for when to collect.
@@ -108,6 +116,9 @@ fn weight(obj: &Object) -> usize {
     match obj {
         Object::String(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
+        Object::Context(_, b) => {
+            1 + (b.capacity() * size_of::<(Symbol, Value)>()).div_ceil(size_of::<Slot>())
+        }
         _ => 1,
     }
 }
@@ -121,6 +132,9 @@ pub(crate) struct Heap {
     /// The mark stack, empty between collections: every slot reserved its entry here when it was
     /// made, so a collection never grows it.
     marks: Vec<u32>,
+    /// The generation a new slot starts at: past every generation of a slot given back, so no
+    /// reference to one that was there matches the slot made in its place.
+    fresh: u32,
     /// What the last collection found alive, by weight, for tests of what a run keeps.
     #[cfg(test)]
     live: usize,
@@ -147,6 +161,9 @@ pub(crate) struct Heap {
     /// Collections so far.
     #[cfg(test)]
     pub collections: usize,
+    /// Weight allocated, and slots and roots outside the heap that collections walked, so far.
+    #[cfg(test)]
+    pub work: (usize, usize),
 }
 
 impl Default for Heap {
@@ -156,6 +173,7 @@ impl Default for Heap {
             free: NONE,
             until_gc: Cell::new(GC_MIN),
             marks: Vec::new(),
+            fresh: 0,
             #[cfg(test)]
             live: 0,
             #[cfg(test)]
@@ -174,6 +192,8 @@ impl Default for Heap {
             refused: 0,
             #[cfg(test)]
             collections: 0,
+            #[cfg(test)]
+            work: (0, 0),
         }
     }
 }
@@ -193,6 +213,7 @@ impl Heap {
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
         {
+            self.work.0 += weight(&obj);
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
             match self.refuse_in {
                 Some(0) => {
@@ -228,13 +249,14 @@ impl Heap {
         self.marks
             .try_reserve(self.slots.len() + 1)
             .map_err(|_| self.refused())?;
+        let generation = self.fresh;
         let slot = Slot {
-            generation: 0,
+            generation,
             marked: Cell::new(false),
             obj,
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
-        Ok(Reference { idx, generation: 0 })
+        Ok(Reference { idx, generation })
     }
 
     /// A new empty context.
@@ -296,40 +318,90 @@ impl Heap {
 
     /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
     /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
-    /// reserved its entry as it was made. `parked` is the weight of what
-    /// outside the heap the next collection walks too, counted as live.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, parked: usize) {
+    /// reserved its entry as it was made. `walked` is how much outside the heap the collection
+    /// walks too. The free list is made again from the top down, so the lowest slots are reused
+    /// first and the top empties, to be given back.
+    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, walked: usize) {
         #[cfg(test)]
         {
             self.collections += 1;
+            self.work.1 += self.slots.len() + walked;
         }
         let slots = &self.slots;
         let marks = &mut self.marks;
+        #[cfg(test)]
+        let room = marks.capacity();
         roots.for_each(|v| mark(slots, marks, v));
         while let Some(idx) = marks.pop() {
             if let Some(s) = slots.get(idx as usize) {
                 children(&s.obj, |v| mark(slots, marks, v));
             }
         }
-        let mut live = parked;
-        for (idx, s) in (0..).zip(self.slots.iter_mut()) {
+        #[cfg(test)]
+        assert_eq!(marks.capacity(), room, "marking grew the mark stack");
+        let (mut live, mut free, mut top) = (0usize, 0, None);
+        self.free = NONE;
+        for (idx, s) in (0..NONE).zip(self.slots.iter_mut()).rev() {
             if s.marked.take() {
                 live = live.saturating_add(weight(&s.obj));
-            } else if !matches!(s.obj, Object::Free(_)) {
-                s.obj = Object::Free(self.free);
+                top = top.or(Some(idx));
+                continue;
+            }
+            if !matches!(s.obj, Object::Free(_)) {
                 // A slot whose generations run out is retired, never reused: its last one, which
                 // no reference has, means free for good.
                 s.generation = s.generation.saturating_add(1);
-                if s.generation != u32::MAX {
-                    self.free = idx;
-                }
+            }
+            if s.generation == u32::MAX {
+                // Swept every time and never reused, it counts as live.
+                s.obj = Object::Free(NONE);
+                top = top.or(Some(idx));
+                live = live.saturating_add(1);
+            } else {
+                s.obj = Object::Free(self.free);
+                self.free = idx;
+                free += 1;
             }
         }
-        *self.until_gc.get_mut() = live.max(GC_MIN);
+        let used = top.map_or(0, |i| i as usize + 1);
+        free -= self.give_back(used).min(free);
+        *self.until_gc.get_mut() = live.max(walked).max(free / 2).max(GC_MIN);
         #[cfg(test)]
         {
-            self.live = live;
+            self.live = live.saturating_add(walked);
         }
+    }
+
+    /// Gives back the free slots above `used`, when they are at least a third of all, and says
+    /// how many it gave: what survived was made last, so about as high as half the free slots.
+    /// The free list runs from the bottom up, so they are its end. A slot made in their place
+    /// starts past their generations, unless those ran so far that it couldn't.
+    fn give_back(&mut self, used: usize) -> usize {
+        let top = self.slots.get(used..).unwrap_or_default();
+        let past = top.iter().map(|s| s.generation).max().unwrap_or(0);
+        if top.len() < GC_MIN || top.len() < self.slots.len() / 3 || past >= u32::MAX - 1 {
+            return 0;
+        }
+        let given = top.len();
+        self.fresh = self.fresh.max(past);
+        self.slots.truncate(used);
+        // The last free slot below now ends the list.
+        if let Some(Slot {
+            obj: Object::Free(next),
+            ..
+        }) = self.slots.iter_mut().rev().find(|s| match s.obj {
+            Object::Free(next) => next != NONE && next as usize >= used,
+            _ => false,
+        }) {
+            *next = NONE;
+        }
+        shrink(&mut self.slots);
+        // The mark stack is empty between collections, and needs room for every slot.
+        let mut marks = Vec::new();
+        if marks.try_reserve_exact(used + 1).is_ok() {
+            self.marks = marks;
+        }
+        given
     }
 
     #[cfg(test)]
@@ -341,6 +413,15 @@ impl Heap {
     #[cfg(test)]
     pub fn mark_room(&self) -> usize {
         self.marks.capacity()
+    }
+}
+
+/// Moves `v` into storage of its own length, if memory allows; else leaves it as it is.
+pub(crate) fn shrink<X>(v: &mut Vec<X>) {
+    let mut smaller = Vec::new();
+    if v.capacity() > v.len() && smaller.try_reserve_exact(v.len()).is_ok() {
+        smaller.append(v);
+        *v = smaller;
     }
 }
 
