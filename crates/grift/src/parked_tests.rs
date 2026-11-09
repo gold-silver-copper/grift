@@ -59,7 +59,7 @@ fn dropping_a_handle_asks_for_no_memory() {
         handles.push(parked(start(&mut g, &mut log, src)));
     }
     let room = |g: &Grift<Log>| {
-        let queue = g.control.forgotten();
+        let queue = &g.control.handles().forgotten;
         (queue.capacity(), queue.as_ptr())
     };
     let before = room(&g);
@@ -983,9 +983,10 @@ mod generated {
                 3 if !waiting.is_empty() => {
                     let i = r.below(waiting.len() as u64) as usize;
                     let Waiting { run, parked } = waiting.swap_remove(i);
-                    let queue = g.control.forgotten();
+                    let handles = g.control.handles();
+                    let queue = &handles.forgotten;
                     assert!(queue.len() < queue.capacity(), "{context}");
-                    drop(queue);
+                    drop(handles);
                     drop(parked);
                     let parked = g.forgotten().expect("the handle dropped");
                     let asked = request_id(&g, parked.request()) as u64 / 100_000;

@@ -9,6 +9,8 @@
 //! the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]: never repeated, at a
 //! run a nanosecond they wrap after seventy years.
 
+use crate::Value;
+use std::collections::{HashMap, TryReserveError};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -28,11 +30,59 @@ fn after(word: u64) -> u64 {
 #[derive(Default)]
 pub(crate) struct Control {
     word: AtomicU64,
-    /// The kept names of parked runs whose handles were dropped, for the host to find again.
-    forgotten: Mutex<Vec<u32>>,
+    /// What host handles change from any thread, under one lock.
+    handles: Mutex<Handles>,
+}
+
+/// What host handles change from any thread.
+#[derive(Default)]
+pub(crate) struct Handles {
+    /// The kept names of parked runs whose handles were dropped, and their requests, for the host
+    /// to find again.
+    pub forgotten: Vec<(u32, Value)>,
+    /// How many host [`Symbol`](crate::Symbol)s hold each name, of those handed out: the
+    /// collector's roots. A name is here only while a handle holds it.
+    pub symbols: HashMap<u32, usize>,
 }
 
 impl Control {
+    /// What host handles change. Nothing panics under the lock.
+    pub fn handles(&self) -> MutexGuard<'_, Handles> {
+        self.handles.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// One more host handle of name `id`, its count's room asked for if it is the first.
+    pub fn hold(&self, id: u32) -> Result<(), TryReserveError> {
+        let symbols = &mut self.handles().symbols;
+        if !symbols.contains_key(&id) {
+            symbols.try_reserve(1)?;
+        }
+        let count = symbols.entry(id).or_insert(0);
+        *count = count.saturating_add(1);
+        Ok(())
+    }
+
+    /// A clone of a host handle of name `id`, which is counted already, so this needs no memory.
+    /// A count that reaches the most there is stays, the name held for good, rather than wrap.
+    pub fn again(&self, id: u32) {
+        if let Some(count) = self.handles().symbols.get_mut(&id) {
+            *count = count.saturating_add(1);
+        }
+    }
+
+    /// One host handle of name `id` fewer: with none left, the name is no longer a root.
+    pub fn release(&self, id: u32) {
+        let symbols = &mut self.handles().symbols;
+        match symbols.get_mut(&id) {
+            Some(count) if *count == usize::MAX => {}
+            Some(count) if *count > 1 => *count -= 1,
+            Some(_) => {
+                symbols.remove(&id);
+            }
+            None => {}
+        }
+    }
+
     pub fn begin(&self) {
         self.word.fetch_or(RUNNING, Relaxed);
     }
@@ -84,11 +134,6 @@ impl Control {
     /// Ends the run to park it, unless it was asked to stop.
     pub fn parks(&self) -> bool {
         self.update(|word| (word & ASKED == 0).then(|| after(word)))
-    }
-
-    /// The parked runs no handle holds. Nothing panics under the lock.
-    pub fn forgotten(&self) -> MutexGuard<'_, Vec<u32>> {
-        self.forgotten.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 

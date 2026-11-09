@@ -42,6 +42,7 @@ pub(crate) enum Object {
     Free(u32),
     Pair(Value, Value, Origin),
     String(Box<str>),
+    Symbol(Box<str>),
     /// An optional parent and the bindings.
     Context(Option<Reference>, Bindings),
     Operative(Operative),
@@ -114,7 +115,7 @@ const GC_MIN: usize = 4096;
 #[inline]
 fn weight(obj: &Object) -> usize {
     match obj {
-        Object::String(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
+        Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
         Object::Context(_, b) => {
             1 + (b.capacity() * size_of::<(Symbol, Value)>()).div_ceil(size_of::<Slot>())
@@ -257,6 +258,14 @@ impl Heap {
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
         Ok(Reference { idx, generation })
+    }
+
+    /// Symbol ids name slots, but cannot escape as unrooted heap references.
+    pub fn symbol_name(&self, id: u32) -> Option<&str> {
+        match self.slots.get(id as usize).map(|s| &s.obj) {
+            Some(Object::Symbol(name)) => Some(name),
+            _ => None,
+        }
     }
 
     /// A new empty context.
@@ -428,6 +437,15 @@ pub(crate) fn shrink<X>(v: &mut Vec<X>) {
 /// Puts `v`'s object on the mark stack, unless a collection already reached it.
 fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
     let r = match v {
+        Value::Symbol(id) => {
+            if let Some(s) = slots.get(id.0 as usize)
+                && matches!(s.obj, Object::Symbol(_))
+                && !s.marked.replace(true)
+            {
+                marks.push(id.0);
+            }
+            return;
+        }
         Value::Pair(r)
         | Value::String(r)
         | Value::Bytes(r)
@@ -447,8 +465,11 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
 /// What `obj` refers to.
 fn children(obj: &Object, mut f: impl FnMut(Value)) {
     match obj {
-        Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
-        Object::Pair(a, d, _) => {
+        Object::Free(_) | Object::String(_) | Object::Symbol(_) | Object::Bytes(_) => {}
+        Object::Pair(a, d, origin) => {
+            if let Some((source, _)) = origin.place {
+                f(Value::Symbol(source));
+            }
             f(*a);
             f(*d);
         }
@@ -456,9 +477,13 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
             if let Some(p) = parent {
                 f(Value::Context(*p));
             }
-            bindings.values().copied().for_each(f);
+            for (&name, &value) in bindings {
+                f(Value::Symbol(name));
+                f(value);
+            }
         }
         Object::Operative(op) => {
+            f(op.context_parameter);
             f(op.parameters);
             f(op.body);
             f(Value::Context(op.context));

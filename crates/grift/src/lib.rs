@@ -86,11 +86,40 @@ enum OperativeKind {
     Host(Owner, u32),
 }
 
-/// An interned symbol of one [`Grift`]; its name is [`Grift::symbol_name`].
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// An interned symbol of one [`Grift`]; its name is [`Grift::symbol_name`]. A name no program
+/// value refers to is collected, and its spelling made again later is a new symbol of the same
+/// name; a host's handle keeps its name, so it stays equal to that spelling, until its last clone
+/// is dropped.
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct Symbol {
     owner: Owner,
     index: u32,
+}
+
+/// Whether `id` is one of the names every interpreter has, which are never collected, so host
+/// handles of them aren't counted.
+fn known(id: u32) -> bool {
+    (id as usize) < local::K_NAMES.len()
+}
+
+impl Clone for Symbol {
+    fn clone(&self) -> Self {
+        if let Some(control) = self.owner.0.upgrade().filter(|_| !known(self.index)) {
+            control.again(self.index);
+        }
+        Self {
+            owner: self.owner.clone(),
+            index: self.index,
+        }
+    }
+}
+
+impl Drop for Symbol {
+    fn drop(&mut self) {
+        if let Some(control) = self.owner.0.upgrade().filter(|_| !known(self.index)) {
+            control.release(self.index);
+        }
+    }
 }
 
 /// An object in the heap of one [`Grift`]: a slot and its generation.
@@ -318,8 +347,7 @@ const SPARE: usize = 64 * 1024;
 /// they pass on to host functions.
 pub struct Grift<T = ()> {
     heap: Heap,
-    names: Vec<Box<str>>,
-    /// Names to symbol ids, for interning; `names` gives the spelling by id.
+    /// Weak spelling-to-heap-slot index; collection removes dead entries.
     symbols: HashMap<Box<str>, u32>,
     hosts: Vec<(local::Symbol, HostFunction<T>)>,
     built_in: heap::Reference,
@@ -327,8 +355,8 @@ pub struct Grift<T = ()> {
     /// The kept values and parked runs, and the first free entry.
     kept: Vec<Entry>,
     kept_free: Option<u32>,
-    /// The kept name of the run that has just parked, for whoever began or resumed it.
-    parked_as: Option<u32>,
+    /// The kept name and request of the run that has just parked, for whoever began or resumed it.
+    parked_as: Option<(u32, Value)>,
     machine: evaluate::Machine,
     /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
     /// unwinds, when small allocations may have only scraps left, and taken again by the next run.
@@ -346,7 +374,6 @@ impl<T> Grift<T> {
     pub fn new() -> Result<Grift<T>, Error> {
         let mut g = Grift {
             heap: Heap::default(),
-            names: Vec::new(),
             symbols: HashMap::new(),
             hosts: Vec::new(),
             built_in: heap::Reference::NONE,
@@ -363,11 +390,12 @@ impl<T> Grift<T> {
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
-        self.built_in = self.heap.context(None)?;
-        self.top = self.heap.context(Some(self.built_in))?;
+        // Known ids are constants: reserve their heap slots first, and always root them.
         for name in local::K_NAMES {
             self.intern(name)?;
         }
+        self.built_in = self.heap.context(None)?;
+        self.top = self.heap.context(Some(self.built_in))?;
         for &p in evaluate::Primitive::ALL {
             let s = self.intern(p.name())?;
             let wrapped = Object::Applicative(local::Value::Primitive(p));
@@ -526,7 +554,10 @@ impl<T> Grift<T> {
 
     /// The top-level context, where programs define things.
     pub fn top_level(&self) -> Value {
-        self.export(local::Value::Context(self.top))
+        Value::Context(Reference {
+            owner: self.owner(),
+            local: self.top,
+        })
     }
 
     /// Binds `name` to `v` in the top-level context.
@@ -572,21 +603,20 @@ impl<T> Grift<T> {
             let name = self.import_symbol(name)?;
             self.find(context_kind(c)?, name)
         });
-        self.out(found.map(|v| v.map(|v| self.export(v))))
+        self.out(found.and_then(|v| v.map(|v| self.export(v)).transpose()))
     }
 
     /// `(names context)`: the symbols bound in `context` itself, sorted by name.
     pub fn names(&self, context: &Value) -> Result<Vec<Symbol>, Error> {
         let names = self.context_of(context).and_then(|c| self.names_of(c));
-        let names =
-            names.and_then(|names| collected(names.into_iter().map(|s| self.export_symbol(s))));
+        let names = names.and_then(|names| mapped(&names, |s| self.export_symbol(s)));
         self.out(names)
     }
 
     /// Interns `name`.
     pub fn symbol(&mut self, name: &str) -> Result<Symbol, Error> {
         let s = self.intern(name);
-        self.out(s.map(|s| self.export_symbol(s)))
+        self.out(s.and_then(|s| self.export_symbol(s)))
     }
 
     /// The name of a symbol.
@@ -598,7 +628,7 @@ impl<T> Grift<T> {
     pub fn error(&mut self, kind: &str, values: &[Value]) -> Error {
         let made = self.intern(kind).and_then(|kind| {
             Ok(Error {
-                kind: self.export_symbol(kind),
+                kind: self.export_symbol(kind)?,
                 values: collected(values.iter().cloned())?,
                 trace: Vec::new(),
                 limit: false,
@@ -673,7 +703,11 @@ impl<T> Grift<T> {
             local::Value::Pair(r) => self.pair_at(r).map(Some),
             _ => Ok(None),
         });
-        self.out(p.map(|p| p.map(|(a, b)| (self.export(a), self.export(b)))))
+        let p = p.and_then(|p| {
+            p.map(|(a, b)| Ok((self.export(a)?, self.export(b)?)))
+                .transpose()
+        });
+        self.out(p)
     }
 
     /// A new list of `values`, as `pair` builds one from its end.
@@ -706,7 +740,7 @@ impl<T> Grift<T> {
     /// ```
     pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
         let items = self.import(list).and_then(|l| self.items(l, l));
-        let items = items.and_then(|items| collected(items.into_iter().map(|v| self.export(v))));
+        let items = items.and_then(|items| self.export_all(&items));
         self.out(items)
     }
 
@@ -894,6 +928,21 @@ impl<T> Grift<T> {
         }
     }
 
+    /// Drops the spellings of names the last collection freed, and gives back the index's storage
+    /// once it is under a quarter used, if memory allows. Each collection walks the whole index.
+    pub(crate) fn tidy_symbols(&mut self) {
+        let heap = &self.heap;
+        self.symbols.retain(|_, id| heap.symbol_name(*id).is_some());
+        if self.symbols.capacity() / 4 > self.symbols.len() {
+            let mut smaller = HashMap::new();
+            if smaller.try_reserve(self.symbols.len()).is_ok() {
+                // It has room for all, so this allocates nothing.
+                smaller.extend(self.symbols.drain());
+                self.symbols = smaller;
+            }
+        }
+    }
+
     /// The value `k` keeps.
     pub fn kept(&self, k: &Kept) -> Result<Value, Error> {
         let found = self
@@ -920,21 +969,18 @@ impl<T> Grift<T> {
         if let Some(symbol) = self.symbols.get(name).copied().map(local::Symbol) {
             return Ok(symbol);
         }
-        let id = u32::try_from(self.names.len()).map_err(|_| local::Error::oom())?;
         let (spelling, key) = (boxed(name)?, boxed(name)?);
-        self.names.try_reserve(1).map_err(|_| local::Error::oom())?;
         self.symbols
             .try_reserve(1)
             .map_err(|_| local::Error::oom())?;
-        // Neither table changes until both spellings and both collections have room.
-        self.names.push(spelling);
+        let id = self.heap.alloc(Object::Symbol(spelling))?.idx;
         self.symbols.insert(key, id);
         Ok(local::Symbol(id))
     }
 
     /// The name of symbol `s`.
     pub(crate) fn name(&self, s: local::Symbol) -> &str {
-        self.names.get(s.0 as usize).map_or("", |n| n)
+        self.heap.symbol_name(s.0).unwrap_or("")
     }
 
     /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
@@ -1093,14 +1139,15 @@ impl<T> Grift<T> {
         Ok(out)
     }
 
-    pub(crate) fn export(&self, v: local::Value) -> Value {
+    /// `v` as the host's. Only a symbol needs memory: its handle's count.
+    pub(crate) fn export(&self, v: local::Value) -> Result<Value, local::Error> {
         use local::Value as L;
         let reference = |local| Reference {
             owner: self.owner(),
             local,
         };
         let operative = |kind| Value::Operative(Operative(kind));
-        match v {
+        Ok(match v {
             L::EmptyList => Value::EmptyList,
             L::Boolean(b) => Value::Boolean(b),
             L::Inert => Value::Inert,
@@ -1108,7 +1155,7 @@ impl<T> Grift<T> {
             L::Integer(n) => Value::Integer(n),
             L::Float(f) => Value::Float(f),
             L::Primitive(p) => operative(OperativeKind::Primitive(p)),
-            L::Symbol(s) => Value::Symbol(self.export_symbol(s)),
+            L::Symbol(s) => Value::Symbol(self.export_symbol(s)?),
             L::Pair(r) => Value::Pair(reference(r)),
             L::String(r) => Value::String(reference(r)),
             L::Bytes(r) => Value::Bytes(reference(r)),
@@ -1116,14 +1163,23 @@ impl<T> Grift<T> {
             L::Operative(r) => operative(OperativeKind::Compound(reference(r))),
             L::Applicative(r) => Value::Applicative(reference(r)),
             L::Host(h) => operative(OperativeKind::Host(self.owner(), h.0)),
-        }
+        })
     }
 
-    fn export_symbol(&self, s: local::Symbol) -> Symbol {
-        Symbol {
+    /// `vs` as the host's, in a new vector.
+    pub(crate) fn export_all(&self, vs: &[local::Value]) -> Result<Vec<Value>, local::Error> {
+        mapped(vs, |v| self.export(v))
+    }
+
+    /// A host handle of `s`, which holds its name: counted, unless it is a known one.
+    fn export_symbol(&self, s: local::Symbol) -> Result<Symbol, local::Error> {
+        if !known(s.0) {
+            self.control.hold(s.0).map_err(|_| local::Error::oom())?;
+        }
+        Ok(Symbol {
             owner: self.owner(),
             index: s.0,
-        }
+        })
     }
 
     /// An error as the host's. Memory refused here, not on its way through a run, asks for its
@@ -1132,28 +1188,32 @@ impl<T> Grift<T> {
         if e.refused {
             self.heap.request_collection();
         }
-        let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
         // The host's trace is innermost first: the shared list's places reversed, then the rest.
         let trace = self.items(e.shared, e.shared).and_then(|mut v| {
             v.reverse();
             v.try_reserve_exact(e.trace.len())
                 .map_err(|_| local::Error::oom())?;
             v.extend_from_slice(&e.trace);
-            exported(&v)
+            self.export_all(&v)
         });
-        match (exported(&e.values), trace) {
-            (Ok(values), Ok(trace)) => Error {
-                kind: self.export_symbol(e.kind),
+        match (
+            self.export_symbol(e.kind),
+            self.export_all(&e.values),
+            trace,
+        ) {
+            (Ok(kind), Ok(values), Ok(trace)) => Error {
+                kind,
                 values,
                 trace,
                 limit: e.limit,
             },
+            // Its kind is a known name, which needs no memory.
             _ => self.export_error(local::Error::oom()),
         }
     }
 
     fn exported(&self, r: Result<local::Value, local::Error>) -> Result<Value, Error> {
-        self.out(r.map(|v| self.export(v)))
+        self.out(r.and_then(|v| self.export(v)))
     }
 
     fn out<R>(&self, r: Result<R, local::Error>) -> Result<R, Error> {
@@ -1167,6 +1227,20 @@ fn context_kind(v: local::Value) -> Result<heap::Reference, local::Error> {
         local::Value::Context(c) => Ok(c),
         v => Err(evaluate::type_error(v)),
     }
+}
+
+/// What `f` makes of each of `xs`, in a new vector, reporting `out-of-memory` instead of aborting.
+fn mapped<X: Copy, Y>(
+    xs: &[X],
+    mut f: impl FnMut(X) -> Result<Y, local::Error>,
+) -> Result<Vec<Y>, local::Error> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(xs.len())
+        .map_err(|_| local::Error::oom())?;
+    for &x in xs {
+        out.push(f(x)?);
+    }
+    Ok(out)
 }
 
 /// The items in a new vector, reporting `out-of-memory` instead of aborting.

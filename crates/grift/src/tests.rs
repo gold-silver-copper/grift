@@ -7,7 +7,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Answer, Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
+use crate::{Answer, Error, Grift, Interrupter, Operative, OperativeKind, Ran, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -93,7 +93,7 @@ impl<T> Grift<T> {
     /// The combiner under `v` if it is an applicative, else `v`.
     fn underlying(&self, v: &Value) -> Value {
         match self.import(v).unwrap() {
-            local::Value::Applicative(r) => self.export(self.unwrapped(r).unwrap()),
+            local::Value::Applicative(r) => self.export(self.unwrapped(r).unwrap()).unwrap(),
             _ => v.clone(),
         }
     }
@@ -4256,4 +4256,60 @@ fn a_report_checking_many_values_finds_a_force() {
     define(&mut g, "report", checks_with_a_force_waiting);
     let e = g.evaluate(&mut (), "(report)").unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
+}
+
+#[test]
+fn unreachable_symbols_are_reclaimed_but_reachable_names_keep_identity() {
+    let mut g: Grift = Grift::new().unwrap();
+    let held = g.symbol("host-held-spelling").unwrap();
+    let cloned = held.clone();
+    drop(held);
+    g.evaluate(&mut (), "(define! bound-spelling 42)").unwrap();
+    for n in 0..20_000 {
+        g.intern(&format!("discarded-symbol-{n}")).unwrap();
+    }
+    // Only names handed to the host are counted.
+    assert_eq!(g.control.handles().symbols.len(), 1);
+    g.heap.request_collection();
+    g.evaluate(&mut (), "0").unwrap();
+    assert!(!g.symbols.contains_key("discarded-symbol-0"));
+    assert!(g.symbols.capacity() < 4096, "{}", g.symbols.capacity());
+    assert_eq!(cloned, g.symbol("host-held-spelling").unwrap());
+    assert_eq!(g.symbol_name(&cloned).unwrap(), "host-held-spelling");
+    assert_eq!(
+        g.evaluate(&mut (), "bound-spelling").unwrap(),
+        Value::Integer(42)
+    );
+    drop(cloned);
+    g.heap.request_collection();
+    g.evaluate(&mut (), "0").unwrap();
+    assert!(!g.symbols.contains_key("host-held-spelling"));
+    // A dynamically made error kind has no symbol in the source to retain it while
+    // a cleanup collects; its pending Error is its only reference.
+    g.heap.stress = true;
+    let e = g.evaluate(&mut (),
+        "(finally! (raise (error (string-to-symbol (join \"pending-\" \"kind\")))) (list 1 2 3))")
+        .unwrap_err();
+    assert_eq!(g.symbol_name(&e.kind).unwrap(), "pending-kind");
+    g.evaluate(&mut (), "0").unwrap();
+    assert_eq!(e.kind, g.symbol("pending-kind").unwrap());
+    g.heap.stress = false;
+    // A parked run's request keeps its name through a dropped handle and a collection.
+    let wait = g
+        .host_function("wait", |_, _, args| Ok(Answer::Later(args[0].clone())))
+        .unwrap();
+    g.define("wait", wait).unwrap();
+    let top = g.top_level();
+    let src = "(wait (string-to-symbol (join \"asked-\" \"name\")))";
+    let Ran::Parked(parked) = g.start_in(&mut (), &top, "s", src).unwrap() else {
+        panic!("it waits")
+    };
+    drop(parked);
+    g.heap.request_collection();
+    g.evaluate(&mut (), "0").unwrap();
+    let parked = g.forgotten().unwrap();
+    let Value::Symbol(asked) = parked.request() else {
+        panic!("{:?}", parked.request())
+    };
+    assert_eq!(g.symbol_name(asked).unwrap(), "asked-name");
 }

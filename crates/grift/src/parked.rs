@@ -77,7 +77,8 @@ impl Drop for Parked {
     fn drop(&mut self) {
         if let Some(control) = self.owner.0.upgrade() {
             // Its park made the room, so this needs no memory and the run can always be found.
-            control.forgotten().push(self.name);
+            let request = std::mem::replace(&mut self.request, Value::Inert);
+            control.handles().forgotten.push((self.name, request));
         }
     }
 }
@@ -149,24 +150,20 @@ impl<T> Grift<T> {
         self.ran(done)
     }
 
-    /// What a run came to: parked, if it left its kept name, or else what it returned.
+    /// What a run came to: parked, if it left its kept name and request, or else what it returned.
     fn ran(&mut self, done: Result<local::Value, local::Error>) -> Result<Ran, Error> {
         match self.parked_as.take() {
-            Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
+            Some((name, request)) => Ok(Ran::Parked(self.parked_handle(name, request))),
             None => self.exported(done).map(Ran::Finished),
         }
     }
 
-    /// A handle to the run parked under kept name `name`.
-    fn parked_handle(&self, name: u32) -> Parked {
-        let request = match self.kept.get(name as usize) {
-            Some(Entry::Run(room)) => room.first().map(|m| m.request),
-            _ => None,
-        };
+    /// A handle to the run parked under kept name `name`, which asked for `request`.
+    fn parked_handle(&self, name: u32, request: Value) -> Parked {
         Parked {
             owner: self.owner(),
             name,
-            request: self.export(request.unwrap_or(local::Value::Inert)),
+            request,
         }
     }
 
@@ -256,7 +253,7 @@ impl<T> Grift<T> {
     /// about to park too, whose entry is already made: no more runs are parked than there are kept
     /// names.
     pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
-        let mut forgotten = self.control.forgotten();
+        let forgotten = &mut self.control.handles().forgotten;
         let more = self.kept.len().saturating_sub(forgotten.len());
         forgotten.try_reserve(more).map_err(|_| local::Error::oom())
     }
@@ -270,7 +267,7 @@ impl<T> Grift<T> {
     /// A new handle for a parked run whose handle was dropped, one at a time: the only way to its
     /// cleanups.
     pub fn forgotten(&mut self) -> Option<Parked> {
-        let name = self.control.forgotten().pop()?;
-        Some(self.parked_handle(name))
+        let (name, request) = self.control.handles().forgotten.pop()?;
+        Some(self.parked_handle(name, request))
     }
 }

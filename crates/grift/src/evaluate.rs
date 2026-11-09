@@ -20,7 +20,7 @@
 
 use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
-use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
+use crate::local::{Error, Host, K, K_NAMES, Symbol, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, collected, context_kind};
 use std::sync::Arc;
@@ -313,11 +313,15 @@ pub(crate) struct Machine {
 
 /// What an ending holds for the collector: its value, or its error's values and trace.
 pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
-    let (value, values, trace) = match ending {
-        Ok(v) => (Some(*v), &[][..], &[][..]),
-        Err(e) => (Some(e.shared), e.values.as_slice(), e.trace.as_slice()),
+    let (held, values, trace) = match ending {
+        Ok(v) => ([*v, Value::Inert], &[][..], &[][..]),
+        Err(e) => (
+            [Value::Symbol(e.kind), e.shared],
+            e.values.as_slice(),
+            e.trace.as_slice(),
+        ),
     };
-    value.into_iter().chain(values.iter().chain(trace).copied())
+    held.into_iter().chain(values.iter().chain(trace).copied())
 }
 
 impl Machine {
@@ -494,13 +498,14 @@ impl<T> Grift<T> {
         room.try_reserve_exact(1).map_err(|_| Error::oom())?;
         let name = self.free_name()?;
         self.room_to_forget()?;
+        let asked = self.export(request)?;
         if !self.control.parks() {
             return Err(Error::interrupted());
         }
         self.machine.request = request;
         room.push(std::mem::take(&mut self.machine));
         self.fill_kept(name, Entry::Run(room));
-        self.parked_as = Some(name);
+        self.parked_as = Some((name, asked));
         Ok(())
     }
 
@@ -795,8 +800,19 @@ impl<T> Grift<T> {
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
-        self.heap.collect(roots, walked);
+        // Names live as heap objects: the known ones, host functions' and those a host holds are
+        // roots too, and the spelling index, which the collection walks, keeps only live ones.
+        let handles = self.control.handles();
+        let held = &handles.symbols;
+        let known = (0..).zip(K_NAMES).map(|(id, _)| Symbol(id));
+        let hosts = self.hosts.iter().map(|&(name, _)| name);
+        let names = known.chain(held.keys().map(|&id| Symbol(id))).chain(hosts);
+        let walked = walked + self.symbols.capacity() + held.len() + self.hosts.len();
+        self.heap
+            .collect(roots.chain(names.map(Value::Symbol)), walked);
+        drop(handles);
         self.tidy_kept();
+        self.tidy_symbols();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -808,7 +824,7 @@ impl<T> Grift<T> {
         };
         // The arguments stay on the argument stack, rooted, while the host runs.
         let given = self.machine.arguments.get(base..).unwrap_or_default();
-        let arguments = collected(given.iter().map(|&v| self.export(v)))?;
+        let arguments = self.export_all(given)?;
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
         let v = f(self, state, &arguments);
         // Replaced: the run is over, and what is on this machine is no part of it. The replaced

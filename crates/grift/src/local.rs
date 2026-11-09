@@ -36,7 +36,8 @@ pub(crate) enum Value {
 // `a_values_tag_is_a_whole_word` checks that.
 const _: () = assert!(size_of::<Value>() == 16 && align_of::<Value>() == 8);
 
-/// An interned symbol: its index among the names.
+/// An interned symbol: the slot of its collectable name. Live ids are traced everywhere
+/// they occur; public host handles keep their slots rooted, so reuse cannot alias one.
 #[derive(Clone, Copy, Debug, Eq, Hash)]
 #[cfg_attr(not(test), derive(PartialEq))]
 // The `eq` below only counts as well: it agrees with the hash.
