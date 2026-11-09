@@ -32,20 +32,15 @@ const CORE: &[&str] = &[
     "subtract",
     "multiply",
     "divide",
-    "remainder",
     "less-than?",
     "power",
     "square-root",
     "sine",
     "cosine",
     "tangent",
+    "absolute-value",
     "exponential",
     "natural-logarithm",
-    "floor",
-    "ceiling",
-    "round",
-    "truncate",
-    "absolute-value",
     "byte-at",
     "join",
     "string-to-symbol",
@@ -1225,6 +1220,8 @@ fn natives_are_their_definitions() {
             ),
             ("(wrap sequence!)", vec![Value::Integer(0), f.clone()]),
             ("integer-to-float", vec![f.clone()]),
+            ("truncate", vec![f.clone()]),
+            ("remainder", vec![f.clone(), Value::Float(1.5)]),
         ] {
             let (fa, fb) = (
                 native.evaluate(&mut Vec::new(), name),
@@ -1320,6 +1317,44 @@ fn boundary_cases() -> Vec<String> {
         "\"0x1\"",
     ] {
         cases.push(format!("(string-to-integer {text})"));
+    }
+    // Rounding at halves, just under them and at 2^52, the edges of not-a-number and zero's sign,
+    // and the operands that aren't floats.
+    let floats = [
+        "2.5",
+        "-2.5",
+        "0.49999999999999994",
+        "-0.49999999999999994",
+        "4503599627370495.5",
+        "-4503599627370495.5",
+        "4503599627370497.0",
+        "-0.3",
+        "5e-324",
+        "-5e-324",
+        "(divide 0.0 0.0)",
+        "(subtract 0.0 (divide 0.0 0.0))",
+        "1",
+        "\"a\"",
+    ];
+    for f in FLOAT_TEXTS.iter().chain(&floats) {
+        for p in ["truncate", "floor", "ceiling", "round"] {
+            cases.push(format!("({p} {f})"));
+        }
+    }
+    for p in ["truncate", "floor", "ceiling", "round", "remainder"] {
+        cases.push(format!("({p})"));
+        cases.push(format!("({p} 1.5 2.5 3.5)"));
+    }
+    for x in INTEGER_TEXTS
+        .iter()
+        .chain(&["-1.5", "7.25", "#not-a-number", "\"a\""])
+    {
+        for y in INTEGER_TEXTS
+            .iter()
+            .chain(&["0.0", "-2.0", "#infinity", "(quote! y)"])
+        {
+            cases.push(format!("(remainder {x} {y})"));
+        }
     }
     cases.extend([
         "(sequence! (bind record (quote! answer) (note 17)) (bind record (quote! last) (note 18)) #inert)".into(),

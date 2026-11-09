@@ -138,6 +138,7 @@ mod generated {
         next: u64,
         /// The most a list it makes may hold.
         churn: u64,
+        mode: Mode,
     }
 
     impl Program<'_> {
@@ -147,7 +148,11 @@ mod generated {
         }
 
         fn expression(&mut self, depth: u32) -> String {
-            let choice = self.r.below(if depth == 0 { 4 } else { 22 });
+            let choice = self.r.below(match (depth, self.mode) {
+                (0, _) => 4,
+                (_, Mode::Plain | Mode::Stress) => 22,
+                _ => 24,
+            });
             let id = self.id();
             let sub = |p: &mut Self| p.expression(depth.saturating_sub(1));
             match choice {
@@ -192,6 +197,26 @@ mod generated {
                 ),
                 // A limit of the host's own: nothing catches it, in a run nothing else touched too.
                 19 => format!("(catch! (host-limit {id}) e {})", handler(id)),
+                // A loop in tail position: under a memory limit, long enough that only collection
+                // lets it finish.
+                22 => {
+                    let n = match self.mode {
+                        Mode::Limited => 2_000 + self.r.below(8_000),
+                        _ => self.r.below(30),
+                    };
+                    format!("(add {id} (spin {n}))")
+                }
+                // Data nested deep: on a small stack, as deep as no Rust recursion could walk.
+                23 => {
+                    let n = match self.mode {
+                        Mode::SmallStack => 2_000 + self.r.below(4_000),
+                        _ => self.r.below(20),
+                    };
+                    match self.r.below(2) {
+                        0 => format!("(byte-length (value-to-string (deep {n} {id})))"),
+                        _ => format!("(raise (error (quote! mine) (deep {n} {id})))"),
+                    }
+                }
                 _ => format!("(list (join \"held\" \"{id}\") {} (list {id}))", sub(self)),
             }
         }
@@ -352,7 +377,7 @@ mod generated {
         id
     }
 
-    fn interpreter() -> Grift<World> {
+    fn interpreter(mode: Mode) -> Grift<World> {
         let mut g: Grift<World> = Grift::new().unwrap();
         let f = g.host_function("wait", g_wait).unwrap();
         g.define("wait", f).unwrap();
@@ -366,6 +391,15 @@ mod generated {
         g.define("seen", f).unwrap();
         let f = g.host_function("host-limit", g_host_limit).unwrap();
         g.define("host-limit", f).unwrap();
+        if matches!(mode, Mode::Plain | Mode::Stress) {
+            return g;
+        }
+        g.evaluate(
+            &mut World::default(),
+            "(define! spin (lambda! (n) (if! (same? n 0) 0 (spin (subtract n 1)))))
+             (define! deep (lambda! (n x) (if! (same? n 0) x (deep (subtract n 1) (list x)))))",
+        )
+        .unwrap();
         g
     }
 
@@ -397,8 +431,8 @@ mod generated {
     }
 
     /// What a program means: alone, its waits answered at once.
-    fn meaning(run: usize, src: &str) -> (Outcome, Log) {
-        let mut g = interpreter();
+    fn meaning(run: usize, src: &str, mode: Mode) -> (Outcome, Log) {
+        let mut g = interpreter(mode);
         let mut w = World {
             logs: vec![Vec::new(); run + 1],
             current: run,
@@ -548,7 +582,23 @@ mod generated {
         host_limits: usize,
     }
 
-    fn one_case(seed: u64, stress: bool, reached: &mut Reached) {
+    /// What a case runs under besides its own programs.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Mode {
+        Plain,
+        /// Collect at every safe point: slow, and it reaches what a parked run holds.
+        Stress,
+        /// A memory limit three times what is live, and loops long enough to need collection.
+        Limited,
+        /// A thread with a small stack, and data nested deep.
+        SmallStack,
+    }
+
+    /// The stack a small-stack case runs on.
+    const SMALL_STACK: usize = 256 * 1024;
+
+    fn one_case(seed: u64, mode: Mode, reached: &mut Reached) {
+        let stress = mode == Mode::Stress;
         let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let runs = 1 + r.below(5) as usize;
         let programs: Vec<String> = (0..runs)
@@ -558,6 +608,7 @@ mod generated {
                     run: run as u64 + 1,
                     next: 0,
                     churn: if stress { 6 } else { 200 },
+                    mode,
                 };
                 let depth = if stress { 3 } else { 5 };
                 p.expression(depth)
@@ -566,14 +617,14 @@ mod generated {
         let with = |text: &str| programs.iter().filter(|p| p.contains(text)).count();
         reached.forgeries += with("(quote! forged)");
         reached.host_limits += with("(host-limit ");
-        let context = format!("seed {seed} stress {stress}\n{programs:#?}");
+        let context = format!("seed {seed} {mode:?}\n{programs:#?}");
         let meanings: Vec<(Outcome, Log)> = programs
             .iter()
             .enumerate()
-            .map(|(run, src)| meaning(run, src))
+            .map(|(run, src)| meaning(run, src, mode))
             .collect();
 
-        let mut g = interpreter();
+        let mut g = interpreter(mode);
         if r.one_in(4) {
             g.run_definitions();
         }
@@ -591,10 +642,18 @@ mod generated {
             "(define! churn (lambda! (n) (length (map list (range 0 n)))))",
         )
         .unwrap();
+        if mode == Mode::Limited {
+            // Live data the collector's pacing is measured against, beyond its least allowance.
+            g.evaluate(&mut w, "(define! held (range 0 5000))").unwrap();
+        }
         g.heap.request_collection();
         g.evaluate(&mut w, "#inert").unwrap();
         let baseline = g.heap.live();
         g.heap.stress = stress;
+        if mode == Mode::Limited {
+            // What is live, as much again before the next collection, and room for the runs.
+            g.heap.slot_limit = 3 * baseline;
+        }
 
         let may_stop = r.one_in(2);
         let may_force = r.one_in(3);
@@ -709,7 +768,12 @@ mod generated {
                 4 => {
                     w.current = usize::MAX;
                     g.heap.stress = false;
-                    let _ = g.evaluate(&mut w, "(churn 300)");
+                    let churn = if mode == Mode::Limited {
+                        "(churn 1000)"
+                    } else {
+                        "(churn 300)"
+                    };
+                    let _ = g.evaluate(&mut w, churn);
                     g.heap.stress = stress;
                 }
                 5 => {
@@ -785,7 +849,25 @@ mod generated {
         let mut reached = Reached::default();
         for seed in first..first + cases {
             // One case in eight collects at every step: slow, and it reaches what a parked run holds.
-            one_case(seed, seed % 8 == 0, &mut reached);
+            let mode = if seed % 8 == 0 {
+                Mode::Stress
+            } else {
+                Mode::Plain
+            };
+            one_case(seed, mode, &mut reached);
+        }
+        // As many again in eight run under a memory limit, and on a small stack.
+        for seed in first..first + cases.div_ceil(8) {
+            one_case(seed, Mode::Limited, &mut reached);
+            reached = std::thread::Builder::new()
+                .stack_size(SMALL_STACK)
+                .spawn(move || {
+                    one_case(seed, Mode::SmallStack, &mut reached);
+                    reached
+                })
+                .unwrap()
+                .join()
+                .unwrap();
         }
         // `--nocapture` shows this. A fixed seed, so these can be required: each kind of thing
         // happened to some run, whatever the program generator comes to do.

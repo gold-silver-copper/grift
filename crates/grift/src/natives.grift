@@ -229,12 +229,44 @@
        (continued-by b (tail xs) (add at 1) start (subtract left 1)
                      (add (multiply scalar 64) (subtract (head xs) 128)) smallest done)))))
 
+; Rounding a float to a whole one, by its powers of two from 2^51 down: from 2^52 on every float is
+; whole already, and not-a-number and the infinities are left as they are. A zero keeps the float's
+; sign.
+(define! whole
+  (lambda! (f)
+    (conditional!
+      ((not? (less-than? (if! (less-than? f 0.0) (subtract 0.0 f) f) 4503599627370496.0)) f)
+      ((or!? (less-than? f 0.0) (same? f -0.0)) (subtract -0.0 (powers (subtract 0.0 f) 2251799813685248.0 0.0)))
+      (#true (powers f 2251799813685248.0 0.0)))))
+(define! powers
+  (lambda! (f power t)
+    (if! (less-than? power 1.0)
+      t
+      (powers f (divide power 2.0) (if! (less-than? f (add t power)) t (add t power))))))
+(define! floored (lambda! (f) (let! ((t (whole f))) (if! (less-than? f t) (subtract t 1.0) t))))
+(define! ceiled (lambda! (f) (let! ((t (whole f))) (if! (less-than? t f) (add t 1.0) t))))
+; Half away from zero: what is cut off is exact, and at least a half moves the whole one out.
+(define! rounded
+  (lambda! (f)
+    (let! ((t (whole f)) (d (subtract f t)))
+      (conditional!
+        ((or!? (less-than? 0.5 d) (same? d 0.5)) (add t 1.0))
+        ((or!? (less-than? d -0.5) (same? d -0.5)) (subtract t 1.0))
+        (#true t)))))
+; An integer remainder is what dividing leaves, with divide's errors; a float's is Rust's fmod.
+(define! rust-remainder remainder)
+(define! remaindered
+  (lambda! ((a b))
+    (if! (and!? (integer? a) (integer? b))
+      (subtract a (multiply (divide a b) b))
+      (apply rust-remainder (list a b)))))
+
 (define! meanings
   (record
     (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
              string-to-integer byte-length code-point-to-string slice search bitwise-and
              bitwise-or bitwise-exclusive-or shift-left shift-right string-to-bytes bytes-to-string
-             list-to-bytes bytes-to-list))
+             list-to-bytes bytes-to-list truncate floor ceiling round remainder))
     (list (several 3 picked)
           (one (quote! pair) head)
           (one (quote! pair) tail)
@@ -257,4 +289,9 @@
                (lambda! (s) (packed (bytes-from s 0 (byte-length s) ()))))
           (one (quote! bytes) decoded)
           (several 1 (lambda! ((xs)) (packed xs)))
-          (one (quote! bytes) byte-list))))
+          (one (quote! bytes) byte-list)
+          (one (quote! float) whole)
+          (one (quote! float) floored)
+          (one (quote! float) ceiled)
+          (one (quote! float) rounded)
+          (several 2 remaindered))))
