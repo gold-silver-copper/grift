@@ -158,9 +158,7 @@ fn a_stop_ends_every_walking_primitive_by_itself() {
             missed.push(format!("{}: {}", p.name(), s.said));
         }
     }
-    // The reader has no stop check yet (R1 in the testing study): fixing it makes this fail, to
-    // empty the list.
-    assert_eq!(missed, ["read-form: done"], "went on past a stop");
+    assert!(missed.is_empty(), "went on past a stop: {missed:?}");
 }
 
 #[test]
