@@ -455,7 +455,7 @@ mod generated {
                 19 => format!("(catch! (host-limit {id}) e {})", handler(id)),
                 // A loop in tail position: under a memory limit, long enough that only collection
                 // lets it finish.
-                20 => {
+                22 => {
                     let n = match self.mode {
                         Mode::Limited => 2_000 + self.r.below(8_000),
                         _ => self.r.below(30),
@@ -463,7 +463,7 @@ mod generated {
                     format!("(add {id} (spin {n}))")
                 }
                 // Data nested deep: on a small stack, as deep as no Rust recursion could walk.
-                21 => {
+                23 => {
                     let n = match self.mode {
                         Mode::SmallStack => 2_000 + self.r.below(4_000),
                         _ => self.r.below(20),
