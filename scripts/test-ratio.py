@@ -65,9 +65,14 @@ def measure(by_lines=False):
         elif "/src/" in path:
             parts[path] = (ext, *split(path)) if ext == ".rs" else (ext, lines, [])
     # A .grift file only test code includes is test code.
-    included = {m for ext, p, _ in parts.values() if ext == ".rs" for m in re.findall(r'include_str!\("([^"]+)"\)', "\n".join(p))}
+    included = {
+        os.path.normpath(os.path.join(os.path.dirname(path), m))
+        for path, (ext, p, _) in parts.items()
+        if ext == ".rs"
+        for m in re.findall(r'include_str!\s*\(\s*"([^"]+)"\s*\)', "\n".join(p))
+    }
     for path, (ext, p, t) in parts.items():
-        if ext == ".grift" and "/src/" in path and os.path.basename(path) not in included:
+        if ext == ".grift" and "/src/" in path and os.path.normpath(path) not in included:
             p, t = [], p
         prod += size(p, ext, by_lines)
         test += size(t, ext, by_lines)
