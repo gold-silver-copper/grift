@@ -1150,3 +1150,29 @@ fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local
     v.extend(items);
     Ok(v)
 }
+
+/// Test hooks for an outside harness, off by default: refuse heap slots from the `n`th on,
+/// count the slots asked for, cap the heap's memory, and collect at every safe point.
+#[cfg(feature = "hooks")]
+impl<T> Grift<T> {
+    /// Refuse the `n`th slot asked for from now (1 is the next) and every one after; `None`
+    /// stops refusing.
+    pub fn hook_refuse_from(&mut self, n: Option<usize>) {
+        self.heap.refuse_in = n.map(|n| n.saturating_sub(1));
+    }
+
+    /// Slots asked for since the interpreter was made.
+    pub fn hook_allocations(&self) -> usize {
+        self.heap.allocated
+    }
+
+    /// Refuse new slots once the heap's slots would pass `bytes`.
+    pub fn hook_memory_limit(&mut self, bytes: usize) {
+        self.heap.slot_limit = bytes / heap::SLOT_BYTES;
+    }
+
+    /// Collect at every safe point (the collector's stress mode).
+    pub fn hook_stress(&mut self, on: bool) {
+        self.heap.stress = on;
+    }
+}

@@ -14,6 +14,10 @@ categories = ["compilers"]
 name = "stops"
 path = "../../examples/stops.rs"
 
+[features]
+# Test hooks for an outside harness (allocation refusal and counting, a slot limit).
+hooks = []
+
 [lints.rust]
 unsafe_code = "forbid"
 

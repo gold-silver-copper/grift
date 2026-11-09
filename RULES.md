@@ -5,6 +5,10 @@ Each line is a promise and the test that checks it, in `crates/grift-rules` (`wi
 `cargo build -p grift-cli && cargo test -p grift-rules`. Memory limits and refused allocations
 come from grift's `hooks` feature, which only these tests turn on.
 
+Rows marked **not yet** are promises today's core breaks: their tests are ignored with the
+reason, and CI runs them on their own and reports them without failing. Fixing one removes its
+`ignore` and its mark.
+
 ## The language
 - **L1** The reader and printer handle every datum; a reader error is an ordinary error. `l1`
 - **L2** Operatives, `wrap`, `unwrap`; parameter trees are checked at call time. `l2`
@@ -30,15 +34,15 @@ come from grift's `hooks` feature, which only these tests turn on.
 
 ## Resources (each checked in every operation family: machine steps, read, print, search,
 parameter matching, reports, collection, host calls, park and resume)
-- **R1** A stop asked before or during the work ends it within 50 ms. `r1`
+- **R1** (not yet) A stop asked before or during the work ends it within 50 ms. `r1`
 - **R2** Nothing recurses on the Rust stack: deep data and deep recursion run on a 256 KiB
   thread. `r2`
 - **R3** Memory refused at the Nth allocation, for every N in turn, ends the work with its own
   result or `out-of-memory`, and the interpreter works after. `r3`
 - **R4** Printing and reports keep their budget, even for a context that holds itself. `r4`
-- **F1** Collection takes time in proportion to what it walks, and memory is given back. `f1`
-- **F2** Catching and raising again at every level is linear in depth. `f2`
-- **F3** Symbol names are reclaimed: new symbols forever fit in a fixed memory limit. `f3`
+- **F1** (not yet) Collection takes time in proportion to what it walks, and memory is given back. `f1`
+- **F2** (not yet) Catching and raising again at every level is linear in depth. `f2`
+- **F3** (not yet) Symbol names are reclaimed: new symbols forever fit in a fixed memory limit. `f3`
 - **F4** The runner refuses, with an exit status, a file larger than its memory. `f4`
 
 ## The laws (on generated programs, with a fixed seed; `GRIFT_LAW_SEED` and `GRIFT_LAW_CASES`

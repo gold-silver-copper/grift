@@ -84,6 +84,10 @@ struct Slot {
 // A pair's origin fits in the room an operative already needs.
 const _: () = assert!(size_of::<Slot>() == 72);
 
+/// A slot's size, for the harness's memory limit.
+#[cfg(feature = "hooks")]
+pub(crate) const SLOT_BYTES: usize = size_of::<Slot>();
+
 /// Where a pair came from: the source and line it was read at, if under a name; whether the
 /// library made it, by reading its text or by running its code; and whether it is one of its
 /// source's outer forms.
@@ -128,22 +132,25 @@ pub(crate) struct Heap {
     #[cfg(test)]
     pub operatives: usize,
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hooks"))]
     pub slot_limit: usize,
     /// Refuse the kept table room past this length, to test a park with no memory to spare.
     #[cfg(test)]
     pub kept_limit: usize,
     /// Collect at every safe point, to test what a collection could lose.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hooks"))]
     pub stress: bool,
     /// Refuse a slot after this many more, to choose where memory runs out; and how many were
     /// refused. `refuse_once` lets the next one through.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "hooks"))]
     pub refuse_in: Option<usize>,
     #[cfg(test)]
     pub refuse_once: bool,
     #[cfg(test)]
     pub refused: usize,
+    /// Slots asked for so far, for the harness's allocation count.
+    #[cfg(feature = "hooks")]
+    pub allocated: usize,
     /// Collections so far.
     #[cfg(test)]
     pub collections: usize,
@@ -160,14 +167,16 @@ impl Default for Heap {
             live: 0,
             #[cfg(test)]
             operatives: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "hooks"))]
             slot_limit: usize::MAX,
             #[cfg(test)]
             kept_limit: usize::MAX,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "hooks"))]
             stress: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "hooks"))]
             refuse_in: None,
+            #[cfg(feature = "hooks")]
+            allocated: 0,
             #[cfg(test)]
             refuse_once: false,
             #[cfg(test)]
@@ -191,6 +200,15 @@ impl Heap {
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
+        #[cfg(all(feature = "hooks", not(test)))]
+        {
+            self.allocated += 1;
+            match self.refuse_in {
+                Some(0) => return Err(self.refused()),
+                Some(n) => self.refuse_in = Some(n - 1),
+                None => {}
+            }
+        }
         #[cfg(test)]
         {
             self.operatives += usize::from(matches!(obj, Object::Operative(_)));
@@ -217,7 +235,7 @@ impl Heap {
                 generation: slot.generation,
             });
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "hooks"))]
         if self.slots.len() >= self.slot_limit {
             return Err(self.refused());
         }
@@ -282,7 +300,7 @@ impl Heap {
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
     #[inline]
     pub fn due(&self) -> bool {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "hooks"))]
         if self.stress {
             return true;
         }
