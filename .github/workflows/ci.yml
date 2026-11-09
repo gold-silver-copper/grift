@@ -22,10 +22,22 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --locked --exclude grift-rules
       - name: Editor example
         working-directory: examples/emacs
         run: cargo clippy --all-targets --locked -- -D warnings
+
+  # The rules grift keeps (RULES.md): every obligation, the rules harness and the laws, beside
+  # `check` so CI takes no longer. F4 runs the `grift` runner built beside the test. The rows that
+  # time a stop or compare timings run after the rest, one at a time, so other tests can't slow them.
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build -p grift-cli --locked
+      - run: cargo test -p grift-rules --locked -- --skip witnesses::r1 --skip witnesses::f1 --skip witnesses::f2 --skip witnesses::f3
+      - run: cargo test -p grift-rules --locked -- --test-threads=1 --exact witnesses::r1 witnesses::f1 witnesses::f2 witnesses::f3
 
   # The library on the wasm target with the least of an operating system: a target with more, such
   # as wasm32-wasip1, needs nothing this one doesn't.
