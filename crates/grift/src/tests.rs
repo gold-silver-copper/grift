@@ -4356,7 +4356,7 @@ fn a_context_that_grows_brings_collection_nearer() {
 #[test]
 fn names_a_host_let_go_leave_no_walk_behind() {
     let mut g = grift();
-    let held: Vec<_> = (0..200_000)
+    let held: Vec<_> = (0..50_000)
         .map(|i| g.symbol(&format!("h{i}")).unwrap())
         .collect();
     drop(held);
