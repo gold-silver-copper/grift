@@ -109,6 +109,7 @@ impl Trace {
     pub fn given(places: Vec<Value>) -> Result<Trace, Error> {
         let mut seen = Seen::default();
         seen.try_reserve(places.len()).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved places.len() above")]
         seen.extend(places.iter().filter_map(|v| match v {
             Value::Pair(r) => Some(r.idx),
             _ => None,
@@ -122,6 +123,7 @@ impl Trace {
 
     /// Adds program combination `r`, unless it is there already. With no memory to spare the
     /// trace stays as it is: the error matters more than its last location.
+    #[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
     pub fn add(&mut self, r: Reference) {
         if r != Reference::NONE
             && self.seen.try_reserve(1).is_ok()

@@ -979,6 +979,7 @@ impl<T> Grift<T> {
             let mut smaller = HashMap::new();
             if smaller.try_reserve(self.symbols.len()).is_ok() {
                 // It has room for all, so this allocates nothing.
+                #[expect(clippy::disallowed_methods, reason = "reserved symbols.len() above")]
                 smaller.extend(self.symbols.drain());
                 self.symbols = smaller;
             }
@@ -1195,6 +1196,7 @@ impl<T> Grift<T> {
             v.reverse();
             v.try_reserve_exact(added.len())
                 .map_err(|_| local::Error::oom())?;
+            #[expect(clippy::disallowed_methods, reason = "reserved added.len() above")]
             v.extend_from_slice(added);
             exported(&v)
         });
