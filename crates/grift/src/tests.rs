@@ -1125,14 +1125,14 @@ fn catch_catches_errors_as_contexts() {
             "(catch! (add 1 (check (quote! a))) e (raise e))"
         ]
     );
-    // A new error starts at its raise.
+    // A new error starts at its raise. A program reads a trace newest first.
     let trace = g
         .evaluate(
             &mut (),
             "(catch! (catch! (first 1) e (raise e)) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, &trace), "((first 1) (raise e))");
+    assert_eq!(show(&g, &trace), "((raise e) (first 1))");
     let trace = g
         .evaluate(
             &mut (),
@@ -1942,6 +1942,23 @@ fn unwinding_and_checking_parameters_search_nothing() {
 }
 
 #[test]
+fn a_catch_and_raise_at_every_level_copies_no_trace() {
+    // 3,000 levels, each a combination of its own, each catching the error and raising it again:
+    // the trace each handler gets is the last one's with the places since on its front. A copy at
+    // each level would make 4.5 million pairs, a collection every few thousand.
+    let mut g = grift();
+    let mut src = String::from("(first 1)");
+    for _ in 0..3000 {
+        src = format!("(catch! {src} e (raise e))");
+    }
+    let (e, _, collections, _) = work(&mut g, &src);
+    let e = e.unwrap_err();
+    assert_eq!(e.trace.len(), 3002);
+    assert_eq!(show(&g, &e.trace[0]), "(first 1)");
+    assert!(collections < 20, "{collections} collections");
+}
+
+#[test]
 fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
     let mut g = grift();
     holds(
@@ -1961,15 +1978,16 @@ fn a_trace_keeps_each_combination_once_and_a_given_trace_as_it_is() {
                      (catch! (add 1 (up (subtract n 1))) e (raise e)))))
                (define! trace (catch! (up 20) e (evaluate-in! trace e)))
                (equal? (length trace) (length (fold (lambda! (seen x) (if! (member? x seen) seen (pair x seen))) () trace))))",
-            // What a raise is given stays, repeats and all, and what it passes is added once.
+            // What a raise is given stays, repeats and all, and what it passes is added once, on
+            // its front: a program reads a trace newest first.
             "(sequence!
                (define! e (error (quote! mine)))
                (define! at (quote! (a b)))
-               (bind e (quote! trace) (list 1 at at))
+               (bind e (quote! trace) (list at at 1))
                (define! trace (catch! (add 1 (raise e)) caught (evaluate-in! trace caught)))
-               (and!? (equal? (first trace) 1)
-                      (same? (first (rest trace)) at)
+               (and!? (equal? (last trace) 1)
                       (same? (first (rest (rest trace))) at)
+                      (same? (first (rest (rest (rest trace)))) at)
                       (equal? (length trace) 5)))",
         ],
     );
@@ -2586,9 +2604,9 @@ fn catch_kind_catches_one_kind_and_lets_the_rest_go_on_as_they_were() {
             // Another kind goes on, its trace the body's own combinations and the form it passed.
             "(equal? (length (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
                      (add 1 (length (trace-of (quote! (deep 1))))))",
-            "(equal? (first (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
-                     (first (trace-of (quote! (deep 1)))))",
             "(equal? (last (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
+                     (last (trace-of (quote! (deep 1)))))",
+            "(equal? (first (trace-of (quote! (catch-kind! (deep 1) parse-error e 0))))
                      (quote! (catch-kind! (deep 1) parse-error e 0)))",
             "(same? (catch-kind! (catch-kind! (deep 1) parse-error e 1) type-error e 2) 2)",
         ],

@@ -570,7 +570,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     let program = r#"
         (define! loads 0)
         (define! write-trace (lambda! (place) (display (value-to-string place) " ")))
-        (catch-kind! (load "lib/a.grift") type-error e (write-trace (first (evaluate-in! trace e))))
+        (catch-kind! (load "lib/a.grift") type-error e (write-trace (last (evaluate-in! trace e))))
         (display (b 1) " " loads " ")
         ; Each load runs the file again; in a child context, its definitions are the child's.
         (define! child (context (current-context)))

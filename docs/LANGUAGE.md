@@ -114,7 +114,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(integer-to-float n)`, `(float-to-integer x)` | Rust's `as`: the nearest float; the integer part, saturating at the ends of the 64-bit range, and 0 for `#not-a-number`. |
 | `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` meets the error leaving by the one rule (see Errors). A stop from the host can cut `cleanup`, even before it does anything. If memory is refused at its first step, `cleanup` has done nothing and `out-of-memory` goes on, by the same rule; the cleanups around it are still tried. Not a tail call. |
 | `(evaluate-with-handler x c handler)` | Evaluates `x` in `c` and returns its value. If an error leaves it, the cleanups inside run first, then the combiner `handler` is called in `c` with the error as a new context with no parent, binding `kind` (a symbol), `values` (a list) and `trace` (a list, see Errors); its value is `evaluate-with-handler`'s, as a tail call. A limit (see Errors) is never caught. |
-| `(raise e)` | Raises the error `e`, a context binding `kind`, `values` and `trace` as `error` makes and a handler gets. It keeps the trace it has, which then gains the `raise` and the combinations it passes on its way out, each once. The fields are looked up as any record's, so they may be inherited; others aren't carried. Anything else is a `type-error`. |
+| `(raise e)` | Raises the error `e`, a context binding `kind`, `values` and `trace` as `error` makes and a handler gets. It keeps the trace it has, which then gains the `raise` and the combinations it passes on its way out on its front, each once. The fields are looked up as any record's, so they may be inherited; others aren't carried. Anything else is a `type-error`. |
 | `(byte-length s)`, `(byte-at s i)` | The length of `s`, a string or a bytes value, in bytes (a string's of UTF-8); the byte at offset `i`, an integer 0–255, a `range-error` unless `0 <= i <` the length. Both O(1). |
 | `(slice s start end)` | The bytes of `s` from offset `start` to `end`, of `s`'s kind: a string or a bytes value. A `range-error` unless `0 <= start <= end <=` the length and, for a string, both lie on character boundaries. |
 | `(search text pattern start)` | The byte offset of the first place at or after `start` where `pattern` is in `text`, or `()`; an empty pattern is at `start`. Both are strings or both bytes; a pattern of the other kind is a `type-error`. A `start` out of range, or off a character boundary of a string, is a `range-error`. |
@@ -216,8 +216,12 @@ as it checks the list's length to say what is wrong, where `(first (rest x))` co
 ## Errors
 
 Every error stops evaluation and goes to the innermost `catch!` around it, or to the host, as a
-kind, the values involved, and a trace: the combinations of the program being evaluated,
-innermost first, each once, out to the top-level form. Who made a combination decides: the
+kind, the values involved, and a trace: the combinations of the program being evaluated, each
+once, from the innermost out to the top-level form. A program reads the trace newest first, so the
+place the error began is its `last`; the host's `Error::trace` and the runner's report list it
+innermost first. A handler's trace shares the list it was raised with: a catch and raise adds only
+the places it passed to the front, and raising the trace a handler just got costs nothing per
+place, while raising any other trace walks it once. Who made a combination decides: the
 library's own code, and the code it builds as it runs, are skipped; code a program reads or builds
 is listed, whatever its head is. Listed are the combination evaluated when the error came, and
 each one with work left to do around it: an operand still to evaluate, or its value awaited. A
@@ -253,6 +257,7 @@ retain their own boundaries too.
 
 ```lisp
 (catch! (run (quote! a)) e (list (evaluate-in! kind e) (evaluate-in! values e)))   ; => (not-integer (a))
+(catch! (run (quote! a)) e (last (evaluate-in! trace e)))   ; => (raise (error (quote! not-integer) x))
 (catch-kind! (first 1) type-error e 0)                                  ; => 0
 ```
 

@@ -88,7 +88,8 @@
 (define! misuse-kinds
   (quote! (expectation-outside-test test-inside-test test-name-twice test-name-not-a-string)))
 
-; This program's raises, innermost in a trace, and the combinations it calls a file's forms from:
+; This program's raises, innermost in a trace (its last, as a trace is newest first), and the
+; combinations it calls a file's forms from:
 ; what is outside those is this program's, or the expression the failure already names.
 (define! own-raises
   (quote! ((raise (error (quote! exit-called) status))
@@ -112,7 +113,7 @@
       ()
       (map (lambda! (at) (field "  at" (value-to-string at)))
            (filter (lambda! (at) (not? (member? at own-raises)))
-                   (inside-boundaries (evaluate-in! trace e)))))))
+                   (inside-boundaries (reverse (evaluate-in! trace e))))))))
 
 ; The lines for what attempt gave.
 (define! outcome-lines

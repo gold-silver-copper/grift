@@ -22,16 +22,17 @@
   (test! "the error has no parent: it binds only its three fields"
     (expect-equal! (catch! (first 1) e (names e)) (quote! (kind trace values)))
     (expect-false! (catch! (first 1) e (binds? e (quote! list)))))
-  (test! "the trace is the combinations, innermost first, without those in tail position"
+  (test! "the trace is the combinations, newest first, without those in tail position"
     (define! inner (lambda! () (add 1 (raise (error (quote! deep))))))
     (expect-equal! (catch! (list (inner)) e (evaluate-in! trace e))
-                   (quote! ((raise (error (quote! deep)))
+                   (quote! ((list (inner))
                             (add 1 (raise (error (quote! deep))))
-                            (list (inner))))))
-  (test! "raise passes a caught error on, keeping its trace"
+                            (raise (error (quote! deep)))))))
+  (test! "raise passes a caught error on, its trace the same list with what it passes in front"
     (define! once (catch! (raise (error (quote! k))) e e))
-    (expect-equal! (catch! (raise once) e (evaluate-in! trace e))
-                   (append (evaluate-in! trace once) (quote! ((raise once))))))
+    (define! again (catch! (raise once) e (evaluate-in! trace e)))
+    (expect-equal! (first again) (quote! (raise once)))
+    (expect-true! (same? (rest again) (evaluate-in! trace once))))
   (test! "an early exit is a kind of the program's own"
     (define! first-even
       (lambda! (xs)

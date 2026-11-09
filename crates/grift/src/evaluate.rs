@@ -18,7 +18,7 @@
 //! flagged, and run in Rust when their operands have the shape the twin handles; any other shape
 //! runs the operative's body, so what a program sees never differs.
 
-use crate::heap::{Bindings, Object, Operative, Origin, Reference};
+use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
 use crate::read::float_name;
@@ -303,6 +303,9 @@ pub(crate) struct Machine {
     pub request: Value,
     /// Whether this run may park: only one the host began to, with [`Grift::start`] or the like.
     pub(crate) may_park: bool,
+    /// The trace the last handler got, and its combinations: raising that trace again takes them
+    /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
+    handed: Option<(Value, Seen)>,
     /// Steps taken, for tests of what a form costs.
     #[cfg(test)]
     pub steps: u64,
@@ -312,7 +315,7 @@ pub(crate) struct Machine {
 pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
     let (value, values, trace) = match ending {
         Ok(v) => (Some(*v), &[][..], &[][..]),
-        Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
+        Err(e) => (Some(e.shared), e.values.as_slice(), e.trace.as_slice()),
     };
     value.into_iter().chain(values.iter().chain(trace).copied())
 }
@@ -338,6 +341,7 @@ impl Machine {
         self.library = false;
         self.request = Value::Inert;
         self.may_park = false;
+        self.handed = None;
     }
 
     /// How many objects a machine counts as, for when to collect: every collection walks it,
@@ -375,6 +379,7 @@ impl Default for Machine {
             work: Vec::new(),
             request: Value::Inert,
             may_park: false,
+            handed: None,
             #[cfg(test)]
             steps: 0,
         }
@@ -689,7 +694,7 @@ impl<T> Grift<T> {
                 What::Handler { handler, base } if !e.limit => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    match self.handle(&e, handler, context) {
+                    match self.handle(e, handler, context) {
                         Ok(mode) => return Ok(mode),
                         Err(mut failed) => {
                             self.acting_on_refusal(&mut failed);
@@ -747,9 +752,11 @@ impl<T> Grift<T> {
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
-    /// `values` and `trace`.
-    fn handle(&mut self, e: &Error, handler: Value, context: Reference) -> Result<Mode, Error> {
-        let (values, trace) = (self.list_local(&e.values)?, self.list_local(&e.trace)?);
+    /// `values` and `trace`. The trace is the error's shared list with the places added since on
+    /// its front, so this costs those places only.
+    fn handle(&mut self, e: Error, handler: Value, context: Reference) -> Result<Mode, Error> {
+        let values = self.list_local(&e.values)?;
+        let trace = (e.trace.iter()).try_fold(e.shared, |l, &x| self.pair_local(x, l))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
         fields.insert(K::Kind.into(), Value::Symbol(e.kind));
@@ -757,6 +764,7 @@ impl<T> Grift<T> {
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
         let operands = self.list_local(&[v])?;
+        self.machine.handed = Some((trace, e.seen));
         self.combine(handler, operands, context)
     }
 
@@ -1415,7 +1423,7 @@ impl<T> Grift<T> {
     }
 
     /// The error an error context describes: one `error` made, or a handler got.
-    fn error_of(&self, e: Value) -> Result<Error, Error> {
+    fn error_of(&mut self, e: Value) -> Result<Error, Error> {
         let bad = || type_error(e);
         let Value::Context(r) = e else {
             return Err(bad());
@@ -1425,8 +1433,18 @@ impl<T> Grift<T> {
             return Err(bad());
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
-        let (values, trace) = (self.items(values, e)?, self.items(trace, e)?);
-        Error::from_parts(kind, values, trace)
+        let values = self.items(values, e)?;
+        // The trace the last handler got comes back whole, its combinations with it.
+        if let Some((_, seen)) = self.machine.handed.take_if(|(h, _)| *h == trace) {
+            return Ok(Error {
+                shared: trace,
+                seen,
+                ..Error::from_parts(kind, values, Vec::new())?
+            });
+        }
+        let mut given = self.items(trace, e)?;
+        given.reverse();
+        Error::from_parts(kind, values, given)
     }
 
     /// The elements of a proper list; anything else is a `type-error` naming `culprit`.

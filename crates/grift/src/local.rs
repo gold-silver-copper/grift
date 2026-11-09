@@ -73,8 +73,12 @@ pub(crate) struct Error {
     pub refused: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
+    /// The trace as handlers got it, or a program gave it: a list, newest first, shared and never
+    /// copied, so a catch and raise at every level costs only the places each level adds.
+    pub shared: Value,
+    /// The places added since, innermost first: a handler gets them on the front of `shared`.
     pub trace: Vec<Value>,
-    /// The combinations in `trace`, so adding one searches nothing.
+    /// The combinations in `shared` and `trace`, so adding one searches nothing.
     pub seen: Seen,
 }
 
@@ -123,7 +127,7 @@ impl Error {
         e
     }
 
-    /// An error a program describes, from its parts: `seen` follows from `trace`.
+    /// An error a program or host describes, from its parts: `seen` follows from `trace`.
     pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Vec<Value>) -> Result<Error, Error> {
         let mut seen = Seen::default();
         seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
@@ -136,6 +140,7 @@ impl Error {
             refused: false,
             kind,
             values,
+            shared: Value::EmptyList,
             trace,
             seen,
         })
@@ -148,6 +153,7 @@ impl Error {
             refused: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
+            shared: Value::EmptyList,
             trace: Vec::new(),
             seen: Seen::default(),
         }

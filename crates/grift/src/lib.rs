@@ -1133,7 +1133,15 @@ impl<T> Grift<T> {
             self.heap.request_collection();
         }
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
-        match (exported(&e.values), exported(&e.trace)) {
+        // The host's trace is innermost first: the shared list's places reversed, then the rest.
+        let trace = self.items(e.shared, e.shared).and_then(|mut v| {
+            v.reverse();
+            v.try_reserve_exact(e.trace.len())
+                .map_err(|_| local::Error::oom())?;
+            v.extend_from_slice(&e.trace);
+            exported(&v)
+        });
+        match (exported(&e.values), trace) {
             (Ok(values), Ok(trace)) => Error {
                 kind: self.export_symbol(e.kind),
                 values,
