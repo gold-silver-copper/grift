@@ -11,44 +11,13 @@ use crate::local::{self, K};
 use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::Weak;
 
-/// A host function that may answer later: [`Grift::parking_function`] makes one.
-pub type ParkingFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>;
-
-/// What a [`ParkingFunction`] answers.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Answer {
-    /// This value, as any host function answers.
-    Now(Value),
-    /// Not yet: the run is set aside, and [`Grift::resume`] gives this call its value or error.
-    /// The value says what is being waited for, and [`Parked::request`] hands it to the host's
-    /// loop: do the work there, once the run has really parked, for it may not. In a run that
-    /// can't park ([`Grift::can_park`]) this call fails with `cannot-park`, naming the function; a
-    /// stop that reached the run fails it with `interrupted`; and with no memory to park,
-    /// `out-of-memory`.
-    Later(Value),
-}
-
-/// A registered host function, of either kind.
-pub(crate) enum Hosted<T> {
-    Plain(crate::HostFunction<T>),
-    Parking(ParkingFunction<T>),
-}
-
-impl<T> Clone for Hosted<T> {
-    fn clone(&self) -> Hosted<T> {
-        *self
-    }
-}
-
-impl<T> Copy for Hosted<T> {}
-
 /// How a run that may park came back to its host, when it didn't fail.
 #[must_use]
 #[derive(Debug)]
 pub enum Ran {
     /// It ended with this value.
     Finished(Value),
-    /// A host function answered [`Answer::Later`].
+    /// A host function answered [`Answer::Later`](crate::Answer::Later).
     Parked(Parked),
 }
 
@@ -61,7 +30,7 @@ pub enum Ran {
 /// ```
 /// use grift::{Answer, Grift, Ran, Value};
 /// let mut g: Grift = Grift::new()?;
-/// let wait = g.parking_function("wait", |_, _, args| Ok(Answer::Later(args[0].clone())))?;
+/// let wait = g.host_function("wait", |_, _, args| Ok(Answer::Later(args[0].clone())))?;
 /// g.define("wait", wait)?;
 /// let top = g.top_level();
 /// let Ran::Parked(parked) = g.start_in(&mut (), &top, "script", "(add 1 (wait 41))")? else {
@@ -80,7 +49,7 @@ pub enum Ran {
 /// ```compile_fail,E0382
 /// # use grift::{Answer, Grift, Ran, Value};
 /// # let mut g: Grift = Grift::new()?;
-/// # let wait = g.parking_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
+/// # let wait = g.host_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
 /// # g.define("wait", wait)?;
 /// # let top = g.top_level();
 /// # let Ran::Parked(parked) = g.start_in(&mut (), &top, "script", "(wait)")? else { panic!() };
@@ -97,8 +66,8 @@ pub struct Parked {
 }
 
 impl Parked {
-    /// What the call asked for in [`Answer::Later`]. The run holds it, so it stays valid for as long
-    /// as this handle waits, through any collection.
+    /// What the call asked for in [`Answer::Later`](crate::Answer::Later). The run holds it, so it
+    /// stays valid for as long as this handle waits, through any collection.
     pub fn request(&self) -> &Value {
         &self.request
     }
@@ -148,7 +117,7 @@ pub struct ResumeError {
     /// What went wrong.
     pub error: Error,
     /// The handle, if nothing was done and the run still waits: it was another interpreter's
-    /// (`foreign-value`), or this was inside a host call (`cannot-park`). `None` if the run went
+    /// (`foreign-value`), or this was inside a host call (`cannot-nest`). `None` if the run went
     /// on and ended with this error.
     pub parked: Option<Parked>,
 }
@@ -161,15 +130,8 @@ impl From<ResumeError> for Error {
 }
 
 impl<T> Grift<T> {
-    /// As [`Grift::host_function`], for a function that may answer later. To a program it is any
-    /// other call.
-    pub fn parking_function(&mut self, name: &str, f: ParkingFunction<T>) -> Result<Value, Error> {
-        self.hosted(name, Hosted::Parking(f))
-    }
-
-    /// [`Grift::call`], in a run that may park. Inside a host call it is a nested run, as `call` is,
-    /// and a wait in it is `cannot-park`, since that call's Rust frames can't be set aside: a host
-    /// function queues work that waits for its host's loop.
+    /// [`Grift::call`], in a run that may park. Inside a host call it is `cannot-nest`, as `call`
+    /// is.
     pub fn start(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Ran, Error> {
         let done = self.run_call(state, f, arguments, true);
         self.ran(done)
@@ -220,7 +182,7 @@ impl<T> Grift<T> {
     /// ```
     /// use grift::{Answer, Grift, Ran, ResumeError, Value};
     /// let mut g: Grift = Grift::new()?;
-    /// let wait = g.parking_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
+    /// let wait = g.host_function("wait", |_, _, _| Ok(Answer::Later(Value::Inert)))?;
     /// g.define("wait", wait)?;
     /// let top = g.top_level();
     /// let src = "(define! here (current-context))
@@ -272,9 +234,6 @@ impl<T> Grift<T> {
         answer: &Result<local::Value, local::Error>,
     ) -> Result<Machine, local::Error> {
         self.owns(&parked.owner)?;
-        if self.control.running() {
-            return Err(local::Error::new(K::CannotPark, &[]));
-        }
         self.prepare(ending_values(answer))?;
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
@@ -287,8 +246,8 @@ impl<T> Grift<T> {
         Ok(machine)
     }
 
-    /// Whether a [`ParkingFunction`] called now may answer [`Answer::Later`]: not under
-    /// [`Grift::evaluate`] or [`Grift::call`], and not in any run inside a host call.
+    /// Whether a host function called now may answer [`Answer::Later`](crate::Answer::Later): not
+    /// under [`Grift::evaluate`] or [`Grift::call`].
     pub fn can_park(&self) -> bool {
         self.machine.may_park
     }

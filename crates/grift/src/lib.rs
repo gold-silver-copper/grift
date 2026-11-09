@@ -23,8 +23,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
 
 pub use interrupt::Interrupter;
-pub use parked::{Answer, Parked, ParkingFunction, Ran, ResumeError};
-pub use print::write_string;
+pub use parked::{Parked, Ran, ResumeError};
+pub use print::{ReportStatus, TextBuffer, write_string};
 
 /// The library, evaluated in the built-in context by [`Grift::new`].
 const LIBRARY: &str = include_str!("library.grift");
@@ -118,15 +118,71 @@ impl Hash for Owner {
 }
 
 /// A host function. It receives the interpreter, the host's state (the one passed to
-/// [`Grift::evaluate`] or [`Grift::call`]) and the evaluated arguments. One that panics ends the
-/// run it was called from: the panic goes on to the host and no cleanup runs. One that replaces
-/// the interpreter it was given ends the run too: the interpreter answers `foreign-value`. Either
-/// way the interpreter starts its next evaluation afresh.
-pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>;
+/// [`Grift::evaluate`], [`Grift::call`] or the like) and the evaluated arguments, and gives its
+/// [`Answer`]. It begins no run of its own: inside a host call, `evaluate`, `call` and every other
+/// way in are the error `cannot-nest`, for a run there would stack the program's depth on this
+/// function's Rust frame. To have grift call something, it answers [`Answer::Call`]. One that
+/// panics ends the run it was called from: the panic goes on to the host and no cleanup runs. One
+/// that replaces the interpreter it was given ends the run too: the interpreter answers
+/// `foreign-value`. Either way the interpreter starts its next evaluation afresh.
+pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>;
+
+/// What a [`HostFunction`] answers.
+#[derive(Debug, PartialEq)]
+pub enum Answer {
+    /// This value.
+    Now(Value),
+    /// Not yet: the run is set aside, and [`Grift::resume`] gives this call its value or error.
+    /// The value says what is being waited for, and [`Parked::request`] hands it to the host's
+    /// loop: do the work there, once the run has really parked, for it may not. In a run that
+    /// can't park ([`Grift::can_park`]) this call fails with `cannot-park`, naming the function; a
+    /// stop that reached the run fails it with `interrupted`; and with no memory to park,
+    /// `out-of-memory`.
+    Later(Value),
+    /// Call `function` with `arguments`, as [`Grift::call`] would, once this host call has
+    /// returned: the machine makes the call on its own frames, so it costs no Rust stack, a
+    /// program can recurse through a host function as deep as memory goes, and a wait inside it
+    /// parks the run as any other does. With no `then`, the call's ending is this call's, in tail
+    /// position. With `then`, an applicative and values saved for it, the call's value goes to
+    /// `then` after those values, and what `then` gives is this call's; a host function as `then`
+    /// may answer `Call` again, which is how a host function loops. An error passes `then` by, as
+    /// a `?` would. The vectors are the host's to make: `Vec::new()` allocates nothing, and
+    /// `try_reserve` makes room that can be refused instead of aborting.
+    ///
+    /// ```
+    /// use grift::{Answer, Grift, Value};
+    /// let mut g: Grift = Grift::new()?;
+    /// // `(twice f x)` is `(f (f x))`: the first call's value goes to `again`, saved with `f`.
+    /// let twice = g.host_function("twice", |g, s, args| {
+    ///     assert!(g.call(s, &args[0], &args[1..2]).is_err()); // `cannot-nest`: no run in here
+    ///     Ok(Answer::Call {
+    ///         function: args[0].clone(),
+    ///         arguments: vec![args[1].clone()],
+    ///         then: Some((args[2].clone(), vec![args[0].clone()])),
+    ///     })
+    /// })?;
+    /// g.define("twice", twice)?;
+    /// let again = g.host_function("again", |_, _, args| {
+    ///     Ok(Answer::Call { function: args[0].clone(), arguments: vec![args[1].clone()], then: None })
+    /// })?;
+    /// g.define("again", again)?;
+    /// let v = g.evaluate(&mut (), "(twice (lambda! (n) (multiply n 3)) 7 again)")?;
+    /// assert_eq!(v, Value::Integer(63));
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    Call {
+        /// An applicative, as for [`Grift::call`].
+        function: Value,
+        /// What it is called with.
+        arguments: Vec<Value>,
+        /// An applicative for the call's value, and the values it gets before that value.
+        then: Option<(Value, Vec<Value>)>,
+    },
+}
 
 /// What went wrong: a symbol naming the kind of error, the values involved, and where.
 /// [`Grift::describe`] writes it for a person.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Error {
     /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::symbol_name`]
     /// reads it.
@@ -144,7 +200,7 @@ pub struct Error {
     /// memory) began this, so that no handler could catch it. Never so for what a program raises or
     /// a host function makes with [`Grift::error`], whatever its kind is called (unless memory is
     /// refused to make it: that is the limit `out-of-memory`), and an error passing through a
-    /// nested run or a host function stays what it was. Its kind then says which limit it is, or,
+    /// host function stays what it was. Its kind then says which limit it is, or,
     /// if the host handed one in after its values were reclaimed, `stale-value`.
     ///
     /// ```
@@ -169,6 +225,27 @@ pub struct Error {
     /// ```
     pub limit: bool,
 }
+
+/// An error has no `clone`, which would abort when memory is refused: a host keeps the one it was
+/// given, or makes another with [`Grift::error`].
+///
+/// ```compile_fail
+/// fn copied(e: &grift::Error) -> grift::Error {
+///     e.clone()
+/// }
+/// ```
+#[cfg(doctest)]
+struct ErrorIsNotClone;
+
+/// Nor has an answer, whose call holds vectors.
+///
+/// ```compile_fail
+/// fn copied(a: &grift::Answer) -> grift::Answer {
+///     a.clone()
+/// }
+/// ```
+#[cfg(doctest)]
+struct AnswerIsNotClone;
 
 /// A value the host keeps across evaluations: an entry in a table the collector marks and no
 /// program reaches. Read it with [`Grift::kept`]; [`Grift::release`] clears it. Neither
@@ -228,7 +305,11 @@ impl Entry {
     }
 }
 
-/// Enough for a report's trace, the copy of it a report checks, and the printer's stack.
+/// Room held back for when memory is refused, given up as the refusal unwinds: for the trace the
+/// unwinding builds, the program's combinations it passes, and after it for a report of the
+/// error, whose printer needs about 2 KiB whatever the error holds, beside the host's own text.
+/// It is no promise past that: a deep trace, or a host's text longer than what is left, can
+/// still find memory refused.
 const SPARE: usize = 64 * 1024;
 
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
@@ -240,7 +321,7 @@ pub struct Grift<T = ()> {
     names: Vec<Box<str>>,
     /// Names to symbol ids, for interning; `names` gives the spelling by id.
     symbols: HashMap<Box<str>, u32>,
-    hosts: Vec<(local::Symbol, parked::Hosted<T>)>,
+    hosts: Vec<(local::Symbol, HostFunction<T>)>,
     built_in: heap::Reference,
     top: heap::Reference,
     /// The kept values and parked runs, and the first free entry.
@@ -252,8 +333,6 @@ pub struct Grift<T = ()> {
     /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
     /// unwinds, when small allocations may have only scraps left, and taken again by the next run.
     spare: Vec<u8>,
-    /// The machines of the runs under a nested run, whose host functions are waiting for it.
-    suspended: Vec<evaluate::Machine>,
     /// Shared with the interrupters; its allocation is this interpreter's identity, which every
     /// value handed out holds.
     control: Arc<Control>,
@@ -261,6 +340,9 @@ pub struct Grift<T = ()> {
 
 impl<T> Grift<T> {
     /// Builds the built-in context, evaluates the library in it and makes an empty top level.
+    /// Memory refused is `out-of-memory`, but for one allocation, the first: the interpreter's
+    /// shared control block, which its interrupters and values point to, is an `Arc::new`, and so
+    /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
         let mut g = Grift {
             heap: Heap::default(),
@@ -274,7 +356,6 @@ impl<T> Grift<T> {
             parked_as: None,
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
-            suspended: Vec::new(),
             control: Arc::new(Control::default()),
         };
         let loaded = g.load();
@@ -320,9 +401,9 @@ impl<T> Grift<T> {
     /// let keys = g.context(Some(&g.top_level()))?;
     /// let e = g.evaluate_in(&mut (), &keys, "keys.grift", "(define! a 1)\n(first a)").unwrap_err();
     /// assert_eq!(g.position(&e.trace[0])?, Some(("keys.grift", 2)));
-    /// let mut text = String::new();
-    /// g.describe(&e, &mut text).unwrap();
-    /// assert_eq!(text, "type-error 1 in (first a) at keys.grift:2");
+    /// let mut text = grift::TextBuffer::new();
+    /// g.describe(&e, &mut text, 4096)?;
+    /// assert_eq!(text.as_str(), "type-error at keys.grift:2 1 in (first a)");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn evaluate_in(
@@ -345,10 +426,10 @@ impl<T> Grift<T> {
     /// let top = g.top_level();
     /// g.evaluate_library_in(&mut (), &top, "prelude.grift", "(define! head (lambda! (xs) (first xs)))")?;
     /// let e = g.evaluate_in(&mut (), &top, "config.grift", "\n(head 9)").unwrap_err();
-    /// let mut text = String::new();
-    /// g.describe(&e, &mut text).unwrap();
+    /// let mut text = grift::TextBuffer::new();
+    /// g.describe(&e, &mut text, 4096)?;
     /// // The prelude's (first xs) is skipped: the error is the config's line.
-    /// assert_eq!(text, "type-error 9 in (head 9) at config.grift:2");
+    /// assert_eq!(text.as_str(), "type-error at config.grift:2 9 in (head 9)");
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn evaluate_library_in(
@@ -382,7 +463,8 @@ impl<T> Grift<T> {
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
     /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
-    /// Host functions get `state`.
+    /// Host functions get `state`. Inside a host call this, and every other way to begin a run, is
+    /// `cannot-nest`: a host function answers [`Answer::Call`] instead.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.run_call(state, f, arguments, false);
         self.exported(done)
@@ -404,10 +486,6 @@ impl<T> Grift<T> {
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
     /// hands it to grift code that keeps it private.
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
-        self.hosted(name, parked::Hosted::Plain(f))
-    }
-
-    fn hosted(&mut self, name: &str, f: parked::Hosted<T>) -> Result<Value, Error> {
         let made = self.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
@@ -673,9 +751,9 @@ impl<T> Grift<T> {
     /// ```
     /// let mut g: grift::Grift = grift::Grift::new()?;
     /// let v = g.evaluate(&mut (), "(list 1.0 \"a\\rb\" (quote! x))")?;
-    /// let mut text = String::new();
-    /// g.write(&v, &mut text).unwrap();
-    /// assert_eq!(text, "(1.0 \"a\\rb\" x)");
+    /// let mut text = grift::TextBuffer::new(); // grows fallibly, where a String aborts
+    /// g.write(&v, &mut text)?;
+    /// assert_eq!(text.as_str(), "(1.0 \"a\\rb\" x)");
     /// g.evaluate(&mut (), "(length (map list (range 0 100000)))")?; // collects v
     /// let e = g.write(&v, &mut text).unwrap_err();
     /// assert_eq!(g.symbol_name(&e.kind)?, "stale-value");
@@ -686,31 +764,45 @@ impl<T> Grift<T> {
         self.out(written)
     }
 
-    /// Writes an error for a person: its kind and values, then each combination of its trace,
-    /// with its source and line where it has one: `type-error 1 in (first a)
-    /// at keys.grift:2`, then `\n  from (f) at keys.grift:3` for each one around it. It fails as
-    /// [`Grift::write`] does.
-    pub fn describe(&self, error: &Error, out: &mut dyn fmt::Write) -> Result<(), Error> {
-        let written = self
-            .import_error(error)
-            .and_then(|e| self.write_error(&e, out));
-        self.out(written)
-    }
-
-    fn write_error(&self, e: &local::Error, out: &mut dyn fmt::Write) -> Result<(), local::Error> {
-        self.print(local::Value::Symbol(e.kind), out)?;
-        for &v in &e.values {
-            out.write_char(' ')?;
-            self.print(v, out)?;
-        }
-        for (i, &at) in e.trace.iter().enumerate() {
-            out.write_str(if i == 0 { " in " } else { "\n  from " })?;
-            self.print(at, out)?;
-            if let Some((source, line)) = self.position_local(at) {
-                write!(out, " at {source}:{line}")?;
-            }
-        }
-        Ok(())
+    /// Writes an error for a person, in at most `bytes` bytes of `out`: its kind and the innermost
+    /// place its trace has, `type-error at keys.grift:2`, then its values, then each combination
+    /// of its trace, the first after ` in ` and each one around it on a line of its own, `\n  from
+    /// (f ...) at keys.grift:3`, where `...` is the line before's combination, so each piece of
+    /// source is written once. A report that fits `bytes` is written whole. One that doesn't gives
+    /// the kind and the source's name at most a quarter of `bytes` each, cut with `...`, so it
+    /// begins with both from 30 bytes up, and below that with as much of the kind as fits. A
+    /// context is written as its count of names, `#[context 3 names]`, where [`Grift::write`]
+    /// lists them, and a name's control characters are escaped as in a string literal, so only
+    /// the report begins a line. Data nested more than 32 deep is written as `...` too. Nothing
+    /// is copied: past the text the sink holds, a report needs about 2 KiB for its printer,
+    /// whatever the error holds, so after `out-of-memory` a host needs room for its text and
+    /// that; a [`TextBuffer`] may hold up to twice its text while it grows.
+    ///
+    /// [`ReportStatus::Truncated`] says the report was cut. A [`TextBuffer`] holds the text
+    /// fallibly. A value of the error that is stale or another interpreter's fails it before
+    /// anything is written, a stop that reaches it is `interrupted`, and an `out` that refuses the
+    /// text `output-error`.
+    ///
+    /// ```
+    /// use grift::{Grift, ReportStatus, TextBuffer};
+    /// let mut g: Grift = Grift::new()?;
+    /// let top = g.top_level();
+    /// let e = g.evaluate_in(&mut (), &top, "keys.grift", "(define! f (lambda! (x) (first x)))\n(f 1)").unwrap_err();
+    /// let mut text = TextBuffer::new();
+    /// assert_eq!(g.describe(&e, &mut text, 4096)?, ReportStatus::Complete);
+    /// assert_eq!(text.as_str(), "type-error at keys.grift:1 1 in (first x)\n  from (f 1) at keys.grift:2");
+    /// let mut text = TextBuffer::new();
+    /// assert_eq!(g.describe(&e, &mut text, 40)?, ReportStatus::Truncated);
+    /// assert_eq!(text.as_str(), "type-error at keys.grift:1 1 in (first x");
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn describe(
+        &self,
+        error: &Error,
+        out: &mut dyn fmt::Write,
+        bytes: usize,
+    ) -> Result<ReportStatus, Error> {
+        self.out(self.report(error, out, bytes))
     }
 
     /// The source and line of a combination read by [`Grift::read_in`] or [`Grift::evaluate_in`],
@@ -835,27 +927,30 @@ impl<T> Grift<T> {
         *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
     }
 
-    /// Starts an outer run, unless one is in progress; whether it did, which `Control::end` then
-    /// ends. What a host function left behind when it panicked or replaced the interpreter is
-    /// over: its machines go here.
-    pub(crate) fn begin_run(&mut self) -> bool {
+    /// [`Grift::walk_stopped`] for `cost` items at once, such as the bytes of a piece of text.
+    pub(crate) fn walk_charged(&self, walked: &mut usize, cost: usize) -> bool {
+        let before = *walked;
+        *walked = before.wrapping_add(cost);
+        before / WALK_CHECK != *walked / WALK_CHECK && self.control.asked()
+    }
+
+    /// Starts a run, which `Control::end` then ends. Every way in has passed [`Grift::prepare`],
+    /// which refuses one inside a host call, so none is in progress; what a host function left
+    /// behind when it panicked or replaced the interpreter is over, and its machine is cleared.
+    pub(crate) fn begin_run(&mut self) {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
-        let outer = self.settled();
-        if outer {
-            self.control.begin();
-        }
-        outer
+        self.settled();
+        self.control.begin();
     }
 
     /// Whether no run is in progress; if none is, what a host function left on the machines when
     /// it panicked or replaced the interpreter is over, so nothing the host makes now takes its
-    /// mark. A machine is empty between runs, and none is suspended.
+    /// mark. A machine is empty between runs.
     pub(crate) fn settled(&mut self) -> bool {
         let none = !self.control.running();
         if none {
             self.machine.clear();
-            self.suspended.clear();
         }
         none
     }
@@ -946,8 +1041,7 @@ impl<T> Grift<T> {
         })
     }
 
-    /// Validate and root a host call before its first allocation. Return before running it, so
-    /// validation and root-iterator temporaries do not stay on a suspended host's stack.
+    /// Validate and root a host call before its first allocation.
     fn prepare_call(
         &mut self,
         f: &Value,

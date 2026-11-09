@@ -9,10 +9,13 @@ use std::process::Command;
 #[allow(dead_code)]
 mod host;
 
+/// A program that recurses through a host function that calls back can't choose how deep the Rust
+/// stack goes: a call back on the host function's frame is refused, and a call it hands the machine
+/// costs no Rust stack at any depth.
 #[test]
-fn named_evaluations_through_host_callbacks_fit_a_small_stack() {
+fn a_host_function_that_calls_back_never_overflows_a_small_stack() {
     // Embedders normally develop without optimization. The workspace test profile optimizes
-    // grift, which otherwise hides the stack cost of temporaries in long-lived machine frames.
+    // grift, which otherwise hides the stack cost of temporaries in a host function's frame.
     let source = Path::new(env!("CARGO_MANIFEST_DIR"));
     let scratch =
         Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("small-stack-{}", std::process::id()));

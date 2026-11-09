@@ -14,7 +14,9 @@ language with a Unix runner.
 The core crate has no dependencies and no `unsafe` code; it does no I/O, starts no threads and
 keeps no global state: the host owns all of that. It uses the memory the allocator gives it and
 sets no limits of its own; when the allocator refuses, evaluation returns an `out-of-memory`
-error instead of aborting. It reaches the outside world only through functions the host
+error instead of aborting. There is one exception: `Grift::new`'s first allocation, the
+interpreter's shared control block, is an `Arc::new`, which aborts if refused, until Rust's
+`Arc::try_new` is stable; every later refusal is `out-of-memory`. It reaches the outside world only through functions the host
 registers, and every error goes to the host with its kind, its values and where it happened.
 
 ## The language on one screen
@@ -154,17 +156,17 @@ script, run by the runner's tests.
 ## Embedding
 
 ```rust
-use grift::{Error, Grift, Value};
+use grift::{Answer, Error, Grift, Value};
 
 /// The host's state: here, how often `twice` ran. The host lends it to each `evaluate` and `call`.
 struct Board {
     calls: u32,
 }
 
-fn twice(g: &mut Grift<Board>, board: &mut Board, args: &[Value]) -> Result<Value, Error> {
+fn twice(g: &mut Grift<Board>, board: &mut Board, args: &[Value]) -> Result<Answer, Error> {
     board.calls += 1;
     match args {
-        [Value::Integer(n)] => n.checked_mul(2).map(Value::Integer).ok_or_else(|| g.error("overflow", args)),
+        [Value::Integer(n)] => n.checked_mul(2).map(|n| Answer::Now(Value::Integer(n))).ok_or_else(|| g.error("overflow", args)),
         _ => Err(g.error("type-error", args)),
     }
 }
@@ -184,13 +186,14 @@ fn main() -> Result<(), Error> {
     let list = g.list(&[hi.clone(), Value::Integer(1)])?; // or pair by pair, from its end
     assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]); // or as_pair, from its start
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
-    let mut s = String::new();
-    g.write(&forms, &mut s).unwrap(); // into any std::fmt::Write
-    assert_eq!(s, "((f 1) (first 1))");
+    let mut s = grift::TextBuffer::new(); // or any std::fmt::Write
+    g.write(&forms, &mut s)?;
+    assert_eq!(s.as_str(), "((f 1) (first 1))");
     let e = g.evaluate_in(&mut board, &top, "user.grift", "\n(f (quote! x))").unwrap_err();
-    let mut text = String::new();
-    g.describe(&e, &mut text).unwrap(); // innermost first, with the source and line
-    assert_eq!(text, "type-error x in (add x 1) at init.grift:1\n  from (twice (add x 1)) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
+    let mut text = grift::TextBuffer::new(); // grows fallibly, where a String aborts
+    let status = g.describe(&e, &mut text, 4096)?; // in at most 4096 bytes, innermost first
+    assert_eq!(status, grift::ReportStatus::Complete);
+    assert_eq!(text.as_str(), "type-error at init.grift:1 x in (add x 1)\n  from (twice ...) at init.grift:1\n  from (f (quote! x)) at user.grift:2");
     let kept = g.keep(f)?; // alive across evaluations until released
     g.release(kept).map_err(|(e, _)| e)?;
     Ok(())
@@ -218,16 +221,25 @@ fn main() -> Result<(), Error> {
   as grift's own: traces skip it. Code a program reads or builds is the program's.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
-  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out)`,
+  `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out, bytes)`,
   which fail with an `Error` too: an `out` that refuses the text is kind `output-error`, and a host
-  that wants to know why keeps the reason in its `out`.
+  that wants to know why keeps the reason in its `out`. `TextBuffer` is an `out` that refuses
+  instead of aborting when it has no memory to grow, as a `String` would; `as_str` reads it.
   A list is built whole with `list` or with `pair` from its end, and read whole with `list_items` or
   with `as_pair` from its start. Host text is written as a string literal either with `string`
   then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an
   interpreter or allocation; it returns `std::fmt::Result`. A `Value::Operative` is opaque: a host compares and writes it,
   which shows how it was made, and can't look inside or make one.
-- `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Value, Error>`; it gets
-  evaluated arguments and may call `evaluate` or `call` itself.
+- `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>`; it gets
+  evaluated arguments and answers `Answer::Now(value)`, `Answer::Later(request)` to wait (see
+  below), or `Answer::Call { function, arguments, then }` to have grift call something: the machine
+  makes that call once the host function has returned, on its own frames, so a program can recurse
+  through a host function as deep as memory goes, and a wait inside the call parks the run. With
+  `then: Some((after, saved))`, the call's value goes to `after` behind the `saved` values, and
+  `after` may answer `Call` again, which is how a host function loops; an error passes it by. A host
+  function begins no run of its own: `evaluate`, `call`, `start`, `resume` and every other way in
+  are the error `cannot-nest` inside a host call, since a run there would put the program's depth
+  on the host function's Rust stack.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
   context of operations on it, never as a number a program could forge. Keep the host functions
   that take a resource's number private: don't `define` them; hand them to grift code, evaluated
@@ -242,7 +254,11 @@ fn main() -> Result<(), Error> {
   top-level form; the library's code, read or built, is skipped, so `(if! 1 2 3)` fails at
   `(if! 1 2 3)`, not inside `if!`. A call in tail position has finished, so it isn't listed.
   `position(&at)` (`Result<Option<_>, Error>`) is a
-  combination's source and line; `describe(&e, out)` writes the whole error for a person;
+  combination's source and line; `describe(&e, out, bytes)` writes the error for a person in at
+  most `bytes` bytes, the kind and innermost place first, each line writing the line before's
+  combination as `...` (and data nested more than 32 deep), whole if it fits, and says whether
+  it was cut, `ReportStatus::Complete` or `Truncated`
+  (grift has no number of its own: the runner gives 4096);
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one
   run: the run in progress when it is taken, or, taken between runs, the next to begin; a clone is
@@ -255,18 +271,18 @@ fn main() -> Result<(), Error> {
   wasn't taken for: a watchdog takes one as its job begins and needs no lock. Stops waiting together
   count as one; a later stop stops the run again, even in a cleanup that doesn't end. `force()` ends
   the handle's run however its cleanups behave, with no stop needed first: each is cut before its first
-  form, at every level, and the run ends with `interrupted`, whatever else fails on the way.
+  form, and the run ends with `interrupted`, whatever else fails on the way.
   `examples/stops.rs` shows stop, force, `limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
   interpreter it was given ends the run with `foreign-value`.
 - **Limits.** `e.limit` says the host or the machine began an error, not a program: handlers
-  pass it, a program's error in a cleanup doesn't replace it, and it stays one through nested runs.
+  pass it, a program's error in a cleanup doesn't replace it, and a host function passing it on
+  keeps it one.
   A host function makes its own with `Error { limit: true, ..g.error(kind, values) }`, and reads `e.kind` and
   `e.values` when the run has ended: the runner's `exit` carries its status this way. It says the host
   began the ending, not that your stop did: a newer limit in a cleanup replaces it, so a host that gives
-  scripts a function making limits trusts its own record of what it asked for. A host function that
-  swallows a nested run's stop and returns lets the outer run go on; it can't hide a force.
+  scripts a function making limits trusts its own record of what it asked for.
 - **Waiting.** A host function can answer "not yet", so a script waits for an event in a call that
   looks like any other while the host's loop goes on, with no thread held. See below.
 - **A returned `Value` stays valid until the next `evaluate`, `call`, `start` or `resume`**, which may collect it.
@@ -274,8 +290,8 @@ fn main() -> Result<(), Error> {
   `kept(&k)` reads it. Every
   value carries its interpreter's identity and each heap reference its slot's generation, so a
   stale value is `stale-value` and another interpreter's is `foreign-value`, everywhere, never
-  read as some other object. A value a host function makes stays valid until it returns
-  or starts a nested `evaluate`, `evaluate_in` or `call`: allocation never collects, a nested run may.
+  read as some other object. A value a host function makes stays valid until it returns:
+  allocation never collects.
 
 ### A watchdog
 
@@ -324,7 +340,7 @@ with the same handle.
 
 ### Waiting: pausable runs
 
-Register the function with `parking_function`, and have it answer `Answer::Later(request)`.
+Have a host function answer `Answer::Later(request)`.
 `start` calls a combiner and `start_in` runs source text, each in a run that can wait. A run that
 ends gives `Ran::Finished(value)`; one that comes to such a call is set aside, and you get a
 `Ran::Parked(parked)`. Your loop goes on: other runs start, finish and park over the same heap,
@@ -344,18 +360,18 @@ fn sleep(g: &mut Grift<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Res
     }
 }
 
-fn say(g: &mut Grift<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
+fn say(g: &mut Grift<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
     let [name] = args else {
         return Err(g.error("arity-error", args));
     };
     said.extend(g.as_str(name)?.map(str::to_owned));
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 fn main() -> Result<(), Error> {
     let mut g: Grift<Vec<String>> = Grift::new()?;
     let mut said = Vec::new();
-    let f = g.parking_function("sleep", sleep)?;
+    let f = g.host_function("sleep", sleep)?;
     g.define("sleep", f)?;
     let f = g.host_function("say", say)?;
     g.define("say", f)?;
@@ -411,7 +427,7 @@ fn main() -> Result<(), Error> {
   goes on, or with a limit and it ends there. One that never ends is yours to stop or force; each
   `resume` being a run of its own, take a handle for it just before the `resume`: one taken before it
   waited does nothing and says `false`. A cleanup that installs a new cleanup that
-  waits comes back each time, and neither reaches it while it waits: have your parking function call
+  waits comes back each time, and neither reaches it while it waits: have your waiting function call
   `force()` before it answers `Later`, which ends the run there, as in the example below.
 - **A run you never finish** stays alive, holding what it refers to, as a kept value does: its
   cleanups are still owed. `parked()` counts these. Dropping the handle doesn't end it, and
@@ -427,14 +443,14 @@ fn main() -> Result<(), Error> {
   one of them may park, the stop having been acted on: `true` and `Ran::Parked` can go together.
   Cleanups after out of memory have what a collection frees. `resume` makes no heap object to begin;
   refused the little it does need, the run waits still and the handle comes back.
-- **What can't wait.** A run under `evaluate` or `call`, or any run inside a host call, has Rust
-  frames that can't be set aside. A waiting call there is the error `cannot-park`, its trace saying which call,
-  and `can_park()` lets a host function do something else instead.
-  `start` inside a host call is such a run. `resume` there is refused (`cannot-park`), the handle
-  coming back in `ResumeError::parked` with the run untouched: queue it for your loop. Another
+- **What can't wait.** A run under `evaluate` or `call` has Rust frames that can't be set aside. A
+  waiting call there is the error `cannot-park`, its trace saying which call, and `can_park()` lets
+  a host function do something else instead. `resume` inside a host call is refused
+  (`cannot-nest`), the handle coming back in `ResumeError::parked` with the run untouched: queue it
+  for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`, an error of the interpreter you
   called.
-- **Hosts that never park** keep the signatures of `evaluate`, `call` and `host_function`, but two
+- **Hosts that never park** keep the signatures of `evaluate` and `call`, but two
   things reach every host. Memory refused makes one collection due, before the nearest cleanup's first
   step, and a cleanup refused memory all the same is passed over for the next, which that new refusal
   collects for. And a kind's name
@@ -445,14 +461,14 @@ fn main() -> Result<(), Error> {
   where a dropped one goes.
 
 Ending a run whose every cleanup waits again: the host's state says the host is ending it, and the
-parking function forces the run before it answers.
+waiting function forces the run before it answers.
 
 ```rust
 use grift::{Answer, Grift, Ran, Value};
 
 fn main() -> Result<(), grift::Error> {
     let mut g: Grift<bool> = Grift::new()?; // the state: whether the host is ending this run
-    let wait = g.parking_function("wait", |g, ending, _| {
+    let wait = g.host_function("wait", |g, ending, _| {
         if *ending {
             g.interrupter().force();
         }

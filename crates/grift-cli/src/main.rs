@@ -16,7 +16,7 @@
 //! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
 //! `elapsed-nanoseconds` and `exit`.
 
-use grift::{Error, Grift, HostFunction, Value};
+use grift::{Answer, Error, Grift, HostFunction, Ran, ReportStatus, Value};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -465,9 +465,11 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     g.pair(status, list)
 }
 
-/// Prints an error to stderr as its source, then its kind followed by its values and where it happened, the
-/// innermost combination on the error's line and each one around it on a line of its own.
-/// A report up to 4 KiB is one write, so output sharing its pipe can't land inside it.
+/// Prints an error to stderr as its source, then its kind, where it happened and its values, the
+/// innermost combination on the error's line and each one around it on a line of its own. A
+/// report longer than [`REPORT_BYTES`], or one leaving deep data out, is cut short, and then a
+/// line of the runner's own says so: no text of the program's can begin a line in a report. A
+/// report up to 4 KiB is one write, so output sharing its pipe can't land inside it.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
         w: Gathered {
@@ -478,11 +480,16 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
         error: None,
     };
     let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
-    let _ = g.describe(e, &mut err);
+    if let Ok(ReportStatus::Truncated) = g.describe(e, &mut err, REPORT_BYTES) {
+        let _ = fmt::Write::write_str(&mut err, "\n  (report cut short)");
+    }
     let _ = fmt::Write::write_str(&mut err, "\n");
     let _ = err.w.flush();
     ExitCode::FAILURE
 }
+
+/// The most a report of an error takes, before the line saying it was cut.
+const REPORT_BYTES: usize = 4096;
 
 /// Writes gathered on the stack and passed on when it is full or flushed: no memory to be refused.
 struct Gathered<W: Write> {
@@ -510,41 +517,63 @@ impl<W: Write> Write for Gathered<W> {
     }
 }
 
-/// `(report-host thunk)`: calls `thunk` as a run of its own. An error that ends it is reported as
-/// any run's is, even one no `catch!` could stop, and the session goes on; `exit` or a pipe no one
-/// reads ends it.
-fn report_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+/// `(report-host thunk)`: has the host's loop call `thunk` as a run of its own, so an error that
+/// ends it, even one no `catch!` could stop, is reported as any run's is and the session goes on:
+/// the session's run waits for it, in [`run_session`].
+fn report_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Answer, Error> {
     let [thunk] = exactly(g, args)?;
-    match g.call(r, thunk, &[]) {
-        Err(e) if exit_status(g, &e).is_none() => {
-            report(g, "stdin", &e);
-            Ok(Value::Inert)
-        }
-        done => done,
+    Ok(Answer::Later(thunk.clone()))
+}
+
+/// Runs the terminal session, a run that waits at each `report-host` while its thunk runs here,
+/// as a run of its own, whose ending is the answer; `exit` or a pipe no one reads ends it.
+fn run_session(g: &mut G, r: &mut Runner, session: &Value) -> Result<Value, Error> {
+    let mut ran = g.start(r, session, &[])?;
+    loop {
+        let parked = match ran {
+            Ran::Finished(v) => return Ok(v),
+            Ran::Parked(parked) => parked,
+        };
+        let thunk = parked.request().clone();
+        let answer = match g.call(r, &thunk, &[]) {
+            Err(e) if exit_status(g, &e).is_none() => {
+                report(g, "stdin", &e);
+                Ok(Value::Inert)
+            }
+            done => done,
+        };
+        ran = g.resume(r, parked, answer)?;
     }
+}
+
+/// A host function that answers at once, with the value `f` gives.
+macro_rules! now {
+    ($f:ident) => {
+        |g, r, args| $f(g, r, args).map(Answer::Now)
+    };
 }
 
 /// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
 /// those it should have.
 const HOSTS: [(&str, HostFunction<Runner>); 18] = [
-    ("display", display),
-    ("display-error", display_error),
-    ("read-file", read_file),
-    ("environment-variable", environment_variable),
-    ("wall-clock-nanoseconds", wall_clock_nanoseconds),
-    ("elapsed-nanoseconds", elapsed_nanoseconds),
-    ("exit", exit),
-    ("open-host", open_host),
-    ("create-host", create_host),
-    ("read-line-host", read_line_host),
-    ("read-all-host", read_all_host),
-    ("read-bytes-host", read_bytes_host),
-    ("write-host", write_host),
-    ("close-host", close_host),
-    ("run-host", run_host),
+    ("display", now!(display)),
+    ("display-error", now!(display_error)),
+    ("read-file", now!(read_file)),
+    ("environment-variable", now!(environment_variable)),
+    ("wall-clock-nanoseconds", now!(wall_clock_nanoseconds)),
+    ("elapsed-nanoseconds", now!(elapsed_nanoseconds)),
+    ("exit", now!(exit)),
+    ("open-host", now!(open_host)),
+    ("create-host", now!(create_host)),
+    ("read-line-host", now!(read_line_host)),
+    ("read-all-host", now!(read_all_host)),
+    ("read-bytes-host", now!(read_bytes_host)),
+    ("write-host", now!(write_host)),
+    ("close-host", now!(close_host)),
+    ("run-host", now!(run_host)),
     ("report-host", report_host),
-    ("read-forms", read_forms),
-    ("position", position),
+    ("read-forms", now!(read_forms)),
+    ("position", now!(position)),
 ];
 
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
@@ -644,7 +673,7 @@ fn main() -> ExitCode {
     };
     let name = script.unwrap_or("stdin");
     let done = if script.is_none() && io::stdin().is_terminal() {
-        g.call(&mut r, &session, &[])
+        run_session(&mut g, &mut r, &session)
     } else {
         let text = match script {
             Some(path) => std::fs::read_to_string(path),

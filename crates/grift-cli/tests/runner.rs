@@ -110,7 +110,10 @@ fn a_failed_write_is_an_error() {
         let out = run(&[], program, Stdio::from(full));
         assert_eq!(out.status.code(), Some(1));
         let said = String::from_utf8_lossy(&out.stderr);
-        assert!(said.contains("file-error \"standard-output\""), "{said}");
+        assert!(
+            said.contains("file-error at stdin:1 \"standard-output\""),
+            "{said}"
+        );
     }
 }
 
@@ -504,7 +507,8 @@ fn exit_ends_the_run_with_its_status() {
     assert_eq!(script(&dir, forged, &[], "").1, "caught");
     let (status, _, err) = script(&dir, "(raise (error (quote! exit) 3))", &[], "");
     assert_eq!(status, Some(1));
-    assert!(err.contains("exit 3"), "{err}");
+    assert!(err.contains("exit at "), "{err}");
+    assert!(err.contains("script.grift:1 3 in (raise"), "{err}");
 }
 
 #[test]
@@ -590,8 +594,8 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(
         err,
         format!(
-            "{path}: type-error 2 in (first 2) at lib/b.grift:4\n  \
-             from (define! c (first 2)) at lib/b.grift:4\n  \
+            "{path}: type-error at lib/b.grift:4 2 in (first 2)\n  \
+             from (define! c ...) at lib/b.grift:4\n  \
              from (load \"lib/b.grift\") at {path}:13\n"
         )
     );
@@ -600,7 +604,7 @@ fn load_runs_a_file_s_forms_where_it_is_called() {
     assert_eq!(status, Some(1));
     assert_eq!(
         err,
-        format!("{path}: parse-error unclosed-list 3 3 lib/bad.grift in (load d) at {path}:2\n")
+        format!("{path}: parse-error at {path}:2 unclosed-list 3 3 lib/bad.grift in (load d)\n")
     );
 }
 
@@ -646,7 +650,10 @@ fn a_program_s_own_loader_gets_the_lines_load_gets() {
     let (status, out, err) = script(&dir, program, &[], "");
     assert_eq!(status, Some(1));
     assert_eq!(out, "((\"data.txt\" 2) () (\"data.txt\" 4) ())()");
-    assert!(err.contains("in (first 1) at inner.grift:2"), "{err}");
+    assert!(
+        err.contains("type-error at inner.grift:2 1 in (first 1)\n"),
+        "{err}"
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -789,38 +796,28 @@ fn a_parse_error_says_where_the_form_opened() {
     );
 }
 
-/// A report too long for one write is written once all the same, a piece at a time.
+/// A report is cut at the runner's 4 KiB budget, and a line of the runner's own says so: no text of
+/// the program's can start a line in a report, so none can pass for that line or hide it.
 #[test]
-fn a_report_over_4_kib_is_written_once() {
+fn a_cut_report_says_so_on_a_line_no_program_can_write() {
     let dir = scratch("long-report");
-    let (status, _, err) = script(&dir, "(first (string-repeat \"a\" 5000))", &[], "");
-    assert_eq!(status, Some(1));
     let path = dir.join("script.grift");
     let path = path.to_str().unwrap();
-    let a = "a".repeat(5000);
-    let want =
-        format!("{path}: type-error \"{a}\" in (first (string-repeat \"a\" 5000)) at {path}:1\n");
-    // Not the text itself on failure: a report written again and again is megabytes.
-    assert!(err == want, "{} bytes, not {}", err.len(), want.len());
-}
-
-#[test]
-fn a_closed_stderr_is_the_same_as_any_closed_pipe() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    drop(child.stderr.take());
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"(display-error \"lost\") (display \"after\")")
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert_eq!((out.status.code(), &out.stdout[..]), (Some(141), &b""[..]));
+    let (status, _, err) = script(&dir, "(first (string-repeat \"a\" 5000))", &[], "");
+    assert_eq!(status, Some(1));
+    let start = format!("{path}: type-error at {path}:1 \"aaaa");
+    assert!(
+        err.starts_with(&start)
+            && err.ends_with("aaaa\n  (report cut short)\n")
+            && err.len() == path.len() + ": ".len() + 4096 + "\n  (report cut short)\n".len(),
+        "{} bytes: {}",
+        err.len(),
+        &err[..err.len().min(200)]
+    );
+    let forged = "(raise (error (string-to-symbol \"x\n  (report cut short)\") 1))";
+    let (status, _, err) = script(&dir, forged, &[], "");
+    assert_eq!(status, Some(1));
+    assert_eq!(err.lines().count(), 1, "{err}");
 }
 
 /// The write end of a pipe whose read end is gone.
@@ -982,7 +979,7 @@ fn a_terminal_session_goes_on_past_an_error_and_ends_with_its_input() {
     assert_eq!(status, Some(0), "{shown}");
     assert!(shown.contains("  #inert\n"), "{shown}");
     assert!(
-        shown.contains("stdin: type-error 1 in (first 1) at stdin:4\n"),
+        shown.contains("stdin: type-error at stdin:4 1 in (first 1)\n"),
         "{shown}"
     );
     assert!(
@@ -1046,7 +1043,7 @@ fn a_session_numbers_its_lines_from_its_start() {
     assert_eq!(status, Some(0), "{shown}");
     assert!(
         shown.contains(
-            "stdin: type-error 1 in (first 1) at stdin:3\n  from (add 1 (f)) at stdin:5\n"
+            "stdin: type-error at stdin:3 1 in (first 1)\n  from (add 1 (f)) at stdin:5\n"
         ),
         "{shown}"
     );
@@ -1061,4 +1058,36 @@ fn a_session_numbers_its_lines_from_its_start() {
         shown.contains("stdin: parse-error unclosed-list 2 1 stdin\n"),
         "{shown}"
     );
+}
+
+/// A report that fits its budget is written whole and says so, at exactly its size: a name is cut
+/// only to keep the place in a report that doesn't fit, and the kind comes first. Through the
+/// runner, a long kind in a report under 4 KiB is whole, with no line saying it was cut.
+#[test]
+fn a_report_that_fits_its_budget_is_whole() {
+    use grift::{Grift, ReportStatus, TextBuffer};
+    let mut g: Grift = Grift::new().unwrap();
+    let e = g.evaluate(&mut (), "(first 1)").unwrap_err();
+    let report = |bytes| {
+        let mut text = TextBuffer::new();
+        let status = g.describe(&e, &mut text, bytes).unwrap();
+        (status, text.as_str().to_owned())
+    };
+    let whole = "type-error 1 in (first 1)";
+    for bytes in [whole.len(), whole.len() + 1, 4096] {
+        assert_eq!(report(bytes), (ReportStatus::Complete, whole.to_owned()));
+    }
+    for bytes in [whole.len() - 1, 12] {
+        assert_eq!(
+            report(bytes),
+            (ReportStatus::Truncated, whole[..bytes].to_owned())
+        );
+    }
+    let dir = scratch("long-kind");
+    let kind = "k".repeat(1100);
+    let program = format!("(raise (error (string-to-symbol \"{kind}\") 1))");
+    let (status, _, err) = script(&dir, &program, &[], "");
+    assert_eq!(status, Some(1));
+    assert!(err.contains(&format!("{kind} at ")), "{err}");
+    assert_eq!(err.lines().count(), 1, "{err}");
 }

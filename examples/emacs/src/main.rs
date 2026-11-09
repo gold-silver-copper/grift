@@ -16,11 +16,8 @@
 
 mod jobs;
 
-use grift::{
-    Answer, Error, Grift, HostFunction, Kept, Parked, ParkingFunction, Ran, ResumeError, Value,
-};
+use grift::{Answer, Error, Grift, HostFunction, Kept, Parked, Ran, ResumeError, Value};
 use jobs::{Event, Inbox, JobEvent};
-use std::fmt;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -82,7 +79,7 @@ fn job_wait(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
 }
 
 /// `(job-start command)`: runs the shell command beside the editor and gives the job's number.
-fn job_start(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn job_start(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [command] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -95,7 +92,7 @@ fn job_start(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
         let status = inbox.run(id, &command).ok().flatten();
         inbox.ended(id, status.unwrap_or(-1));
     });
-    Ok(job_value(id))
+    Ok(Answer::Now(job_value(id)))
 }
 
 fn job_value(id: u64) -> Value {
@@ -104,55 +101,56 @@ fn job_value(id: u64) -> Value {
 
 /// `(job-cancel job)`: kills the job's command. Its `ended` comes as usual; an ended job's
 /// number does nothing.
-fn job_cancel(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn job_cancel(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [Value::Integer(id)] = args else {
         return Err(g.error("type-error", args));
     };
     h.inbox.cancel(u64::try_from(*id).unwrap_or(0));
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(job-abandon job)`: ends the runs waiting for the job, through their cleanups, when the run
 /// calling this has come back to the host: nothing can be taken up inside a host call.
-fn job_abandon(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn job_abandon(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [Value::Integer(id)] = args else {
         return Err(g.error("type-error", args));
     };
     h.abandoned.push(*id);
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(spawn f)`: calls `f` as a run of its own, beside this one, when this one has come back to
 /// the host. Its error, if it ends with one, goes to the echo area.
-fn spawn(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn spawn(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [f] = args else {
         return Err(g.error("arity-error", args));
     };
     h.spawned.push(g.keep(f.clone())?);
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(quit-editor)`: the host's loop ends when this run comes back to it, abandoning what waits.
-fn quit_editor(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn quit_editor(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     if !args.is_empty() {
         return Err(g.error("arity-error", args));
     }
     h.quitting = true;
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(temporary-file)`: a new path in the system's temporary directory; no file is made.
-fn temporary_file(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn temporary_file(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     if !args.is_empty() {
         return Err(g.error("arity-error", args));
     }
     h.temporaries += 1;
     let name = format!("grift-emacs-{}-{}", std::process::id(), h.temporaries);
     g.string(&std::env::temp_dir().join(name).to_string_lossy())
+        .map(Answer::Now)
 }
 
 /// `(delete-file path)`: removes the file; one that isn't there is no error.
-fn delete_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn delete_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [path] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -161,29 +159,30 @@ fn delete_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> 
     };
     match std::fs::remove_file(name) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(file_error(g, path, &e)),
-        _ => Ok(Value::Inert),
+        _ => Ok(Answer::Now(Value::Inert)),
     }
 }
 
 /// `(terminal-write string ...)`: queues the strings for the terminal.
-fn terminal_write(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn terminal_write(g: &mut G, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     for v in args {
         match g.as_str(v)? {
             Some(s) => h.out.extend_from_slice(s.as_bytes()),
             None => return Err(g.error("type-error", std::slice::from_ref(v))),
         }
     }
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// `(terminal-size)`: the terminal's rows and columns, as a list.
-fn terminal_size(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn terminal_size(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     if !args.is_empty() {
         return Err(g.error("arity-error", args));
     }
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let cols = g.pair(Value::Integer(i64::from(cols)), Value::EmptyList)?;
     g.pair(Value::Integer(i64::from(rows)), cols)
+        .map(Answer::Now)
 }
 
 fn file_error(g: &mut G, path: &Value, e: &io::Error) -> Error {
@@ -194,7 +193,7 @@ fn file_error(g: &mut G, path: &Value, e: &io::Error) -> Error {
 }
 
 /// `(read-file path)`: the file's text; `()` when it doesn't exist.
-fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [path] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -202,14 +201,14 @@ fn read_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
         return Err(g.error("type-error", args));
     };
     match std::fs::read_to_string(&name) {
-        Ok(s) => g.string(&s),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Value::EmptyList),
+        Ok(s) => g.string(&s).map(Answer::Now),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Answer::Now(Value::EmptyList)),
         Err(e) => Err(file_error(g, path, &e)),
     }
 }
 
 /// `(write-file path string)`: replaces the file's contents with the string's bytes.
-fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
+fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [path, contents] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -217,33 +216,19 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Value, Error> {
         return Err(g.error("type-error", args));
     };
     match std::fs::write(name, s) {
-        Ok(()) => Ok(Value::Inert),
+        Ok(()) => Ok(Answer::Now(Value::Inert)),
         Err(e) => Err(file_error(g, path, &e)),
     }
 }
 
-/// A `fmt::Write` into a string of one line that stops at `ERROR_TEXT_MAX` bytes, then adds `...`.
-struct Capped(String);
-
-impl fmt::Write for Capped {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        for c in s.chars() {
-            if self.0.len() + c.len_utf8() > ERROR_TEXT_MAX {
-                self.0.push_str("...");
-                return Err(fmt::Error);
-            }
-            self.0.push(if c == '\n' { ' ' } else { c });
-        }
-        Ok(())
-    }
-}
-
-/// An error as its kind, values and trace, written out now: the values may be collected by
-/// the next `evaluate`.
+/// An error as its kind, place, values and trace, on one line of at most `ERROR_TEXT_MAX` bytes,
+/// with `...` if that cut it, written out now: the values may be collected by the next `evaluate`.
 fn describe(g: &G, e: &Error) -> String {
-    let mut out = Capped(String::new());
-    let _ = g.describe(e, &mut out);
-    out.0
+    let mut text = grift::TextBuffer::new();
+    let budget = ERROR_TEXT_MAX - "...".len();
+    let whole = g.describe(e, &mut text, budget) == Ok(grift::ReportStatus::Complete);
+    let line = text.as_str().replace('\n', " ");
+    if whole { line } else { line + "..." }
 }
 
 /// Calls the editor's function `name` with string arguments (`None` for `()`).
@@ -260,7 +245,9 @@ fn enter(g: &mut G, h: &mut Host, name: &str, args: &[Option<&str>]) -> Result<V
     g.call(h, &f, &values)
 }
 
-const HOST: [(&str, HostFunction<Host>); 11] = [
+const HOST: [(&str, HostFunction<Host>); 13] = [
+    ("key", key),
+    ("job-wait", job_wait),
     ("job-start", job_start),
     ("job-cancel", job_cancel),
     ("job-abandon", job_abandon),
@@ -273,8 +260,6 @@ const HOST: [(&str, HostFunction<Host>); 11] = [
     ("read-file", read_file),
     ("write-file", write_file),
 ];
-
-const PARKING: [(&str, ParkingFunction<Host>); 2] = [("key", key), ("job-wait", job_wait)];
 
 /// The runs set aside, by what each waits for.
 #[derive(Default)]
@@ -353,7 +338,10 @@ fn given_up(g: &G, e: &Error) -> bool {
 /// run. That it was abandoned is no news; anything else that cut a cleanup is. A cleanup that waits
 /// comes back, waiting.
 fn abandon(g: &mut G, h: &mut Host, parked: Parked) -> Option<Parked> {
-    let ending = grift::Error { limit: true, ..g.error("abandoned", &[]) };
+    let ending = grift::Error {
+        limit: true,
+        ..g.error("abandoned", &[])
+    };
     h.inbox.arm(g.interrupter());
     let ResumeError { error, parked } = match g.resume(h, parked, Err(ending)) {
         Ok(Ran::Parked(again)) => return Some(again),
@@ -537,15 +525,6 @@ fn main() -> ExitCode {
     };
     for (name, f) in HOST {
         if g.host_function(name, f)
-            .and_then(|f| g.define(name, f))
-            .is_err()
-        {
-            eprintln!("grift-emacs: out of memory");
-            return ExitCode::FAILURE;
-        }
-    }
-    for (name, f) in PARKING {
-        if g.parking_function(name, f)
             .and_then(|f| g.define(name, f))
             .is_err()
         {

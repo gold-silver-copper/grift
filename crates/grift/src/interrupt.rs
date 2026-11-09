@@ -102,8 +102,7 @@ impl Control {
 /// Stops waiting together count as one; a later stop of the same run, say of a cleanup that doesn't
 /// end, interrupts it again. One that reached a run before it parked stops it there, its cleanups
 /// then running, and they may park in turn. Each [`Grift::resume`](crate::Grift::resume) is a run
-/// of its own: take a handle for it before resuming. A run inside a host call is part of the run
-/// that made the call. [`Interrupter::force`] ends a run however its cleanups behave.
+/// of its own: take a handle for it before resuming. [`Interrupter::force`] ends a run however its cleanups behave.
 ///
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
@@ -148,10 +147,9 @@ impl Interrupter {
 
     /// Ends this handle's run, if it is in progress, at its next check, however its cleanups behave;
     /// whether it was. No stop need come first. Each cleanup it meets is cut before its first form,
-    /// at every level of the run, nothing a host function then evaluates runs past the one
-    /// primitive it may call directly, and the run ends with `interrupted`, whatever else fails on
-    /// the way. `true` doesn't say it acted, as for a stop. [`Error::limit`] says the ending is
-    /// real.
+    /// a call made for a host function's [`Answer::Call`](crate::Answer::Call) as any other, and
+    /// the run ends with `interrupted`, whatever else fails on the way. `true` doesn't say it
+    /// acted, as for a stop. [`Error::limit`] says the ending is real.
     ///
     /// [`Error::limit`]: crate::Error::limit
     pub fn force(&mut self) -> bool {

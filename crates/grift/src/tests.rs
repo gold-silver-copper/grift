@@ -7,7 +7,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
+use crate::{Answer, Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -386,33 +386,31 @@ fn a_combination_is_the_program_s_when_the_program_made_it() {
         ),
         "(#[applicative #[primitive first]] 1)"
     );
-    // Built by a host function after it ran library code, in a nested run or as library text:
-    // the host's, so the program's.
-    fn first_one(g: &mut Grift) -> Result<Value, Error> {
-        let top = g.top_level();
-        let name = g.symbol("first")?;
-        let first = g.lookup(&top, &name)?.unwrap();
+    // Built by a host function after library code ran for it on the machine: the host's, so the
+    // program's.
+    fn lookup(g: &mut Grift, name: &str) -> Result<Value, Error> {
+        let (top, name) = (g.top_level(), g.symbol(name)?);
+        Ok(g.lookup(&top, &name)?.unwrap())
+    }
+    fn after_library_code(g: &mut Grift, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+        let one = g.list(&[Value::Integer(1)])?;
+        Ok(Answer::Call {
+            function: lookup(g, "element-at")?,
+            arguments: vec![one, Value::Integer(0)],
+            then: Some((lookup(g, "first-one")?, Vec::new())),
+        })
+    }
+    fn first_one(g: &mut Grift, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+        let first = lookup(g, "first")?;
         let one = g.pair(Value::Integer(1), Value::EmptyList)?;
-        g.pair(first, one)
+        g.pair(first, one).map(Answer::Now)
     }
-    fn after_a_run(g: &mut Grift, s: &mut (), _: &[Value]) -> Result<Value, Error> {
-        g.evaluate(s, "(element-at (list 1) 0)")?;
-        first_one(g)
-    }
-    fn after_library_text(g: &mut Grift, s: &mut (), _: &[Value]) -> Result<Value, Error> {
-        let top = g.top_level();
-        g.evaluate_library_in(s, &top, "prelude.grift", "(element-at (list 1) 0)")?;
-        first_one(g)
-    }
-    define(&mut g, "after-a-run", after_a_run);
-    define(&mut g, "after-library-text", after_library_text);
-    for made in ["after-a-run", "after-library-text"] {
-        assert_eq!(
-            first_place(&mut g, &format!("(evaluate ({made}) (current-context))")),
-            "(#[applicative #[primitive first]] 1)",
-            "{made}"
-        );
-    }
+    define(&mut g, "after-library-code", after_library_code);
+    define(&mut g, "first-one", first_one);
+    assert_eq!(
+        first_place(&mut g, "(evaluate (after-library-code) (current-context))"),
+        "(#[applicative #[primitive first]] 1)",
+    );
     // Code the program made stays the program's after a host's own library code has run.
     g.evaluate(&mut (), "(define! kept (list (quote! first) 1))")
         .unwrap();
@@ -714,16 +712,22 @@ fn redefinition_and_names() {
     fails(&mut g, &[("built-in-context", "unbound-symbol")]);
 }
 
-fn twice(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
+fn twice(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Answer, Error> {
     match args {
-        [Value::Integer(n)] => Ok(Value::Integer(n * 2)),
+        [Value::Integer(n)] => Ok(Answer::Now(Value::Integer(n * 2))),
         _ => Err(g.error("type-error", args)),
     }
 }
 
-fn reenter(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
-    g.evaluate(&mut (), "(churn 2000)")?;
-    Ok(args[0].clone())
+/// `(reenter x)`: the machine calls `(churn 2000)` for it, which collects, then `(give-back x)`.
+fn reenter(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Answer, Error> {
+    let top = g.top_level();
+    let (churn, give_back) = (g.symbol("churn")?, g.symbol("give-back")?);
+    Ok(Answer::Call {
+        function: g.lookup(&top, &churn)?.unwrap(),
+        arguments: vec![Value::Integer(2000)],
+        then: Some((g.lookup(&top, &give_back)?.unwrap(), vec![args[0].clone()])),
+    })
 }
 
 #[test]
@@ -738,8 +742,11 @@ fn host_functions() {
     let f = g.evaluate(&mut (), "twice").unwrap();
     assert_eq!(show(&g, &f), "#[applicative #[host twice]]");
     fails(&mut g, &[("(twice 1 2)", "type-error")]);
-    // A host function may evaluate; collections inside keep the caller's values.
+    // A host function may have the machine call grift code; collections inside keep the values
+    // saved for its `then`.
     g.evaluate(&mut (), "(define! churn (lambda! (n) (if! (same? n 0) #true (sequence! (list 1 2 3) (churn (subtract n 1))))))")
+        .unwrap();
+    g.evaluate(&mut (), "(define! give-back (lambda! (x done) x))")
         .unwrap();
     assert_eq!(
         g.evaluate(&mut (), "(length (reenter (list 1 2 3)))"),
@@ -748,18 +755,18 @@ fn host_functions() {
 }
 
 /// `(halves "ab")` is `("ab" . "ab")`, made from Rust; `(sum (1 2 3))` walks a list from Rust.
-fn halves(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
+fn halves(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Answer, Error> {
     let s = g.as_str(&args[0])?.unwrap().to_owned();
     let (a, b) = (g.string(&s)?, g.string(&s)?);
-    g.pair(a, b)
+    g.pair(a, b).map(Answer::Now)
 }
 
-fn sum(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Value, Error> {
+fn sum(g: &mut Grift, _: &mut (), args: &[Value]) -> Result<Answer, Error> {
     let (mut list, mut n) = (args[0].clone(), 0);
     while let Some((Value::Integer(x), rest)) = g.as_pair(&list)? {
         (list, n) = (rest, n + x);
     }
-    Ok(Value::Integer(n))
+    Ok(Answer::Now(Value::Integer(n)))
 }
 
 #[test]
@@ -777,13 +784,18 @@ fn host_functions_make_and_read_data() {
     assert_eq!(g.as_pair(&Value::Integer(1)), Ok(None));
 }
 
-/// Counts its calls in the host's state, and calls back into grift with it.
-fn count(g: &mut Grift<u32>, calls: &mut u32, args: &[Value]) -> Result<Value, Error> {
+/// Counts its calls in the host's state, and has the machine call it again, which gets the state.
+fn count(g: &mut Grift<u32>, calls: &mut u32, args: &[Value]) -> Result<Answer, Error> {
     *calls += 1;
-    match args {
-        [] => Ok(Value::Integer(i64::from(*calls))),
-        _ => g.evaluate(calls, "(count)"),
+    if args.is_empty() {
+        return Ok(Answer::Now(Value::Integer(i64::from(*calls))));
     }
+    let (top, name) = (g.top_level(), g.symbol("count")?);
+    Ok(Answer::Call {
+        function: g.lookup(&top, &name)?.unwrap(),
+        arguments: Vec::new(),
+        then: None,
+    })
 }
 
 #[test]
@@ -1084,13 +1096,13 @@ fn catch_catches_errors_as_contexts() {
     );
 }
 
-fn stop(g: &mut Grift<Interrupter>, _: &mut Interrupter, _: &[Value]) -> Result<Value, Error> {
+fn stop(g: &mut Grift<Interrupter>, _: &mut Interrupter, _: &[Value]) -> Result<Answer, Error> {
     g.interrupter().stop();
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 /// A host function that fails as the program's mistake, or says that memory ran out.
-fn fail<T>(g: &mut Grift<T>, _: &mut T, args: &[Value]) -> Result<Value, Error> {
+fn fail<T>(g: &mut Grift<T>, _: &mut T, args: &[Value]) -> Result<Answer, Error> {
     match args {
         [] => Err(g.error("out-of-memory", &[])),
         _ => Err(g.error("bad-input", args)),
@@ -2375,7 +2387,7 @@ fn a_trace_from_the_host_is_checked_as_values_are() {
     e.trace.push(g.string("reclaimed").unwrap());
     g.heap.request_collection();
     g.evaluate(&mut (), "#inert").unwrap();
-    let Err(why) = g.describe(&e, &mut String::new()) else {
+    let Err(why) = g.describe(&e, &mut String::new(), 4096) else {
         panic!("described a reclaimed value");
     };
     assert_eq!(kind(&g, &why), "stale-value");
@@ -2421,7 +2433,7 @@ fn named_parse_errors_stay_describable_after_collection() {
         }
         .unwrap_err();
         let mut before = String::new();
-        g.describe(&e, &mut before).unwrap();
+        g.describe(&e, &mut before, 4096).unwrap();
         for _ in 0..2 {
             // A second error with the same name must not invalidate the one the host holds.
             let again = g.read_in("config.grift", "(").unwrap_err();
@@ -2431,7 +2443,7 @@ fn named_parse_errors_stay_describable_after_collection() {
             assert_eq!(kind(&g, &g.as_str(&garbage).unwrap_err()), "stale-value");
             for held in [&e, &again] {
                 let mut after = String::new();
-                let described = g.describe(held, &mut after);
+                let described = g.describe(held, &mut after, 4096);
                 let position = g.position(&held.values[3]);
                 if described.is_err() || position != Ok(None) {
                     broken.push(format!(
@@ -3085,14 +3097,18 @@ impl Comparison<'_> {
 }
 
 /// `(note x)`: logs x as it prints, and gives it back: the order and number of evaluations.
-fn note(g: &mut Grift<Vec<String>>, log: &mut Vec<String>, args: &[Value]) -> Result<Value, Error> {
+fn note(
+    g: &mut Grift<Vec<String>>,
+    log: &mut Vec<String>,
+    args: &[Value],
+) -> Result<Answer, Error> {
     log.push(
         args.iter()
             .map(|v| show(g, v))
             .collect::<Vec<_>>()
             .join(" "),
     );
-    Ok(args.first().cloned().unwrap_or(Value::Inert))
+    Ok(Answer::Now(args.first().cloned().unwrap_or(Value::Inert)))
 }
 
 /// What a host might hand back wrongly: an object's reference in another kind's variant.
@@ -3100,18 +3116,18 @@ fn malformed(
     g: &mut Grift<Vec<String>>,
     _: &mut Vec<String>,
     args: &[Value],
-) -> Result<Value, Error> {
+) -> Result<Answer, Error> {
     let string = g.string("not a context")?;
     let pair = g.pair(Value::Integer(1), Value::Integer(2))?;
     let (Value::String(s), Value::Pair(p)) = (string, pair) else {
         return Err(g.error("not-made", &[]));
     };
-    Ok(match args.first() {
+    Ok(Answer::Now(match args.first() {
         Some(Value::Integer(0)) => Value::Context(s),
         Some(Value::Integer(1)) => Value::String(p),
         Some(Value::Integer(3)) => Value::Bytes(s),
         _ => Value::Pair(s),
-    })
+    }))
 }
 
 /// Two interpreters alike, one running the natives and one their grift definitions.
@@ -3563,7 +3579,7 @@ fn walks_with_a_stop_waiting(
     g: &mut Grift<Interrupter>,
     stop: &mut Interrupter,
     args: &[Value],
-) -> Result<Value, Error> {
+) -> Result<Answer, Error> {
     assert!(stop.stop(), "a run to stop");
     let tree = g.import(&args[0]).unwrap();
     let interrupted = |g: &Grift<Interrupter>, e: local::Error| {
@@ -3578,7 +3594,7 @@ fn walks_with_a_stop_waiting(
         panic!("printing went on past a stop");
     };
     assert_eq!(kind(g, &e), "interrupted");
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 #[test]
@@ -3600,7 +3616,7 @@ fn walks_with_a_force_waiting(
     g: &mut Grift<Interrupter>,
     stop: &mut Interrupter,
     args: &[Value],
-) -> Result<Value, Error> {
+) -> Result<Answer, Error> {
     assert!(stop.stop(), "a run to stop");
     g.control.acted();
     assert!(!g.control.asked());
@@ -3617,7 +3633,7 @@ fn walks_with_a_force_waiting(
         panic!("printing went on past a force");
     };
     assert!(e.limit);
-    Ok(Value::Inert)
+    Ok(Answer::Now(Value::Inert))
 }
 
 #[test]
@@ -3896,4 +3912,277 @@ fn the_mark_stack_has_room_for_every_slot() {
     assert!(g.heap.mark_room() >= g.heap.len());
     g.evaluate(&mut (), "(length (range 0 50000))").unwrap();
     assert!(g.heap.mark_room() >= g.heap.len());
+}
+
+/// Asks for a stop of the run in progress, then searches `(search text pattern 0)` with no step of
+/// the machine around it: a long search must find the stop itself, in whichever phase it is.
+fn searches_with_a_stop_waiting(
+    g: &mut Grift<Interrupter>,
+    stop: &mut Interrupter,
+    args: &[Value],
+) -> Result<Answer, Error> {
+    assert!(stop.stop(), "a run to stop");
+    let (text, pattern) = (g.import(&args[0]).unwrap(), g.import(&args[1]).unwrap());
+    match g.search_directly(text, pattern) {
+        Err(e) => assert_eq!(kind(g, &g.export_error(e)), "interrupted"),
+        Ok(v) => panic!("the search went on past a stop and answered {v:?}"),
+    }
+    Ok(Answer::Now(Value::Inert))
+}
+
+/// Bytes and strings, a text the pattern nearly matches everywhere, and an empty text, where only
+/// the preparation of the search reads the pattern.
+#[test]
+fn a_long_search_finds_a_stop_by_itself() {
+    let mut pattern = "a".repeat((1 << 15) - 1);
+    pattern.push('b');
+    for text in ["a".repeat(1 << 16), String::new()] {
+        for bytes in [true, false] {
+            let mut g: Grift<Interrupter> = Grift::new().unwrap();
+            define(&mut g, "walk", searches_with_a_stop_waiting);
+            let (hay, wanted) = if bytes {
+                (g.bytes(text.as_bytes()), g.bytes(pattern.as_bytes()))
+            } else {
+                (g.string(&text), g.string(&pattern))
+            };
+            g.define("hay", hay.unwrap()).unwrap();
+            g.define("pattern", wanted.unwrap()).unwrap();
+            let mut stop = g.interrupter();
+            let r = g.evaluate(&mut stop, "(walk hay pattern)");
+            assert_eq!(kind(&g, &r.unwrap_err()), "interrupted");
+        }
+    }
+}
+
+/// The search against the plain definition: every text and pattern of two letters up to a length,
+/// which holds every shape of periodic pattern that short, then long periodic ones.
+#[test]
+fn searching_finds_what_the_plain_definition_finds() {
+    let g: Grift = Grift::new().unwrap();
+    let check = |text: &[u8], pattern: &[u8]| {
+        let plain = match pattern.len() {
+            0 => Some(0),
+            n => text.windows(n).position(|w| w == pattern),
+        };
+        assert_eq!(
+            g.search(text, pattern).unwrap(),
+            plain,
+            "{text:?} {pattern:?}"
+        );
+    };
+    let word = |bits: usize, len: usize| -> Vec<u8> {
+        (0..len).map(|i| b'a' + (bits >> i & 1) as u8).collect()
+    };
+    for len in 0..=8 {
+        for pattern in (0..1 << len).map(|bits| word(bits, len)) {
+            for text_len in 0..=12 {
+                for text in (0..1 << text_len).map(|bits| word(bits, text_len)) {
+                    check(&text, &pattern);
+                }
+            }
+        }
+    }
+    let mut x: u32 = 1;
+    let mut next = move |below: u32| {
+        x = x.wrapping_mul(1664525).wrapping_add(1013904223);
+        (x >> 16) % below
+    };
+    for _ in 0..3000 {
+        let period: Vec<u8> = (0..1 + next(5)).map(|_| b'a' + next(3) as u8).collect();
+        let pattern: Vec<u8> = period
+            .iter()
+            .cycle()
+            .take(1 + next(40) as usize)
+            .copied()
+            .collect();
+        let mut text: Vec<u8> = period
+            .iter()
+            .cycle()
+            .take(next(300) as usize)
+            .copied()
+            .collect();
+        if !text.is_empty() {
+            let at = next(text.len() as u32) as usize;
+            text[at] = b'a' + next(3) as u8;
+        }
+        check(&text, &pattern);
+    }
+}
+/// Asks for a stop of the run in progress, then writes the value it was given: the printer must
+/// find the stop by what it has written, however few items that took.
+fn writes_with_a_stop_waiting(
+    g: &mut Grift<Interrupter>,
+    stop: &mut Interrupter,
+    args: &[Value],
+) -> Result<Answer, Error> {
+    assert!(stop.stop(), "a run to stop");
+    let Err(e) = g.write(&args[0], &mut String::new()) else {
+        panic!("printing went on past a stop");
+    };
+    assert_eq!(kind(g, &e), "interrupted");
+    Ok(Answer::Now(Value::Inert))
+}
+
+/// A few items can be a great deal of text: 64 references to one 64 KiB string, or one 64 KiB
+/// bytes value, which prints as one item.
+#[test]
+fn printing_finds_a_stop_by_the_bytes_it_writes() {
+    for value in [
+        "(map (lambda! (n) big) (range 0 64))",
+        "(string-to-bytes big)",
+    ] {
+        let mut g: Grift<Interrupter> = Grift::new().unwrap();
+        define(&mut g, "walk", writes_with_a_stop_waiting);
+        let mut stop = g.interrupter();
+        let src = format!("(define! big (string-repeat \"x\" 65536)) (walk {value})");
+        let r = g.evaluate(&mut stop, &src);
+        assert_eq!(kind(&g, &r.unwrap_err()), "interrupted", "{value}");
+    }
+}
+
+fn report(g: &Grift, e: &Error, bytes: usize) -> (crate::ReportStatus, String) {
+    let mut text = crate::TextBuffer::new();
+    let status = g.describe(e, &mut text, bytes).unwrap();
+    (status, text.as_str().to_owned())
+}
+
+/// A report is never longer than its budget, and a cut one still begins with the kind and the
+/// innermost place, each in at most a quarter of it, whatever the program made long: its nesting,
+/// its kind, its source's name, or a value that shares itself. Each line writes the line before's
+/// combination as `...`, so each piece of source is printed once, and only grift starts a line.
+#[test]
+fn a_report_fits_its_budget_and_begins_with_kind_and_place() {
+    use crate::ReportStatus::{Complete, Truncated};
+    let mut g = grift();
+    let top = g.top_level();
+    let e = g
+        .evaluate_in(&mut (), &top, "keys.grift", "(define! a 1)\n(first a)")
+        .unwrap_err();
+    let complete = (
+        Complete,
+        "type-error at keys.grift:2 1 in (first a)".to_owned(),
+    );
+    assert_eq!(report(&g, &e, 4096), complete);
+    let nested = |depth| format!("{}(first 1){}", "(add 1 ".repeat(depth), ")".repeat(depth));
+    let e = g
+        .evaluate_in(&mut (), &top, "deep.grift", &nested(300))
+        .unwrap_err();
+    let (status, text) = report(&g, &e, 1 << 20);
+    assert_eq!((status, text.matches("(add 1 ").count()), (Complete, 300));
+    assert!(text.starts_with("type-error at deep.grift:1 1 in (first 1)\n  from (add 1 ...) at"));
+    let long_kind = format!(
+        "(raise (error (string-to-symbol \"{}\") 1))",
+        "k".repeat(5000)
+    );
+    let long_source = "s".repeat(5000);
+    g.evaluate(&mut (), "(define! x 1)").unwrap();
+    for _ in 0..40 {
+        g.evaluate(&mut (), "(define! x (pair x x))").unwrap();
+    }
+    for (source, program, begins) in [
+        (
+            "deep.grift",
+            nested(2000),
+            "type-error at deep.grift:2 1 in (first 1)\n",
+        ),
+        ("long.grift", long_kind, "kkk"),
+        (
+            long_source.as_str(),
+            "(first 1)".to_owned(),
+            "type-error at sss",
+        ),
+        (
+            "shared.grift",
+            "(raise (error (quote! mine) x))".to_owned(),
+            "mine at shared.grift:2 (((",
+        ),
+    ] {
+        let e = g
+            .evaluate_in(&mut (), &top, source, &format!("\n{program}"))
+            .unwrap_err();
+        let (status, text) = report(&g, &e, 4096);
+        let place = text.find(" at ").unwrap();
+        assert!(
+            status == Truncated
+                && text.len() <= 4096
+                && text.starts_with(begins)
+                && place <= 1024
+                && text[place..].contains(":2"),
+            "{status:?} {} bytes: {:?}",
+            text.len(),
+            &text[..text.len().min(80)]
+        );
+    }
+    let e = g
+        .evaluate(
+            &mut (),
+            "(raise (error (string-to-symbol \"a\\nb\") (quote! c)))",
+        )
+        .unwrap_err();
+    let (_, text) = report(&g, &e, 4096);
+    assert_eq!(text.lines().count(), 1, "{text:?}");
+}
+
+/// A sink that takes everything and keeps nothing.
+struct Discard;
+
+impl std::fmt::Write for Discard {
+    fn write_str(&mut self, _: &str) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+/// Asks its run to stop, or with `true` in the state to be forced, then describes an error of
+/// many small values with no budget to cut it: the report's work is one walk, which the stop ends.
+fn reports_with_a_stop_waiting(
+    g: &mut Grift<bool>,
+    force: &mut bool,
+    _: &[Value],
+) -> Result<Answer, Error> {
+    let e = g.error("example", &vec![Value::Inert; 16_384]);
+    let mut stop = g.interrupter();
+    assert!(if *force { stop.force() } else { stop.stop() });
+    let failure = g.describe(&e, &mut Discard, usize::MAX).unwrap_err();
+    assert_eq!(
+        (kind(g, &failure).as_str(), failure.limit),
+        ("interrupted", true)
+    );
+    Ok(Answer::Now(Value::Inert))
+}
+
+#[test]
+fn a_report_of_many_small_values_finds_a_stop() {
+    for mut force in [false, true] {
+        let mut g: Grift<bool> = Grift::new().unwrap();
+        let f = g
+            .host_function("report", reports_with_a_stop_waiting)
+            .unwrap();
+        let ending = g.call(&mut force, &f, &[]).unwrap_err();
+        assert_eq!(
+            (kind(&g, &ending).as_str(), ending.limit),
+            ("interrupted", true)
+        );
+    }
+}
+
+/// Forces its run, then describes into no room at all an error whose values and trace a report
+/// must check before it writes: the checking is work like any other, which the force ends.
+fn checks_with_a_force_waiting(g: &mut Grift, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+    let mut e = g.error("example", &vec![Value::Inert; 8_192]);
+    e.trace = vec![Value::Inert; 8_192];
+    assert!(g.interrupter().force());
+    let failure = g.describe(&e, &mut Discard, 0).unwrap_err();
+    assert_eq!(
+        (kind(g, &failure).as_str(), failure.limit),
+        ("interrupted", true)
+    );
+    Ok(Answer::Now(Value::Inert))
+}
+
+#[test]
+fn a_report_checking_many_values_finds_a_force() {
+    let mut g = grift();
+    define(&mut g, "report", checks_with_a_force_waiting);
+    let e = g.evaluate(&mut (), "(report)").unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
 }

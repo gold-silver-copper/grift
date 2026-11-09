@@ -152,7 +152,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(element-at list index)`, `(second list)`, `(third list)`, `(last list)` | The element at `index`, counting from 0 as Rust does; the second, the third, the last. |
 | `(take list n)`, `(drop list n)` | The first `n` elements; the list after them, shared. An index or count out of range in any of these is a `range-error` carrying the operands, the list and the index or count: `(element-at (list 1) 3)` gives `range-error (1) 3`, `(second (list 1))` `range-error (1) 1`, and `(last ())` `range-error ()`. An index that isn't an integer is a `type-error`. |
 | `(when! test body ...)` | Evaluates `test`, which must give a boolean; if it is `#true`, the body forms in turn, the last as a tail call, and its value; if `#false`, `#inert`. |
-| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if there are no clauses, or if its body is empty (5.6.1), as `when!` and an empty body give `#inert`: `conditional!` may choose nothing, where `if!` must have both branches. A clause that isn't a pair `(test . body)` is an `arity-error` carrying, as for any parameter tree that doesn't fit, the whole of what was matched: here the list of the clauses and the caller's context, which prints with all its names, so `(conditional! 1)` gives `arity-error ((1) #[context ...])`. A body is checked only when it runs. |
+| `(conditional! (test body ...) ...)` | The body of the first clause whose test is `#true`; `#inert` if none is, or if there are no clauses, or if its body is empty (5.6.1), as `when!` and an empty body give `#inert`: `conditional!` may choose nothing, where `if!` must have both branches. A clause that isn't a pair `(test . body)` is an `arity-error` carrying, as for any parameter tree that doesn't fit, the whole of what was matched: here the list of the clauses and the caller's context, which `write` prints with all its names and a report as their count, so `(conditional! 1)` reports `arity-error ((1) #[context N names])`. A body is checked only when it runs. |
 | `(let! ((parameters expression) ...) body ...)` | Makes one new child of the caller's context; each binding in order evaluates its expression there and binds its parameters there, so it sees the bindings before it, and a combiner it binds can call itself and the ones after it; then the body (R-1RK's `$letrec*`, 6.7.6). A binding that isn't `(parameters expression)` is an `arity-error`. |
 | `(finally! body cleanup ...)` | The body's value, after the cleanup forms ran; they also run when an error leaves the body, and the error then goes on, to a `catch!` or the host. An error in a cleanup form ends the cleanup and goes on by the one rule (see Errors). A stop from the host can cut a cleanup that has begun, even before its first form: the body's value or error is lost, and `interrupted` goes on. A force cuts every cleanup. Memory refused collects once, before the nearest cleanup's first step; a cleanup stops at its first allocation that still fails, so it may do nothing, and that refusal collects again for the next. |
 | `(catch! body e handler ...)` | The body's value. If an error leaves it, the cleanups inside run first, then the handler forms, with the parameter `e` bound to the error in a new child of the caller's context; the last one's value is `catch!`'s. A limit (see Errors) is never caught. |
@@ -260,7 +260,7 @@ retain their own boundaries too.
 host function's, and the program's own, whatever kind they are called. A **limit** can't: an error
 the host or the machine began, a real stop (`interrupted`), the allocator refusing (`out-of-memory`),
 or an error a host function or a host's answer made a limit. It goes on through every `catch!` to the
-host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through nested runs. Who began
+host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through a host function. Who began
 an unwinding decides this, and no name does: a program that raises its own `interrupted` raises an
 ordinary error, `catch!` catches it, and rebinding a kind's name changes nothing.
 
@@ -298,6 +298,7 @@ its cleanups do.
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
+| `cannot-nest` | a host function began a run of its own, which would put the program's depth on its Rust stack; it hands grift the call to make instead | none |
 | `output-error` | a host's output refused what `write` or `describe` wrote: a host may pass it on | none |
 | any symbol | a program raised an error it made | the values given |
 
@@ -341,8 +342,8 @@ The host may answer with a limit instead, to end the run. The call raises it, no
 and the cleanups run on the way out. A cleanup that waits there is a run that waits like any other.
 
 A call that would wait inside a run that can't be set aside, because it runs under `Grift::evaluate`
-or `Grift::call` or inside a host function that called back into grift, is the error `cannot-park`;
-the trace says which call. It can be caught like any other error.
+or `Grift::call`, is the error `cannot-park`; the trace says which call. It can be caught like any
+other error. A call a host function hands grift to make is part of the run, and waits as it does.
 
 A host that drops its interpreter with runs waiting runs none of their cleanups, as if its process
 had died. The README's embedding section gives the host's side.
