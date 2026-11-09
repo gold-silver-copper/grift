@@ -9,16 +9,16 @@
   (lambda! (path file)
     (record (quote! (path read-line read-all read-bytes close))
                 (list path
-                      (lambda! () (read-line-host file))
-                      (lambda! () (read-all-host file))
-                      (lambda! (count) (read-bytes-host file count))
-                      (lambda! () (close-host file))))))
+                      (lambda! () (read-line-host file path))
+                      (lambda! () (read-all-host file path))
+                      (lambda! (count) (read-bytes-host file path count))
+                      (lambda! () (close-host file path))))))
 (define! writer
   (lambda! (path file)
     (record (quote! (path write close))
                 (list path
-                      (lambda! (data) (write-host file data))
-                      (lambda! () (close-host file))))))
+                      (lambda! (data) (write-host file path data))
+                      (lambda! () (close-host file path))))))
 (define! standard-input (reader "standard-input" 0))
 (define! standard-error (writer "standard-error" 1))
 (define! standard-output (writer "standard-output" 2))
@@ -56,7 +56,7 @@
 (define! session
   (lambda! (text prompt)
     (display-error prompt)
-    (let! ((line (read-line-host 0))
+    (let! ((line (read-line-host 0 "standard-input"))
            (text (join text line)))
       (conditional!
         ((same? line "") (read-forms "stdin" text) #inert)

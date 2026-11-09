@@ -311,6 +311,28 @@ fn reading_and_loading_again_and_again_keep_nothing() {
     assert_eq!(out.stdout, b"done");
 }
 
+/// A line longer than the memory the runner may have is the limit `out-of-memory`, not an abort:
+/// `/dev/zero` has no newline, and 256 MB of address space can't hold it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_line_longer_than_memory_is_out_of_memory() {
+    let dir = scratch("long-line");
+    let file = dir.join("line.grift");
+    std::fs::write(
+        &file,
+        "((evaluate-in! read-line (open-file \"/dev/zero\")))",
+    )
+    .unwrap();
+    let out = Command::new("prlimit")
+        .args(["--as=256000000", env!("CARGO_BIN_EXE_grift")])
+        .arg(&file)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains(": out-of-memory at "), "{err}");
+}
+
 /// A file a program closed stays closed whatever is read or opened after it.
 #[test]
 fn a_closed_file_stays_closed_past_later_reads_and_opens() {

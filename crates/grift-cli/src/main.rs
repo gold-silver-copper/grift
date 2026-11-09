@@ -17,7 +17,7 @@
 //! `elapsed-nanoseconds` and `exit`.
 
 use grift::{Answer, Error, Grift, HostFunction, Ran, ReportStatus, Value};
-use std::fmt;
+use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
@@ -30,23 +30,18 @@ const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, read
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
 
-/// A file a program opened: its path, and its stream.
-struct Opened {
-    path: String,
-    file: Stream,
-}
-
-/// A file is being read, being written, or closed, which is for good.
+/// A file is being read or written.
 enum Stream {
     Reading(Box<dyn BufRead>),
     Writing(Box<dyn Write>),
-    Closed,
 }
 
-/// The runner's state: the files opened, standard input, error and output first, and when the run
-/// started.
+/// The runner's state: the files open, by their numbers, which only grow: standard input, error
+/// and output first; the next file's number; and when the run started. A file closed leaves
+/// `files`, so it holds only what is open, and a number below `next` not in it is closed for good.
 struct Runner {
-    files: Vec<Opened>,
+    files: Vec<(i64, Stream)>,
+    next: i64,
     started: Instant,
 }
 
@@ -73,16 +68,24 @@ fn say(text: fmt::Arguments) {
     let _ = io::stderr().write_fmt(text);
 }
 
-/// The numbers of the standard streams that are written to, in `Runner::files`.
-const STANDARD_ERROR: i64 = 1;
-const STANDARD_OUTPUT: i64 = 2;
+/// The numbers and names of the standard streams that are written to.
+const STANDARD_ERROR: (i64, &str) = (1, "standard-error");
+const STANDARD_OUTPUT: (i64, &str) = (2, "standard-output");
 
 /// Writes the values to file `id`, strings without quotes and everything else as written, and
 /// flushes.
-fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
-    let id = Value::Integer(id);
-    let (path, Stream::Writing(w)) = file(g, r, &id)? else {
-        return Err(g.error("type-error", values));
+fn put(
+    g: &mut G,
+    r: &mut Runner,
+    (id, path): (i64, &str),
+    values: &[Value],
+) -> Result<Value, Error> {
+    let found = place(r, &Value::Integer(id))
+        .ok()
+        .and_then(|i| r.files.get_mut(i));
+    let Some((_, Stream::Writing(w))) = found else {
+        let path = g.string(path)?;
+        return Err(g.error("closed", &[path]));
     };
     let mut out = Sink { w, error: None };
     let printed = values.iter().try_for_each(|v| match g.as_str(v) {
@@ -96,7 +99,11 @@ fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Er
         (None, Err(e)) => return Err(e),
         (None, Ok(())) => out.w.flush(),
     };
-    written(g, path, wrote)
+    if wrote.is_ok() {
+        return Ok(Value::Inert);
+    }
+    let path = g.string(path)?;
+    written(g, &path, wrote)
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
@@ -146,19 +153,31 @@ fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
     let Some(s) = g.as_str(v)? else {
         return Ok(None);
     };
-    let mut copy = String::new();
-    if copy.try_reserve_exact(s.len()).is_err() {
-        return Err(limit(g, "out-of-memory", &[]));
+    match copy(s) {
+        Some(s) => Ok(Some(s)),
+        None => Err(limit(g, "out-of-memory", &[])),
     }
-    copy.push_str(s);
-    Ok(Some(copy))
 }
 
-/// The one string argument, or a `type-error` or an `arity-error`.
+/// A copy of `s`, `None` if memory was refused for it.
+fn copy(s: &str) -> Option<String> {
+    let mut copy = String::new();
+    copy.try_reserve_exact(s.len()).ok()?;
+    copy.push_str(s);
+    Some(copy)
+}
+
+/// The most bytes of paths, names and a process's words one operation hands the system, which
+/// copies them where refused memory aborts: more is a `range-error`.
+const SYSTEM_BYTES: usize = 1 << 20;
+
+/// The one string argument, a path or a name for the system; or a `type-error`, an `arity-error`
+/// or a `range-error`.
 fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
     let [v] = exactly(g, args)?;
     match owned_string(g, v)? {
-        Some(s) => Ok(s),
+        Some(s) if s.len() <= SYSTEM_BYTES => Ok(s),
+        Some(_) => Err(g.error("range-error", args)),
         None => Err(g.error("type-error", args)),
     }
 }
@@ -173,18 +192,16 @@ fn limit(g: &mut G, kind: &str, values: &[Value]) -> Error {
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
 /// aren't UTF-8, else `kind` with the system's message.
-fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
-    if e.kind() == io::ErrorKind::OutOfMemory {
+fn failed(g: &mut G, kind: &str, what: &Value, e: &io::Error) -> Error {
+    let what = what.clone();
+    let mut message = grift::TextBuffer::new();
+    if e.kind() == io::ErrorKind::OutOfMemory || write!(message, "{e}").is_err() {
         return limit(g, "out-of-memory", &[]);
     }
-    let what = match g.string(what) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
     if e.kind() == io::ErrorKind::InvalidData {
         return g.error("encoding-error", &[what]);
     }
-    match g.string(&e.to_string()) {
+    match g.string(message.as_str()) {
         Ok(message) => g.error(kind, &[what, message]),
         Err(e) => e,
     }
@@ -198,14 +215,14 @@ fn opened(
     open: fn(&str) -> io::Result<Stream>,
 ) -> Result<Value, Error> {
     let path = one_string(g, args)?;
-    match open(&path) {
-        Ok(file) => {
-            let id = i64::try_from(r.files.len()).map_err(|_| limit(g, "out-of-memory", &[]))?;
-            r.files.push(Opened { path, file });
-            Ok(Value::Integer(id))
-        }
-        Err(e) => Err(failed(g, "file-error", &path, &e)),
-    }
+    let (Ok(()), Some(next)) = (r.files.try_reserve(1), r.next.checked_add(1)) else {
+        return Err(limit(g, "out-of-memory", &[]));
+    };
+    let what = args.first().unwrap_or(&Value::Inert);
+    let file = open(&path).map_err(|e| failed(g, "file-error", what, &e))?;
+    r.files.push((r.next, file));
+    r.next = next;
+    Ok(Value::Integer(next - 1))
 }
 
 fn open_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
@@ -220,67 +237,46 @@ fn create_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error
     })
 }
 
-/// The open file whose number is `id`, and its path; `closed` once it is closed.
-fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mut Stream), Error> {
-    let opened = match id {
-        Value::Integer(n) => usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i)),
-        _ => None,
+/// Where the open file whose number is `id` is in `Runner::files`: `Err(true)` once it is closed,
+/// `Err(false)` if no file had that number.
+fn place(r: &Runner, id: &Value) -> Result<usize, bool> {
+    let &Value::Integer(n) = id else {
+        return Err(false);
     };
-    match opened {
-        Some(Opened {
-            path,
-            file: Stream::Closed,
-        }) => {
-            let path = g.string(path)?;
-            Err(g.error("closed", &[path]))
-        }
-        Some(Opened { path, file }) => Ok((path, file)),
-        None => Err(g.error("type-error", std::slice::from_ref(id))),
+    r.files
+        .binary_search_by_key(&n, |(id, _)| *id)
+        .map_err(|_| (0..r.next).contains(&n))
+}
+
+/// The open file whose number is `id`, its place and stream; `closed` with its `path` once it is
+/// closed.
+fn file<'r>(
+    g: &mut G,
+    r: &'r mut Runner,
+    id: &Value,
+    path: &Value,
+) -> Result<(usize, &'r mut Stream), Error> {
+    match place(r, id).map(|i| (i, r.files.get_mut(i))) {
+        Ok((i, Some((_, file)))) => Ok((i, file)),
+        Err(true) => Err(g.error("closed", std::slice::from_ref(path))),
+        _ => Err(g.error("type-error", std::slice::from_ref(id))),
     }
 }
 
-/// Reads with `read` from the file whose number is the only argument.
-fn reading(
+/// The next bytes of the file whose number and path are `file`, `most` of them at most and, for a
+/// `line`, up to its newline; none at the end.
+fn gather(
     g: &mut G,
     r: &mut Runner,
-    args: &[Value],
-    read: fn(&mut dyn BufRead, &mut String) -> io::Result<usize>,
-) -> Result<Value, Error> {
-    let [id] = exactly(g, args)?;
-    let (path, Stream::Reading(input)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
+    file: [&Value; 2],
+    most: u64,
+    line: bool,
+) -> Result<Vec<u8>, Error> {
+    let [id, path] = file;
+    let (_, Stream::Reading(input)) = self::file(g, r, id, path)? else {
+        return Err(g.error("type-error", std::slice::from_ref(id)));
     };
-    let mut s = String::new();
-    match read(input.as_mut(), &mut s) {
-        Ok(_) => g.string(&s),
-        Err(e) => Err(failed(g, "file-error", path, &e)),
-    }
-}
-
-/// `(read-line)` on a file: the next line with its newline, `""` at the end (Rust's
-/// `BufRead::read_line`).
-fn read_line_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    reading(g, r, args, |input, s| input.read_line(s))
-}
-
-/// `(read-all)` on a file: the rest of it.
-fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    reading(g, r, args, |input, s| input.read_to_string(s))
-}
-
-/// `(read-bytes count)` on a file: the next `count` bytes, fewer at the end, as a bytes value;
-/// `#bytes()` at the end. It reads only as much as it gives, so a pipe that stays open answers as
-/// soon as `count` bytes have come.
-fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, count] = exactly(g, args)?;
-    let &Value::Integer(n) = count else {
-        return Err(g.error("type-error", std::slice::from_ref(count)));
-    };
-    let n = u64::try_from(n).map_err(|_| g.error("range-error", std::slice::from_ref(count)))?;
-    let (path, Stream::Reading(input)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
-    };
-    let mut input = input.as_mut().take(n);
+    let mut input = input.as_mut().take(most);
     let mut bytes = Vec::new();
     loop {
         let chunk = match input.fill_buf() {
@@ -289,20 +285,60 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(e) => return Err(failed(g, "file-error", path, &e)),
         };
-        if bytes.try_reserve(chunk.len()).is_err() {
+        let newline = chunk.iter().position(|&b| line && b == b'\n');
+        let used = chunk
+            .get(..newline.map_or(chunk.len(), |i| i + 1))
+            .unwrap_or_default();
+        if bytes.try_reserve(used.len()).is_err() {
             return Err(limit(g, "out-of-memory", &[]));
         }
-        bytes.extend_from_slice(chunk);
-        let used = chunk.len();
+        bytes.extend_from_slice(used);
+        let used = used.len();
         input.consume(used);
+        if newline.is_some() {
+            break;
+        }
     }
+    Ok(bytes)
+}
+
+/// What `gather` gives of the file, as text; an `encoding-error` if it isn't UTF-8.
+fn text(g: &mut G, r: &mut Runner, args: &[Value], line: bool) -> Result<Value, Error> {
+    let [id, path] = exactly(g, args)?;
+    let bytes = gather(g, r, [id, path], u64::MAX, line)?;
+    match std::str::from_utf8(&bytes) {
+        Ok(text) => g.string(text),
+        Err(_) => Err(g.error("encoding-error", std::slice::from_ref(path))),
+    }
+}
+
+/// `(read-line)` on a file: the next line with its newline, `""` at the end.
+fn read_line_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    text(g, r, args, true)
+}
+
+/// `(read-all)` on a file: the rest of it.
+fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    text(g, r, args, false)
+}
+
+/// `(read-bytes count)` on a file: the next `count` bytes, fewer at the end, as a bytes value;
+/// `#bytes()` at the end. It reads only as much as it gives, so a pipe that stays open answers as
+/// soon as `count` bytes have come.
+fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+    let [id, path, count] = exactly(g, args)?;
+    let &Value::Integer(n) = count else {
+        return Err(g.error("type-error", std::slice::from_ref(count)));
+    };
+    let n = u64::try_from(n).map_err(|_| g.error("range-error", std::slice::from_ref(count)))?;
+    let bytes = gather(g, r, [id, path], n, false)?;
     g.bytes(&bytes)
 }
 
 /// `(write data)` on a file: all of the bytes of a string or a bytes value.
 fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id, data] = exactly(g, args)?;
-    let (path, Stream::Writing(out)) = file(g, r, id)? else {
+    let [id, path, data] = exactly(g, args)?;
+    let (_, Stream::Writing(out)) = file(g, r, id, path)? else {
         return Err(g.error("type-error", args));
     };
     let bytes = match g.as_str(data)? {
@@ -318,12 +354,11 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
 
 /// After a write to the file `path`: `#inert`, or a `file-error`, except that a pipe no one reads
 /// is the limit that ends the run quietly, as [`exit_status`] says, and only a real write makes it.
-fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
+fn written(g: &mut G, path: &Value, wrote: io::Result<()>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-            let path = g.string(path)?;
-            Err(limit(g, "broken-pipe", &[path]))
+            Err(limit(g, "broken-pipe", std::slice::from_ref(path)))
         }
         Err(e) => Err(failed(g, "file-error", path, &e)),
     }
@@ -331,8 +366,9 @@ fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error>
 
 /// `(close)` on a file: closes it; using it after this is the error `closed`.
 fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let [id] = exactly(g, args)?;
-    *file(g, r, id)?.1 = Stream::Closed;
+    let [id, path] = exactly(g, args)?;
+    let (i, _) = file(g, r, id, path)?;
+    r.files.remove(i);
     Ok(Value::Inert)
 }
 
@@ -341,7 +377,12 @@ fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> 
     let path = one_string(g, args)?;
     match std::fs::read_to_string(&path) {
         Ok(text) => g.string(&text),
-        Err(e) => Err(failed(g, "file-error", &path, &e)),
+        Err(e) => Err(failed(
+            g,
+            "file-error",
+            args.first().unwrap_or(&Value::Inert),
+            &e,
+        )),
     }
 }
 
@@ -434,18 +475,24 @@ fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
 /// (`#inert` if a signal ended it) and what it wrote to stdout and stderr, as a list.
 fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let mut words = Vec::new();
+    if words.try_reserve_exact(args.len()).is_err() {
+        return Err(limit(g, "out-of-memory", &[]));
+    }
     for v in args {
         match owned_string(g, v)? {
             Some(s) => words.push(s),
             None => return Err(g.error("type-error", std::slice::from_ref(v))),
         }
     }
-    let Some((program, arguments)) = words.split_first() else {
+    if words.iter().map(String::len).sum::<usize>() > SYSTEM_BYTES {
+        return Err(g.error("range-error", args));
+    }
+    let (Some((program, arguments)), Some(name)) = (words.split_first(), args.first()) else {
         return Err(g.error("arity-error", args));
     };
     let (status, outputs) = match ran(program, arguments) {
         Ok(ran) => ran,
-        Err(e) => return Err(failed(g, "process-error", program, &e)),
+        Err(e) => return Err(failed(g, "process-error", name, &e)),
     };
     let status = status
         .code()
@@ -592,7 +639,9 @@ fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let Some((source, line)) = g.position(form)? else {
         return Ok(Value::EmptyList);
     };
-    let source = source.to_owned();
+    let Some(source) = copy(source) else {
+        return Err(limit(g, "out-of-memory", &[]));
+    };
     let source = g.string(&source)?;
     g.list(&[source, Value::Integer(i64::from(line))])
 }
@@ -652,19 +701,11 @@ fn main() -> ExitCode {
     let arguments = words.get(1..).unwrap_or_default();
     let mut r = Runner {
         files: vec![
-            Opened {
-                path: String::from("standard-input"),
-                file: Stream::Reading(Box::new(BufReader::new(io::stdin()))),
-            },
-            Opened {
-                path: String::from("standard-error"),
-                file: Stream::Writing(Box::new(io::stderr())),
-            },
-            Opened {
-                path: String::from("standard-output"),
-                file: Stream::Writing(Box::new(io::stdout())),
-            },
+            (0, Stream::Reading(Box::new(BufReader::new(io::stdin())))),
+            (1, Stream::Writing(Box::new(io::stderr()))),
+            (2, Stream::Writing(Box::new(io::stdout()))),
         ],
+        next: 3,
         started: Instant::now(),
     };
     let session = match set_up(&mut g, &mut r, arguments, script.unwrap_or_default()) {
@@ -686,7 +727,10 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 let missing = e.kind() == io::ErrorKind::NotFound;
-                let e = failed(&mut g, "file-error", name, &e);
+                let e = match g.string(name) {
+                    Ok(name) => failed(&mut g, "file-error", &name, &e),
+                    Err(e) => e,
+                };
                 let status = report(&g, "grift", &e);
                 if missing {
                     say(format_args!("{USAGE}\n"));
