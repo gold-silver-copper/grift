@@ -22,6 +22,8 @@ disallowed-methods = [
   { path = "std::collections::VecDeque::push_back", reason = "aborts when memory is refused: reserve first" },
   { path = "alloc::borrow::ToOwned::to_owned", reason = "aborts when memory is refused: use local::boxed" },
   { path = "alloc::string::ToString::to_string", reason = "aborts when memory is refused: use local::boxed" },
+  # A list walk goes through `evaluate::Items`, which a stop ends; one pair read per step says so.
+  { path = "grift::Grift::pair_at", reason = "walk a list with evaluate::Items, which a stop ends" },
 ]
 disallowed-macros = [
   { path = "std::format", reason = "aborts when memory is refused: write into a reserved buffer" },

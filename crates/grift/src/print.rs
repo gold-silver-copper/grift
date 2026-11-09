@@ -80,6 +80,7 @@ impl<T> Grift<T> {
                     continue;
                 }
                 Item::Tail(Value::Pair(r), text) => {
+                    #[expect(clippy::disallowed_methods, reason = "the printer's loop is charged")]
                     let (element, rest) = self.pair_at(r)?;
                     out.write_char(' ')?;
                     push(&mut todo, Item::Tail(rest, text))?;

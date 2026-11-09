@@ -689,6 +689,7 @@ impl<T> Grift<T> {
     /// The first and the rest of a pair; `None` for anything else.
     pub fn as_pair(&self, v: &Value) -> Result<Option<(Value, Value)>, Error> {
         let p = self.import(v).and_then(|v| match v {
+            #[expect(clippy::disallowed_methods, reason = "one pair for the host")]
             local::Value::Pair(r) => self.pair_at(r).map(Some),
             _ => Ok(None),
         });

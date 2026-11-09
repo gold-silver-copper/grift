@@ -121,6 +121,42 @@ primitives! {
     BytesToList "bytes-to-list" 1 1;
 }
 
+/// A walk along a list's items inside one step, charged to [`Grift::walk_stopped`], so a stop
+/// ends it however long the list is. Every list walk goes through one: the lint on
+/// [`Grift::pair_at`] (`clippy.toml`) refuses another.
+pub(crate) struct Items {
+    rest: Value,
+    walked: usize,
+}
+
+impl Items {
+    pub(crate) fn new(list: Value) -> Items {
+        Items {
+            rest: list,
+            walked: 0,
+        }
+    }
+
+    /// The next item, or `None` once what is left isn't a pair.
+    pub(crate) fn next<T>(&mut self, g: &Grift<T>) -> Result<Option<Value>, Error> {
+        let Value::Pair(r) = self.rest else {
+            return Ok(None);
+        };
+        if g.walk_stopped(&mut self.walked) {
+            return Err(Error::interrupted());
+        }
+        #[expect(clippy::disallowed_methods, reason = "the one list walk")]
+        let (x, rest) = g.pair_at(r)?;
+        self.rest = rest;
+        Ok(Some(x))
+    }
+
+    /// What is left: `()` after a proper list.
+    pub(crate) fn rest(&self) -> Value {
+        self.rest
+    }
+}
+
 /// The library forms with a native twin.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Native {
@@ -562,6 +598,7 @@ impl<T> Grift<T> {
                     What::Forms {
                         rest: Value::Pair(r),
                     } => {
+                        #[expect(clippy::disallowed_methods, reason = "one form per step")]
                         let (form, rest) = self.pair_at(r)?;
                         let at = match form {
                             Value::Pair(f) if !self.origin_at(f)?.library => f,
@@ -901,13 +938,11 @@ impl<T> Grift<T> {
     /// Applies a primitive or a host function to its operands as they are.
     fn spread(&mut self, f: Value, operands: Value, context: Reference) -> Result<Mode, Error> {
         let base = self.machine.arguments.len();
-        let mut rest = operands;
-        while let Value::Pair(r) = rest {
-            let (x, next) = self.pair_at(r)?;
+        let mut items = Items::new(operands);
+        while let Some(x) = items.next(self)? {
             push(&mut self.machine.arguments, x)?;
-            rest = next;
         }
-        if rest != Value::EmptyList {
+        if items.rest() != Value::EmptyList {
             return Err(Error::new(K::TypeError, &[f, operands]));
         }
         self.apply(f, context, base)
@@ -923,6 +958,7 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         match rest {
             Value::Pair(r) => {
+                #[expect(clippy::disallowed_methods, reason = "one operand per step")]
                 let (x, rest) = self.pair_at(r)?;
                 let arguments = What::Arguments {
                     combiner,
@@ -1024,11 +1060,9 @@ impl<T> Grift<T> {
                 Mode::Evaluate(test, context)
             }
             Native::Sequence => {
-                let mut rest = operands;
-                while let Value::Pair(r) = rest {
-                    rest = self.pair_at(r)?.1;
-                }
-                if rest != Value::EmptyList {
+                let mut items = Items::new(operands);
+                while items.next(self)?.is_some() {}
+                if items.rest() != Value::EmptyList {
                     return Ok(None);
                 }
                 self.next_form(operands, context, at)?
@@ -1038,6 +1072,7 @@ impl<T> Grift<T> {
     }
 
     #[inline(always)]
+    #[expect(clippy::disallowed_methods, reason = "three items at most")]
     fn three(&self, list: Value) -> Result<Option<[Value; 3]>, Error> {
         let mut items = [Value::EmptyList; 3];
         let mut rest = list;
@@ -1076,6 +1111,7 @@ impl<T> Grift<T> {
         let Value::Pair(r) = forms else {
             return Ok(Mode::Return(Value::Inert));
         };
+        #[expect(clippy::disallowed_methods, reason = "one form per step")]
         let (form, rest) = self.pair_at(r)?;
         if rest != Value::EmptyList {
             self.frame(What::Body { rest }, context, at)?;
@@ -1150,6 +1186,7 @@ impl<T> Grift<T> {
             P::Pair => self.pair_local(x, y)?,
             P::First | P::Rest => match x {
                 Value::Pair(r) => {
+                    #[expect(clippy::disallowed_methods, reason = "one pair: first or rest")]
                     let (a, b) = self.pair_at(r)?;
                     if p == P::First { a } else { b }
                 }
@@ -1383,9 +1420,8 @@ impl<T> Grift<T> {
             }
             P::ListToBytes => {
                 let mut bytes = Vec::new();
-                let mut rest = x;
-                while let Value::Pair(r) = rest {
-                    let (v, next) = self.pair_at(r)?;
+                let mut items = Items::new(x);
+                while let Some(v) = items.next(self)? {
                     let at = integer(bytes.len());
                     let byte = match v {
                         Value::Integer(n) => {
@@ -1394,11 +1430,10 @@ impl<T> Grift<T> {
                         _ => return Err(Error::new(K::TypeError, &[v, at])),
                     };
                     push(&mut bytes, byte)?;
-                    rest = next;
                 }
-                if rest != Value::EmptyList {
+                if items.rest() != Value::EmptyList {
                     let at = integer(bytes.len());
-                    return Err(Error::new(K::TypeError, &[rest, at]));
+                    return Err(Error::new(K::TypeError, &[items.rest(), at]));
                 }
                 self.bytes_local(bytes)?
             }
@@ -1437,14 +1472,13 @@ impl<T> Grift<T> {
     }
 
     /// The elements of a proper list; anything else is a `type-error` naming `culprit`.
-    pub(crate) fn items(&self, mut list: Value, culprit: Value) -> Result<Vec<Value>, Error> {
+    pub(crate) fn items(&self, list: Value, culprit: Value) -> Result<Vec<Value>, Error> {
         let mut v = Vec::new();
-        while let Value::Pair(r) = list {
-            let (x, rest) = self.pair_at(r)?;
+        let mut items = Items::new(list);
+        while let Some(x) = items.next(self)? {
             push(&mut v, x)?;
-            list = rest;
         }
-        if list == Value::EmptyList {
+        if items.rest() == Value::EmptyList {
             Ok(v)
         } else {
             Err(type_error(culprit))
@@ -1598,6 +1632,7 @@ impl<T> Grift<T> {
                     Err(_) => Err(Error::oom()),
                 },
                 (Value::Ignore, _) | (Value::EmptyList, Value::EmptyList) => Ok(()),
+                #[expect(clippy::disallowed_methods, reason = "a tree walk charged above")]
                 (Value::Pair(t), Value::Pair(v)) => self.pair_at(t).and_then(|(ta, tb)| {
                     let (va, vb) = self.pair_at(v)?;
                     push(&mut work, (tb, vb))?;
@@ -1688,6 +1723,7 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
+    /// One pair's two halves. A walk along a list goes through [`Items`], which a stop ends.
     pub(crate) fn pair_at(&self, r: Reference) -> Result<(Value, Value), Error> {
         match self.heap.get(r)? {
             Object::Pair(a, b, _) => Ok((*a, *b)),
