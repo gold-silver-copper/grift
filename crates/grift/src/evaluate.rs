@@ -20,7 +20,7 @@
 
 use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
-use crate::local::{Error, Host, K, Symbol, Trace, Value, boxed, push};
+use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, collected, context_kind};
 use std::sync::Arc;
@@ -351,7 +351,11 @@ pub(crate) struct Machine {
 pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
     let (value, values, trace) = match ending {
         Ok(v) => (Some(*v), &[][..], None),
-        Err(e) => (None, e.values.as_slice(), Some(&e.trace)),
+        Err(e) => (
+            Some(Value::Symbol(e.kind)),
+            e.values.as_slice(),
+            Some(&e.trace),
+        ),
     };
     let trace = trace.into_iter().flat_map(Trace::roots);
     value.into_iter().chain(values.iter().copied()).chain(trace)
@@ -832,7 +836,11 @@ impl<T> Grift<T> {
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
-        self.heap.collect(roots, parked)
+        // Names are heap objects: the known ones and host functions' are roots too.
+        let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
+        let hosts = self.hosts.iter().map(|&(name, _)| Value::Symbol(name));
+        self.heap.collect(roots.chain(known).chain(hosts), parked);
+        self.tidy_symbols();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping

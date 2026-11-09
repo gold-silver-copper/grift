@@ -1663,3 +1663,49 @@ fn a_report_checking_many_values_finds_a_force() {
     let e = g.evaluate(&mut (), "(report)").unwrap_err();
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
 }
+
+#[test]
+fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
+    let mut g: Grift = Grift::new().unwrap();
+    let held = g.symbol("only-the-host-holds-this").unwrap();
+    g.evaluate(&mut (), "(define! bound-name 42)").unwrap();
+    let bound = g.symbol("bound-name").unwrap();
+    let before = g.symbols.len();
+    g.evaluate(
+        &mut (),
+        "(define! dead (lambda! (n) (if! (same? n 0) #inert (dead-step n))))
+         (define! dead-step (lambda! (n) (string-to-symbol (join \"dead-\" (integer-to-string n))) (dead (subtract n 1))))
+         (dead 20000)",
+    )
+    .unwrap();
+    g.heap.request_collection();
+    g.evaluate(&mut (), "0").unwrap();
+    // Only the two definitions' names and `n` were added; the 20,000 and the host's are gone.
+    assert!(
+        g.symbols.len() <= before + 3,
+        "{} {before}",
+        g.symbols.len()
+    );
+    assert!(g.symbols.capacity() < 4096, "{}", g.symbols.capacity());
+    let e = g.symbol_name(&held).unwrap_err();
+    assert_eq!(kind(&g, &e), "stale-value");
+    let again = g.symbol("only-the-host-holds-this").unwrap();
+    assert_ne!(again, held);
+    assert_eq!(g.symbol_name(&again).unwrap(), "only-the-host-holds-this");
+    let top = g.top_level();
+    let e = g.lookup(&top, &held).unwrap_err();
+    assert_eq!(kind(&g, &e), "stale-value");
+    // A bound name keeps its identity through the collection.
+    assert_eq!(g.symbol("bound-name").unwrap(), bound);
+    assert_eq!(g.lookup(&top, &bound).unwrap(), Some(Value::Integer(42)));
+    // An error's kind made as the program runs is held by the error alone while a cleanup runs.
+    g.heap.stress = true;
+    let e = g
+        .evaluate(
+            &mut (),
+            "(finally! (raise (error (string-to-symbol (join \"pending-\" \"kind\")))) (list 1 2 3))",
+        )
+        .unwrap_err();
+    g.heap.stress = false;
+    assert_eq!(g.symbol_name(&e.kind).unwrap(), "pending-kind");
+}

@@ -214,7 +214,8 @@ fn main() -> Result<(), Error> {
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive: `symbol(name)` gives a `Symbol`, and one
-  name is `Value::Symbol(g.symbol("x")?)`;
+  name is `Value::Symbol(g.symbol("x")?)`. A `Symbol` lasts as a `Value` does: a name nothing in
+  the interpreter refers to is collected at the next run, and its `Symbol` is then `stale-value`;
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
   grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
