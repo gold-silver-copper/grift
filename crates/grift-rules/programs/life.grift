@@ -1,0 +1,109 @@
+;; Conway's life on a 40x40 wrapping grid, from grift's programs/life, using only the slice
+;; natives and the slice library (lambda! define! if! sequence! let! list map). Two gliders move one
+;; cell diagonally every 4 generations, so after 4x40 generations the grid is back where it began:
+;; the value is (#true 10), the grid repeating and its population.
+;;
+;; A row holds its cells as bytes, 1 alive and 0 dead, with one more cell at each end copying the
+;; cell at the other end, so every cell has a left and a right neighbour.
+
+(define! here ((vau! () c c)))
+(define! apply (lambda! (f args) (evaluate (pair (unwrap f) args) here)))
+(define! zero #bytes(0))
+(define! one #bytes(1))
+(define! range (lambda! (a b) (if! (less-than? a b) (pair a (range (add a 1) b)) ())))
+(define! reverse-onto (lambda! (xs acc) (if! (same? xs ()) acc (reverse-onto (rest xs) (pair (first xs) acc)))))
+(define! reverse (lambda! (xs) (reverse-onto xs ())))
+
+; The row of the cells `interior`, with its two end cells.
+(define! with-ends
+  (lambda! (interior)
+    (let! ((width (byte-length interior)))
+      (join (slice interior (subtract width 1) width) interior (slice interior 0 1)))))
+
+; A pattern row of `.` and `#` as cells.
+(define! cells
+  (lambda! (row)
+    (apply join (map (lambda! (x) (if! (same? (byte-at row x) 35) one zero)) (range 0 (byte-length row))))))
+
+; What a cell becomes, at the count of the living cells among the nine around it, itself
+; included, plus 9 if it is alive itself: it lives with 3, or with 4 if it is one of them.
+(define! rule
+  (apply join (map (lambda! (i) (if! (same? i 3) one (if! (same? i 12) one (if! (same? i 13) one zero))))
+                   (range 0 19))))
+(define! becomes (lambda! (i) (slice rule i (add i 1))))
+
+; The next generation of `grid`: each new row from the row and the rows around it, wrapping.
+(define! step
+  (lambda! (grid)
+    (let! ((end (subtract (byte-length (first grid)) 1))
+           (next-row (lambda! (above row below)
+                       (let! ((column (lambda! (x)
+                                        (add (byte-at above x) (add (byte-at row x) (byte-at below x)))))
+                              (cell (lambda! (x left middle right out)
+                                      (cells (add x 1) middle right
+                                             (pair (becomes (add (add left (add middle right))
+                                                                 (multiply 9 (byte-at row x))))
+                                                   out))))
+                              (cells (lambda! (x left middle out)
+                                       (if! (same? x end)
+                                         (with-ends (apply join (reverse out)))
+                                         (cell x left middle (column (add x 1)) out)))))
+                         (cells 1 (column 0) (column 1) ()))))
+           (rows (lambda! (above (row . more) after-last)
+                   (pair (next-row above row (if! (same? more ()) after-last (first more)))
+                         (if! (same? more ()) () (rows row more after-last))))))
+      (rows (first (reverse grid)) grid (first grid)))))
+
+(define! count-row
+  (lambda! (row x end n) (if! (same? x end) n (count-row row (add x 1) end (add n (byte-at row x))))))
+(define! population
+  (lambda! (grid)
+    (if! (same? grid ()) 0
+      (add (count-row (first grid) 1 (subtract (byte-length (first grid)) 1) 0) (population (rest grid))))))
+(define! generations (lambda! (grid n) (if! (same? n 0) grid (generations (step grid) (subtract n 1)))))
+
+(define! pattern
+  (list
+    "........................................"
+    "........................................"
+    "...#...................................."
+    "....#..................................."
+    "..###..................................."
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "................#......................."
+    ".................#......................"
+    "...............###......................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"
+    "........................................"))
+(define! start (map (lambda! (row) (with-ends (cells row))) pattern))
+(define! final (generations start 160))
+(list (same? (value-to-string final) (value-to-string start)) (population final))

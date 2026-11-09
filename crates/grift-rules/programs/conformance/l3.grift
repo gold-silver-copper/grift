@@ -1,0 +1,20 @@
+; L3 first-class contexts; nothing is special by name.
+(define! top ((vau! () c c)))
+(define! c (context top))
+(bind c (quote! (x y)) (list 1 2))
+(define! names-of-empty (names (context ())))
+(list
+  (same? (evaluate (quote! (add x y)) c) 3)
+  (same? (lookup c (quote! x) 0) 1)
+  (same? (lookup c (quote! nothing-here) 99) 99)
+  (same? (value-to-string (names c)) "(x y)")
+  (same? names-of-empty ())
+  (same? (lookup (context ()) (quote! add) 0) 0)
+  ; Every library word is a binding a program can shadow: if!, sequence!, lambda!.
+  (same? ((lambda! (if!) (if! 1 2 3)) (lambda! (a b c) b)) 2)
+  (same? (first ((lambda! (sequence!) (sequence! 1 2)) list)) 1)
+  (same? ((wrap (vau! (lambda!) #ignore (lambda! 7))) (lambda! (x) (add x 1))) 8)
+  (same? (evaluate (quote! (if! #true 1 2)) (sequence! (bind c (quote! if!) (lambda! (a b d) d)) c)) 2)
+  ; A child context sees its parent's later bindings.
+  (sequence! (bind top (quote! late) 5) (same? (evaluate (quote! late) c) 5))
+  (same? (evaluate (quote! x) (context c)) 1))

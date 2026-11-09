@@ -1,0 +1,21 @@
+[package]
+name = "grift-rules"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The rules grift keeps (RULES.md), checked as properties on its public API: tests only"
+publish = false
+
+[dependencies]
+grift = { path = "../grift", features = ["hooks"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"

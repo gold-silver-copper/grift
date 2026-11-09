@@ -1,0 +1,23 @@
+; L2 combiners and parameter trees.
+(define! top ((vau! () c c)))
+(define! kind-of-error
+  (lambda! (expr) (evaluate-with-handler expr top (lambda! (e) (lookup e (quote! kind) 0)))))
+(define! quoting (vau! (x) #ignore x))
+(define! caller-of (vau! () c c))
+(define! ignoring (vau! (#ignore y) #ignore y))
+(define! nested (lambda! ((a (b . c)) . d) (list a b c d)))
+(list
+  (same? (type-of quoting) (quote! operative))
+  (same? (value-to-string (quoting (add 1 2))) "(add 1 2)")
+  (same? (caller-of) top)
+  (same? (ignoring (raise 1) 5) 5)
+  (same? ((wrap quoting) (add 1 2)) 3)
+  (same? (type-of (unwrap add)) (quote! operative))
+  (same? (value-to-string ((unwrap list) a b)) "(a b)")
+  (same? (value-to-string (nested (list 1 (list 2 3 4)) 5 6)) "(1 2 (3 4) (5 6))")
+  (same? ((lambda! args (first (rest args))) 1 2 3) 2)
+  (same? (kind-of-error (quote! (nested 1))) (kind-of-error (quote! ((lambda! (x) x)))))
+  (same? (type-of (kind-of-error (quote! ((lambda! (x) x) 1 2)))) (quote! symbol))
+  (same? (type-of (kind-of-error (quote! ((lambda! ((a b)) a) (list 1))))) (quote! symbol))
+  (same? (value-to-string ((vau! (a . #ignore) #ignore a) 1 2 3)) "1")
+  (same? (type-of (kind-of-error (quote! (wrap 1)))) (quote! symbol)))

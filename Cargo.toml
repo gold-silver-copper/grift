@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/grift", "crates/grift-cli"]
+members = ["crates/grift", "crates/grift-cli", "crates/grift-rules"]
 exclude = ["examples/emacs"]
 
 [workspace.package]

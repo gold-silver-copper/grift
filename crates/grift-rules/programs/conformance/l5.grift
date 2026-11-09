@@ -1,0 +1,26 @@
+; L5 errors: raise, handlers, cleanups, traces.
+(define! top ((vau! () c c)))
+(define! make-error
+  (lambda! (kind values)
+    ((lambda! (e) (sequence! (bind e (list (quote! kind) (quote! values) (quote! trace)) (list kind values ())) e))
+     (context ()))))
+(define! kind-of (lambda! (e) (lookup e (quote! kind) 0)))
+(define! catch (lambda! (expr handler) (evaluate-with-handler expr top handler)))
+(define! log (context ()))
+(bind log (quote! cleaned) #false)
+(define! cleaned-up (lambda! () (bind log (quote! cleaned) #true)))
+(list
+  (same? (catch (quote! (raise (make-error (quote! mine) (list 1 2)))) kind-of) (quote! mine))
+  (same? (value-to-string (catch (quote! (raise (make-error (quote! mine) (list 1 2)))) (lambda! (e) (lookup e (quote! values) 0)))) "(1 2)")
+  (same? (catch (quote! (first 1)) kind-of) (quote! type-error))
+  (same? (catch (quote! undefined-name) kind-of) (quote! unbound-symbol))
+  (same? (catch (quote! (divide 1 0)) (lambda! (e) (type-of (kind-of e)))) (quote! symbol))
+  (same? (type-of (catch (quote! (first 1)) (lambda! (e) (lookup e (quote! trace) 0)))) (quote! pair))
+  (same? (evaluate-with-cleanup (quote! 5) top cleaned-up) 5)
+  (same? (lookup log (quote! cleaned) 0) #true)
+  (sequence! (bind log (quote! cleaned) #false)
+    (same? (catch (quote! (evaluate-with-cleanup (quote! (raise (make-error (quote! x) ()))) top cleaned-up)) kind-of) (quote! x)))
+  (same? (lookup log (quote! cleaned) 0) #true)
+  ; Re-raise keeps the kind and grows the trace.
+  (same? (catch (quote! (catch (quote! (first 1)) (lambda! (e) (raise e)))) kind-of) (quote! type-error))
+  (same? (catch (quote! (raise 5)) kind-of) (quote! type-error)))

@@ -12,3 +12,10 @@ version = "3.0.0"
 dependencies = [
  "grift",
 ]
+
+[[package]]
+name = "grift-rules"
+version = "3.0.0"
+dependencies = [
+ "grift",
+]
