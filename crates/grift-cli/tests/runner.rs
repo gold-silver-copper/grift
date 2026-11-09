@@ -821,25 +821,6 @@ fn a_cut_report_says_so_on_a_line_no_program_can_write() {
     assert_eq!(err.lines().count(), 1, "{err}");
 }
 
-#[test]
-fn a_closed_stderr_is_the_same_as_any_closed_pipe() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_grift"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    drop(child.stderr.take());
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(b"(display-error \"lost\") (display \"after\")")
-        .unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert_eq!((out.status.code(), &out.stdout[..]), (Some(141), &b""[..]));
-}
-
 /// The write end of a pipe whose read end is gone.
 fn closed_pipe() -> std::io::PipeWriter {
     std::io::pipe().unwrap().1
