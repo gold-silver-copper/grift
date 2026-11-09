@@ -8,6 +8,19 @@ use crate::heap::Object;
 use crate::local::{Error, K, Value, push};
 use std::fmt::{self, Write};
 
+/// The least budget a report cut to fit keeps both its kind and its place in: past the two
+/// quarter shares for the names, half the budget holds ` at `, `:` and a line of 10 digits.
+const REPORT_FLOOR: usize = 2 * (" at :".len() + 10);
+
+/// A sink that takes everything and keeps nothing: a report's first pass, which measures.
+struct Discard;
+
+impl Write for Discard {
+    fn write_str(&mut self, _: &str) -> fmt::Result {
+        Ok(())
+    }
+}
+
 /// How many items a report's printer holds before it writes what it would open as `...`: data
 /// nested through its first element costs an item a level, so this, not the data, bounds the
 /// printer's memory, about 2 KiB.
@@ -182,8 +195,20 @@ impl<T> Grift<T> {
         out: &mut dyn Write,
         bytes: usize,
     ) -> Result<ReportStatus, Error> {
+        // A first pass writes nothing, to learn whether the whole report fits: only one that doesn't
+        // has its names cut, to keep the place in, and only from `REPORT_FLOOR` bytes up, where
+        // both fit; below, the kind comes first, as much of it as fits.
+        let mut discard = Discard;
+        let mut probe = Paced::new(self, &mut discard, bytes);
+        let probed = self.write_report(e, usize::MAX, &mut probe);
+        probe.ending(probed)?;
+        let share = match probe.full && bytes >= REPORT_FLOOR {
+            true => bytes / 4,
+            false => usize::MAX,
+        };
         let mut out = Paced::new(self, out, bytes);
-        let written = self.write_report(e, bytes / 4, &mut out);
+        out.walked = probe.walked;
+        let written = self.write_report(e, share, &mut out);
         out.ending(written)?;
         Ok(match out.left_out {
             true => ReportStatus::Truncated,
@@ -192,7 +217,8 @@ impl<T> Grift<T> {
     }
 
     /// The report: the kind and the innermost place, each cut to `share` bytes, the values, then
-    /// the trace, each line's combination written whole but for the line before's.
+    /// the trace, each line's combination written whole but for the line before's. With no place
+    /// to keep in, the kind isn't cut to a share.
     fn write_report(
         &self,
         e: &crate::Error,
@@ -217,7 +243,8 @@ impl<T> Grift<T> {
                 break;
             }
         }
-        write_name(self.name(kind), share, out)?;
+        let kind_share = if place.is_some() { share } else { usize::MAX };
+        write_name(self.name(kind), kind_share, out)?;
         if let Some((_, source, line)) = place {
             out.write_str(" at ")?;
             write_name(source, share, out)?;

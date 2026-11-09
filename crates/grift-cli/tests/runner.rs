@@ -808,14 +808,13 @@ fn a_cut_report_says_so_on_a_line_no_program_can_write() {
     let start = format!("{path}: type-error at {path}:1 \"aaaa");
     assert!(
         err.starts_with(&start)
-            && err.ends_with("aaaa\n  (report cut at 4096 bytes)\n")
-            && err.len()
-                == path.len() + ": ".len() + 4096 + "\n  (report cut at 4096 bytes)\n".len(),
+            && err.ends_with("aaaa\n  (report cut short)\n")
+            && err.len() == path.len() + ": ".len() + 4096 + "\n  (report cut short)\n".len(),
         "{} bytes: {}",
         err.len(),
         &err[..err.len().min(200)]
     );
-    let forged = "(raise (error (string-to-symbol \"x\n  (report cut at 4096 bytes)\") 1))";
+    let forged = "(raise (error (string-to-symbol \"x\n  (report cut short)\") 1))";
     let (status, _, err) = script(&dir, forged, &[], "");
     assert_eq!(status, Some(1));
     assert_eq!(err.lines().count(), 1, "{err}");
@@ -1059,4 +1058,36 @@ fn a_session_numbers_its_lines_from_its_start() {
         shown.contains("stdin: parse-error unclosed-list 2 1 stdin\n"),
         "{shown}"
     );
+}
+
+/// A report that fits its budget is written whole and says so, at exactly its size: a name is cut
+/// only to keep the place in a report that doesn't fit, and the kind comes first. Through the
+/// runner, a long kind in a report under 4 KiB is whole, with no line saying it was cut.
+#[test]
+fn a_report_that_fits_its_budget_is_whole() {
+    use grift::{Grift, ReportStatus, TextBuffer};
+    let mut g: Grift = Grift::new().unwrap();
+    let e = g.evaluate(&mut (), "(first 1)").unwrap_err();
+    let report = |bytes| {
+        let mut text = TextBuffer::new();
+        let status = g.describe(&e, &mut text, bytes).unwrap();
+        (status, text.as_str().to_owned())
+    };
+    let whole = "type-error 1 in (first 1)";
+    for bytes in [whole.len(), whole.len() + 1, 4096] {
+        assert_eq!(report(bytes), (ReportStatus::Complete, whole.to_owned()));
+    }
+    for bytes in [whole.len() - 1, 12] {
+        assert_eq!(
+            report(bytes),
+            (ReportStatus::Truncated, whole[..bytes].to_owned())
+        );
+    }
+    let dir = scratch("long-kind");
+    let kind = "k".repeat(1100);
+    let program = format!("(raise (error (string-to-symbol \"{kind}\") 1))");
+    let (status, _, err) = script(&dir, &program, &[], "");
+    assert_eq!(status, Some(1));
+    assert!(err.contains(&format!("{kind} at ")), "{err}");
+    assert_eq!(err.lines().count(), 1, "{err}");
 }

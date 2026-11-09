@@ -467,8 +467,8 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 
 /// Prints an error to stderr as its source, then its kind, where it happened and its values, the
 /// innermost combination on the error's line and each one around it on a line of its own. A
-/// report is cut at [`REPORT_BYTES`], and then a line of the runner's own says so: no text of the
-/// program's can begin a line in a report. A report up to 4 KiB is one write, so output sharing
+/// report longer than [`REPORT_BYTES`], or one leaving deep data out, is cut short, and then a
+/// line of the runner's own says so: no text of the program's can begin a line in a report. A report up to 4 KiB is one write, so output sharing
 /// its pipe can't land inside it.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
@@ -481,10 +481,7 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     };
     let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     if let Ok(ReportStatus::Truncated) = g.describe(e, &mut err, REPORT_BYTES) {
-        let _ = fmt::Write::write_fmt(
-            &mut err,
-            format_args!("\n  (report cut at {REPORT_BYTES} bytes)"),
-        );
+        let _ = fmt::Write::write_str(&mut err, "\n  (report cut short)");
     }
     let _ = fmt::Write::write_str(&mut err, "\n");
     let _ = err.w.flush();

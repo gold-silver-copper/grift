@@ -768,11 +768,12 @@ impl<T> Grift<T> {
     /// place its trace has, `type-error at keys.grift:2`, then its values, then each combination
     /// of its trace, the first after ` in ` and each one around it on a line of its own, `\n  from
     /// (f ...) at keys.grift:3`, where `...` is the line before's combination, so each piece of
-    /// source is written once. The kind and the source's name get at most a quarter of `bytes`
-    /// each, cut with `...`, so a cut report begins with both from 30 bytes up. A context is
-    /// written as its count of names, `#[context 3 names]`, where [`Grift::write`] lists them, and
-    /// a name's control characters are escaped as in a string literal, so only the report begins
-    /// a line. Data nested more than 32 deep is written as `...` too. Nothing is copied: past the
+    /// source is written once. A report that fits `bytes` is written whole. One that doesn't gives
+    /// the kind and the source's name at most a quarter of `bytes` each, cut with `...`, so it
+    /// begins with both from 30 bytes up, and below that with as much of the kind as fits. A
+    /// context is written as its count of names, `#[context 3 names]`, where [`Grift::write`]
+    /// lists them, and a name's control characters are escaped as in a string literal, so only
+    /// the report begins a line. Data nested more than 32 deep is written as `...` too. Nothing is copied: past the
     /// text the sink holds, a report needs about 2 KiB for its printer, whatever the error holds,
     /// so after `out-of-memory` a host needs room for its text and that; a [`TextBuffer`] may hold
     /// up to twice its text while it grows.
