@@ -1,9 +1,8 @@
 //! The embedding's guarantees, from the host's side, through the public API alone:
-//! - a reclaimed value is `stale-value` and another interpreter's value is `foreign-value`, at
-//!   every way in: each primitive's every argument, every reader and writer, every operation on
-//!   contexts, and what a host function returns;
-//! - a stop reaches only the run its handle was taken for, never a later one;
-//! - a kept value lives until it is released, and only its own interpreter takes it.
+//! - a run its host function left is over, and a stop reaches only the run its handle was
+//!   taken for, never a later one;
+//! - a stop ends a walk of a parameter tree, and reading and printing, the host's own included,
+//!   are work a stop reaches.
 #![allow(
     clippy::disallowed_methods,
     clippy::disallowed_macros,
