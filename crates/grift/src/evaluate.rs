@@ -1772,6 +1772,7 @@ impl<T> Grift<T> {
 
 /// Adds program combination `r` to the error's trace, unless it is there already. With no
 /// memory to spare the trace stays as it is: the error matters more than its last location.
+#[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
 fn locate(e: &mut Error, r: Reference) {
     if r != Reference::NONE
         && e.seen.try_reserve(1).is_ok()

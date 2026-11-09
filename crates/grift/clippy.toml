@@ -18,6 +18,7 @@ disallowed-methods = [
   { path = "std::rc::Rc::new", reason = "aborts when memory is refused" },
   { path = "std::sync::Arc::new", reason = "aborts when memory is refused" },
   { path = "std::collections::HashMap::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::HashSet::insert", reason = "aborts when memory is refused: reserve first" },
   { path = "std::collections::BTreeMap::insert", reason = "aborts when memory is refused" },
   { path = "std::collections::VecDeque::push_back", reason = "aborts when memory is refused: reserve first" },
   { path = "alloc::borrow::ToOwned::to_owned", reason = "aborts when memory is refused: use local::boxed" },
