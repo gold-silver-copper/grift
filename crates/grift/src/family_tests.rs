@@ -118,21 +118,19 @@ fn kind<T>(g: &Grift<T>, e: &Error) -> String {
 struct Probe {
     stop: Interrupter,
     p: Primitive,
+    /// How the primitive ended: its error's kind, or `done`.
+    said: String,
 }
 
 /// Asks for a stop, then runs the primitive on its operands with no machine step between them.
 fn probe(g: &mut Grift<Probe>, s: &mut Probe, args: &[Value]) -> Result<Answer, Error> {
     assert!(s.stop.stop(), "a run to stop");
     let args: Vec<local::Value> = args.iter().map(|a| g.import(a).unwrap()).collect();
-    let r = g.call_primitive(s.p, &args, g.built_in);
-    match r {
-        Err(e) => {
-            let e = g.export_error(e);
-            let k = kind(g, &e);
-            Ok(Answer::Now(Value::Symbol(g.symbol(&k).unwrap())))
-        }
-        Ok(_) => Ok(Answer::Now(Value::Inert)),
-    }
+    s.said = match g.call_primitive(s.p, &args, g.built_in) {
+        Err(e) => kind(g, &g.export_error(e)),
+        Ok(_) => "done".into(),
+    };
+    Ok(Answer::Now(Value::Inert))
 }
 
 #[test]
@@ -146,19 +144,18 @@ fn a_stop_ends_every_walking_primitive_by_itself() {
         let mut s = Probe {
             stop: g.interrupter(),
             p,
+            said: String::new(),
         };
         g.evaluate(&mut s, &operands(1 << 16, false, 20)).unwrap();
         // A handle taken between runs reaches the next one.
         s.stop = g.interrupter();
         let f = g.host_function("probe", probe).unwrap();
         g.define("probe", f).unwrap();
-        let r = g.evaluate(&mut s, &format!("(probe {args})"));
-        let said = match &r {
-            Ok(v) => super::tests::show(&g, v),
-            Err(e) => kind(&g, e),
-        };
-        if said != "interrupted" {
-            missed.push(format!("{}: {said}", p.name()));
+        // The run itself ends `interrupted` either way, at its next step: what counts is how
+        // the primitive ended.
+        let _ = g.evaluate(&mut s, &format!("(probe {args})"));
+        if s.said != "interrupted" {
+            missed.push(format!("{}: {}", p.name(), s.said));
         }
     }
     assert!(missed.is_empty(), "went on past a stop: {missed:?}");
