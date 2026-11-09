@@ -4165,3 +4165,24 @@ fn a_report_of_many_small_values_finds_a_stop() {
     }
 }
 
+/// Forces its run, then describes into no room at all an error whose values and trace a report
+/// must check before it writes: the checking is work like any other, which the force ends.
+fn checks_with_a_force_waiting(g: &mut Grift, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+    let mut e = g.error("example", &vec![Value::Inert; 8_192]);
+    e.trace = vec![Value::Inert; 8_192];
+    assert!(g.interrupter().force());
+    let failure = g.describe(&e, &mut Discard, 0).unwrap_err();
+    assert_eq!(
+        (kind(g, &failure).as_str(), failure.limit),
+        ("interrupted", true)
+    );
+    Ok(Answer::Now(Value::Inert))
+}
+
+#[test]
+fn a_report_checking_many_values_finds_a_force() {
+    let mut g = grift();
+    define(&mut g, "report", checks_with_a_force_waiting);
+    let e = g.evaluate(&mut (), "(report)").unwrap_err();
+    assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
+}

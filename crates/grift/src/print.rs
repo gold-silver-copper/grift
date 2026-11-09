@@ -188,15 +188,23 @@ impl<T> Grift<T> {
         out: &mut Paced<'_, T>,
     ) -> Result<(), Error> {
         let kind = self.import_symbol(&e.kind)?;
-        e.values
-            .iter()
-            .chain(&e.trace)
-            .try_for_each(|v| self.import(v).map(drop))?;
+        for v in e.values.iter().chain(&e.trace) {
+            if out.charge(1) {
+                return Err(Error::interrupted());
+            }
+            self.import(v)?;
+        }
         let trace = e.trace.iter().map(|v| self.import(v));
-        let place = trace.clone().enumerate().find_map(|(i, at)| {
-            let (source, line) = self.position_local(at.ok()?)?;
-            Some((i, source, line))
-        });
+        let mut place = None;
+        for (i, at) in trace.clone().enumerate() {
+            if out.charge(1) {
+                return Err(Error::interrupted());
+            }
+            if let Some((source, line)) = self.position_local(at?) {
+                place = Some((i, source, line));
+                break;
+            }
+        }
         write_name(self.name(kind), share, out)?;
         if let Some((_, source, line)) = place {
             out.write_str(" at ")?;
@@ -282,7 +290,19 @@ fn write_name<T>(name: &str, share: usize, out: &mut Paced<'_, T>) -> fmt::Resul
         }
         false => c.len_utf8(),
     };
-    let whole = name.chars().map(width).sum::<usize>() <= share;
+    // Whether it fits, looking no further in than `share` bytes.
+    let mut seen = 0;
+    let mut whole = true;
+    for c in name.chars() {
+        seen += width(c);
+        whole = seen <= share;
+        if !whole {
+            break;
+        }
+        if out.charge(1) {
+            return Err(fmt::Error);
+        }
+    }
     let room = if whole {
         share
     } else {
