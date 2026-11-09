@@ -225,7 +225,8 @@ fn write_file(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> 
 /// with `...` if that cut it, written out now: the values may be collected by the next `evaluate`.
 fn describe(g: &G, e: &Error) -> String {
     let mut text = grift::TextBuffer::new();
-    let whole = g.describe(e, &mut text, ERROR_TEXT_MAX) == Ok(grift::ReportStatus::Complete);
+    let budget = ERROR_TEXT_MAX - "...".len();
+    let whole = g.describe(e, &mut text, budget) == Ok(grift::ReportStatus::Complete);
     let line = text.as_str().replace('\n', " ");
     if whole { line } else { line + "..." }
 }
