@@ -132,6 +132,9 @@ ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can k
 program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
 success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading, a process's output included, is the limit `out-of-memory`;
 `run-process` still reads both of the process's pipes to their ends and waits for it to end.
+The system copies paths, variable names and a process's words where refused memory aborts, so
+each operation hands it at most 1 MiB: a path or name, or a process's words each counted with its
+end byte and a pointer, past that is a `range-error`.
 
 ```lisp
 #!/usr/bin/env grift

@@ -484,7 +484,9 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
             None => return Err(g.error("type-error", std::slice::from_ref(v))),
         }
     }
-    if words.iter().map(String::len).sum::<usize>() > SYSTEM_BYTES {
+    // Each word also costs the system its end byte and a pointer to it, so empty words count too.
+    let size = |w: &String| w.len() + 1 + size_of::<usize>();
+    if words.iter().map(size).sum::<usize>() > SYSTEM_BYTES {
         return Err(g.error("range-error", args));
     }
     let (Some((program, arguments)), Some(name)) = (words.split_first(), args.first()) else {

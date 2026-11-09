@@ -333,6 +333,17 @@ fn a_line_longer_than_memory_is_out_of_memory() {
     assert!(err.contains(": out-of-memory at "), "{err}");
 }
 
+/// Each word handed to the system costs room past its text, so many empty words are a
+/// `range-error` too, before the system is asked to run them.
+#[test]
+fn many_empty_words_for_a_process_are_a_range_error() {
+    let dir = scratch("empty-words");
+    let program = r#"(catch! (apply run-process (pair "/bin/true" (map (lambda! (#ignore) "") (range 0 120000))))
+                      e (display (evaluate-in! kind e)))"#;
+    let (status, out, err) = script(&dir, program, &[], "");
+    assert_eq!((status, out.as_str()), (Some(0), "range-error"), "{err}");
+}
+
 /// A file a program closed stays closed whatever is read or opened after it.
 #[test]
 fn a_closed_file_stays_closed_past_later_reads_and_opens() {
