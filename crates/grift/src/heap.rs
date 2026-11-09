@@ -97,20 +97,20 @@ pub(crate) struct Origin {
 
 const NONE: u32 = u32::MAX;
 
-/// A collection pays for itself: the next one starts once as much was allocated as the largest
-/// part of what this one walked, at least this much, about 1.2 MB of slots: a small program's
-/// collections walk the library each time, so fewer of them cost less. It walks what survived,
-/// the roots outside the heap (the running machine, the kept table and its parked runs, the names
-/// a host holds and the spelling index) and every slot, so the next waits
-/// for the largest of those three, the slots counted as half the free ones: that many take free
-/// slots without the heap growing, and as the lowest go first the top stays free. The heap stays
-/// within about twice the larger of the live data, those roots and the slots it already has; a
-/// free third at the top of the slots is given back, so a past peak leaves no walking behind. Its
-/// memory goes back only down to the highest slot still alive: objects never move, so one
-/// long-lived object made after a peak keeps the slots below it, never more than the peak. A
-/// retired slot counts as live. A string, bytes value or context counts as many objects as its
-/// storage would fill slots, and a context's bindings as they grow too, so large chunks dropped
-/// one after another bring the next collection nearer as their size, not their number, says.
+/// A collection pays for itself: the next one starts once as much was allocated as the largest part
+/// of what this one walked, at least this much, about 1.2 MB of slots: a small program's
+/// collections walk the library each time, so fewer of them cost less. It walks what survived, the
+/// roots outside the heap (the running machine, the kept table and its parked runs, the names a
+/// host holds and the spelling index) and every slot, so the next waits for the largest of those
+/// three, the slots counted as half the free ones: that many take free slots without the heap
+/// growing, and as the lowest go first the top stays free. The heap stays within about twice the
+/// larger of the live data, those roots, the slots it already has and this floor; a free third at
+/// the top of the slots is given back, so a past peak leaves no walking behind. Its memory goes
+/// back only down to the highest slot still alive: objects never move, so one long-lived object
+/// made after a peak keeps the slots below it, never more than the peak. A retired slot counts as
+/// live. A string, bytes value or context counts as many objects as its storage would fill slots,
+/// and a context's bindings as they grow too, so large chunks dropped one after another bring the
+/// next collection nearer as their size, not their number, says.
 const GC_MIN: usize = 16384;
 
 /// How many objects `obj` counts as, for when to collect.
@@ -269,7 +269,7 @@ impl Heap {
     }
 
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
-    /// next collection nearer, as a new object's weight does.
+    /// next collection nearer, as a new object's weight does. With `more` 0 it only reaches them.
     pub fn room_in(&mut self, r: Reference, more: usize) -> Result<&mut Bindings, Error> {
         let bindings = match self.slots.get_mut(r.idx as usize) {
             Some(s) if s.generation == r.generation => match &mut s.obj {
@@ -378,6 +378,8 @@ impl Heap {
                 continue;
             }
             if !matches!(s.obj, Object::Free(_)) {
+                // Its object dies here, whichever way the slot goes below.
+                names_freed |= matches!(s.obj, Object::Symbol(_));
                 // A slot whose generations run out is retired, never reused: its last one, which
                 // no reference has, means free for good.
                 s.generation = s.generation.saturating_add(1);
@@ -388,13 +390,7 @@ impl Heap {
                 top = top.or(Some(idx));
                 live = live.saturating_add(1);
             } else {
-                match &mut s.obj {
-                    Object::Free(next) => *next = self.free,
-                    obj => {
-                        names_freed |= matches!(obj, Object::Symbol(_));
-                        *obj = Object::Free(self.free);
-                    }
-                }
+                s.obj = Object::Free(self.free);
                 self.free = idx;
                 free += 1;
             }
@@ -412,7 +408,7 @@ impl Heap {
     /// Gives back the free slots above `used`, when they are at least a third of all, and says
     /// how many it gave: what survived was made last, so about as high as half the free slots.
     /// The free list runs from the bottom up, so they are its end. A slot made in their place
-    /// starts past their generations, unless those ran so far that it couldn't.
+    /// starts past their generations; past half their range, nothing is given back.
     fn give_back(&mut self, used: usize) -> usize {
         let top = self.slots.get(used..).unwrap_or_default();
         if top.len() < GC_MIN || top.len() < self.slots.len() / 3 {
@@ -550,5 +546,24 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
             f(Value::Context(op.context));
         }
         Object::Applicative(c) => f(*c),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    use super::*;
+
+    /// A name freed for good, its slot retired, is a freed name too: the spelling index must
+    /// drop it, or interning the spelling again would give the dead slot.
+    #[test]
+    fn retiring_a_name_says_a_name_was_freed() {
+        let mut heap = Heap::default();
+        let name = crate::local::boxed("retired-name").unwrap();
+        let r = heap.alloc(Object::Symbol(name)).unwrap();
+        heap.slots[r.idx as usize].generation = u32::MAX - 1;
+        let names_freed = heap.collect(std::iter::empty(), 0);
+        assert!(heap.symbol_name(r.idx).is_none());
+        assert!(names_freed, "the spelling index must drop this name");
     }
 }
