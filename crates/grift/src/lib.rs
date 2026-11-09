@@ -599,7 +599,8 @@ impl<T> Grift<T> {
     /// ```
     pub fn bind(&mut self, context: &Value, parameters: &Value, value: Value) -> Result<(), Error> {
         // Every value is checked before the context's kind, as the primitive's arguments are.
-        let done = self.import(context).and_then(|c| {
+        let done = Control::host_run(&self.control).and_then(|_run| {
+            let c = self.import(context)?;
             let (parameters, value) = (self.import(parameters)?, self.import(&value)?);
             let c = context_kind(c)?;
             self.bind_tree(c, parameters, value)
