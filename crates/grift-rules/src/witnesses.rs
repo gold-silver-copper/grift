@@ -696,7 +696,7 @@ fn runner_refuses(runner: &std::path::Path, dir: &std::path::Path) -> Result<(),
     huge.resize(300 << 20, b'a');
     huge.push(b')');
     let out = run("huge.grift", &huge, Some("268435456"))?;
-    check(out.status.code().is_some(), || {
+    check(!out.status.success() && out.status.code().is_some(), || {
         format!(
             "runner on a 300 MB line with 256 MB of address space aborted: {} {}",
             out.status,

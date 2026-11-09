@@ -7,7 +7,8 @@ license.workspace = true
 description = "The rules grift keeps (RULES.md), checked as properties on its public API: tests only"
 publish = false
 
-[dependencies]
+# A dev-dependency, so the hooks feature reaches only this crate's tests, never a workspace build.
+[dev-dependencies]
 grift = { path = "../grift", features = ["hooks"] }
 
 [lints.rust]

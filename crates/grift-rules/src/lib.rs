@@ -319,7 +319,13 @@ pub fn isolated(
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let out = std::process::Command::new(exe)
-        .args([test, "--exact", "--test-threads=1", "--nocapture"])
+        .args([
+            test,
+            "--exact",
+            "--include-ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
         .env(key, case)
         .output()
         .map_err(|e| e.to_string())?;
