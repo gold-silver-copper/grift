@@ -1797,7 +1797,6 @@ impl<T> Grift<T> {
     }
 }
 
-
 /// The bitwise operations, as Rust's `&`, `|`, `^`, `<<` and `>>` on `i64`: a shift by an amount
 /// outside 0 to 63 is `overflow`, where Rust panics, and the bits shifted out are lost, as in Rust.
 fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
