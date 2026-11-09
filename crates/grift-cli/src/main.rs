@@ -17,6 +17,7 @@
 //! `elapsed-nanoseconds` and `exit`.
 
 use grift::{Answer, Error, Grift, HostFunction, Ran, ReportStatus, Value};
+use std::ffi::OsString;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -30,12 +31,6 @@ const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, read
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
 
-/// A file a program opened: its path, and its stream.
-struct Opened {
-    path: String,
-    file: Stream,
-}
-
 /// A file is being read, being written, or closed, which is for good.
 enum Stream {
     Reading(Box<dyn BufRead>),
@@ -43,10 +38,10 @@ enum Stream {
     Closed,
 }
 
-/// The runner's state: the files opened, standard input, error and output first, and when the run
-/// started.
+/// The runner's state: the files opened, each with its path, standard input, error and output first,
+/// and when the run started.
 struct Runner {
-    files: Vec<Opened>,
+    files: Vec<(String, Stream)>,
     started: Instant,
 }
 
@@ -158,7 +153,7 @@ fn opened(
     match open(&path) {
         Ok(file) => {
             let id = i64::try_from(r.files.len()).map_err(|_| limit(g, "out-of-memory", &[]))?;
-            r.files.push(Opened { path, file });
+            r.files.push((path, file));
             Ok(Value::Integer(id))
         }
         Err(e) => Err(failed(g, "file-error", &path, &e)),
@@ -184,14 +179,11 @@ fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mu
         _ => None,
     };
     match opened {
-        Some(Opened {
-            path,
-            file: Stream::Closed,
-        }) => {
+        Some((path, Stream::Closed)) => {
             let path = g.string(path)?;
             Err(g.error("closed", &[path]))
         }
-        Some(Opened { path, file }) => Ok((path, file)),
+        Some((path, file)) => Ok((path, file)),
         None => Err(g.error("type-error", std::slice::from_ref(id))),
     }
 }
@@ -391,15 +383,11 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [Some(stderr), Some(stdout)] = outputs else {
         return Err(limit(g, "out-of-memory", &[]));
     };
-    let mut list = Value::EmptyList;
-    for bytes in [stderr, stdout] {
-        let Ok(text) = String::from_utf8(bytes) else {
-            return Err(g.error("encoding-error", args));
-        };
-        let text = g.string(&text)?;
-        list = g.pair(text, list)?;
-    }
-    g.pair(status, list)
+    let (Ok(stdout), Ok(stderr)) = (String::from_utf8(stdout), String::from_utf8(stderr)) else {
+        return Err(g.error("encoding-error", args));
+    };
+    let list = [status, g.string(&stdout)?, g.string(&stderr)?];
+    g.list(&list)
 }
 
 /// Prints an error to stderr as its source, then its kind, where it happened and its values, the
@@ -543,11 +531,9 @@ fn set_up(g: &mut G, r: &mut Runner, arguments: &[String], script: &str) -> Resu
         let f = g.host_function(name, f)?;
         bind(g, name, f)?;
     }
-    let mut list = Value::EmptyList;
-    for a in arguments.iter().rev() {
-        let a = g.string(a)?;
-        list = g.pair(a, list)?;
-    }
+    let arguments = arguments.iter().map(|a| g.string(a));
+    let arguments = arguments.collect::<Result<Vec<_>, _>>()?;
+    let list = g.list(&arguments)?;
     bind(g, "command-line-arguments", list)?;
     let script = g.string(script)?;
     bind(g, "script-path", script)?;
@@ -567,35 +553,33 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut words = Vec::new();
-    for word in std::env::args_os().skip(1) {
-        match word.into_string() {
-            Ok(word) => words.push(word),
-            Err(word) => {
-                let e = match g.bytes(word.as_encoded_bytes()) {
-                    Ok(bytes) => g.error("encoding-error", &[bytes]),
-                    Err(e) => e,
-                };
-                return report(&g, "grift", &e);
-            }
+    let words = std::env::args_os().skip(1).map(OsString::into_string);
+    let words = match words.collect::<Result<Vec<_>, _>>() {
+        Ok(words) => words,
+        Err(word) => {
+            let e = match g.bytes(word.as_encoded_bytes()) {
+                Ok(bytes) => g.error("encoding-error", &[bytes]),
+                Err(e) => e,
+            };
+            return report(&g, "grift", &e);
         }
-    }
+    };
     let script = words.first().map(String::as_str);
     let arguments = words.get(1..).unwrap_or_default();
     let mut r = Runner {
         files: vec![
-            Opened {
-                path: String::from("standard-input"),
-                file: Stream::Reading(Box::new(BufReader::new(io::stdin()))),
-            },
-            Opened {
-                path: String::from("standard-error"),
-                file: Stream::Writing(Box::new(io::stderr())),
-            },
-            Opened {
-                path: String::from("standard-output"),
-                file: Stream::Writing(Box::new(io::stdout())),
-            },
+            (
+                "standard-input".into(),
+                Stream::Reading(Box::new(BufReader::new(io::stdin()))),
+            ),
+            (
+                "standard-error".into(),
+                Stream::Writing(Box::new(io::stderr())),
+            ),
+            (
+                "standard-output".into(),
+                Stream::Writing(Box::new(io::stdout())),
+            ),
         ],
         started: Instant::now(),
     };
