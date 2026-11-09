@@ -336,12 +336,6 @@ impl Heap {
     pub fn len(&self) -> usize {
         self.slots.len()
     }
-
-    /// The mark stack's room, for tests that every slot has an entry.
-    #[cfg(test)]
-    pub fn mark_room(&self) -> usize {
-        self.marks.capacity()
-    }
 }
 
 /// Puts `v`'s object on the mark stack, unless a collection already reached it.
