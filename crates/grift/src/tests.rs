@@ -233,14 +233,14 @@ fn catch_catches_errors_as_contexts() {
             "(catch! (add 1 (check (quote! a))) e (raise e))"
         ]
     );
-    // A new error starts at its raise.
+    // A new error starts at its raise. A program reads a trace newest first.
     let trace = g
         .evaluate(
             &mut (),
             "(catch! (catch! (first 1) e (raise e)) e (evaluate-in! trace e))",
         )
         .unwrap();
-    assert_eq!(show(&g, &trace), "((first 1) (raise e))");
+    assert_eq!(show(&g, &trace), "((raise e) (first 1))");
     let trace = g
         .evaluate(
             &mut (),
@@ -389,6 +389,23 @@ fn unwinding_and_checking_parameters_search_nothing() {
         names.join(" ")
     );
     fails(&mut g, &[(twice.as_str(), "parameter-error")]);
+}
+
+#[test]
+fn a_catch_and_raise_at_every_level_copies_no_trace() {
+    // 3,000 levels, each a combination of its own, each catching the error and raising it again:
+    // the trace each handler gets is the last one's with the places since on its front. A copy at
+    // each level would make 4.5 million pairs, a collection every few thousand.
+    let mut g = grift();
+    let mut src = String::from("(first 1)");
+    for _ in 0..3000 {
+        src = format!("(catch! {src} e (raise e))");
+    }
+    let (e, _, collections, _) = work(&mut g, &src);
+    let e = e.unwrap_err();
+    assert_eq!(e.trace.len(), 3002);
+    assert_eq!(show(&g, &e.trace[0]), "(first 1)");
+    assert!(collections < 20, "{collections} collections");
 }
 
 #[test]

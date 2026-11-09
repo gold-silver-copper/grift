@@ -1075,7 +1075,7 @@ impl<T> Grift<T> {
     pub(crate) fn import_error(&self, e: &Error) -> Result<local::Error, local::Error> {
         let (values, trace) = (self.imported(&e.values)?, self.imported(&e.trace)?);
         let kind = self.import_symbol(&e.kind)?;
-        let imported = local::Error::from_parts(kind, values, trace)?;
+        let imported = local::Error::from_parts(kind, values, local::Trace::given(trace)?);
         Ok(local::Error {
             limit: e.limit,
             ..imported
@@ -1164,7 +1164,16 @@ impl<T> Grift<T> {
             self.heap.request_collection();
         }
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
-        match (exported(&e.values), exported(&e.trace)) {
+        // The host's trace is innermost first: the shared list's places reversed, then the rest.
+        let (shared, added) = e.trace.parts();
+        let trace = self.items(shared, shared).and_then(|mut v| {
+            v.reverse();
+            v.try_reserve_exact(added.len())
+                .map_err(|_| local::Error::oom())?;
+            v.extend_from_slice(added);
+            exported(&v)
+        });
+        match (exported(&e.values), trace) {
             (Ok(values), Ok(trace)) => Error {
                 kind: self.export_symbol(e.kind),
                 values,

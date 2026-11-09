@@ -18,9 +18,9 @@
 //! flagged, and run in Rust when their operands have the shape the twin handles; any other shape
 //! runs the operative's body, so what a program sees never differs.
 
-use crate::heap::{Bindings, Object, Operative, Origin, Reference};
+use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
-use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
+use crate::local::{Error, Host, K, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, collected, context_kind};
 use std::sync::Arc;
@@ -339,6 +339,9 @@ pub(crate) struct Machine {
     pub request: Value,
     /// Whether this run may park: only one the host began to, with [`Grift::start`] or the like.
     pub(crate) may_park: bool,
+    /// The trace the last handler got, and its combinations: raising that trace again takes them
+    /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
+    handed: Option<(Value, Seen)>,
     /// Steps taken, for tests of what a form costs.
     #[cfg(test)]
     pub steps: u64,
@@ -347,10 +350,11 @@ pub(crate) struct Machine {
 /// What an ending holds for the collector: its value, or its error's values and trace.
 pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
     let (value, values, trace) = match ending {
-        Ok(v) => (Some(*v), &[][..], &[][..]),
-        Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
+        Ok(v) => (Some(*v), &[][..], None),
+        Err(e) => (None, e.values.as_slice(), Some(&e.trace)),
     };
-    value.into_iter().chain(values.iter().chain(trace).copied())
+    let trace = trace.into_iter().flat_map(Trace::roots);
+    value.into_iter().chain(values.iter().copied()).chain(trace)
 }
 
 impl Machine {
@@ -374,11 +378,16 @@ impl Machine {
         self.library = false;
         self.request = Value::Inert;
         self.may_park = false;
+        self.handed = None;
     }
 
     /// How many objects a parked machine counts as, for when to collect: every collection walks it.
     pub(crate) fn weight(&self) -> usize {
-        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
+        let waiting = self.waiting.iter().map(|w| match w {
+            Ok(_) => 1,
+            Err(e) => e.values.len() + e.trace.weight(),
+        });
+        1 + self.frames.len() + self.arguments.len() + waiting.sum::<usize>()
     }
 }
 
@@ -393,6 +402,7 @@ impl Default for Machine {
             work: Vec::new(),
             request: Value::Inert,
             may_park: false,
+            handed: None,
             #[cfg(test)]
             steps: 0,
         }
@@ -700,11 +710,11 @@ impl<T> Grift<T> {
         // a level at a time, and a collection walks all the levels left. A cleanup refused memory
         // is a new refusal, and asks again.
         self.acting_on_refusal(&mut e);
-        locate(&mut e, self.machine.here);
+        e.trace.add(self.machine.here);
         while let Some(Frame { what, context, at }) = self.machine.frames.pop() {
             match what {
                 What::Cleanup { cleanup, base } => {
-                    locate(&mut e, at);
+                    e.trace.add(at);
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
                     return self.start_cleanup(Err(e), cleanup, context, at);
@@ -712,12 +722,12 @@ impl<T> Grift<T> {
                 What::Handler { handler, base } if !e.limit => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    match self.handle(&e, handler, context) {
+                    match self.handle(e, handler, context) {
                         Ok(mode) => return Ok(mode),
                         Err(mut failed) => {
                             self.acting_on_refusal(&mut failed);
                             e = failed;
-                            locate(&mut e, at);
+                            e.trace.add(at);
                         }
                     }
                 }
@@ -731,7 +741,7 @@ impl<T> Grift<T> {
                         e = waiting;
                     }
                 }
-                _ => locate(&mut e, at),
+                _ => e.trace.add(at),
             }
         }
         Err(e)
@@ -778,9 +788,11 @@ impl<T> Grift<T> {
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
-    /// `values` and `trace`.
-    fn handle(&mut self, e: &Error, handler: Value, context: Reference) -> Result<Mode, Error> {
-        let (values, trace) = (self.list_local(&e.values)?, self.list_local(&e.trace)?);
+    /// `values` and `trace`. The trace is the error's shared list with the places added since on
+    /// its front, so this costs those places only.
+    fn handle(&mut self, e: Error, handler: Value, context: Reference) -> Result<Mode, Error> {
+        let values = self.list_local(&e.values)?;
+        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
@@ -791,6 +803,7 @@ impl<T> Grift<T> {
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
         let operands = self.list_local(&[v])?;
+        self.machine.handed = Some((trace, seen));
         self.combine(handler, operands, context)
     }
 
@@ -1464,7 +1477,7 @@ impl<T> Grift<T> {
     }
 
     /// The error an error context describes: one `error` made, or a handler got.
-    fn error_of(&self, e: Value) -> Result<Error, Error> {
+    fn error_of(&mut self, e: Value) -> Result<Error, Error> {
         let bad = || type_error(e);
         let Value::Context(r) = e else {
             return Err(bad());
@@ -1474,8 +1487,14 @@ impl<T> Grift<T> {
             return Err(bad());
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
-        let (values, trace) = (self.items(values, e)?, self.items(trace, e)?);
-        Error::from_parts(kind, values, trace)
+        let values = self.items(values, e)?;
+        // The trace the last handler got comes back whole, its combinations with it.
+        if let Some((_, seen)) = self.machine.handed.take_if(|(h, _)| *h == trace) {
+            return Ok(Error::from_parts(kind, values, Trace::handed(trace, seen)));
+        }
+        let mut given = self.items(trace, e)?;
+        given.reverse();
+        Ok(Error::from_parts(kind, values, Trace::given(given)?))
     }
 
     /// The elements of a proper list; anything else is a `type-error` naming `culprit`.
@@ -1770,19 +1789,6 @@ impl<T> Grift<T> {
     }
 }
 
-/// Adds program combination `r` to the error's trace, unless it is there already. With no
-/// memory to spare the trace stays as it is: the error matters more than its last location.
-#[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
-fn locate(e: &mut Error, r: Reference) {
-    if r != Reference::NONE
-        && e.seen.try_reserve(1).is_ok()
-        && e.trace.try_reserve(1).is_ok()
-        && e.seen.insert(r.idx)
-    {
-        #[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
-        e.trace.push(Value::Pair(r));
-    }
-}
 
 /// The bitwise operations, as Rust's `&`, `|`, `^`, `<<` and `>>` on `i64`: a shift by an amount
 /// outside 0 to 63 is `overflow`, where Rust panics, and the bits shifted out are lost, as in Rust.
