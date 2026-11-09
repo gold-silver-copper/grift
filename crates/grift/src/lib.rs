@@ -128,7 +128,7 @@ impl Hash for Owner {
 pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>;
 
 /// What a [`HostFunction`] answers.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Answer {
     /// This value.
     Now(Value),
@@ -236,6 +236,16 @@ pub struct Error {
 /// ```
 #[cfg(doctest)]
 struct ErrorIsNotClone;
+
+/// Nor has an answer, whose call holds vectors.
+///
+/// ```compile_fail
+/// fn copied(a: &grift::Answer) -> grift::Answer {
+///     a.clone()
+/// }
+/// ```
+#[cfg(doctest)]
+struct AnswerIsNotClone;
 
 /// A value the host keeps across evaluations: an entry in a table the collector marks and no
 /// program reaches. Read it with [`Grift::kept`]; [`Grift::release`] clears it. Neither
