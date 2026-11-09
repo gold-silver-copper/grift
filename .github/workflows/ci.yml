@@ -23,6 +23,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
+      # Tests may grow only as fast as the code they test (the rule is in the script).
+      - run: scripts/test-ratio.py
       - name: Editor example
         working-directory: examples/emacs
         run: cargo clippy --all-targets --locked -- -D warnings
