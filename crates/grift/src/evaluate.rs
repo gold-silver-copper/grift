@@ -1294,7 +1294,7 @@ impl<T> Grift<T> {
                 let text = std::mem::take(text);
                 let read = offset
                     .filter(|&i| text.is_char_boundary(i))
-                    .map(|i| self.read_form(&text, i, 1, None));
+                    .map(|i| self.read_form(&text, i, 1, None, &mut 0));
                 if let Object::String(s) = self.heap.get_mut(r)? {
                     *s = text;
                 }

@@ -263,3 +263,42 @@ fn a_stop_ends_a_walk_of_a_parameter_tree() {
         "(evaluate (list vau! shared #ignore 1) (current-context))"
     ));
 }
+
+/// A sink that stops its handle's run at the first text it is given.
+struct Stopping(Interrupter, Option<bool>, String);
+
+impl std::fmt::Write for Stopping {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.1.get_or_insert_with(|| self.0.stop());
+        self.2.push_str(s);
+        Ok(())
+    }
+}
+
+/// Reading and printing are work a stop ends wherever they happen: the host's own `write`, with
+/// no run in progress, is a run of its own, and the reader inside a run checks for its stop. A
+/// stop that ends host-side work is spent with it.
+#[test]
+fn a_stop_reaches_reading_and_printing() {
+    let mut g: Grift<Option<bool>> = Grift::new().unwrap();
+    let list = g.evaluate(&mut None, "(range 0 100000)").unwrap();
+    let mut sink = Stopping(g.interrupter(), None, String::new());
+    let e = g.write(&list, &mut sink).unwrap_err();
+    assert_eq!(sink.1, Some(true), "the write was the run in progress");
+    assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+    assert!(sink.2.len() < 100_000, "it stopped part way");
+    assert!(!sink.0.stop(), "its run is over");
+    assert_eq!(g.evaluate(&mut None, "(add 1 2)"), Ok(Value::Integer(3)));
+
+    let read: grift::HostFunction<Option<bool>> = |g, read, _| {
+        assert!(g.interrupter().stop(), "a run to stop");
+        let e = g.read(&"1 ".repeat(100_000)).unwrap_err();
+        *read = Some(g.symbol_name(&e.kind)? == "interrupted");
+        Ok(Answer::Now(Value::Inert))
+    };
+    let read = g.host_function("read-long", read).unwrap();
+    let mut stopped = None;
+    let e = g.call(&mut stopped, &read, &[]).unwrap_err();
+    assert_eq!(stopped, Some(true), "the reader found the stop");
+    assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+}

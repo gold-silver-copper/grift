@@ -411,7 +411,7 @@ impl<T> Grift<T> {
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
         let forms = self
             .prepare(std::iter::empty())
-            .and_then(|()| self.read_local(src, None, false));
+            .and_then(|()| self.read_to_run(src, None, false));
         let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
         self.exported(done)
     }
@@ -483,8 +483,24 @@ impl<T> Grift<T> {
         let c = self.context_of(context)?;
         self.prepare(std::iter::once(local::Value::Context(c)))?;
         let source = self.intern(source)?;
-        let forms = self.read_local(src, Some(source), library)?;
+        let forms = self.read_to_run(src, Some(source), library)?;
         self.evaluate_forms(Some(state), forms, c, parks)
+    }
+
+    /// Reads `src` as the first part of the run that then evaluates it, so a stop reaches the
+    /// reading too; text that doesn't read ends the run.
+    fn read_to_run(
+        &mut self,
+        src: &str,
+        source: Option<local::Symbol>,
+        library: bool,
+    ) -> Result<local::Value, local::Error> {
+        self.begin_run();
+        let forms = self.read_local(src, source, library);
+        if forms.is_err() {
+            self.control.end();
+        }
+        forms
     }
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
@@ -742,7 +758,8 @@ impl<T> Grift<T> {
     /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
     /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let forms = self.read_local(src, None, false);
+        let forms =
+            Control::host_run(&self.control).and_then(|_run| self.read_local(src, None, false));
         self.exported(forms)
     }
 
@@ -762,9 +779,10 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error> {
-        let forms = self
-            .intern(source)
-            .and_then(|source| self.read_local(text, Some(source), false));
+        let forms = Control::host_run(&self.control).and_then(|_run| {
+            let source = self.intern(source)?;
+            self.read_local(text, Some(source), false)
+        });
         self.exported(forms)
     }
 
@@ -787,7 +805,8 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn write(&self, v: &Value, out: &mut dyn fmt::Write) -> Result<(), Error> {
-        let written = self.import(v).and_then(|v| self.print(v, out));
+        let written = Control::host_run(&self.control)
+            .and_then(|_run| self.import(v).and_then(|v| self.print(v, out)));
         self.out(written)
     }
 
@@ -829,7 +848,8 @@ impl<T> Grift<T> {
         out: &mut dyn fmt::Write,
         bytes: usize,
     ) -> Result<ReportStatus, Error> {
-        self.out(self.report(error, out, bytes))
+        let run = Control::host_run(&self.control);
+        self.out(run.and_then(|_run| self.report(error, out, bytes)))
     }
 
     /// The source and line of a combination read by [`Grift::read_in`] or [`Grift::evaluate_in`],
