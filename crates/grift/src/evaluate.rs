@@ -1723,6 +1723,23 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
+    /// Runs primitive `p` on `args` in `context`, for the sweeps in `family_tests`.
+    #[cfg(test)]
+    pub(crate) fn call_primitive(
+        &mut self,
+        p: Primitive,
+        args: &[Value],
+        context: Reference,
+    ) -> Result<Mode, Error> {
+        let base = self.machine.arguments.len();
+        for &a in args {
+            push(&mut self.machine.arguments, a)?;
+        }
+        let r = self.primitive(p, context, base);
+        self.machine.arguments.truncate(base);
+        r
+    }
+
     /// One pair's two halves. A walk along a list goes through [`Items`], which a stop ends.
     pub(crate) fn pair_at(&self, r: Reference) -> Result<(Value, Value), Error> {
         match self.heap.get(r)? {

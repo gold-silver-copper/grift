@@ -8,6 +8,13 @@
 )]
 mod ending_tests;
 mod evaluate;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
+mod family_tests;
 mod heap;
 mod interrupt;
 mod local;
