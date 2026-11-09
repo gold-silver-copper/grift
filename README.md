@@ -256,7 +256,7 @@ fn main() -> Result<(), Error> {
   `position(&at)` (`Result<Option<_>, Error>`) is a
   combination's source and line; `describe(&e, out, bytes)` writes the error for a person in at
   most `bytes` bytes, the kind and innermost place first, each line writing the line before's
-  combination as `...`, and says whether that cut it, `ReportStatus::Complete` or `Truncated`
+  combination as `...` (and data nested more than 32 deep), and says whether that cut it, `ReportStatus::Complete` or `Truncated`
   (grift has no number of its own: the runner gives 4096);
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one

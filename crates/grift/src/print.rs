@@ -1,11 +1,17 @@
 //! The printer, with an explicit stack. Pairs can't form cycles (they are immutable, and a
 //! pair only refers to older values), and a context prints only its names, so it ends. A report
-//! prints the same way into a budget, a context there only as its count of names.
+//! prints the same way into a budget, a context there only as its count of names and data nested
+//! too deep for its stack as `...`.
 
 use crate::Grift;
 use crate::heap::Object;
 use crate::local::{Error, K, Value, push};
 use std::fmt::{self, Write};
+
+/// How many items a report's printer holds before it writes what it would open as `...`: data
+/// nested through its first element costs an item a level, so this, not the data, bounds the
+/// printer's memory, about 2 KiB.
+const REPORT_DEPTH: usize = 32;
 
 enum Item {
     Value(Value),
@@ -114,6 +120,12 @@ impl<T> Grift<T> {
                     out.write_char(']')?;
                 }
                 Value::Pair(_) if shown == Some(v) => {
+                    out.write_str("...")?;
+                }
+                Value::Pair(_) | Value::Operative(_) | Value::Applicative(_)
+                    if report.is_some() && todo.len() >= REPORT_DEPTH =>
+                {
+                    out.left_out = true;
                     out.write_str("...")?;
                 }
                 Value::Pair(r)

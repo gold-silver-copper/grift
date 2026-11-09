@@ -113,3 +113,33 @@ fn an_out_of_memory_report_needs_memory_for_its_text_alone() {
         );
     }
 }
+
+/// A combination in the trace that nests 5,000 deep through its first element, as quoted data,
+/// is cut by the report: its report needs memory for the budget, not for the program's data.
+#[test]
+fn an_out_of_memory_report_of_deep_quoted_data_needs_no_more_than_its_budget() {
+    let hog = "(define! hog (lambda! (xs n) (hog (pair n xs) (add n 1))))\n";
+    let program = format!(
+        "{hog}(list (quote! {}x{}) (hog () 0))",
+        "(".repeat(5000),
+        ")".repeat(5000)
+    );
+    for spare in [16 << 10, 64 << 10] {
+        let mut g: Grift = Grift::new().unwrap();
+        LIMIT.set(LIVE.get() + (32 << 20));
+        let e = g.evaluate(&mut (), &program).unwrap_err();
+        LIMIT.set(usize::MAX);
+        let mut text = grift::TextBuffer::new();
+        LIMIT.set(LIVE.get() + spare);
+        let written = g.describe(&e, &mut text, 4096);
+        LIMIT.set(usize::MAX);
+        let why = written
+            .as_ref()
+            .err()
+            .map(|w| g.symbol_name(&w.kind).map(String::from));
+        assert!(
+            written.is_ok() && text.as_str().starts_with("out-of-memory in ("),
+            "{spare}: {why:?}"
+        );
+    }
+}

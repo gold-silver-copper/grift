@@ -295,7 +295,11 @@ impl Entry {
     }
 }
 
-/// Enough for an `out-of-memory` trace, and for a report of it: its text and the printer's stack.
+/// Room held back for when memory is refused, given up as the refusal unwinds: for the trace the
+/// unwinding builds, the program's combinations it passes, and after it for a report of the
+/// error, whose printer needs about 2 KiB whatever the error holds, beside the host's own text.
+/// It is no promise past that: a deep trace, or a host's text longer than what is left, can
+/// still find memory refused.
 const SPARE: usize = 64 * 1024;
 
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
@@ -758,7 +762,10 @@ impl<T> Grift<T> {
     /// each, cut with `...`, so a cut report begins with both from 30 bytes up. A context is
     /// written as its count of names, `#[context 3 names]`, where [`Grift::write`] lists them, and
     /// a name's control characters are escaped as in a string literal, so only the report begins
-    /// a line. Nothing is copied: past its text, a report needs only the printer's work.
+    /// a line. Data nested more than 32 deep is written as `...` too. Nothing is copied: past the
+    /// text the sink holds, a report needs about 2 KiB for its printer, whatever the error holds,
+    /// so after `out-of-memory` a host needs room for its text and that; a [`TextBuffer`] may hold
+    /// up to twice its text while it grows.
     ///
     /// [`ReportStatus::Truncated`] says the report was cut. A [`TextBuffer`] holds the text
     /// fallibly. A value of the error that is stale or another interpreter's fails it before
