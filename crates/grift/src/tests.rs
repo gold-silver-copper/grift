@@ -1168,6 +1168,9 @@ fn malformed(
 fn twins() -> [Grift<Vec<String>>; 2] {
     [true, false].map(|natives| {
         let mut g: Grift<Vec<String>> = Grift::new().unwrap();
+        // A memory limit far over what any case holds: a collector that stops keeping up runs
+        // out here, in seconds, instead of growing until the machine does.
+        g.heap.slot_limit = 1 << 18;
         if !natives {
             g.run_definitions();
         }
