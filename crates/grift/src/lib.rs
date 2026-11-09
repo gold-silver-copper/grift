@@ -17,7 +17,7 @@ mod tests;
 use heap::{Heap, Object};
 use interrupt::Control;
 use local::{K, boxed, push};
-use std::collections::HashMap;
+use std::collections::{HashMap, TryReserveError};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Weak};
@@ -104,7 +104,9 @@ fn known(id: u32) -> bool {
 
 impl Clone for Symbol {
     fn clone(&self) -> Self {
-        if let Some(control) = self.owner.0.upgrade().filter(|_| !known(self.index)) {
+        if !known(self.index)
+            && let Some(control) = self.owner.0.upgrade()
+        {
             control.again(self.index);
         }
         Self {
@@ -116,7 +118,9 @@ impl Clone for Symbol {
 
 impl Drop for Symbol {
     fn drop(&mut self) {
-        if let Some(control) = self.owner.0.upgrade().filter(|_| !known(self.index)) {
+        if !known(self.index)
+            && let Some(control) = self.owner.0.upgrade()
+        {
             control.release(self.index);
         }
     }
@@ -603,20 +607,20 @@ impl<T> Grift<T> {
             let name = self.import_symbol(name)?;
             self.find(context_kind(c)?, name)
         });
-        self.out(found.and_then(|v| v.map(|v| self.export(v)).transpose()))
+        self.out(found.and_then(|v| Ok(v.map(|v| self.export(v)).transpose()?)))
     }
 
     /// `(names context)`: the symbols bound in `context` itself, sorted by name.
     pub fn names(&self, context: &Value) -> Result<Vec<Symbol>, Error> {
         let names = self.context_of(context).and_then(|c| self.names_of(c));
-        let names = names.and_then(|names| mapped(&names, |s| self.export_symbol(s)));
+        let names = names.and_then(|names| Ok(mapped(&names, |s| self.export_symbol(s))?));
         self.out(names)
     }
 
     /// Interns `name`.
     pub fn symbol(&mut self, name: &str) -> Result<Symbol, Error> {
         let s = self.intern(name);
-        self.out(s.and_then(|s| self.export_symbol(s)))
+        self.out(s.and_then(|s| Ok(self.export_symbol(s)?)))
     }
 
     /// The name of a symbol.
@@ -740,7 +744,7 @@ impl<T> Grift<T> {
     /// ```
     pub fn list_items(&self, list: &Value) -> Result<Vec<Value>, Error> {
         let items = self.import(list).and_then(|l| self.items(l, l));
-        let items = items.and_then(|items| self.export_all(&items));
+        let items = items.and_then(|items| Ok(self.export_all(&items)?));
         self.out(items)
     }
 
@@ -1140,7 +1144,7 @@ impl<T> Grift<T> {
     }
 
     /// `v` as the host's. Only a symbol needs memory: its handle's count.
-    pub(crate) fn export(&self, v: local::Value) -> Result<Value, local::Error> {
+    pub(crate) fn export(&self, v: local::Value) -> Result<Value, TryReserveError> {
         use local::Value as L;
         let reference = |local| Reference {
             owner: self.owner(),
@@ -1167,14 +1171,14 @@ impl<T> Grift<T> {
     }
 
     /// `vs` as the host's, in a new vector.
-    pub(crate) fn export_all(&self, vs: &[local::Value]) -> Result<Vec<Value>, local::Error> {
+    pub(crate) fn export_all(&self, vs: &[local::Value]) -> Result<Vec<Value>, TryReserveError> {
         mapped(vs, |v| self.export(v))
     }
 
     /// A host handle of `s`, which holds its name: counted, unless it is a known one.
-    fn export_symbol(&self, s: local::Symbol) -> Result<Symbol, local::Error> {
+    fn export_symbol(&self, s: local::Symbol) -> Result<Symbol, TryReserveError> {
         if !known(s.0) {
-            self.control.hold(s.0).map_err(|_| local::Error::oom())?;
+            self.control.hold(s.0)?;
         }
         Ok(Symbol {
             owner: self.owner(),
@@ -1194,7 +1198,7 @@ impl<T> Grift<T> {
             v.try_reserve_exact(e.trace.len())
                 .map_err(|_| local::Error::oom())?;
             v.extend_from_slice(&e.trace);
-            self.export_all(&v)
+            Ok(self.export_all(&v)?)
         });
         match (
             self.export_symbol(e.kind),
@@ -1213,7 +1217,7 @@ impl<T> Grift<T> {
     }
 
     fn exported(&self, r: Result<local::Value, local::Error>) -> Result<Value, Error> {
-        self.out(r.and_then(|v| self.export(v)))
+        self.out(r.and_then(|v| Ok(self.export(v)?)))
     }
 
     fn out<R>(&self, r: Result<R, local::Error>) -> Result<R, Error> {
@@ -1229,14 +1233,14 @@ fn context_kind(v: local::Value) -> Result<heap::Reference, local::Error> {
     }
 }
 
-/// What `f` makes of each of `xs`, in a new vector, reporting `out-of-memory` instead of aborting.
-fn mapped<X: Copy, Y>(
+/// What `f` makes of each of `xs`, in a new vector, its memory asked for first.
+#[inline]
+fn mapped<X: Copy, Y, E: From<TryReserveError>>(
     xs: &[X],
-    mut f: impl FnMut(X) -> Result<Y, local::Error>,
-) -> Result<Vec<Y>, local::Error> {
+    mut f: impl FnMut(X) -> Result<Y, E>,
+) -> Result<Vec<Y>, E> {
     let mut out = Vec::new();
-    out.try_reserve_exact(xs.len())
-        .map_err(|_| local::Error::oom())?;
+    out.try_reserve_exact(xs.len())?;
     for &x in xs {
         out.push(f(x)?);
     }

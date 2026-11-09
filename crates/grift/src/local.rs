@@ -5,6 +5,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Reference, Seen};
+use std::collections::TryReserveError;
 use std::fmt;
 
 /// A value of this interpreter: the language's types, as the public [`Value`](crate::Value) shows
@@ -173,6 +174,13 @@ impl Error {
 impl From<fmt::Error> for Error {
     fn from(_: fmt::Error) -> Error {
         Error::new(K::OutputError, &[])
+    }
+}
+
+/// Memory refused.
+impl From<TryReserveError> for Error {
+    fn from(_: TryReserveError) -> Error {
+        Error::oom()
     }
 }
 

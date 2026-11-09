@@ -107,9 +107,9 @@ const NONE: u32 = u32::MAX;
 /// memory goes back only down to the highest slot still alive: objects never move, so one
 /// long-lived object made after a peak keeps the slots below it, never more than the peak. A
 /// retired slot counts as live. A string, bytes value or context counts as many objects as its
-/// storage would fill slots, so large chunks dropped one after another bring the next collection
-/// nearer as their size, not their number, says.
-const GC_MIN: usize = 4096;
+/// storage would fill slots, and a context's bindings as they grow too, so large chunks dropped
+/// one after another bring the next collection nearer as their size, not their number, says.
+const GC_MIN: usize = 16384;
 
 /// How many objects `obj` counts as, for when to collect.
 #[inline]
@@ -437,12 +437,12 @@ pub(crate) fn shrink<X>(v: &mut Vec<X>) {
 /// Puts `v`'s object on the mark stack, unless a collection already reached it.
 fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
     let r = match v {
+        // A name refers to nothing, so it is marked where it is and never stacked.
         Value::Symbol(id) => {
             if let Some(s) = slots.get(id.0 as usize)
                 && matches!(s.obj, Object::Symbol(_))
-                && !s.marked.replace(true)
             {
-                marks.push(id.0);
+                s.marked.set(true);
             }
             return;
         }

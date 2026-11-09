@@ -2424,7 +2424,8 @@ fn a_parse_error_says_why_and_where() {
 #[test]
 fn an_object_counts_its_storage_towards_the_next_collection() {
     let mut g = grift();
-    let text = "x".repeat(1_000_000);
+    // Past the floor of 16,384 slots' worth, about 1.2 MB.
+    let text = "x".repeat(2_000_000);
     g.heap.not_due();
     g.string(&text).unwrap();
     assert!(g.heap.due(), "a string");
