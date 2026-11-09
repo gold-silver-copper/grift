@@ -475,6 +475,10 @@ impl<T> Grift<T> {
             return Err(Error::interrupted());
         }
         self.machine.request = request;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "room was reserved above, before anything could fail"
+        )]
         room.push(std::mem::take(&mut self.machine));
         self.fill_kept(name, Entry::Run(room));
         self.parked_as = Some(name);
@@ -709,12 +713,20 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         let m = &mut self.machine;
         m.waiting.pop();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the frame's install reserved this room"
+        )]
         m.waiting.push(ending);
         #[cfg(test)]
         assert!(
             m.frames.len() + 2 <= m.frames.capacity(),
             "its install made the room"
         );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the frame's install reserved this room"
+        )]
         m.frames.push(Frame {
             what: What::Finish,
             context: Reference::NONE,
@@ -734,8 +746,11 @@ impl<T> Grift<T> {
         let (values, trace) = (self.list_local(&e.values)?, self.list_local(&e.trace)?);
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Kind.into(), Value::Symbol(e.kind));
+        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Values.into(), values);
+        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
         let operands = self.list_local(&[v])?;
@@ -975,6 +990,10 @@ impl<T> Grift<T> {
             .map_err(|_| Error::oom())?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Value::Symbol(s) = op.context_parameter {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "reserved the operative's size above"
+            )]
             bindings.insert(s, Value::Context(context));
         }
         let local = self
@@ -1177,6 +1196,7 @@ impl<T> Grift<T> {
                     m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
                     m.frames.try_reserve(2).map_err(|_| Error::oom())?;
                     self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
+                    #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
                     self.machine.waiting.push(Ok(Value::Inert));
                 }
                 return Ok(Mode::Evaluate(x, c));
@@ -1312,6 +1332,10 @@ impl<T> Grift<T> {
                     let mut joined = Vec::new();
                     joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
                     for &v in given {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "reserved the exact joined length above"
+                        )]
                         joined.extend_from_slice(self.bytes_of(v)?);
                     }
                     Object::Bytes(joined)
@@ -1319,6 +1343,10 @@ impl<T> Grift<T> {
                     let mut joined = String::new();
                     joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
                     for &v in given {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "reserved the exact joined length above"
+                        )]
                         joined.push_str(self.text(v)?);
                     }
                     Object::String(joined.into_boxed_str())
@@ -1563,6 +1591,7 @@ impl<T> Grift<T> {
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = match (t, v) {
                 _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
+                #[expect(clippy::disallowed_methods, reason = "reserved 1 in the arm")]
                 (Value::Symbol(s), _) => match bindings.try_reserve(1) {
                     Ok(()) if bindings.insert(s, v).is_none() => Ok(()),
                     Ok(()) => Err(Error::new(K::ParameterError, &[tree])),
@@ -1596,6 +1625,7 @@ impl<T> Grift<T> {
         bindings
             .try_reserve(matched.len())
             .map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved matched.len() above")]
         bindings.extend(matched);
         Ok(())
     }
@@ -1609,6 +1639,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let bindings = self.bindings_mut(context)?;
         bindings.try_reserve(1).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         bindings.insert(s, v);
         Ok(())
     }
@@ -1687,6 +1718,7 @@ fn locate(e: &mut Error, r: Reference) {
         && e.trace.try_reserve(1).is_ok()
         && e.seen.insert(r.idx)
     {
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
         e.trace.push(Value::Pair(r));
     }
 }

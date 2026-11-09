@@ -319,6 +319,10 @@ impl<T> Grift<T> {
                 c => c,
             };
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "reserved the character's length above"
+            )]
             s.push(c);
         }
         self.string_local(&s)

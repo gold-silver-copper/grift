@@ -1,6 +1,11 @@
 #![doc = include_str!("../README.md")]
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 mod ending_tests;
 mod evaluate;
 mod heap;
@@ -8,10 +13,20 @@ mod interrupt;
 mod local;
 mod parked;
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 mod parked_tests;
 mod print;
 mod read;
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 mod tests;
 
 use heap::{Heap, Object};
@@ -344,6 +359,10 @@ impl<T> Grift<T> {
     /// shared control block, which its interrupters and values point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "Arc::try_new is unstable: the one abort `new` documents"
+        )]
         let mut g = Grift {
             heap: Heap::default(),
             names: Vec::new(),
@@ -908,7 +927,9 @@ impl<T> Grift<T> {
             .try_reserve(1)
             .map_err(|_| local::Error::oom())?;
         // Neither table changes until both spellings and both collections have room.
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.names.push(spelling);
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.symbols.insert(key, id);
         Ok(local::Symbol(id))
     }
@@ -1147,6 +1168,7 @@ fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local
     let mut v = Vec::new();
     v.try_reserve_exact(items.len())
         .map_err(|_| local::Error::oom())?;
+    #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     v.extend(items);
     Ok(v)
 }

@@ -353,6 +353,10 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
         && s.generation == r.generation
         && !s.marked.replace(true)
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "alloc keeps one mark-stack entry per slot"
+        )]
         marks.push(r.idx);
     }
 }

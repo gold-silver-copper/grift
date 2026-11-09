@@ -118,6 +118,10 @@ impl Error {
             e.limit = false;
             e.refused = false;
             e.kind = kind.into();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "reserved exactly in the condition"
+            )]
             e.values.extend_from_slice(values);
         }
         e
@@ -127,6 +131,7 @@ impl Error {
     pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Vec<Value>) -> Result<Error, Error> {
         let mut seen = Seen::default();
         seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved trace.len() above")]
         seen.extend(trace.iter().filter_map(|v| match v {
             Value::Pair(r) => Some(r.idx),
             _ => None,
@@ -173,6 +178,7 @@ impl From<fmt::Error> for Error {
 pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     let mut b = String::new();
     b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+    #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     b.push_str(s);
     Ok(b.into_boxed_str())
 }
@@ -180,6 +186,7 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
 pub(crate) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), Error> {
     v.try_reserve(1).map_err(|_| Error::oom())?;
+    #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
     v.push(x);
     Ok(())
 }

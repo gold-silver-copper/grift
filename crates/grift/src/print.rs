@@ -312,6 +312,7 @@ impl TextBuffer {
 impl Write for TextBuffer {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         self.0.try_reserve(text.len()).map_err(|_| fmt::Error)?;
+        #[expect(clippy::disallowed_methods, reason = "reserved text.len() above")]
         self.0.push_str(text);
         Ok(())
     }

@@ -1,6 +1,10 @@
 //! Runs that park: a host function answers "not yet", the run is set aside, and the host's loop
 //! goes on until it resumes it, with a value or an error.
-
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

@@ -4,7 +4,11 @@
 //!   contexts, and what a host function returns;
 //! - a stop reaches only the run its handle was taken for, never a later one;
 //! - a kept value lives until it is released, and only its own interpreter takes it.
-
+#![allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
