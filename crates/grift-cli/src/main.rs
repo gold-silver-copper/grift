@@ -10,8 +10,8 @@
 //! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 141, the status a
 //! shell gives a program that SIGPIPE ended.
 //!
-//! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
-//! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`,
+//! For scripting, the program gets a small fixed set of operations: `read-file`, `read-forms`,
+//! `position`, `display`, `display-error`, `standard-input`, `standard-output`, `standard-error`,
 //! `open-file`, `create-file`, `run-process` and `load` (made by `runner.grift`),
 //! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
 //! `elapsed-nanoseconds` and `exit`.
@@ -52,61 +52,18 @@ struct Runner {
 
 type G = Grift<Runner>;
 
-/// A `fmt::Write` straight into an `io::Write`, keeping what failed first, so printing a value
-/// needs no buffer that could grow without bound.
-struct Sink<W: Write> {
-    w: W,
-    error: Option<io::Error>,
-}
+/// A `fmt::Write` straight into an `io::Write`, so printing a report needs no buffer that could grow.
+struct Sink<W: Write>(W);
 
 impl<W: Write> fmt::Write for Sink<W> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.w.write_all(s.as_bytes()).map_err(|e| {
-            self.error.get_or_insert(e);
-            fmt::Error
-        })
+        self.0.write_all(s.as_bytes()).map_err(|_| fmt::Error)
     }
 }
 
 /// Writes to stderr. One that is closed loses the text, which is all that can go wrong here.
 fn say(text: fmt::Arguments) {
     let _ = io::stderr().write_fmt(text);
-}
-
-/// The numbers of the standard streams that are written to, in `Runner::files`.
-const STANDARD_ERROR: i64 = 1;
-const STANDARD_OUTPUT: i64 = 2;
-
-/// Writes the values to file `id`, strings without quotes and everything else as written, and
-/// flushes.
-fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
-    let id = Value::Integer(id);
-    let (path, Stream::Writing(w)) = file(g, r, &id)? else {
-        return Err(g.error("type-error", values));
-    };
-    let mut out = Sink { w, error: None };
-    let printed = values.iter().try_for_each(|v| match g.as_str(v) {
-        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| g.error("output-error", &[])),
-        _ => g.write(v, &mut out),
-    });
-    // The sink's own error first: it says what really failed, and `written` turns it into the
-    // runner's kinds.
-    let wrote = match (out.error, printed) {
-        (Some(e), _) => Err(e),
-        (None, Err(e)) => return Err(e),
-        (None, Ok(())) => out.w.flush(),
-    };
-    written(g, path, wrote)
-}
-
-/// `(display v ...)`: strings without quotes, everything else as written.
-fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, r, STANDARD_OUTPUT, args)
-}
-
-/// `(display-error v ...)`: as `display`, to stderr.
-fn display_error(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    put(g, r, STANDARD_ERROR, args)
 }
 
 /// `(wall-clock-nanoseconds)`: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock,
@@ -280,23 +237,11 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
     let (path, Stream::Reading(input)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
     };
-    let mut input = input.as_mut().take(n);
     let mut bytes = Vec::new();
-    loop {
-        let chunk = match input.fill_buf() {
-            Ok([]) => break,
-            Ok(chunk) => chunk,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(failed(g, "file-error", path, &e)),
-        };
-        if bytes.try_reserve(chunk.len()).is_err() {
-            return Err(limit(g, "out-of-memory", &[]));
-        }
-        bytes.extend_from_slice(chunk);
-        let used = chunk.len();
-        input.consume(used);
+    match input.as_mut().take(n).read_to_end(&mut bytes) {
+        Ok(_) => g.bytes(&bytes),
+        Err(e) => Err(failed(g, "file-error", path, &e)),
     }
-    g.bytes(&bytes)
 }
 
 /// `(write data)` on a file: all of the bytes of a string or a bytes value.
@@ -412,21 +357,13 @@ fn ran(program: &str, arguments: &[String]) -> io::Result<(ExitStatus, [Option<V
 
 /// Reads `pipe` to its end: all of it, or `None` if memory was refused, the rest read and dropped.
 fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
-    let mut kept = Some(Vec::new());
-    let mut chunk = [0; 8192];
-    loop {
-        let n = match pipe.read(&mut chunk) {
-            Ok(0) => return Ok(kept),
-            Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(e),
-        };
-        if let Some(bytes) = &mut kept {
-            match (bytes.try_reserve(n), chunk.get(..n)) {
-                (Ok(()), Some(read)) => bytes.extend_from_slice(read),
-                _ => kept = None,
-            }
+    let mut bytes = Vec::new();
+    match pipe.read_to_end(&mut bytes) {
+        Err(e) if e.kind() == io::ErrorKind::OutOfMemory => {
+            drop(bytes);
+            io::copy(&mut pipe, &mut io::sink()).map(|_| None)
         }
+        read => read.map(|_| Some(bytes)),
     }
 }
 
@@ -471,20 +408,17 @@ fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
 /// line of the runner's own says so: no text of the program's can begin a line in a report. A
 /// report up to 4 KiB is one write, so output sharing its pipe can't land inside it.
 fn report(g: &G, source: &str, e: &Error) -> ExitCode {
-    let mut err = Sink {
-        w: Gathered {
-            out: io::stderr().lock(),
-            text: [0; 4096],
-            len: 0,
-        },
-        error: None,
-    };
+    let mut err = Sink(Gathered {
+        out: io::stderr().lock(),
+        text: [0; 4096],
+        len: 0,
+    });
     let _ = fmt::Write::write_fmt(&mut err, format_args!("{source}: "));
     if let Ok(ReportStatus::Truncated) = g.describe(e, &mut err, REPORT_BYTES) {
         let _ = fmt::Write::write_str(&mut err, "\n  (report cut short)");
     }
     let _ = fmt::Write::write_str(&mut err, "\n");
-    let _ = err.w.flush();
+    let _ = err.0.flush();
     ExitCode::FAILURE
 }
 
@@ -555,9 +489,7 @@ macro_rules! now {
 
 /// The host functions, bound by name where `runner.grift` is evaluated, which gives the program
 /// those it should have.
-const HOSTS: [(&str, HostFunction<Runner>); 18] = [
-    ("display", now!(display)),
-    ("display-error", now!(display_error)),
+const HOSTS: [(&str, HostFunction<Runner>); 16] = [
     ("read-file", now!(read_file)),
     ("environment-variable", now!(environment_variable)),
     ("wall-clock-nanoseconds", now!(wall_clock_nanoseconds)),

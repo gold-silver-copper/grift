@@ -22,6 +22,13 @@
 (define! standard-input (reader "standard-input" 0))
 (define! standard-error (writer "standard-error" 1))
 (define! standard-output (writer "standard-output" 2))
+; display: strings without quotes, everything else as written, each value in turn.
+(define! displayer
+  (lambda! (file)
+    (lambda! values
+      (for-each (lambda! (v) (write-host file (if! (string? v) v (value-to-string v)))) values))))
+(define! display (displayer 2))
+(define! display-error (displayer 1))
 (define! open-file (lambda! (path) (reader path (open-host path))))
 (define! create-file (lambda! (path) (writer path (create-host path))))
 ; The record of a finished process: its status, output and error output.
