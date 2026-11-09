@@ -1124,8 +1124,17 @@ impl<T> Grift<T> {
     #[inline(never)]
     fn names_list(&mut self, context: Reference) -> Result<Value, Error> {
         let names = self.names_of(context)?;
-        names.iter().rev().try_fold(Value::EmptyList, |list, &s| {
-            self.pair_local(Value::Symbol(s), list)
+        self.list_of(names.iter().map(|&s| Value::Symbol(s)))
+    }
+
+    /// A new list of `items`, built from the last: charged like [`Items`], so a stop ends it.
+    fn list_of(&mut self, items: impl DoubleEndedIterator<Item = Value>) -> Result<Value, Error> {
+        let mut walked = 0;
+        items.rev().try_fold(Value::EmptyList, |list, x| {
+            if self.walk_stopped(&mut walked) {
+                return Err(Error::interrupted());
+            }
+            self.pair_local(x, list)
         })
     }
 
@@ -1439,9 +1448,7 @@ impl<T> Grift<T> {
             }
             P::BytesToList => {
                 let b = collected(self.bytes_of(x)?.iter().copied())?;
-                b.iter().rev().try_fold(Value::EmptyList, |list, &byte| {
-                    self.pair_local(Value::Integer(i64::from(byte)), list)
-                })?
+                self.list_of(b.iter().map(|&byte| Value::Integer(i64::from(byte))))?
             }
             _ => return Err(type_error(x)),
         })
