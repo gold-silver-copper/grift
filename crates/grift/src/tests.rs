@@ -255,6 +255,84 @@ fn catch_catches_errors_as_contexts() {
     );
 }
 
+/// The value of `src`, which must be a float.
+fn float(g: &mut Grift, src: &str) -> f64 {
+    match g.evaluate(&mut (), src) {
+        Ok(Value::Float(f)) => f,
+        other => panic!("{src} gave {other:?}"),
+    }
+}
+
+const FLOATS: [f64; 12] = [
+    0.0,
+    -0.0,
+    0.1,
+    -2.5,
+    1.0,
+    1e300,
+    5e-324,
+    123456.789,
+    f64::MAX,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::NAN,
+];
+
+#[test]
+fn floats_read_back_as_they_print() {
+    let mut g = grift();
+    for x in FLOATS {
+        let printed = show(&g, &Value::Float(x));
+        let again = float(&mut g, &printed);
+        assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
+        // value-to-string gives the printer's text, and string-to-float reads it back (a
+        // not-a-number only up to its sign, which these floats don't vary).
+        let s = g
+            .evaluate(&mut (), &format!("(value-to-string {printed})"))
+            .unwrap();
+        assert_eq!(g.as_str(&s), Ok(Some(printed.as_str())));
+        let again = float(
+            &mut g,
+            &format!("(string-to-float (value-to-string {printed}))"),
+        );
+        assert_eq!(again.to_bits(), x.to_bits(), "{printed}");
+    }
+    // A not-a-number of any sign reads back as a not-a-number.
+    let negative = show(&g, &Value::Float(-f64::NAN));
+    assert!(float(&mut g, &negative).is_nan());
+    holds(
+        &mut g,
+        &[
+            "(float? 1.5)",
+            "(float? 1e3)",
+            "(integer? 1000)",
+            "(same? (string-to-float \"1\") 1.0)",
+            "(same? (value-to-string 1.0) \"1.0\")",
+            "(same? (float-to-string 1.0) \"1.0\")",
+            "(same? (float-to-string -2.5e-7) (value-to-string -2.5e-7))",
+            "(same? (string-to-float \"inf\") #infinity)",
+            "(same? (string-to-integer \"-42\") -42)",
+            "(same? (integer-to-string -42) \"-42\")",
+        ],
+    );
+    fails(
+        &mut g,
+        &[
+            ("1e", "parse-error"),
+            ("1.2.3", "parse-error"),
+            ("#nan", "parse-error"),
+            ("(string-to-integer \"4x\")", "parse-error"),
+            (
+                "(string-to-integer \"99999999999999999999\")",
+                "parse-error",
+            ),
+            ("(string-to-integer \" 1\")", "parse-error"),
+            ("(string-to-float \"one\")", "parse-error"),
+            ("(string-to-float 1.0)", "type-error"),
+        ],
+    );
+}
+
 #[test]
 fn a_token_with_two_signs_is_a_symbol() {
     let mut g = grift();
