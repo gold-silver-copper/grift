@@ -900,10 +900,6 @@ impl<T> Grift<T> {
         if let Some(name) = self.kept_free {
             return Ok(name);
         }
-        #[cfg(test)]
-        if self.kept.len() >= self.heap.kept_limit {
-            return Err(local::Error::oom());
-        }
         let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
         push(&mut self.kept, Entry::Free(None))?;
         self.kept_free = Some(name);

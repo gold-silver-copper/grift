@@ -215,9 +215,6 @@ fn and_then(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
     })
 }
 
-/// What giving a run up promises doesn't rest on what `stop` means.
-mod giving_up_and_the_stop_rule {}
-
 /// `(call-then f then)`: calls `f` on the machine, then `then` with its value.
 fn call_then(_: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Call {

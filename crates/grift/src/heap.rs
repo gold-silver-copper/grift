@@ -127,15 +127,9 @@ pub(crate) struct Heap {
     /// What the last collection found alive, by weight, for tests of what a run keeps.
     #[cfg(test)]
     live: usize,
-    /// Operatives made, for tests of what a form costs.
-    #[cfg(test)]
-    pub operatives: usize,
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
-    /// Refuse the kept table room past this length, to test a park with no memory to spare.
-    #[cfg(test)]
-    pub kept_limit: usize,
     /// Collect at every safe point, to test what a collection could lose.
     #[cfg(test)]
     pub stress: bool,
@@ -162,11 +156,7 @@ impl Default for Heap {
             #[cfg(test)]
             live: 0,
             #[cfg(test)]
-            operatives: 0,
-            #[cfg(test)]
             slot_limit: usize::MAX,
-            #[cfg(test)]
-            kept_limit: usize::MAX,
             #[cfg(test)]
             stress: false,
             #[cfg(test)]
@@ -196,7 +186,6 @@ impl Heap {
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
         {
-            self.operatives += usize::from(matches!(obj, Object::Operative(_)));
             match self.refuse_in {
                 Some(0) => {
                     self.refused += 1;

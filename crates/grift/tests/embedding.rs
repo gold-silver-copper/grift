@@ -289,15 +289,25 @@ fn a_stop_reaches_reading_and_printing() {
     assert!(!sink.0.stop(), "its run is over");
     assert_eq!(g.evaluate(&mut None, "(add 1 2)"), Ok(Value::Integer(3)));
 
-    let read: grift::HostFunction<Option<bool>> = |g, read, _| {
-        assert!(g.interrupter().stop(), "a run to stop");
-        let e = g.read(&"1 ".repeat(100_000)).unwrap_err();
-        *read = Some(g.symbol_name(&e.kind)? == "interrupted");
-        Ok(Answer::Now(Value::Inert))
-    };
-    let read = g.host_function("read-long", read).unwrap();
-    let mut stopped = None;
-    let e = g.call(&mut stopped, &read, &[]).unwrap_err();
-    assert_eq!(stopped, Some(true), "the reader found the stop");
-    assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+    // Many short forms, or one long string: each byte read is charged.
+    for read in [
+        (|g, read, _| {
+            assert!(g.interrupter().stop(), "a run to stop");
+            let e = g.read(&"1 ".repeat(100_000)).unwrap_err();
+            *read = Some(g.symbol_name(&e.kind)? == "interrupted");
+            Ok(Answer::Now(Value::Inert))
+        }) as grift::HostFunction<Option<bool>>,
+        |g, read, _| {
+            assert!(g.interrupter().stop(), "a run to stop");
+            let e = g.read(&format!("\"{}\"", "a".repeat(100_000))).unwrap_err();
+            *read = Some(g.symbol_name(&e.kind)? == "interrupted");
+            Ok(Answer::Now(Value::Inert))
+        },
+    ] {
+        let read = g.host_function("read-long", read).unwrap();
+        let mut stopped = None;
+        let e = g.call(&mut stopped, &read, &[]).unwrap_err();
+        assert_eq!(stopped, Some(true), "the reader found the stop");
+        assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+    }
 }

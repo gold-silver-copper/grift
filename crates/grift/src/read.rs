@@ -139,7 +139,8 @@ impl<T> Grift<T> {
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
     /// form, where it is and the line it ends on, or `None` if only space and comments are left.
-    /// Each byte read is a step of the walk `walked`, which a stop ends.
+    /// Each byte read is a step of the walk `walked`, which a stop ends between one item and the
+    /// next: a space, a comment, a parenthesis, a string or a token.
     pub(crate) fn read_form(
         &mut self,
         src: &str,
@@ -219,6 +220,11 @@ impl<T> Grift<T> {
                     self.atom(token, fail)?
                 }
             };
+            // The datum's own bytes, a long string or symbol, are charged as it ends.
+            if self.walk_charged(walked, cur.at - charged) {
+                return Err(Error::interrupted());
+            }
+            charged = cur.at;
             let Some(list) = open.last_mut() else {
                 return Ok(Some((datum, start..cur.at, cur.line)));
             };
