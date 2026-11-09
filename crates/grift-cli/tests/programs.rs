@@ -1,4 +1,5 @@
-//! The corpus: every program in `programs/` passes its own `test.sh` on this runner, three at a time.
+//! The corpus: every program in `programs/` passes its own `test.sh` on this runner, three at a time,
+//! each within two minutes, so a program that never ends fails instead of hanging the suite.
 
 use std::path::Path;
 use std::process::Command;
@@ -24,7 +25,8 @@ fn every_program_passes_its_own_test() {
                     let tmp = scratch.join(&name);
                     let _ = std::fs::remove_dir_all(&tmp);
                     std::fs::create_dir_all(&tmp).unwrap();
-                    let out = Command::new("bash")
+                    let out = Command::new("timeout")
+                        .args(["120", "bash"])
                         .arg(programs.join(&name).join("test.sh"))
                         .env("GRIFT", env!("CARGO_BIN_EXE_grift"))
                         .env("TMPDIR", &tmp)

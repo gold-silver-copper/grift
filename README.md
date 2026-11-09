@@ -467,6 +467,7 @@ waiting function forces the run before it answers.
 use grift::{Answer, Grift, Ran, Value};
 
 fn main() -> Result<(), grift::Error> {
+#   std::thread::spawn(|| { std::thread::sleep(std::time::Duration::from_secs(60)); std::process::exit(1) });
     let mut g: Grift<bool> = Grift::new()?; // the state: whether the host is ending this run
     let wait = g.host_function("wait", |g, ending, _| {
         if *ending {
