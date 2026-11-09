@@ -478,7 +478,7 @@ fn string_helpers() {
                      (range 0 4)))
                (pair \"ab\" (rest texts)))",
             // string-to-lowercase: only A to Z change, and once is enough.
-            "(same? (string-to-lowercase \"ÉCLAIR Ab1 [@]\") \"Éclair ab1 [@]\")",
+            "(same? (string-to-lowercase \"ÉCLAIR AZb1 [@]\") \"Éclair azb1 [@]\")",
             "(all? (lambda! (t)
                (let! ((low (string-to-lowercase t)))
                  (and!? (same? (string-to-lowercase low) low)

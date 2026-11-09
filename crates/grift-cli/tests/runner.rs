@@ -223,6 +223,13 @@ fn a_session_numbers_its_lines_from_its_start() {
         shown.contains("stdin: parse-error unmatched-parenthesis 3 1 stdin\n"),
         "{shown}"
     );
+    // A string open at a line's end goes on to the next line, as a list does.
+    let (_, shown) = at_a_terminal("\"a\nb\"\n(first 1)\n\x04");
+    assert!(
+        shown.contains("stdin: type-error at stdin:3 1 in (first 1)\n")
+            && !shown.contains("parse-error"),
+        "{shown}"
+    );
     // So is input ending inside a form.
     let (_, shown) = at_a_terminal("1\n(add 1\n\x04");
     assert!(
