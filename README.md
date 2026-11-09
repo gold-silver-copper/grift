@@ -270,7 +270,7 @@ fn main() -> Result<(), Error> {
   wasn't taken for: a watchdog takes one as its job begins and needs no lock. Stops waiting together
   count as one; a later stop stops the run again, even in a cleanup that doesn't end. `force()` ends
   the handle's run however its cleanups behave, with no stop needed first: each is cut before its first
-  form, at every level, and the run ends with `interrupted`, whatever else fails on the way.
+  form, and the run ends with `interrupted`, whatever else fails on the way.
   `examples/stops.rs` shows stop, force, `limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
   to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the

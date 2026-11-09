@@ -147,9 +147,8 @@ impl Interrupter {
 
     /// Ends this handle's run, if it is in progress, at its next check, however its cleanups behave;
     /// whether it was. No stop need come first. Each cleanup it meets is cut before its first form,
-    /// at every level of the run, nothing a host function then evaluates runs past the one
-    /// primitive it may call directly, and the run ends with `interrupted`, whatever else fails on
-    /// the way. `true` doesn't say it acted, as for a stop. [`Error::limit`] says the ending is
+    /// a call made for a host function's [`Answer::Call`](crate::Answer::Call) as any other, and
+    /// the run ends with `interrupted`, whatever else fails on the way. `true` doesn't say it acted, as for a stop. [`Error::limit`] says the ending is
     /// real.
     ///
     /// [`Error::limit`]: crate::Error::limit

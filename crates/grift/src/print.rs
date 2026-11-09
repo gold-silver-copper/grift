@@ -402,9 +402,9 @@ impl<T> Write for Paced<'_, T> {
 /// and the reader. Needs no interpreter and allocates nothing; an output failure is `fmt::Error`.
 ///
 /// ```
-/// let mut out = String::new();
+/// let mut out = grift::TextBuffer::new();
 /// grift::write_string("a\n\"b", &mut out)?;
-/// assert_eq!(out, "\"a\\n\\\"b\"");
+/// assert_eq!(out.as_str(), "\"a\\n\\\"b\"");
 /// # Ok::<(), std::fmt::Error>(())
 /// ```
 pub fn write_string(text: &str, out: &mut dyn fmt::Write) -> fmt::Result {
