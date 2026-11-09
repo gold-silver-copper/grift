@@ -279,7 +279,7 @@ impl<T> Grift<T> {
 pub enum ReportStatus {
     /// The whole report was written.
     Complete,
-    /// The budget cut it short, or cut a name in it with `...`.
+    /// Something was left out: by the budget, a name cut with `...`, or data nested too deep.
     Truncated,
 }
 

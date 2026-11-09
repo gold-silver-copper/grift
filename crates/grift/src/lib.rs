@@ -773,10 +773,10 @@ impl<T> Grift<T> {
     /// begins with both from 30 bytes up, and below that with as much of the kind as fits. A
     /// context is written as its count of names, `#[context 3 names]`, where [`Grift::write`]
     /// lists them, and a name's control characters are escaped as in a string literal, so only
-    /// the report begins a line. Data nested more than 32 deep is written as `...` too. Nothing is copied: past the
-    /// text the sink holds, a report needs about 2 KiB for its printer, whatever the error holds,
-    /// so after `out-of-memory` a host needs room for its text and that; a [`TextBuffer`] may hold
-    /// up to twice its text while it grows.
+    /// the report begins a line. Data nested more than 32 deep is written as `...` too. Nothing
+    /// is copied: past the text the sink holds, a report needs about 2 KiB for its printer,
+    /// whatever the error holds, so after `out-of-memory` a host needs room for its text and
+    /// that; a [`TextBuffer`] may hold up to twice its text while it grows.
     ///
     /// [`ReportStatus::Truncated`] says the report was cut. A [`TextBuffer`] holds the text
     /// fallibly. A value of the error that is stale or another interpreter's fails it before
