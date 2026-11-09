@@ -32,36 +32,19 @@ impl<T> Grift<T> {
     /// item and each byte written is a step of the walk, so a stop reaches a print that writes a
     /// great deal from a few items: many references to one long string, or one long bytes value.
     pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Error> {
-        self.print_as(v, None, out)
+        let mut out = Paced::new(self, out, usize::MAX);
+        let printed = self.print_into(v, None, &mut out);
+        out.ending(printed)
     }
 
-    /// [`Grift::print`], or with `report`, as a report prints `v`: a context as its count of
+    /// Prints `v` into `out`, or with `report`, as a report prints it: a context as its count of
     /// names, a name with its control characters escaped, and the combination `report` holds, the
     /// line before's, as `...`.
-    fn print_as(
+    fn print_into(
         &self,
         v: Value,
         report: Option<Option<Value>>,
-        out: &mut dyn Write,
-    ) -> Result<(), Error> {
-        let mut charged = Charged {
-            grift: self,
-            out,
-            walked: 0,
-            stopped: false,
-        };
-        let printed = self.print_charged(v, report, &mut charged);
-        if charged.stopped {
-            return Err(Error::interrupted());
-        }
-        printed
-    }
-
-    fn print_charged(
-        &self,
-        v: Value,
-        report: Option<Option<Value>>,
-        out: &mut Charged<'_, T>,
+        out: &mut Paced<'_, T>,
     ) -> Result<(), Error> {
         let mut todo = Vec::new();
         // The first item is held outside the stack, so writing an atom allocates nothing and an
@@ -69,7 +52,7 @@ impl<T> Grift<T> {
         let mut first = Some(Item::Value(v));
         let shown = report.flatten();
         while let Some(item) = first.take().or_else(|| todo.pop()) {
-            if self.walk_charged(&mut out.walked, 1) {
+            if out.charge(1) {
                 return Err(Error::interrupted());
             }
             let v = match item {
@@ -103,9 +86,7 @@ impl<T> Grift<T> {
                 Value::Float(f) if f == f64::NEG_INFINITY => out.write_str("#-infinity")?,
                 // Rust's shortest form that reads back, always with a `.` or an exponent.
                 Value::Float(f) => write!(out, "{f:?}")?,
-                Value::Symbol(s) if report.is_some() => {
-                    write_name(self.name(s), usize::MAX, out)?;
-                }
+                Value::Symbol(s) if report.is_some() => write_name(self.name(s), usize::MAX, out)?,
                 Value::Symbol(s) => out.write_str(self.name(s))?,
                 Value::Primitive(p) => write!(out, "#[primitive {}]", p.name())?,
                 Value::Host(h) => {
@@ -115,7 +96,7 @@ impl<T> Grift<T> {
                         .map_or("", |&(s, _)| self.name(s));
                     out.write_str("#[host ")?;
                     match report {
-                        Some(_) => write_name(name, usize::MAX, out).map(drop)?,
+                        Some(_) => write_name(name, usize::MAX, out)?,
                         None => out.write_str(name)?,
                     }
                     out.write_char(']')?;
@@ -181,62 +162,56 @@ impl<T> Grift<T> {
 
 impl<T> Grift<T> {
     /// What [`Grift::describe`] writes, into `bytes` bytes of `out`. Nothing is copied: the error
-    /// is printed from where it is, each value checked first.
+    /// is printed from where it is, each value checked first. All of its work, every check, item
+    /// and byte, is one walk, which a stop ends.
     pub(crate) fn report(
         &self,
         e: &crate::Error,
         out: &mut dyn Write,
         bytes: usize,
     ) -> Result<ReportStatus, Error> {
+        let mut out = Paced::new(self, out, bytes);
+        let written = self.write_report(e, bytes / 4, &mut out);
+        out.ending(written)?;
+        Ok(match out.left_out {
+            true => ReportStatus::Truncated,
+            false => ReportStatus::Complete,
+        })
+    }
+
+    /// The report: the kind and the innermost place, each cut to `share` bytes, the values, then
+    /// the trace, each line's combination written whole but for the line before's.
+    fn write_report(
+        &self,
+        e: &crate::Error,
+        share: usize,
+        out: &mut Paced<'_, T>,
+    ) -> Result<(), Error> {
         let kind = self.import_symbol(&e.kind)?;
         e.values
             .iter()
             .chain(&e.trace)
             .try_for_each(|v| self.import(v).map(drop))?;
-        let mut budget = Budget {
-            out,
-            left: bytes,
-            cut: false,
-        };
-        let written = self.write_report(e, kind, bytes / 4, &mut budget);
-        match written {
-            _ if budget.cut => Ok(ReportStatus::Truncated),
-            Ok(true) => Ok(ReportStatus::Truncated),
-            Ok(false) => Ok(ReportStatus::Complete),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// The report: the kind and the innermost place, each cut to `share` bytes, the values, then
-    /// the trace, each line's combination written whole but for the line before's. Whether a name
-    /// was cut.
-    fn write_report(
-        &self,
-        e: &crate::Error,
-        kind: crate::local::Symbol,
-        share: usize,
-        out: &mut dyn Write,
-    ) -> Result<bool, Error> {
         let trace = e.trace.iter().map(|v| self.import(v));
         let place = trace.clone().enumerate().find_map(|(i, at)| {
             let (source, line) = self.position_local(at.ok()?)?;
             Some((i, source, line))
         });
-        let mut cut = write_name(self.name(kind), share, out)?;
+        write_name(self.name(kind), share, out)?;
         if let Some((_, source, line)) = place {
             out.write_str(" at ")?;
-            cut |= write_name(source, share, out)?;
+            write_name(source, share, out)?;
             write!(out, ":{line}")?;
         }
         for v in &e.values {
             out.write_char(' ')?;
-            self.print_as(self.import(v)?, Some(None), out)?;
+            self.print_into(self.import(v)?, Some(None), out)?;
         }
         let mut before = None;
         for (i, at) in trace.enumerate() {
             let at = at?;
             out.write_str(if i == 0 { " in " } else { "\n  from " })?;
-            self.print_as(at, Some(before), out)?;
+            self.print_into(at, Some(before), out)?;
             // The header has the innermost place: its line doesn't say it again.
             let placed = self
                 .position_local(at)
@@ -248,7 +223,7 @@ impl<T> Grift<T> {
             }
             before = Some(at);
         }
-        Ok(cut)
+        Ok(())
     }
 }
 
@@ -295,33 +270,9 @@ impl Write for TextBuffer {
     }
 }
 
-/// A report's sink: it passes on `left` more bytes, the last piece cut at a character boundary,
-/// then refuses, and says it was cut.
-struct Budget<'a> {
-    out: &'a mut dyn Write,
-    left: usize,
-    cut: bool,
-}
-
-impl Write for Budget<'_> {
-    fn write_str(&mut self, text: &str) -> fmt::Result {
-        if let Some(left) = self.left.checked_sub(text.len()) {
-            self.left = left;
-            return self.out.write_str(text);
-        }
-        // `left` is inside `text`, and a boundary is at most three bytes back, 0 being one.
-        let end = (0..=self.left).rev().find(|&i| text.is_char_boundary(i));
-        self.out
-            .write_str(text.get(..end.unwrap_or(0)).unwrap_or_default())?;
-        (self.left, self.cut) = (0, true);
-        Err(fmt::Error)
-    }
-}
-
 /// Writes `name` as a report does: its control characters escaped as in a string literal, so no
 /// name can begin a line of a report, and cut with `...` if it is longer than `share` bytes.
-/// Whether it was cut.
-fn write_name(name: &str, share: usize, out: &mut dyn Write) -> Result<bool, fmt::Error> {
+fn write_name<T>(name: &str, share: usize, out: &mut Paced<'_, T>) -> fmt::Result {
     let width = |c: char| match c.is_control() {
         // `\x` and `;` around the hex digits.
         true => {
@@ -341,33 +292,77 @@ fn write_name(name: &str, share: usize, out: &mut dyn Write) -> Result<bool, fmt
     for c in name.chars() {
         used += width(c);
         if used > room {
-            out.write_str("...")?;
-            return Ok(true);
+            out.left_out = true;
+            return out.write_str("...");
         }
         match c.is_control() {
             true => write!(out, "\\x{:x};", u32::from(c))?,
             false => out.write_char(c)?,
         }
     }
-    Ok(false)
+    Ok(())
 }
 
-/// The printer's output, which charges every byte written to its walk and refuses it once a stop
-/// is found.
-struct Charged<'a, T> {
+/// The printer's output. It charges every item and byte to one walk, which a stop ends, and it
+/// passes on `left` more bytes, the last piece cut at a character boundary, then refuses.
+struct Paced<'a, T> {
     grift: &'a Grift<T>,
     out: &'a mut dyn Write,
     walked: usize,
+    left: usize,
+    /// A stop was found.
     stopped: bool,
+    /// `left` ran out.
+    full: bool,
+    /// Something was left out: by `full`, or by a name cut.
+    left_out: bool,
 }
 
-impl<T> Write for Charged<'_, T> {
+impl<'a, T> Paced<'a, T> {
+    fn new(grift: &'a Grift<T>, out: &'a mut dyn Write, left: usize) -> Paced<'a, T> {
+        Paced {
+            grift,
+            out,
+            walked: 0,
+            left,
+            stopped: false,
+            full: false,
+            left_out: false,
+        }
+    }
+
+    /// Charges `cost` items of work; whether a stop was found.
+    fn charge(&mut self, cost: usize) -> bool {
+        self.stopped |= self.grift.walk_charged(&mut self.walked, cost);
+        self.stopped
+    }
+
+    /// What a print came to: a stop found is `interrupted`, running out of room is no error, and
+    /// a refusal of the host's sink is.
+    fn ending(&self, printed: Result<(), Error>) -> Result<(), Error> {
+        match printed {
+            _ if self.stopped => Err(Error::interrupted()),
+            Err(_) if self.full => Ok(()),
+            printed => printed,
+        }
+    }
+}
+
+impl<T> Write for Paced<'_, T> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        if self.grift.walk_charged(&mut self.walked, text.len()) {
-            self.stopped = true;
+        if self.charge(text.len()) {
             return Err(fmt::Error);
         }
-        self.out.write_str(text)
+        if let Some(left) = self.left.checked_sub(text.len()) {
+            self.left = left;
+            return self.out.write_str(text);
+        }
+        // `left` is inside `text`, and a boundary is at most three bytes back, 0 being one.
+        let end = (0..=self.left).rev().find(|&i| text.is_char_boundary(i));
+        self.out
+            .write_str(text.get(..end.unwrap_or(0)).unwrap_or_default())?;
+        (self.left, self.full, self.left_out) = (0, true, true);
+        Err(fmt::Error)
     }
 }
 

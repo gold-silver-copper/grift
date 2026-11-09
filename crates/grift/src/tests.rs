@@ -4122,3 +4122,46 @@ fn a_report_fits_its_budget_and_begins_with_kind_and_place() {
     let (_, text) = report(&g, &e, 4096);
     assert_eq!(text.lines().count(), 1, "{text:?}");
 }
+
+/// A sink that takes everything and keeps nothing.
+struct Discard;
+
+impl std::fmt::Write for Discard {
+    fn write_str(&mut self, _: &str) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+/// Asks its run to stop, or with `true` in the state to be forced, then describes an error of
+/// many small values with no budget to cut it: the report's work is one walk, which the stop ends.
+fn reports_with_a_stop_waiting(
+    g: &mut Grift<bool>,
+    force: &mut bool,
+    _: &[Value],
+) -> Result<Answer, Error> {
+    let e = g.error("example", &vec![Value::Inert; 16_384]);
+    let mut stop = g.interrupter();
+    assert!(if *force { stop.force() } else { stop.stop() });
+    let failure = g.describe(&e, &mut Discard, usize::MAX).unwrap_err();
+    assert_eq!(
+        (kind(g, &failure).as_str(), failure.limit),
+        ("interrupted", true)
+    );
+    Ok(Answer::Now(Value::Inert))
+}
+
+#[test]
+fn a_report_of_many_small_values_finds_a_stop() {
+    for mut force in [false, true] {
+        let mut g: Grift<bool> = Grift::new().unwrap();
+        let f = g
+            .host_function("report", reports_with_a_stop_waiting)
+            .unwrap();
+        let ending = g.call(&mut force, &f, &[]).unwrap_err();
+        assert_eq!(
+            (kind(&g, &ending).as_str(), ending.limit),
+            ("interrupted", true)
+        );
+    }
+}
+
