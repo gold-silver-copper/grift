@@ -900,6 +900,8 @@ impl<T> Grift<T> {
         }
         let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
         push(&mut self.kept, Entry::Free(None))?;
+        // Every collection walks the kept table, so a new entry brings the next one nearer.
+        self.heap.charge(1);
         self.kept_free = Some(name);
         Ok(name)
     }

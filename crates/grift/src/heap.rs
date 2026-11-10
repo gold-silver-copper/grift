@@ -123,6 +123,7 @@ fn weight(obj: &Object) -> usize {
     match obj {
         Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
+        Object::Context(_, b) => 1 + bindings_weight(b),
         _ => 1,
     }
 }
@@ -286,6 +287,17 @@ impl Heap {
         Ok(bindings)
     }
 
+    /// Brings the next collection `n` objects' worth nearer: storage outside a new object that a
+    /// collection walks.
+    pub fn charge(&mut self, n: usize) {
+        let until_gc = self.until_gc.get_mut();
+        *until_gc = until_gc.saturating_sub(n);
+        #[cfg(test)]
+        {
+            self.work.0 += n;
+        }
+    }
+
     /// A new empty context.
     #[inline]
     pub fn context(&mut self, parent: Option<Reference>) -> Result<Reference, Error> {
@@ -374,7 +386,14 @@ impl Heap {
         #[cfg(test)]
         {
             self.collections += 1;
-            let walks = self.slots.len() + walked;
+            // Marking walks each context's bindings too.
+            let bindings: usize = (self.slots.iter())
+                .map(|s| match &s.obj {
+                    Object::Context(_, b) => bindings_weight(b),
+                    _ => 0,
+                })
+                .sum();
+            let walks = self.slots.len() + walked + bindings;
             self.work.1 += walks;
             // A collection that came when pacing said walks a constant factor of what was
             // allocated since the last one; an early one, with the one before it, of what was

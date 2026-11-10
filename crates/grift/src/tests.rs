@@ -622,6 +622,32 @@ fn an_object_counts_its_storage_towards_the_next_collection() {
 /// asked for, can't tell.
 #[test]
 fn collection_pays_for_what_it_walks() {
+    // Kept values and contexts' bindings, which every collection walks, count too.
+    let mut g = grift();
+    g.heap.request_collection();
+    g.evaluate(&mut (), "#inert").unwrap();
+    let kept: Vec<_> = (0..200_000)
+        .map(|_| g.keep(Value::Inert).unwrap())
+        .collect();
+    g.evaluate(&mut (), "(length (range 0 100000))").unwrap();
+    kept.into_iter().for_each(|k| g.release(k).unwrap());
+    let mut g = grift();
+    let names: Vec<Value> = (0..300)
+        .map(|i| Value::Symbol(g.symbol(&format!("n{i}")).unwrap()))
+        .collect();
+    let contexts: Vec<_> = (0..300)
+        .map(|_| {
+            let c = g.evaluate(&mut (), "(record () ())").unwrap();
+            names
+                .iter()
+                .for_each(|n| g.bind(&c, n, Value::Inert).unwrap());
+            g.keep(c).unwrap()
+        })
+        .collect();
+    for _ in 0..3 {
+        g.evaluate(&mut (), "(length (range 0 100000))").unwrap();
+    }
+    contexts.into_iter().for_each(|k| drop(g.release(k)));
     let mut g = grift();
     for src in [
         "(define! big (range 0 100000))",
