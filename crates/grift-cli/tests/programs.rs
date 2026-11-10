@@ -1,5 +1,6 @@
 //! The corpus: every program in `programs/` passes its own `test.sh` on this runner, three at a time,
 //! each within two minutes, so a program that never ends fails instead of hanging the suite.
+#![allow(clippy::unwrap_used)]
 
 use std::path::Path;
 use std::process::Command;

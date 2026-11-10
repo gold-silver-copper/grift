@@ -1,6 +1,7 @@
 //! What a program's `out-of-memory` report needs, when the allocator refuses for real. A budget
 //! on this thread's allocations stands in for the operating system's limit, at the same point in
 //! a program every time; it lives in this package because the core forbids `unsafe`.
+#![allow(unsafe_code, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use grift::Grift;
 use std::alloc::{GlobalAlloc, Layout, System};

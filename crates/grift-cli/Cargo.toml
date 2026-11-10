@@ -14,5 +14,8 @@ categories = ["command-line-utilities", "compilers"]
 name = "grift"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 grift = { path = "../grift", version = "3.0.0" }

@@ -1,4 +1,5 @@
 //! The runner: its exit statuses, where its output goes, and each of its operations.
+#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
