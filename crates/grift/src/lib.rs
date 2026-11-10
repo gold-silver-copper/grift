@@ -144,6 +144,7 @@ static OWNERS: AtomicU64 = AtomicU64::new(0);
 /// starts its next evaluation afresh.
 ///
 /// ```compile_fail
+/// // E0596: a HostCall lends the Grift only as `&Grift`, and `call` needs `&mut`.
 /// let mut g: grift::Grift = grift::Grift::new()?;
 /// g.host_function("f", |g, s, args| g.call(s, &args[0], &[]).map(grift::Answer::Now))?;
 /// # Ok::<(), grift::Error>(())

@@ -177,6 +177,7 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
+        debug_assert!(weight(&obj) > 0, "an object weighs at least its own slot");
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
