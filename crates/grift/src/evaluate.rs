@@ -385,9 +385,22 @@ impl Machine {
         self.handed = None;
     }
 
-    /// How many objects a parked machine counts as, for when to collect: every collection walks it.
+    /// Gives back the room of stacks that were once much deeper than they are.
+    pub(crate) fn tidy(&mut self) {
+        crate::heap::tidy(&mut self.frames);
+        crate::heap::tidy(&mut self.arguments);
+        crate::heap::tidy(&mut self.waiting);
+        crate::heap::tidy(&mut self.work);
+    }
+
+    /// How many objects a machine counts as, for when to collect: every collection walks it,
+    /// running or parked.
     pub(crate) fn weight(&self) -> usize {
-        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
+        let waiting = self.waiting.iter().map(|w| match w {
+            Ok(_) => 1,
+            Err(e) => e.values.len() + e.trace.weight(),
+        });
+        1 + self.frames.len() + self.arguments.len() + waiting.sum::<usize>()
     }
 }
 
@@ -810,12 +823,12 @@ impl<T> Grift<T> {
     /// Every way into a run comes here first. One inside a host call is refused, `cannot-nest`: it
     /// would stack the program's depth on the host function's Rust frame, where a host function
     /// answers [`Answer::Call`] instead. Then, as the run may need slots before reaching the
-    /// machine loop, collect first if due, with its checked inputs as roots.
+    /// machine loop, collect first if due, or after a peak, with its checked inputs as roots.
     pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         if self.control.running() {
             return Err(Error::new(K::CannotNest, &[]));
         }
-        if self.heap.due() {
+        if self.heap.due_before_run() {
             self.collect(current);
         }
         Ok(())
@@ -824,7 +837,9 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) {
-        let parked = self.kept.iter().map(Entry::weight).sum();
+        // What the collection walks outside the heap: this machine, and the whole kept table.
+        let parked: usize = self.kept.iter().map(Entry::weight).sum();
+        let walked = parked + self.kept.len() + self.machine.weight();
         let kept = self.kept.iter().flat_map(Entry::roots);
         let roots = self
             .machine
@@ -835,8 +850,10 @@ impl<T> Grift<T> {
         // Names are heap objects: the known ones and host functions' are roots too.
         let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
         let hosts = self.hosts.iter().map(|&(name, _)| Value::Symbol(name));
-        self.heap.collect(roots.chain(known).chain(hosts), parked);
+        self.heap.collect(roots.chain(known).chain(hosts), walked);
         self.tidy_symbols();
+        self.tidy_kept();
+        self.machine.tidy();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -1203,7 +1220,7 @@ impl<T> Grift<T> {
                     return Err(type_error(bad));
                 };
                 match p {
-                    P::Unbind => Value::Boolean(self.bindings_mut(c)?.remove(&s).is_some()),
+                    P::Unbind => Value::Boolean(self.heap.room_in(c, 0)?.remove(&s).is_some()),
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
@@ -1688,11 +1705,8 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut matched = Bindings::default();
         self.match_tree(&mut matched, tree, value)?;
-        let bindings = self.bindings_mut(c)?;
-        bindings
-            .try_reserve(matched.len())
-            .map_err(|_| Error::oom())?;
-        #[expect(clippy::disallowed_methods, reason = "reserved matched.len() above")]
+        let bindings = self.heap.room_in(c, matched.len())?;
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved matched.len()")]
         bindings.extend(matched);
         Ok(())
     }
@@ -1704,18 +1718,9 @@ impl<T> Grift<T> {
         s: Symbol,
         v: Value,
     ) -> Result<(), Error> {
-        let bindings = self.bindings_mut(context)?;
-        bindings.try_reserve(1).map_err(|_| Error::oom())?;
-        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
-        bindings.insert(s, v);
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved 1")]
+        self.heap.room_in(context, 1)?.insert(s, v);
         Ok(())
-    }
-
-    pub(crate) fn bindings_mut(&mut self, context: Reference) -> Result<&mut Bindings, Error> {
-        match self.heap.get_mut(context)? {
-            Object::Context(_, bindings) => Ok(bindings),
-            _ => Err(Error::new(K::StaleValue, &[Value::Context(context)])),
-        }
     }
 
     pub(crate) fn context_at(

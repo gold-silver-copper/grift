@@ -663,6 +663,7 @@ mod generated {
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut next_run = 0;
         let mut refusal_ends_in = 0u64;
+        let mut peaked = false;
         let mut ended = 0;
 
         // What a run came to: parked again, or at its end, and checked.
@@ -768,10 +769,12 @@ mod generated {
                 4 => {
                     w.current = usize::MAX;
                     g.heap.stress = false;
-                    let churn = if mode == Mode::Limited {
-                        "(churn 1000)"
-                    } else {
-                        "(churn 300)"
+                    // Once, a peak, dropped beside the parked runs: the collections after it walk
+                    // what it left, and give it back.
+                    let churn = match mode {
+                        Mode::Limited => "(churn 1000)",
+                        Mode::Plain if !std::mem::replace(&mut peaked, true) => "(churn 8000)",
+                        _ => "(churn 300)",
                     };
                     let _ = g.evaluate(&mut w, churn);
                     g.heap.stress = stress;
@@ -832,6 +835,12 @@ mod generated {
             g.heap.live() <= baseline + 64,
             "kept {} over {baseline}\n{context}",
             g.heap.live()
+        );
+        // And the slots a peak left are given back.
+        assert!(
+            g.heap.len() <= 2 * baseline + 4096,
+            "{} slots for {baseline}\n{context}",
+            g.heap.len()
         );
     }
 
