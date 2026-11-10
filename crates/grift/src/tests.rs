@@ -89,7 +89,7 @@ impl<T> Grift<T> {
     fn underlying(&self, v: &Value) -> Value {
         match self.import(v).unwrap() {
             local::Value::Applicative(r) => self.export(self.unwrapped(r).unwrap()),
-            _ => v.clone(),
+            _ => *v,
         }
     }
 
@@ -1093,7 +1093,7 @@ impl Comparison<'_> {
 
     fn values(&mut self, a: &Value, b: &Value) -> Result<(), String> {
         let (l, r) = (self.left, self.right);
-        let mut todo = vec![(a.clone(), b.clone())];
+        let mut todo = vec![(*a, *b)];
         while let Some((a, b)) = todo.pop() {
             let differ = || Err(format!("{} against {}", show(l, &a), show(r, &b)));
             match (&a, &b) {
@@ -1139,7 +1139,7 @@ impl Comparison<'_> {
                     match known {
                         Some((x, y)) if *x == a && *y == b => continue,
                         Some(_) => return Err(format!("aliasing differs at {}", show(l, &a))),
-                        None => self.matched.push((a.clone(), b.clone())),
+                        None => self.matched.push((a, b)),
                     }
                     if let (Some((a1, a2)), Some((b1, b2))) =
                         (l.as_pair(&a).unwrap(), r.as_pair(&b).unwrap())
@@ -1384,19 +1384,16 @@ fn natives_are_their_definitions() {
     ] {
         let f = Value::Float(f64::from_bits(bits));
         for (name, arguments) in [
-            ("float-to-integer", vec![f.clone()]),
-            (
-                "select",
-                vec![Value::Boolean(true), f.clone(), Value::Integer(0)],
-            ),
+            ("float-to-integer", vec![f]),
+            ("select", vec![Value::Boolean(true), f, Value::Integer(0)]),
             (
                 "(wrap if!)",
-                vec![Value::Boolean(false), Value::Integer(0), f.clone()],
+                vec![Value::Boolean(false), Value::Integer(0), f],
             ),
-            ("(wrap sequence!)", vec![Value::Integer(0), f.clone()]),
-            ("integer-to-float", vec![f.clone()]),
-            ("truncate", vec![f.clone()]),
-            ("remainder", vec![f.clone(), Value::Float(1.5)]),
+            ("(wrap sequence!)", vec![Value::Integer(0), f]),
+            ("integer-to-float", vec![f]),
+            ("truncate", vec![f]),
+            ("remainder", vec![f, Value::Float(1.5)]),
         ] {
             let (fa, fb) = (
                 native.evaluate(&mut Vec::new(), name),

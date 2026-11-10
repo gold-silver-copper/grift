@@ -524,7 +524,7 @@ impl<W: Write> Write for Gathered<W> {
 /// the session's run waits for it, in [`run_session`].
 fn report_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Answer, Error> {
     let [thunk] = exactly(g, args)?;
-    Ok(Answer::Later(thunk.clone()))
+    Ok(Answer::Later(*thunk))
 }
 
 /// Runs the terminal session, a run that waits at each `report-host` while its thunk runs here,
@@ -536,7 +536,7 @@ fn run_session(g: &mut G, r: &mut Runner, session: &Value) -> Result<Value, Erro
             Ran::Finished(v) => return Ok(v),
             Ran::Parked(parked) => parked,
         };
-        let thunk = parked.request().clone();
+        let thunk = *parked.request();
         let answer = match g.call(r, &thunk, &[]) {
             Err(e) if exit_status(g, &e).is_none() => {
                 report(g, "stdin", &e);

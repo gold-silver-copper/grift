@@ -7,9 +7,10 @@
 //! once by the type, and it carries its interpreter's identity as every value does.
 
 use crate::evaluate::{Machine, ending_values};
+use crate::interrupt::Control;
 use crate::local::{self, K};
 use crate::{Entry, Error, Grift, Owner, Value};
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 /// How a run that may park came back to its host, when it didn't fail.
 #[must_use]
@@ -30,7 +31,7 @@ pub enum Ran {
 /// ```
 /// use grift::{Answer, Grift, Ran, Value};
 /// let mut g: Grift = Grift::new()?;
-/// let wait = g.host_function("wait", |_, _, args| Ok(Answer::Later(args[0].clone())))?;
+/// let wait = g.host_function("wait", |_, _, args| Ok(Answer::Later(args[0])))?;
 /// g.define("wait", wait)?;
 /// let top = g.top_level();
 /// let Ran::Parked(parked) = g.start_in(&mut (), &top, "script", "(add 1 (wait 41))")? else {
@@ -38,7 +39,7 @@ pub enum Ran {
 /// };
 /// // The host's loop goes on, and other runs with it.
 /// assert_eq!(g.evaluate(&mut (), "(add 2 2)")?, Value::Integer(4));
-/// let asked = parked.request().clone();
+/// let asked = *parked.request();
 /// let ran = g.resume(&mut (), parked, Ok(asked))?;
 /// assert!(matches!(ran, Ran::Finished(Value::Integer(42))));
 /// # Ok::<(), grift::Error>(())
@@ -61,6 +62,8 @@ pub enum Ran {
 #[derive(Debug)]
 pub struct Parked {
     owner: Owner,
+    /// Where a dropped handle leaves its name; nowhere once spent.
+    control: Weak<Control>,
     name: u32,
     request: Value,
 }
@@ -75,7 +78,7 @@ impl Parked {
 
 impl Drop for Parked {
     fn drop(&mut self) {
-        if let Some(control) = self.owner.0.upgrade() {
+        if let Some(control) = self.control.upgrade() {
             // Its park made the room, so this needs no memory and the run can always be found.
             #[expect(clippy::disallowed_methods, reason = "its park reserved this room")]
             control.forgotten().push(self.name);
@@ -163,7 +166,8 @@ impl<T> Grift<T> {
             _ => None,
         };
         Parked {
-            owner: self.owner(),
+            owner: self.owner,
+            control: Arc::downgrade(&self.control),
             name,
             request: self.export(request.unwrap_or(local::Value::Inert)),
         }
@@ -218,7 +222,7 @@ impl<T> Grift<T> {
                 });
             }
         };
-        parked.owner = Owner(Weak::new()); // Spent: nothing to find again.
+        parked.control = Weak::new(); // Spent: nothing to find again.
         let done = self.wake(Some(state), machine, answer);
         self.ran(done).map_err(|error| ResumeError {
             error,

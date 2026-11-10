@@ -131,9 +131,9 @@ fn refused_handles_survive_the_question_mark() {
 /// `(call-then f then)`: calls `f` on the machine, then `then` with its value.
 fn call_then(_: &mut HostCall<World>, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Call {
-        function: args[0].clone(),
+        function: args[0],
         arguments: Vec::new(),
-        then: Some((args[1].clone(), Vec::new())),
+        then: Some((args[1], Vec::new())),
     })
 }
 

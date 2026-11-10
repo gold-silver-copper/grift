@@ -125,7 +125,7 @@ fn spawn(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer,
     let [f] = args else {
         return Err(g.error("arity-error", args));
     };
-    h.spawned.push(g.keep(f.clone())?);
+    h.spawned.push(g.keep(*f)?);
     Ok(Answer::Now(Value::Inert))
 }
 
@@ -187,7 +187,7 @@ fn terminal_size(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result
 
 fn file_error(g: &mut HostCall<Host>, path: &Value, e: &io::Error) -> Error {
     match g.string(&e.to_string()) {
-        Ok(why) => g.error("file-error", &[path.clone(), why]),
+        Ok(why) => g.error("file-error", &[*path, why]),
         Err(e) => e,
     }
 }
@@ -375,7 +375,7 @@ fn report(g: &mut G, h: &mut Host, through: &str, e: &Error) -> String {
     let _ = g.evaluate(h, through).and_then(|f| {
         let shown = g.string(&text)?;
         h.inbox.arm(g.interrupter());
-        g.call(h, &f, &[shown, Value::Symbol(e.kind.clone())])
+        g.call(h, &f, &[shown, Value::Symbol(e.kind)])
     });
     text
 }

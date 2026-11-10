@@ -42,8 +42,8 @@ use interrupt::Control;
 use local::{K, boxed, push};
 use std::collections::HashMap;
 use std::fmt;
-use std::hash::{Hash, Hasher};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use interrupt::Interrupter;
 pub use parked::{Parked, Ran, ResumeError};
@@ -62,7 +62,7 @@ const WALK_CHECK: usize = 4096;
 /// A value returned to the host stays valid until the next call to [`Grift::evaluate`],
 /// [`Grift::evaluate_in`], [`Grift::call`] or [`Grift::resume`], or the like; the collector may then reclaim it, and using it is the error `stale-value`,
 /// never another object. To keep one longer, bind it in a context or [`Grift::keep`] it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Value {
     /// The empty list `()`.
     EmptyList,
@@ -95,11 +95,11 @@ pub enum Value {
 /// An operative, opaque: a host holds one, compares it and writes it, which shows how it was made
 /// (`#[operative (x) #ignore x]`, `#[primitive add]`, `#[host name]`), but can't look inside or
 /// make one, so adding or moving a primitive changes no host's code.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Operative(OperativeKind);
 
 /// How an operative was made.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum OperativeKind {
     /// By `vau!`: an object in the heap of one [`Grift`].
     Compound(Reference),
@@ -114,7 +114,7 @@ enum OperativeKind {
 /// lasts as a [`Value`] does: until the next run, unless something the program holds, such as a
 /// binding, a list or a [`Kept`] value, has it. A reclaimed one is `stale-value`, never another
 /// name, and interning its spelling again gives a new symbol, unequal to it.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Symbol {
     owner: Owner,
     index: u32,
@@ -122,28 +122,18 @@ pub struct Symbol {
 }
 
 /// An object in the heap of one [`Grift`]: a slot and its generation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reference {
     owner: Owner,
     local: heap::Reference,
 }
 
-/// The interpreter a value belongs to: its control's allocation. Two are the same only if the
-/// allocation is, even after one interpreter is dropped: a value keeps the address from reuse.
-#[derive(Clone, Debug)]
-struct Owner(Weak<Control>);
+/// The interpreter a value belongs to: a number no other interpreter in the process has, counted
+/// from one static. Counting one a nanosecond, it would take 584 years to come round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct Owner(u64);
 
-impl PartialEq for Owner {
-    fn eq(&self, other: &Owner) -> bool {
-        Weak::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl Eq for Owner {}
-
-impl Hash for Owner {
-    fn hash<H: Hasher>(&self, _: &mut H) {}
-}
+static OWNERS: AtomicU64 = AtomicU64::new(0);
 
 /// A host function. It receives a [`HostCall`] on the interpreter, the host's state (the one
 /// passed to [`Grift::evaluate`], [`Grift::call`] or the like) and the evaluated arguments, and
@@ -238,14 +228,14 @@ pub enum Answer {
     /// // `(twice f x)` is `(f (f x))`: the first call's value goes to `again`, saved with `f`.
     /// let twice = g.host_function("twice", |_, _, args| {
     ///     Ok(Answer::Call {
-    ///         function: args[0].clone(),
-    ///         arguments: vec![args[1].clone()],
-    ///         then: Some((args[2].clone(), vec![args[0].clone()])),
+    ///         function: args[0],
+    ///         arguments: vec![args[1]],
+    ///         then: Some((args[2], vec![args[0]])),
     ///     })
     /// })?;
     /// g.define("twice", twice)?;
     /// let again = g.host_function("again", |_, _, args| {
-    ///     Ok(Answer::Call { function: args[0].clone(), arguments: vec![args[1].clone()], then: None })
+    ///     Ok(Answer::Call { function: args[0], arguments: vec![args[1]], then: None })
     /// })?;
     /// g.define("again", again)?;
     /// let v = g.evaluate(&mut (), "(twice (lambda! (n) (multiply n 3)) 7 again)")?;
@@ -415,15 +405,16 @@ pub struct Grift<T = ()> {
     /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
     /// unwinds, when small allocations may have only scraps left, and taken again by the next run.
     spare: Vec<u8>,
-    /// Shared with the interrupters; its allocation is this interpreter's identity, which every
-    /// value handed out holds.
+    /// Shared with the interrupters and parked runs' handles.
     control: Arc<Control>,
+    /// This interpreter's identity, which every value handed out holds.
+    owner: Owner,
 }
 
 impl<T> Grift<T> {
     /// Builds the built-in context, evaluates the library in it and makes an empty top level.
     /// Memory refused is `out-of-memory`, but for one allocation, the first: the interpreter's
-    /// shared control block, which its interrupters and values point to, is an `Arc::new`, and so
+    /// shared control block, which its interrupters point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
         #[expect(
@@ -442,6 +433,7 @@ impl<T> Grift<T> {
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
             control: Arc::new(Control::default()),
+            owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
         };
         let loaded = g.load();
         g.out(loaded).map(|()| g)
@@ -939,7 +931,7 @@ impl<T> Grift<T> {
             Ok(name)
         });
         self.out(kept.map(|name| Kept {
-            owner: self.owner(),
+            owner: self.owner,
             name,
         }))
     }
@@ -1083,14 +1075,9 @@ impl<T> Grift<T> {
         context_kind(self.import(v)?)
     }
 
-    /// What a value handed out holds: this interpreter's identity.
-    fn owner(&self) -> Owner {
-        Owner(Arc::downgrade(&self.control))
-    }
-
     /// The one check that something is this interpreter's: `foreign-value` if it isn't.
     fn owns(&self, owner: &Owner) -> Result<(), local::Error> {
-        if std::ptr::eq(owner.0.as_ptr(), Arc::as_ptr(&self.control)) {
+        if *owner == self.owner {
             Ok(())
         } else {
             Err(local::Error::new(K::ForeignValue, &[]))
@@ -1206,7 +1193,7 @@ impl<T> Grift<T> {
     pub(crate) fn export(&self, v: local::Value) -> Value {
         use local::Value as L;
         let reference = |local| Reference {
-            owner: self.owner(),
+            owner: self.owner,
             local,
         };
         let operative = |kind| Value::Operative(Operative(kind));
@@ -1225,13 +1212,13 @@ impl<T> Grift<T> {
             L::Context(r) => Value::Context(reference(r)),
             L::Operative(r) => operative(OperativeKind::Compound(reference(r))),
             L::Applicative(r) => Value::Applicative(reference(r)),
-            L::Host(h) => operative(OperativeKind::Host(self.owner(), h.0)),
+            L::Host(h) => operative(OperativeKind::Host(self.owner, h.0)),
         }
     }
 
     fn export_symbol(&self, s: local::Symbol) -> Symbol {
         Symbol {
-            owner: self.owner(),
+            owner: self.owner,
             index: s.0,
             generation: self
                 .heap

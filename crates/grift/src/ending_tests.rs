@@ -19,7 +19,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         // `(on-machine thunk)`: the machine calls `thunk` for this host function.
         ("on-machine", |_, _, args| {
             Ok(Answer::Call {
-                function: args[0].clone(),
+                function: args[0],
                 arguments: Vec::new(),
                 then: None,
             })
@@ -28,7 +28,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         ("swallow", |g, _, args| {
             let (top, list) = (g.top_level(), g.symbol("list")?);
             Ok(Answer::Call {
-                function: args[0].clone(),
+                function: args[0],
                 arguments: Vec::new(),
                 then: Some((g.lookup(&top, &list)?.unwrap(), Vec::new())),
             })

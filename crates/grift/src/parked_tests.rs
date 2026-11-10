@@ -353,7 +353,7 @@ mod generated {
             let id = request_id(g, &args[0]);
             return answer(g.0, id).map(Answer::Now);
         }
-        Ok(Answer::Later(args[0].clone()))
+        Ok(Answer::Later(args[0]))
     }
 
     /// `(nest form)`: the machine evaluates `form` at top level for this host function.
@@ -362,7 +362,7 @@ mod generated {
         let (top, evaluate) = (g.top_level(), g.symbol("evaluate")?);
         Ok(Answer::Call {
             function: g.lookup(&top, &evaluate)?.unwrap(),
-            arguments: vec![args[0].clone(), top],
+            arguments: vec![args[0], top],
             then: None,
         })
     }

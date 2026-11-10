@@ -183,7 +183,7 @@ fn main() -> Result<(), Error> {
     assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.list(&[hi.clone(), Value::Integer(1)])?; // or pair by pair, from its end
+    let list = g.list(&[hi, Value::Integer(1)])?; // or pair by pair, from its end
     assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]); // or as_pair, from its start
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = grift::TextBuffer::new(); // or any std::fmt::Write
@@ -361,7 +361,7 @@ use grift::{Answer, Error, Grift, HostCall, Parked, Ran, Value};
 /// `Parked::request` gives it to the loop. Do the work there, since a run may not get to park.
 fn sleep(g: &mut HostCall<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
     match args {
-        [ms] => Ok(Answer::Later(ms.clone())),
+        [ms] => Ok(Answer::Later(*ms)),
         _ => Err(g.error("arity-error", args)),
     }
 }
