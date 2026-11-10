@@ -112,9 +112,10 @@ const NONE: u32 = u32::MAX;
 /// what the runs before made is garbage by then, so it gives back the rest, and the two walk at
 /// most eight times what was allocated. Objects never move, so one long-lived object made high
 /// keeps the slots below it, never more than the peak. A retired slot counts as live. A string,
-/// bytes value or name counts as many objects as its storage would fill slots, and a context's
-/// bindings as many as they grow by once it is made, so large chunks dropped one after another
-/// bring the next collection nearer as their size, not their number, says.
+/// bytes value or name counts as many objects as its storage would fill slots, and a context as
+/// many as its bindings' storage would fill, at least one, counted as they grow, so large chunks
+/// dropped one after another bring the next collection nearer as their size, not their number,
+/// says.
 const GC_MIN: usize = 4096;
 
 /// How many objects `obj` counts as, for when to collect.
@@ -516,9 +517,13 @@ impl Heap {
     }
 }
 
-/// How many objects a context's bindings count as: the slots their storage would fill.
+/// How many objects a context's bindings count as besides the context: the slots their storage
+/// would fill past the first, which the context's own count stands for. So a call's few bindings
+/// cost nothing more, and a context with many counts as the slots they fill.
 fn bindings_weight(b: &Bindings) -> usize {
-    (b.capacity() * size_of::<(Symbol, Value)>()).div_ceil(size_of::<Slot>())
+    (b.capacity() * size_of::<(Symbol, Value)>())
+        .div_ceil(size_of::<Slot>())
+        .saturating_sub(1)
 }
 
 /// Gives back `v`'s room once it holds under a quarter of it and that is more than [`GC_MIN`]
