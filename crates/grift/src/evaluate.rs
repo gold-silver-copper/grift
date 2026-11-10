@@ -1314,34 +1314,39 @@ impl<T> Grift<T> {
                 };
                 n.ok_or_else(|| Error::new(K::ParseError, &[x]))?
             }
-            P::ReadForm => {
-                let Value::String(r) = x else {
-                    return Err(type_error(x));
-                };
-                let offset = usize::try_from(integer_of(y)?).ok();
-                // The text is lent to the reader, not copied: a program reads a long text one
-                // form at a time.
-                let Object::String(text) = self.heap.get_mut(r)? else {
-                    return Err(Error::new(K::StaleValue, &[x]));
-                };
-                let text = std::mem::take(text);
-                let read = offset
-                    .filter(|&i| text.is_char_boundary(i))
-                    .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
-                if let Object::String(s) = self.heap.get_mut(r)? {
-                    *s = text;
-                }
-                let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
-                match read? {
-                    Some((form, place, _)) => self.list_local(
-                        &[form, integer(place.start), integer(place.end)],
-                        self.machine.library,
-                    )?,
-                    None => Value::EmptyList,
-                }
-            }
+            P::ReadForm => self.read_form_at(x, y)?,
         };
         Ok(Mode::Return(v))
+    }
+
+    /// `read-form`'s work: the form of string `x` after byte offset `y` and where it is. Apart from
+    /// `primitive`, so its size costs the machine's loop nothing.
+    #[inline(never)]
+    fn read_form_at(&mut self, x: Value, y: Value) -> Result<Value, Error> {
+        let Value::String(r) = x else {
+            return Err(type_error(x));
+        };
+        let offset = usize::try_from(integer_of(y)?).ok();
+        // The text is lent to the reader, not copied: a program reads a long text one
+        // form at a time.
+        let Object::String(text) = self.heap.get_mut(r)? else {
+            return Err(Error::new(K::StaleValue, &[x]));
+        };
+        let text = std::mem::take(text);
+        let read = offset
+            .filter(|&i| text.is_char_boundary(i))
+            .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
+        if let Object::String(s) = self.heap.get_mut(r)? {
+            *s = text;
+        }
+        let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
+        Ok(match read? {
+            Some((form, place, _)) => self.list_local(
+                &[form, integer(place.start), integer(place.end)],
+                self.machine.library,
+            )?,
+            None => Value::EmptyList,
+        })
     }
 
     /// The arguments from `base` don't fit the primitive: an `arity-error` carrying them as one
