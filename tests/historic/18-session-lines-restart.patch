@@ -1,0 +1,11 @@
+--- a/crates/grift-cli/src/runner.grift
++++ b/crates/grift-cli/src/runner.grift
+@@ -62,7 +62,7 @@
+         ((same? line "") (read-forms "stdin" text) #inert)
+         ((unfinished? text) (session text "  "))
+         (#true (report-host (lambda! () (evaluate-and-print text)))
+-               (session (string-repeat "\n" (subtract (length (string-split text "\n")) 1)) "> "))))))
++               (session "" "> "))))))
+ 
+ (define! here (current-context))
+ (for-each (lambda! (name) (bind top name (evaluate name here)))

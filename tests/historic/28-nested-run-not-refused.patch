@@ -1,0 +1,12 @@
+diff --git a/crates/grift/src/lib.rs b/crates/grift/src/lib.rs
+index a7248ff..e06fa26 100644
+--- a/crates/grift/src/lib.rs
++++ b/crates/grift/src/lib.rs
+@@ -195,6 +195,7 @@ macro_rules! host_call {
+ 
+ host_call! {
+     fn context(&mut self, parent: Option<&Value>) -> Result<Value, Error>;
++    fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error>;
+     fn private_context(&mut self) -> Result<Value, Error>;
+     fn define(&mut self, name: &str, v: Value) -> Result<(), Error>;
+     fn bind(&mut self, context: &Value, parameters: &Value, value: Value) -> Result<(), Error>;

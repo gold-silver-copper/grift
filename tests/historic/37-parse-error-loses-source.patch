@@ -1,0 +1,11 @@
+--- a/crates/grift/src/read.rs
++++ b/crates/grift/src/read.rs
+@@ -125,7 +125,7 @@
+                 if let Some(source) = source
+                     && e.kind == K::ParseError.into()
+                 {
+-                    let _ = push(&mut e.values, Value::Symbol(source));
++                    let _ = source;
+                 }
+                 e
+             })?

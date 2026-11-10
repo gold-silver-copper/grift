@@ -1,0 +1,13 @@
+diff --git a/crates/grift/src/lib.rs b/crates/grift/src/lib.rs
+index c64ea88..a3c2a53 100644
+--- a/crates/grift/src/lib.rs
++++ b/crates/grift/src/lib.rs
+@@ -1077,7 +1077,7 @@ impl<T> Grift<T> {
+ 
+     /// The one check that something is this interpreter's: `foreign-value` if it isn't.
+     fn owns(&self, owner: &Owner) -> Result<(), local::Error> {
+-        if *owner == self.owner {
++        if true {
+             Ok(())
+         } else {
+             Err(local::Error::new(K::ForeignValue, &[]))

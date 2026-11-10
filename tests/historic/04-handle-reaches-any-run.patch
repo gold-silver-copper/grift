@@ -1,0 +1,11 @@
+--- a/crates/grift/src/interrupt.rs
++++ b/crates/grift/src/interrupt.rs
+@@ -72,7 +72,7 @@
+ 
+     /// Sets `bit`, in one atomic step, if `run` is in progress; whether it was.
+     fn ask(&self, bit: u64, run: u64) -> bool {
+-        self.update(|word| (word & !ASKED == run).then_some(word | bit))
++        self.update(|word| (word & RUNNING != 0).then_some(word | bit))
+     }
+ 
+     /// The machine acts on the stops asked so far: they count as one.

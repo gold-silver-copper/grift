@@ -23,3 +23,14 @@ host. "It is quicker to write" is not one.
 The ratio can be gamed, and review is what stops it: don't pack tests onto fewer lines, move test
 helpers into the library, or delete assertions to make room. A test is deleted only when the
 held-back bug set shows the suite still catches everything it caught.
+
+## Caught bugs stay caught
+
+`tests/historic/` holds bugs from grift's history as patches that put them back, and `INDEX.tsv`
+names the tests that fail with each. `scripts/historic-bugs.py` applies each one to a scratch copy
+and checks its tests still fail; CI runs it nightly and on a PR that changes tests. A PR that changes
+code a patch touches re-ports the patch: run `scripts/historic-bugs.py --only <name>`; a patch that
+no longer applies or builds says "re-port this patch", and you write the same bug into the new code
+and save it with `git diff > tests/historic/<name>.patch`. A PR that changes the tests that catch a
+bug updates its row. The bugs no test catches are in the index as not gated: catching one is a good
+first test to write.

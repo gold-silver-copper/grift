@@ -1,0 +1,11 @@
+--- a/crates/grift/src/print.rs
++++ b/crates/grift/src/print.rs
+@@ -409,7 +409,7 @@
+ 
+ impl<T> Write for Paced<'_, T> {
+     fn write_str(&mut self, text: &str) -> fmt::Result {
+-        if self.charge(text.len()) {
++        if self.charge(0) {
+             return Err(fmt::Error);
+         }
+         if let Some(left) = self.left.checked_sub(text.len()) {

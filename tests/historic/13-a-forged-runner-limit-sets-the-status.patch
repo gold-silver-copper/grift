@@ -1,0 +1,12 @@
+--- a/crates/grift-cli/src/main.rs
++++ b/crates/grift-cli/src/main.rs
+@@ -371,9 +371,6 @@
+ /// gave, or 141 for a pipe no one reads, as a shell says of a program SIGPIPE ended: `grift script |
+ /// head` is quiet, and a run that ended this way never reports success.
+ fn exit_status(g: &G, e: &Error) -> Option<u8> {
+-    if !e.limit {
+-        return None;
+-    }
+     match (g.symbol_name(&e.kind).ok()?, e.values.as_slice()) {
+         ("broken-pipe", _) => Some(141),
+         ("exit", [Value::Integer(n)]) => u8::try_from(*n).ok(),

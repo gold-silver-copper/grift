@@ -1,0 +1,21 @@
+diff --git a/crates/grift/src/lib.rs b/crates/grift/src/lib.rs
+index c64ea88..5b9149a 100644
+--- a/crates/grift/src/lib.rs
++++ b/crates/grift/src/lib.rs
+@@ -572,6 +572,7 @@ impl<T> Grift<T> {
+     ) -> Result<local::Value, local::Error> {
+         let f = self.prepare_call(f, arguments)?;
+         let arguments = self.imported(arguments)?;
++        self.prepare(std::iter::once(f).chain(arguments.iter().copied()));
+         self.call_local(Some(state), f, &arguments, parks)
+     }
+ 
+@@ -1173,7 +1174,7 @@ impl<T> Grift<T> {
+             Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
+             _ => None,
+         });
+-        self.prepare(std::iter::once(f).chain(roots));
++        let _ = roots;
+         Ok(f)
+     }
+ 

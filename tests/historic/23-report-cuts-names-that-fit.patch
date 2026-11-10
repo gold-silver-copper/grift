@@ -1,0 +1,11 @@
+--- a/crates/grift/src/print.rs
++++ b/crates/grift/src/print.rs
+@@ -202,7 +202,7 @@
+         let mut probe = Paced::new(self, &mut discard, bytes);
+         let probed = self.write_report(e, usize::MAX, &mut probe);
+         probe.ending(probed)?;
+-        let share = match probe.full && bytes >= REPORT_FLOOR {
++        let share = match bytes >= REPORT_FLOOR {
+             true => bytes / 4,
+             false => usize::MAX,
+         };

@@ -1,0 +1,13 @@
+diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
+index 8c8d7f0..884d822 100644
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -1654,7 +1654,7 @@ impl<T> Grift<T> {
+         let mut walked = 0;
+         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
+             result = match (t, v) {
+-                _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
++                _ if false => Err(Error::interrupted()),
+                 #[expect(clippy::disallowed_methods, reason = "reserved 1 in the arm")]
+                 (Value::Symbol(s), _) => match bindings.try_reserve(1) {
+                     Ok(()) if bindings.insert(s, v).is_none() => Ok(()),

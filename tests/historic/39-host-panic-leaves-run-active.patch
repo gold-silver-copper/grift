@@ -1,0 +1,11 @@
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -383,7 +383,7 @@
+ impl Drop for Hosting {
+     fn drop(&mut self) {
+         if let Some(c) = &self.0 {
+-            c.end();
++            let _ = c;
+         }
+     }
+ }

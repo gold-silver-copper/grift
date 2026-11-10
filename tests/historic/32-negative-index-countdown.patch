@@ -1,0 +1,11 @@
+--- a/crates/grift/src/library.grift
++++ b/crates/grift/src/library.grift
+@@ -349,7 +349,7 @@
+      (define! after
+        (lambda! (xs n)
+          (if! (integer? n)
+-           (if! (less-than? n 0) (raise (error (quote! range-error) xs n)) (walk xs n xs n))
++           (walk xs n xs n)
+            (raise (error (quote! type-error) n)))))
+      (define! walk
+        (lambda! (given n xs i)

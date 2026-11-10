@@ -1,0 +1,11 @@
+--- a/crates/grift/src/lib.rs
++++ b/crates/grift/src/lib.rs
+@@ -984,7 +984,7 @@
+         let live = |r: &Reference, kind: fn(&Object) -> bool| {
+             self.owns(&r.owner)?;
+             match self.heap.get(r.local)? {
+-                o if kind(o) => Ok(r.local),
++                o => Ok(r.local),
+                 _ => Err(local::Error::new(K::StaleValue, &[])),
+             }
+         };
