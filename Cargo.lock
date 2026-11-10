@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "grift"
-version = "3.0.0"
+version = "4.0.0"
 
 [[package]]
 name = "grift-cli"
-version = "3.0.0"
+version = "4.0.0"
 dependencies = [
  "grift",
 ]
