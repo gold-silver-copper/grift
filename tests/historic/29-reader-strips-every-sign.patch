@@ -1,0 +1,12 @@
+--- a/crates/grift/src/read.rs
++++ b/crates/grift/src/read.rs
+@@ -269,8 +269,7 @@
+                 Value::Float(float_name(token).ok_or_else(|| fail(K::UnknownConstant))?)
+             }
+             _ if token
+-                .strip_prefix(['+', '-'])
+-                .unwrap_or(token)
++                .trim_start_matches(['+', '-'])
+                 .starts_with(|c: char| c.is_ascii_digit()) =>
+             {
+                 match token.parse() {

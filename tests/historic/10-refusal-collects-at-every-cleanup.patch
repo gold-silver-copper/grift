@@ -1,0 +1,13 @@
+diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
+index 62a67c0..b9d5484 100644
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -709,7 +709,7 @@ impl<T> Grift<T> {
+     /// An error that began as refused memory: the next safe point collects, and the spare room is
+     /// given up for what reports it. Once: whoever acts on it clears the mark.
+     fn acting_on_refusal(&mut self, e: &mut Error) {
+-        if e.take_refusal() {
++        if e.began == crate::local::Began::Refused {
+             self.heap.request_collection();
+             self.spare = Vec::new();
+         }

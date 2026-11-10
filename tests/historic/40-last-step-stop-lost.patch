@@ -1,0 +1,11 @@
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -516,7 +516,7 @@
+             // A stop that came during the step, however long, is how the step ended, whatever it
+             // would have answered: the cleanups then run.
+             mode = match next {
+-                _ if self.control.asked() => {
++                _ if next.is_err() && self.control.asked() => {
+                     self.control.acted();
+                     self.unwind(Error::interrupted())?
+                 }

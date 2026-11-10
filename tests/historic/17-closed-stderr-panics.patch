@@ -1,0 +1,11 @@
+--- a/crates/grift-cli/src/main.rs
++++ b/crates/grift-cli/src/main.rs
+@@ -70,7 +70,7 @@
+ 
+ /// Writes to stderr. One that is closed loses the text, which is all that can go wrong here.
+ fn say(text: fmt::Arguments) {
+-    let _ = io::stderr().write_fmt(text);
++    eprint!("{text}");
+ }
+ 
+ /// The numbers of the standard streams that are written to, in `Runner::files`.

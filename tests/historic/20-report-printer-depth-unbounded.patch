@@ -1,0 +1,11 @@
+--- a/crates/grift/src/print.rs
++++ b/crates/grift/src/print.rs
+@@ -136,7 +136,7 @@
+                     out.write_str("...")?;
+                 }
+                 Value::Pair(_) | Value::Operative(_) | Value::Applicative(_)
+-                    if report.is_some() && todo.len() >= REPORT_DEPTH =>
++                    if false =>
+                 {
+                     out.left_out = true;
+                     out.write_str("...")?;

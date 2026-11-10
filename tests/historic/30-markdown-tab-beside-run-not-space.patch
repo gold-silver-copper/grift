@@ -1,0 +1,11 @@
+--- a/programs/markdown/main.grift
++++ b/programs/markdown/main.grift
+@@ -240,7 +240,7 @@
+ ; What the ends of a run need to know, unlike white? and punctuation? elsewhere: every ASCII
+ ; white space byte is space, and characters above ASCII count too.
+ (define! run-space?
+-  (lambda! (c) (or!? (same? c -1) (between? 9 c 13) (same? c space) (within? c wide-white))))
++  (lambda! (c) (or!? (same? c -1) (same? c 10) (same? c space) (within? c wide-white))))
+ (define! run-punctuation? (lambda! (c) (or!? (punctuation? c) (within? c wide-punctuation))))
+ 
+ ; The run of * or _ at `at`, by CommonMark's rules: (at size opens? closes? whole), whole being

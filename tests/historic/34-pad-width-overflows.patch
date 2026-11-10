@@ -1,0 +1,11 @@
+--- a/crates/grift/src/library.grift
++++ b/crates/grift/src/library.grift
+@@ -446,7 +446,7 @@
+      (define! room
+        (lambda! (s width fill)
+          (if! (same? (byte-length fill) 1)
+-           (apply join (map (lambda! (#ignore) fill) (range (byte-length s) width)))
++           (apply join (map (lambda! (#ignore) fill) (range 0 (subtract width (byte-length s)))))
+            (raise (error (quote! range-error) fill)))))
+      (list (lambda! (s width fill) (join (room s width fill) s))
+            (lambda! (s width fill) (join s (room s width fill)))))))

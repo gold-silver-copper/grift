@@ -1,0 +1,43 @@
+name: Historic bugs
+
+# Every bug from grift's history the tests caught stays caught (tests/historic/, CONTRIBUTING.md).
+# It runs nightly and on a pull request that changes tests, the patches or this gate; a pull request
+# that changes only the code runs it by hand (workflow_dispatch) or meets it at night.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [master]
+    paths:
+      - "crates/*/tests/**"
+      - "**/*tests.rs"
+      - "**/natives.grift"
+      - "programs/**"
+      - "crates/grift/src/lib.rs"  # the doctest that catches 28; the script checks doctests are here
+      - "tests/historic/**"
+      - "scripts/historic-bugs.py"
+      - ".github/workflows/historic-bugs.yml"
+
+concurrency:
+  group: historic-bugs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/historic-bugs.py --shard ${{ matrix.shard }}/4

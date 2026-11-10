@@ -1,0 +1,25 @@
+diff --git a/crates/grift/src/parked.rs b/crates/grift/src/parked.rs
+index 5654651..a82ca57 100644
+--- a/crates/grift/src/parked.rs
++++ b/crates/grift/src/parked.rs
+@@ -81,7 +81,8 @@ impl Drop for Parked {
+         if let Some(control) = self.control.upgrade() {
+             // Its park made the room, so this needs no memory and the run can always be found.
+             #[expect(clippy::disallowed_methods, reason = "its park reserved this room")]
+-            control.forgotten().push(self.name);
++            let mut forgotten = control.forgotten();
++            if forgotten.try_reserve(1).is_ok() { forgotten.push(self.name); }
+         }
+     }
+ }
+@@ -259,9 +260,7 @@ impl<T> Grift<T> {
+     /// about to park too, whose entry is already made: no more runs are parked than there are kept
+     /// names.
+     pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
+-        let mut forgotten = self.control.forgotten();
+-        let more = self.kept.len().saturating_sub(forgotten.len());
+-        forgotten.try_reserve(more).map_err(|_| local::Error::oom())
++        Ok(())
+     }
+ 
+     /// How many runs are parked. Each holds what it refers to until it ends, so a host that sees this grow has forgotten some: [`Grift::forgotten`].

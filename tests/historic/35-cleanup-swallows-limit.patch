@@ -1,0 +1,13 @@
+diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
+index 62a67c0..b2bd54d 100644
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -746,7 +746,7 @@ impl<T> Grift<T> {
+                     // The one rule: the newest reason wins, unless a program's would replace a
+                     // limit.
+                     if let Some(Err(waiting)) = self.machine.waiting.pop()
+-                        && waiting.limit()
++                        && false
+                         && !e.limit()
+                     {
+                         e = waiting;

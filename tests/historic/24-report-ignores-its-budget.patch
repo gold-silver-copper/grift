@@ -1,0 +1,10 @@
+--- a/crates/grift/src/print.rs
++++ b/crates/grift/src/print.rs
+@@ -198,6 +198,7 @@
+         // A first pass writes nothing, to learn whether the whole report fits: only one that doesn't
+         // has its names cut, to keep the place in, and only from `REPORT_FLOOR` bytes up, where
+         // both fit; below, the kind comes first, as much of it as fits.
++        let bytes = usize::MAX;
+         let mut discard = Discard;
+         let mut probe = Paced::new(self, &mut discard, bytes);
+         let probed = self.write_report(e, usize::MAX, &mut probe);

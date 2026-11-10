@@ -1,0 +1,35 @@
+--- a/crates/grift/src/print.rs
++++ b/crates/grift/src/print.rs
+@@ -52,6 +52,7 @@
+     /// great deal from a few items: many references to one long string, or one long bytes value.
+     pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Error> {
+         let mut out = Paced::new(self, out, usize::MAX);
++        out.interruptible = false;
+         let printed = self.print_into(v, None, &mut out);
+         out.ending(printed)
+     }
+@@ -368,6 +369,7 @@
+     grift: &'a Grift<T>,
+     out: &'a mut dyn Write,
+     walked: usize,
++    interruptible: bool,
+     left: usize,
+     /// A stop was found.
+     stopped: bool,
+@@ -383,6 +385,7 @@
+             grift,
+             out,
+             walked: 0,
++            interruptible: true,
+             left,
+             stopped: false,
+             full: false,
+@@ -392,7 +395,7 @@
+ 
+     /// Charges `cost` items of work; whether a stop was found.
+     fn charge(&mut self, cost: usize) -> bool {
+-        self.stopped |= self.grift.walk_charged(&mut self.walked, cost);
++        self.stopped |= self.interruptible && self.grift.walk_charged(&mut self.walked, cost);
+         self.stopped
+     }
+ 

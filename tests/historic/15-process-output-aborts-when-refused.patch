@@ -1,0 +1,11 @@
+--- a/crates/grift-cli/src/main.rs
++++ b/crates/grift-cli/src/main.rs
+@@ -422,7 +422,7 @@
+             Err(e) => return Err(e),
+         };
+         if let Some(bytes) = &mut kept {
+-            match (bytes.try_reserve(n), chunk.get(..n)) {
++            match (Ok::<(), std::collections::TryReserveError>(()), chunk.get(..n)) {
+                 (Ok(()), Some(read)) => bytes.extend_from_slice(read),
+                 _ => kept = None,
+             }

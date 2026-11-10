@@ -1,0 +1,40 @@
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -1750,17 +1750,11 @@
+         // can't overlap a match.
+         let mut held = 0u64;
+         for &b in p {
+-            if self.walk_stopped(&mut walked) {
+-                return Err(Error::interrupted());
+-            }
+             held |= 1 << (b & 63);
+         }
+         let (mut at, mut memory) = (0, 0);
+         while let Some(window) = text.get(at..at + n) {
+             if window.last().is_some_and(|b| held >> (b & 63) & 1 == 0) {
+-                if self.walk_stopped(&mut walked) {
+-                    return Err(Error::interrupted());
+-                }
+                 (at, memory) = (at + n, 0);
+             } else if let Some(i) = self.difference(split.max(memory)..n, p, window, &mut walked)? {
+                 (at, memory) = (at + i + 1 - split, 0);
+@@ -1785,9 +1779,6 @@
+         walked: &mut usize,
+     ) -> Result<Option<usize>, Error> {
+         for i in places {
+-            if self.walk_stopped(walked) {
+-                return Err(Error::interrupted());
+-            }
+             if a.get(i) != b.get(i) {
+                 return Ok(Some(i));
+             }
+@@ -1804,9 +1795,6 @@
+     ) -> Result<(usize, usize), Error> {
+         let (mut left, mut right, mut offset, mut period) = (0, 1, 0, 1);
+         while let (Some(&a), Some(&b)) = (p.get(right + offset), p.get(left + offset)) {
+-            if self.walk_stopped(walked) {
+-                return Err(Error::interrupted());
+-            }
+             if a == b {
+                 offset += 1;
+                 if offset == period {

@@ -1,0 +1,12 @@
+diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
+index 8c8d7f0..397e810 100644
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -727,7 +727,6 @@ impl<T> Grift<T> {
+                         Err(mut failed) => {
+                             self.acting_on_refusal(&mut failed);
+                             e = failed;
+-                            e.trace.add(at);
+                         }
+                     }
+                 }

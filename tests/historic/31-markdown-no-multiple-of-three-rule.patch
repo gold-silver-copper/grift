@@ -1,0 +1,13 @@
+--- a/programs/markdown/main.grift
++++ b/programs/markdown/main.grift
+@@ -289,9 +289,7 @@
+            (pairs?
+              (lambda! ((opener size can-open can-close opener-whole))
+                (and!? (same? (byte-at s opener) (byte-at s at))
+-                      (not? (and!? (or!? opens can-close)
+-                                   (same? (remainder (add whole opener-whole) 3) 0)
+-                                   (not? (same? (remainder whole 3) 0)))))))
++                      #true)))
+            (seek
+              (lambda! (below inside)
+                (conditional!
