@@ -512,12 +512,13 @@ machine loop over a frame stack, so no Rust recursion grows with a program's nes
 loop and before a host's evaluation or call needs its first heap slot, once as much was allocated
 since the last as the largest of what that one walked: what survived (a context with its bindings),
 the stacks and kept values, and half the free slots. So collecting costs a constant factor of what
-a program allocates, whatever it held before. A collection gives back a free top third of the
-slots, and the running machine's stacks and the kept table give back room they no longer use (a
-parked run keeps its stacks' room until it ends). Objects never move, so the newest live ones keep the slots below them:
-once a collection after a dropped peak finds most slots free, the next run collects first, when
-what the runs before made is garbage, and gives the rest back to the allocator. That first
-collection comes once as much was allocated as the peak left alive. Allocation never collects,
+a program allocates, whatever it held before. A collection gives back the free slots past the room
+the next one waits for, once they are a top third of all, and the running machine's stacks and the
+kept table give back room they no longer use (a parked run keeps its stacks' room until it ends).
+Objects never move, so the newest live ones keep the slots below them: once a collection after a
+dropped peak finds most slots free, the next run collects first, when what the runs before made is
+garbage, and gives the rest back to the allocator. That first collection comes once as much was
+allocated as the peak left alive. Allocation never collects,
 and a collection needs no memory: every new heap slot first reserves its entry on the mark stack,
 or is refused, so a heap full of garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
 work needs: heap slots, which that frees, and a little besides (a new name, a host function's

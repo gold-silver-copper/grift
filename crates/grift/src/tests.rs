@@ -647,7 +647,9 @@ fn collection_pays_for_what_it_walks() {
     for _ in 0..3 {
         g.evaluate(&mut (), "(length (range 0 100000))").unwrap();
     }
-    contexts.into_iter().for_each(|k| drop(g.release(k)));
+    contexts
+        .into_iter()
+        .for_each(|k| assert!(g.release(k).is_ok(), "released"));
     let mut g = grift();
     for src in [
         "(define! big (range 0 100000))",
