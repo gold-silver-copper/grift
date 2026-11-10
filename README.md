@@ -509,7 +509,14 @@ The `grift` crate holds values and a heap that is a growable `Vec` of slots
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
-loop and before a host's evaluation or call needs its first heap slot. Allocation never collects,
+loop and before a host's evaluation or call needs its first heap slot, once as much was allocated
+since the last as that one walked: what survived, the stacks and kept values, and half the free
+slots. So collecting costs a constant factor of what a program allocates, whatever it held before.
+A collection gives back a free top third of the slots, and the stacks and kept table give back
+room they no longer use. Objects never move, so the newest live ones keep the slots below them:
+once a collection after a dropped peak finds most slots free, the next run collects first, when
+what the runs before made is garbage, and gives the rest back to the allocator. That first
+collection comes once as much was allocated as the peak left alive. Allocation never collects,
 and a collection needs no memory: every new heap slot first reserves its entry on the mark stack,
 or is refused, so a heap full of garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
 work needs: heap slots, which that frees, and a little besides (a new name, a host function's
