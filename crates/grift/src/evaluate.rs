@@ -1229,7 +1229,23 @@ impl<T> Grift<T> {
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
             }
-            P::Power => Value::Float(float_of(x)?.powf(float_of(y)?)),
+            P::Power => match (x, y) {
+                (Value::Integer(_), Value::Integer(b)) if b < 0 => {
+                    return Err(Error::new(K::RangeError, &[x, y]));
+                }
+                (Value::Integer(a), Value::Integer(b)) => {
+                    // Past u32's exponents only 0 and ±1 have powers that fit, and those the
+                    // exponent's parity decides, as it does for the largest u32 of that parity.
+                    let b = u32::try_from(b).unwrap_or(if b & 1 == 0 {
+                        u32::MAX - 1
+                    } else {
+                        u32::MAX
+                    });
+                    let n = a.checked_pow(b);
+                    Value::Integer(n.ok_or_else(|| Error::new(K::Overflow, &[x, y]))?)
+                }
+                _ => Value::Float(float_of(x)?.powf(float_of(y)?)),
+            },
             P::SquareRoot => Value::Float(float_of(x)?.sqrt()),
             P::Sine => Value::Float(float_of(x)?.sin()),
             P::Cosine => Value::Float(float_of(x)?.cos()),
@@ -1240,7 +1256,13 @@ impl<T> Grift<T> {
             P::Ceiling => Value::Float(float_of(x)?.ceil()),
             P::Round => Value::Float(float_of(x)?.round()),
             P::Truncate => Value::Float(float_of(x)?.trunc()),
-            P::AbsoluteValue => Value::Float(float_of(x)?.abs()),
+            P::AbsoluteValue => match x {
+                Value::Integer(a) => Value::Integer(
+                    a.checked_abs()
+                        .ok_or_else(|| Error::new(K::Overflow, &[x]))?,
+                ),
+                _ => Value::Float(float_of(x)?.abs()),
+            },
             P::IntegerToFloat => Value::Float(integer_of(x)? as f64),
             // Rust's `as`: saturating, and not-a-number becomes 0.
             P::FloatToInteger => Value::Integer(float_of(x)? as i64),
