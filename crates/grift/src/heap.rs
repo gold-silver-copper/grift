@@ -30,7 +30,7 @@ impl PartialEq for Reference {
 #[derive(Clone, Copy)]
 pub(crate) struct Operative {
     pub parameters: Value,
-    pub context_parameter: Value,
+    pub context_parameter: Option<Symbol>,
     pub body: Value,
     pub context: Reference,
     pub size: u32,
@@ -85,7 +85,7 @@ struct Slot {
 }
 
 // A pair's origin fits in the room an operative already needs.
-const _: () = assert!(size_of::<Slot>() == 72);
+const _: () = assert!(size_of::<Slot>() == 64);
 
 /// Where a pair came from: the source and line it was read at, if under a name; whether the
 /// library made it, by reading its text or by running its code; and whether it is one of its
@@ -601,7 +601,9 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
         }
         Object::Operative(op) => {
             f(op.parameters);
-            f(op.context_parameter);
+            if let Some(s) = op.context_parameter {
+                f(Value::Symbol(s));
+            }
             f(op.body);
             f(Value::Context(op.context));
         }

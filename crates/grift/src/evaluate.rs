@@ -1040,7 +1040,7 @@ impl<T> Grift<T> {
             .try_reserve(op.size as usize)
             .map_err(|_| Error::oom())?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
-        if let Value::Symbol(s) = op.context_parameter {
+        if let Some(s) = op.context_parameter {
             #[expect(
                 clippy::disallowed_methods,
                 reason = "reserved the operative's size above"
@@ -1165,11 +1165,11 @@ impl<T> Grift<T> {
         let [x, y, z] = a;
         let v = match p {
             P::Vau => {
-                let size = self.check_parameters(x, y)?;
+                let (size, context_parameter) = self.check_parameters(x, y)?;
                 let body = self.arguments_list(base + 2)?;
                 let op = Operative {
                     parameters: x,
-                    context_parameter: y,
+                    context_parameter,
                     body,
                     context,
                     size: u32::try_from(size).map_err(|_| Error::oom())?,
@@ -1630,17 +1630,18 @@ impl<T> Grift<T> {
     }
 
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
-    /// symbol not in the tree. The number of bindings a call makes.
+    /// symbol not in the tree. The number of bindings a call makes, and the context parameter's
+    /// symbol unless it is `#ignore`.
     pub(crate) fn check_parameters(
         &mut self,
         tree: Value,
         context_parameter: Value,
-    ) -> Result<usize, Error> {
+    ) -> Result<(usize, Option<Symbol>), Error> {
         let mut bound = Bindings::default();
         self.match_tree(&mut bound, tree, tree)?;
         match context_parameter {
-            Value::Symbol(s) if !bound.contains_key(&s) => Ok(bound.len() + 1),
-            Value::Ignore => Ok(bound.len()),
+            Value::Symbol(s) if !bound.contains_key(&s) => Ok((bound.len() + 1, Some(s))),
+            Value::Ignore => Ok((bound.len(), None)),
             _ => Err(Error::new(K::ParameterError, &[context_parameter])),
         }
     }
