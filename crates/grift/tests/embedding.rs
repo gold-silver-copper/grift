@@ -122,6 +122,7 @@ fn leaving() -> Grift<Leaving> {
         ("panics", panics as grift::HostFunction<Leaving>),
         ("swap-out", swap_out),
         ("note", note),
+        ("listed", |g, _, xs| g.list(xs).map(Answer::Now)),
     ] {
         let f = g.host_function(name, f).unwrap();
         g.define(name, f).unwrap();
@@ -169,6 +170,16 @@ fn a_run_its_host_function_left_is_over() {
     }));
     assert!(caught.is_err());
     quiet(&mut g, &mut s);
+    // What a host function builds is the program's, called by library code too.
+    let e = g
+        .evaluate(
+            &mut s,
+            "(evaluate (apply listed (list first 1)) (current-context))",
+        )
+        .unwrap_err();
+    let mut place = String::new();
+    g.write(&e.trace[0], &mut place).unwrap();
+    assert_eq!(place, "(#[applicative #[primitive first]] 1)");
     for by_list in [false, true] {
         // A panic inside library code leaves no mark on what the host builds, before the next
         // run or after it.

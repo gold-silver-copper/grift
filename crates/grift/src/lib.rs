@@ -731,13 +731,11 @@ impl<T> Grift<T> {
         self.exported(made)
     }
 
-    /// `heads` in front of `tail`, built by the host: what a run a host function left behind
-    /// marked is over first, so the pairs are the program's.
+    /// `heads` in front of `tail`, built by the host, so the pairs are the program's.
     fn pairs(&mut self, heads: &[Value], tail: local::Value) -> Result<local::Value, local::Error> {
-        self.settled();
         heads.iter().rev().try_fold(tail, |rest, v| {
             let v = self.import(v)?;
-            self.pair_local(v, rest)
+            self.pair_local(v, rest, false)
         })
     }
 
@@ -902,6 +900,8 @@ impl<T> Grift<T> {
         }
         let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
         push(&mut self.kept, Entry::Free(None))?;
+        // Every collection walks the kept table, so a new entry brings the next one nearer.
+        self.heap.charge(1);
         self.kept_free = Some(name);
         Ok(name)
     }
@@ -922,6 +922,23 @@ impl<T> Grift<T> {
         let held = std::mem::replace(entry, Entry::Free(self.kept_free));
         self.kept_free = Some(name);
         Some(held)
+    }
+
+    /// Gives back the free entries at the end of the kept table, and room it no longer uses (as
+    /// [`heap::tidy`] says), and makes the free list again from the bottom up, so the lowest names
+    /// are reused first and the end empties. Each collection walks the whole table, and this once
+    /// more.
+    pub(crate) fn tidy_kept(&mut self) {
+        let used = self.kept.iter().rposition(|e| !matches!(e, Entry::Free(_)));
+        self.kept.truncate(used.map_or(0, |i| i + 1));
+        heap::tidy(&mut self.kept);
+        self.kept_free = None;
+        for (name, entry) in (0..u32::MAX).zip(self.kept.iter_mut()).rev() {
+            if let Entry::Free(next) = entry {
+                *next = self.kept_free;
+                self.kept_free = Some(name);
+            }
+        }
     }
 
     /// The value `k` keeps.
@@ -1004,19 +1021,8 @@ impl<T> Grift<T> {
     pub(crate) fn begin_run(&mut self) {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
-        self.settled();
+        self.machine.clear();
         self.control.begin();
-    }
-
-    /// Whether no run is in progress; if none is, what a host function left on the machines when
-    /// it panicked or replaced the interpreter is over, so nothing the host makes now takes its
-    /// mark. A machine is empty between runs.
-    pub(crate) fn settled(&mut self) -> bool {
-        let none = !self.control.running();
-        if none {
-            self.machine.clear();
-        }
-        none
     }
 
     /// The context `v` is, or a `type-error`.

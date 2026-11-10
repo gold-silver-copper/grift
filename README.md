@@ -219,8 +219,9 @@ fn main() -> Result<(), Error> {
   or call uses memory, and its `Symbol` is then `stale-value`;
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
-  grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
-  as grift's own: traces skip it. Code a program reads or builds is the program's.
+  grift code such as a prelude: its code, and the code it builds or reads with `read-form` as it
+  runs, count as library code, as grift's own: traces skip it. Code a program reads or builds is the
+  program's, and so is code a host function builds, whatever called it.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out, bytes)`,
@@ -449,7 +450,7 @@ fn main() -> Result<(), Error> {
   refused the little it does need, the run waits still and the handle comes back.
 - **What can't wait.** A run under `evaluate` or `call` has Rust frames that can't be set aside. A
   waiting call there is the error `cannot-park`, its trace saying which call, and `can_park()` lets
-  a host function do something else instead. `resume` inside a host call is refused
+  a host function do something else instead; it is `false` too with no run in progress. `resume` inside a host call is refused
   (`cannot-nest`), the handle coming back in `ResumeError::parked` with the run untouched: queue it
   for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`, an error of the interpreter you
@@ -508,7 +509,16 @@ The `grift` crate holds values and a heap that is a growable `Vec` of slots
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
-loop and before a host's evaluation or call needs its first heap slot. Allocation never collects,
+loop and before a host's evaluation or call needs its first heap slot, once as much was allocated
+since the last as the largest of what that one walked: what survived (a context with its bindings),
+the stacks and kept values, and half the free slots. So collecting costs a constant factor of what
+a program allocates, whatever it held before. A collection gives back the free slots past the room
+the next one waits for, once they are a top third of all, and the running machine's stacks and the
+kept table give back room they no longer use (a parked run keeps its stacks' room until it ends).
+Objects never move, so the newest live ones keep the slots below them: once a collection after a
+dropped peak finds most slots free, the next run collects first, when what the runs before made is
+garbage, and gives the rest back to the allocator. That first collection comes once as much was
+allocated as the peak left alive. Allocation never collects,
 and a collection needs no memory: every new heap slot first reserves its entry on the mark stack,
 or is refused, so a heap full of garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
 work needs: heap slots, which that frees, and a little besides (a new name, a host function's

@@ -385,9 +385,22 @@ impl Machine {
         self.handed = None;
     }
 
-    /// How many objects a parked machine counts as, for when to collect: every collection walks it.
+    /// Gives back the room of stacks that were once much deeper than they are.
+    pub(crate) fn tidy(&mut self) {
+        crate::heap::tidy(&mut self.frames);
+        crate::heap::tidy(&mut self.arguments);
+        crate::heap::tidy(&mut self.waiting);
+        crate::heap::tidy(&mut self.work);
+    }
+
+    /// How many objects a machine counts as, for when to collect: every collection walks it,
+    /// running or parked.
     pub(crate) fn weight(&self) -> usize {
-        1 + self.frames.len() + self.arguments.len() + self.waiting.len()
+        let waiting = self.waiting.iter().map(|w| match w {
+            Ok(_) => 1,
+            Err(e) => e.values.len() + e.trace.weight(),
+        });
+        1 + self.frames.len() + self.arguments.len() + waiting.sum::<usize>()
     }
 }
 
@@ -447,8 +460,7 @@ impl<T> Grift<T> {
         parks: bool,
     ) -> Result<Value, Error> {
         let f = self.combiner_of(f)?;
-        self.settled();
-        let operands = self.list_local(arguments)?;
+        let operands = self.list_local(arguments, false)?;
         let context = self.heap.context(None)?;
         // The run's own machine, whose argument stack starts empty.
         let call = What::Combine {
@@ -791,8 +803,9 @@ impl<T> Grift<T> {
     /// `values` and `trace`. The trace is the error's shared list with the places added since on
     /// its front, so this costs those places only.
     fn handle(&mut self, e: Error, handler: Value, context: Reference) -> Result<Mode, Error> {
-        let values = self.list_local(&e.values)?;
-        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l))?;
+        let library = self.machine.library;
+        let values = self.list_local(&e.values, library)?;
+        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
@@ -802,7 +815,7 @@ impl<T> Grift<T> {
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
-        let operands = self.list_local(&[v])?;
+        let operands = self.list_local(&[v], library)?;
         self.machine.handed = Some((trace, seen));
         self.combine(handler, operands, context)
     }
@@ -810,12 +823,12 @@ impl<T> Grift<T> {
     /// Every way into a run comes here first. One inside a host call is refused, `cannot-nest`: it
     /// would stack the program's depth on the host function's Rust frame, where a host function
     /// answers [`Answer::Call`] instead. Then, as the run may need slots before reaching the
-    /// machine loop, collect first if due, with its checked inputs as roots.
+    /// machine loop, collect first if due, or after a peak, with its checked inputs as roots.
     pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
         if self.control.running() {
             return Err(Error::new(K::CannotNest, &[]));
         }
-        if self.heap.due() {
+        if self.heap.due_before_run() {
             self.collect(current);
         }
         Ok(())
@@ -824,7 +837,9 @@ impl<T> Grift<T> {
     // Root iterators and marking temporaries belong only to collection.
     #[inline(never)]
     fn collect(&mut self, current: impl Iterator<Item = Value>) {
-        let parked = self.kept.iter().map(Entry::weight).sum();
+        // What the collection walks outside the heap: this machine, and the whole kept table.
+        let parked: usize = self.kept.iter().map(Entry::weight).sum();
+        let walked = parked + self.kept.len() + self.machine.weight();
         let kept = self.kept.iter().flat_map(Entry::roots);
         let roots = self
             .machine
@@ -835,8 +850,10 @@ impl<T> Grift<T> {
         // Names are heap objects: the known ones and host functions' are roots too.
         let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
         let hosts = self.hosts.iter().map(|&(name, _)| Value::Symbol(name));
-        self.heap.collect(roots.chain(known).chain(hosts), parked);
+        self.heap.collect(roots.chain(known).chain(hosts), walked);
         self.tidy_symbols();
+        self.tidy_kept();
+        self.machine.tidy();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -860,7 +877,6 @@ impl<T> Grift<T> {
             .is_some_and(|c| Arc::ptr_eq(c, &self.control));
         if !same {
             self.control.end();
-            self.settled();
             return Err(Error::new(K::ForeignValue, &[]));
         }
         hosting.0 = None;
@@ -907,7 +923,7 @@ impl<T> Grift<T> {
         then: Option<(Value, Vec<Value>)>,
     ) -> Result<Mode, Error> {
         let function = self.combiner_of(function)?;
-        let operands = self.list_local(arguments)?;
+        let operands = self.list_local(arguments, false)?;
         let at = self.machine.here;
         if let Some((then, saved)) = then {
             let combiner = self.combiner_of(then)?;
@@ -1014,7 +1030,7 @@ impl<T> Grift<T> {
         let mut list = Value::EmptyList;
         while self.machine.arguments.len() > base {
             let x = self.machine.arguments.pop().unwrap_or(Value::EmptyList);
-            list = self.pair_local(x, list)?;
+            list = self.pair_local(x, list, self.machine.library)?;
         }
         Ok(list)
     }
@@ -1151,7 +1167,7 @@ impl<T> Grift<T> {
             if self.walk_stopped(&mut walked) {
                 return Err(Error::interrupted());
             }
-            self.pair_local(x, list)
+            self.pair_local(x, list, self.machine.library)
         })
     }
 
@@ -1204,12 +1220,12 @@ impl<T> Grift<T> {
                     return Err(type_error(bad));
                 };
                 match p {
-                    P::Unbind => Value::Boolean(self.bindings_mut(c)?.remove(&s).is_some()),
+                    P::Unbind => Value::Boolean(self.heap.room_in(c, 0)?.remove(&s).is_some()),
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
             P::Names => self.names_list(context_kind(x)?)?,
-            P::Pair => self.pair_local(x, y)?,
+            P::Pair => self.pair_local(x, y, self.machine.library)?,
             P::First | P::Rest => match x {
                 Value::Pair(r) => {
                     #[expect(clippy::disallowed_methods, reason = "one pair: first or rest")]
@@ -1298,33 +1314,39 @@ impl<T> Grift<T> {
                 };
                 n.ok_or_else(|| Error::new(K::ParseError, &[x]))?
             }
-            P::ReadForm => {
-                let Value::String(r) = x else {
-                    return Err(type_error(x));
-                };
-                let offset = usize::try_from(integer_of(y)?).ok();
-                // The text is lent to the reader, not copied: a program reads a long text one
-                // form at a time.
-                let Object::String(text) = self.heap.get_mut(r)? else {
-                    return Err(Error::new(K::StaleValue, &[x]));
-                };
-                let text = std::mem::take(text);
-                let read = offset
-                    .filter(|&i| text.is_char_boundary(i))
-                    .map(|i| self.read_form(&text, i, 1, None, &mut 0));
-                if let Object::String(s) = self.heap.get_mut(r)? {
-                    *s = text;
-                }
-                let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
-                match read? {
-                    Some((form, place, _)) => {
-                        self.list_local(&[form, integer(place.start), integer(place.end)])?
-                    }
-                    None => Value::EmptyList,
-                }
-            }
+            P::ReadForm => self.read_form_at(x, y)?,
         };
         Ok(Mode::Return(v))
+    }
+
+    /// `read-form`'s work: the form of string `x` after byte offset `y` and where it is. Apart from
+    /// `primitive`, so its size costs the machine's loop nothing.
+    #[inline(never)]
+    fn read_form_at(&mut self, x: Value, y: Value) -> Result<Value, Error> {
+        let Value::String(r) = x else {
+            return Err(type_error(x));
+        };
+        let offset = usize::try_from(integer_of(y)?).ok();
+        // The text is lent to the reader, not copied: a program reads a long text one
+        // form at a time.
+        let Object::String(text) = self.heap.get_mut(r)? else {
+            return Err(Error::new(K::StaleValue, &[x]));
+        };
+        let text = std::mem::take(text);
+        let read = offset
+            .filter(|&i| text.is_char_boundary(i))
+            .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
+        if let Object::String(s) = self.heap.get_mut(r)? {
+            *s = text;
+        }
+        let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
+        Ok(match read? {
+            Some((form, place, _)) => self.list_local(
+                &[form, integer(place.start), integer(place.end)],
+                self.machine.library,
+            )?,
+            None => Value::EmptyList,
+        })
     }
 
     /// The arguments from `base` don't fit the primitive: an `arity-error` carrying them as one
@@ -1598,17 +1620,19 @@ impl<T> Grift<T> {
     }
 
     /// A new list of `xs`.
-    pub(crate) fn list_local(&mut self, xs: &[Value]) -> Result<Value, Error> {
+    pub(crate) fn list_local(&mut self, xs: &[Value], library: bool) -> Result<Value, Error> {
         xs.iter()
             .rev()
-            .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l))
+            .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l, library))
     }
 
-    /// A new pair, the library's if the combination being combined is.
-    pub(crate) fn pair_local(&mut self, a: Value, b: Value) -> Result<Value, Error> {
+    /// A new pair, the library's if `library`: what the machine makes is the library's if the
+    /// combination being combined is, what the host makes is the program's, and the reader says
+    /// whose text it reads.
+    pub(crate) fn pair_local(&mut self, a: Value, b: Value, library: bool) -> Result<Value, Error> {
         let origin = Origin {
             place: None,
-            library: self.machine.library,
+            library,
             outer: false,
         };
         Ok(Value::Pair(self.heap.alloc(Object::Pair(a, b, origin))?))
@@ -1686,11 +1710,8 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut matched = Bindings::default();
         self.match_tree(&mut matched, tree, value)?;
-        let bindings = self.bindings_mut(c)?;
-        bindings
-            .try_reserve(matched.len())
-            .map_err(|_| Error::oom())?;
-        #[expect(clippy::disallowed_methods, reason = "reserved matched.len() above")]
+        let bindings = self.heap.room_in(c, matched.len())?;
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved matched.len()")]
         bindings.extend(matched);
         Ok(())
     }
@@ -1702,18 +1723,9 @@ impl<T> Grift<T> {
         s: Symbol,
         v: Value,
     ) -> Result<(), Error> {
-        let bindings = self.bindings_mut(context)?;
-        bindings.try_reserve(1).map_err(|_| Error::oom())?;
-        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
-        bindings.insert(s, v);
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved 1")]
+        self.heap.room_in(context, 1)?.insert(s, v);
         Ok(())
-    }
-
-    pub(crate) fn bindings_mut(&mut self, context: Reference) -> Result<&mut Bindings, Error> {
-        match self.heap.get_mut(context)? {
-            Object::Context(_, bindings) => Ok(bindings),
-            _ => Err(Error::new(K::StaleValue, &[Value::Context(context)])),
-        }
     }
 
     pub(crate) fn context_at(

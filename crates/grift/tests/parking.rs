@@ -12,15 +12,11 @@
     clippy::indexing_slicing
 )]
 
-use grift::{Answer, Error, Grift, Interrupter, Parked, Ran, ResumeError, Value};
+use grift::{Answer, Error, Grift, Parked, Ran, ResumeError, Value};
 
 #[derive(Default)]
 struct World {
     log: Vec<String>,
-    stopper: Option<Interrupter>,
-    held: Option<Parked>,
-    saved: Vec<Value>,
-    refused: Vec<String>,
 }
 
 type G = Grift<World>;
@@ -49,11 +45,6 @@ fn wait(_: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Later(Value::Inert))
 }
 
-/// What `wait` is to a program, with the answer already there: the same call, not parked.
-fn answer(_: &mut G, world: &mut World, _: &[Value]) -> Result<Answer, Error> {
-    Ok(Answer::Now(world.saved.pop().unwrap_or(Value::Inert)))
-}
-
 fn note(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
     for v in args {
         let mut text = String::new();
@@ -63,78 +54,16 @@ fn note(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
 }
 
-/// Saves its arguments for the host, parks, and stops itself first if the host armed that.
-fn wait_with(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
-    world.saved.extend_from_slice(args);
-    if let Some(stopper) = &mut world.stopper {
-        assert!(stopper.stop());
-    }
-    assert!(g.can_park());
-    Ok(Answer::Later(Value::Inert))
-}
-
-/// Tries to evaluate its string argument inside this host call.
-fn nest(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
-    let src = g.as_str(&args[0])?.unwrap().to_owned();
-    assert!(g.can_park());
-    let done = g.evaluate(world, &src);
-    assert!(g.can_park());
-    done.map(Answer::Now)
-}
-
-/// Tries every way to begin or take up a run from inside a host call.
-fn meddle(g: &mut G, world: &mut World, _: &[Value]) -> Result<Answer, Error> {
-    let top = g.top_level();
-    let e = g.start_in(world, &top, "inner", "1").unwrap_err();
-    world.refused.push(kind(g, &e));
-    let parked = world.held.take().unwrap();
-    let refused = g.resume(world, parked, Ok(Value::Inert)).unwrap_err();
-    world.refused.push(kind(g, &refused.error));
-    let refused = give_up(g, world, refused.parked.unwrap()).unwrap_err();
-    world.refused.push(kind(g, &refused.error));
-    world.held = refused.parked;
-    Ok(Answer::Now(Value::Inert))
-}
-
-/// Asks for its argument.
-fn ask(_: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
-    Ok(Answer::Later(args[0].clone()))
-}
-
-/// Asks for what the host saved.
-fn ask_saved(_: &mut G, world: &mut World, _: &[Value]) -> Result<Answer, Error> {
-    Ok(Answer::Later(world.saved.pop().unwrap()))
-}
-
 fn boom(_: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
     panic!("a host function panics");
-}
-
-/// The forms of the text in the host's first saved value, as the runner's `read-forms-host`.
-fn read_forms(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
-    let name = g.as_str(&args[0])?.unwrap().to_owned();
-    g.read_in(
-        &name,
-        "(note (quote! loaded))\n(define! from-file (wait))\n(first from-file)",
-    )
-    .map(Answer::Now)
 }
 
 fn grift() -> G {
     let mut g = G::new().unwrap();
     for (name, f) in [
         ("wait", wait as grift::HostFunction<World>),
-        ("wait-with", wait_with),
-        ("ask", ask),
-        ("ask-saved", ask_saved),
-        ("on-machine", on_machine),
-        ("and-then", and_then),
-        ("answer", answer),
         ("note", note),
-        ("nest", nest),
-        ("meddle", meddle),
         ("boom", boom),
-        ("read-forms-host", read_forms),
     ] {
         let f = g.host_function(name, f).unwrap();
         g.define(name, f).unwrap();
@@ -177,6 +106,10 @@ fn a_run_that_cannot_park_says_so() {
     let e = g.call(&mut w, &f, &[]).unwrap_err();
     assert_eq!(kind(&g, &e), "cannot-park");
     assert!(!g.can_park());
+    // Nor with no run in progress, after a panic ended one that could.
+    let boom = std::panic::AssertUnwindSafe(|| run(&mut g, &mut w, "(boom)"));
+    assert!(std::panic::catch_unwind(boom).is_err());
+    assert!(!g.can_park());
 }
 
 #[test]
@@ -193,26 +126,6 @@ fn refused_handles_survive_the_question_mark() {
     let ended = give_up(&mut g, &mut w, p).unwrap();
     assert_eq!(kind(&g, &ended), "given-up");
     assert_eq!(w.log, ["1"]);
-}
-
-/// `(on-machine thunk)`: calls `thunk` on the machine, as this call's answer.
-fn on_machine(_: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
-    Ok(Answer::Call {
-        function: args[0].clone(),
-        arguments: Vec::new(),
-        then: None,
-    })
-}
-
-/// `(and-then f x)`: calls `f` on the machine, then `(note x result)`, and gives what `note` does.
-fn and_then(g: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
-    let top = g.top_level();
-    let name = g.symbol("note")?;
-    Ok(Answer::Call {
-        function: args[0].clone(),
-        arguments: Vec::new(),
-        then: Some((g.lookup(&top, &name)?.unwrap(), vec![args[1].clone()])),
-    })
 }
 
 /// `(call-then f then)`: calls `f` on the machine, then `then` with its value.

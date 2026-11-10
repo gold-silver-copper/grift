@@ -603,6 +603,83 @@ fn an_object_counts_its_storage_towards_the_next_collection() {
     g.heap.not_due();
     g.bytes(text.as_bytes()).unwrap();
     assert!(g.heap.due(), "bytes");
+    // A context's bindings, as they grow, though binding allocates nothing else.
+    let c = g.evaluate(&mut (), "(record () ())").unwrap();
+    let names: Vec<Value> = (0..20_000)
+        .map(|i| Value::Symbol(g.symbol(&format!("n{i}")).unwrap()))
+        .collect();
+    g.heap.not_due();
+    names
+        .iter()
+        .for_each(|n| g.bind(&c, n, Value::Inert).unwrap());
+    assert!(g.heap.due(), "a context");
+}
+
+/// Collection walks a constant factor of what was allocated, deep in a stack of frames that make
+/// little and after a host kept and released many values: `Heap::collect` checks each one. The
+/// generator's programs run neither so deep nor beside so many kept values. And the next run
+/// after a dropped peak gives its slots back, which the generator's runs, ended by collections
+/// asked for, can't tell.
+#[test]
+fn collection_pays_for_what_it_walks() {
+    // Kept values and contexts' bindings, which every collection walks, count too.
+    let mut g = grift();
+    g.heap.request_collection();
+    g.evaluate(&mut (), "#inert").unwrap();
+    let kept: Vec<_> = (0..200_000)
+        .map(|_| g.keep(Value::Inert).unwrap())
+        .collect();
+    g.evaluate(&mut (), "(length (range 0 100000))").unwrap();
+    kept.into_iter().for_each(|k| g.release(k).unwrap());
+    let mut g = grift();
+    let names: Vec<Value> = (0..300)
+        .map(|i| Value::Symbol(g.symbol(&format!("n{i}")).unwrap()))
+        .collect();
+    let contexts: Vec<_> = (0..300)
+        .map(|_| {
+            let c = g.evaluate(&mut (), "(record () ())").unwrap();
+            names
+                .iter()
+                .for_each(|n| g.bind(&c, n, Value::Inert).unwrap());
+            g.keep(c).unwrap()
+        })
+        .collect();
+    for _ in 0..3 {
+        g.evaluate(&mut (), "(length (range 0 100000))").unwrap();
+    }
+    contexts
+        .into_iter()
+        .for_each(|k| assert!(g.release(k).is_ok(), "released"));
+    let mut g = grift();
+    for src in [
+        "(define! big (range 0 100000))",
+        "(define! big 0)",
+        "(length (range 0 50000))",
+    ] {
+        g.evaluate(&mut (), src).unwrap();
+    }
+    g.evaluate(&mut (), "#inert").unwrap();
+    assert!(g.heap.len() < 20_000, "kept {} slots", g.heap.len());
+    let deep = "(define! spin (lambda! (n) (if! (same? n 0) 0 (sequence! (pair 1 2) (spin (subtract n 1))))))
+        (define! c (current-context)) (define! d 0)
+        (define! body (quote! (if! (same? d 50000) (spin 100000)
+          (add 1 (sequence! (bind c (quote! d) (add d 1)) (evaluate body c))))))
+        (evaluate body c)";
+    g.evaluate(&mut (), deep).unwrap();
+    // The stacks give back room as collections come, all but what a cleanup's install set aside
+    // for its start: a deep stack, gone when the cleanup is installed, and a collection just
+    // before the cleanup starts.
+    define(&mut g, "collect-always", |g, _, _| {
+        g.heap.stress = true;
+        Ok(crate::Answer::Now(Value::Inert))
+    });
+    let cleanup = "(define! down (lambda! (n) (if! (same? n 0) 0 (add 1 (down (subtract n 1))))))
+        (sequence! (down 30000) (evaluate-with-cleanup (quote! (collect-always)) (current-context) (lambda! () 0)))";
+    g.evaluate(&mut (), cleanup).unwrap();
+    g.heap.stress = false;
+    let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
+    kept.into_iter().for_each(|k| g.release(k).unwrap());
+    g.evaluate(&mut (), "(spin 100000)").unwrap();
 }
 
 #[test]
