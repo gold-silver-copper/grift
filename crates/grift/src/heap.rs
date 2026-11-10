@@ -378,7 +378,7 @@ impl Heap {
     /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
     /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
     /// reserved its entry as it was made. `walked` is how much outside the heap the collection
-    /// walks too. The free list is made again from the top down, so the lowest slots are reused
+    /// walks too. The free list is made again from the bottom up, so the lowest slots are reused
     /// first and the top empties, to be given back.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>, walked: usize) {
         let asked = self.asked.take();
@@ -427,29 +427,31 @@ impl Heap {
         #[cfg(test)]
         assert_eq!(marks.capacity(), room, "marking grew the mark stack");
         let (mut live, mut free, mut top) = (0usize, 0usize, None);
-        self.free = NONE;
-        for (idx, s) in (0..NONE).zip(self.slots.iter_mut()).rev() {
+        // Each free slot is linked to from the one below it, so the list runs from the bottom up.
+        let mut tail = &mut self.free;
+        for (idx, s) in (0..NONE).zip(self.slots.iter_mut()) {
             if s.marked.take() {
                 live = live.saturating_add(weight(&s.obj));
-                top = top.or(Some(idx));
+                top = Some(idx);
                 continue;
             }
             if !matches!(s.obj, Object::Free(_)) {
                 // A slot whose generations run out is retired, never reused: its last one, which
                 // no reference has, means free for good.
                 s.generation = s.generation.saturating_add(1);
+                s.obj = Object::Free(NONE);
             }
             if s.generation == u32::MAX {
                 // Swept every time and never reused, it counts as live.
-                s.obj = Object::Free(NONE);
-                top = top.or(Some(idx));
+                top = Some(idx);
                 live = live.saturating_add(1);
-            } else {
-                s.obj = Object::Free(self.free);
-                self.free = idx;
+            } else if let Object::Free(next) = &mut s.obj {
+                *tail = idx;
+                tail = next;
                 free += 1;
             }
         }
+        *tail = NONE;
         let used = top.map_or(0, |i| i as usize + 1);
         let paced = live.max(walked).max(GC_MIN);
         // What is allocated before the next collection fills the free slots below `used` first.
