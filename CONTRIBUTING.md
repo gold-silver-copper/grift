@@ -32,5 +32,6 @@ and checks its tests still fail; CI runs it nightly and on a PR that changes tes
 code a patch touches re-ports the patch: run `scripts/historic-bugs.py --only <name>`; a patch that
 no longer applies or builds says "re-port this patch", and you write the same bug into the new code
 and save it with `git diff > tests/historic/<name>.patch`. A PR that changes the tests that catch a
-bug updates its row. The bugs no test catches are in the index as not gated: catching one is a good
+bug updates its row; a doctest that catches one has its file in the workflow's `paths`. The script
+runs on Linux only, like its workflow. The bugs no test catches are in the index as not gated: catching one is a good
 first test to write.

@@ -14,9 +14,14 @@ on:
       - "**/*tests.rs"
       - "**/natives.grift"
       - "programs/**"
+      - "crates/grift/src/lib.rs"  # the doctest that catches 28; the script checks doctests are here
       - "tests/historic/**"
       - "scripts/historic-bugs.py"
       - ".github/workflows/historic-bugs.yml"
+
+concurrency:
+  group: historic-bugs-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
