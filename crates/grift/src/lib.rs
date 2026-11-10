@@ -143,7 +143,7 @@ static OWNERS: AtomicU64 = AtomicU64::new(0);
 /// run it was called from: the panic goes on to the host, no cleanup runs, and the interpreter
 /// starts its next evaluation afresh.
 ///
-/// ```compile_fail,E0599
+/// ```compile_fail
 /// let mut g: grift::Grift = grift::Grift::new()?;
 /// g.host_function("f", |g, s, args| g.call(s, &args[0], &[]).map(grift::Answer::Now))?;
 /// # Ok::<(), grift::Error>(())

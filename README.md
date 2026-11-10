@@ -280,8 +280,7 @@ fn main() -> Result<(), Error> {
   form, and the run ends with `interrupted`, whatever else fails on the way.
   `examples/stops.rs` shows stop, force, `limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
-  to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
-  interpreter it was given ends the run with `foreign-value`.
+  to the host, no cleanup runs, and the next evaluation starts afresh.
 - **Limits.** `e.limit` says the host or the machine began an error, not a program: handlers
   pass it, a program's error in a cleanup doesn't replace it, and a host function passing it on
   keeps it one.
