@@ -1,10 +1,10 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
-use crate::Grift;
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
 use crate::interrupt::Control;
 use crate::local::{Error, K, Symbol, Value, push};
+use crate::{Grift, WALK_CHECK};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -77,13 +77,29 @@ impl Cursor<'_> {
         }
     }
 
+    /// Moves to the end of the comment here, its line's end. Its end is found at memory speed, as
+    /// a copy is, a check interval of the walk at a time, each charged before the next is searched.
+    fn skip_comment(&mut self) -> Result<(), Error> {
+        loop {
+            let rest = self.src.get(self.at..).unwrap_or_default();
+            let mut window = rest.len().min(WALK_CHECK);
+            while !rest.is_char_boundary(window) {
+                window -= 1;
+            }
+            let end = rest.get(..window).and_then(|w| w.find('\n'));
+            self.skip(end.unwrap_or(window))?;
+            if end.is_some() || window == rest.len() {
+                return Ok(());
+            }
+        }
+    }
+
     fn skip_space(&mut self) -> Result<(), Error> {
         while let Some(c) = self.peek() {
             let rest = self.src.get(self.at..).unwrap_or_default();
             match c {
-                // A comment is found at memory speed, as a copy is, then charged.
                 _ if c == ';' || rest.starts_with("#!") => {
-                    self.skip(rest.find('\n').unwrap_or(rest.len()))?;
+                    self.skip_comment()?;
                     continue;
                 }
                 c if c.is_whitespace() => {}

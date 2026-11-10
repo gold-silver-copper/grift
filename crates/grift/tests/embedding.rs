@@ -262,8 +262,8 @@ impl std::fmt::Write for Stopping {
 /// Each host call that is a run (G-179's R1 (b)) is work a stop ends. With no run in progress,
 /// `write` and `describe` are runs of their own, which their sink stops at its first text, and a
 /// stop that ends one is spent with it. Inside a host function, `read`, `read_in` and `bind` join
-/// its run, which the function stops first; the reader finds the stop inside one long string or
-/// token, before the text's end would fail it.
+/// its run, which the function stops first; the reader finds the stop inside one long string,
+/// token or comment, before the text's end would fail or end it.
 #[test]
 fn a_stop_reaches_every_host_run() {
     let mut g: Grift<usize> = Grift::new().unwrap();
@@ -289,6 +289,7 @@ fn a_stop_reaches_every_host_run() {
             0 => g.read(&"1 ".repeat(100_000)),
             1 => g.read(&format!("\"{a}")),
             2 => g.read_in("t", &format!("#{a}")),
+            3 => g.read(&format!(";{a}")),
             _ => g
                 .context(None)
                 .and_then(|c| g.bind(&c, &n[0], n[0]).map(|()| c)),
@@ -297,7 +298,7 @@ fn a_stop_reaches_every_host_run() {
         Ok(Answer::Now(Value::Inert))
     });
     g.define("joins", f.unwrap()).unwrap();
-    for mut run in 0..4 {
+    for mut run in 0..5 {
         g.evaluate(&mut run, "(joins N)").unwrap_err();
     }
     assert_eq!(g.evaluate(&mut 0, "(add 1 2)"), Ok(Value::Integer(3)));

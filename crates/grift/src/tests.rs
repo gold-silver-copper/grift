@@ -1681,7 +1681,7 @@ fn a_report_fits_its_budget_and_begins_with_kind_and_place() {
             let (_, text) = report(&g, &e, bytes);
             let at = text.find(" at keys.grift:2").unwrap_or(bytes);
             let fits = match bytes {
-                ..30 => kind.starts_with(&text),
+                ..30 => !text.is_empty() && kind.starts_with(&text),
                 _ if kind.len() <= bytes / 4 => text.starts_with(&kind) && at == kind.len(),
                 _ => at <= bytes / 4 && text[..at].ends_with("..."),
             };

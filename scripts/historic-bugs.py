@@ -23,7 +23,7 @@ target `lib` (unit tests), `doc` (doctests: the start of the doctest's name, its
 root and the item, as in `crates/grift/src/lib.rs - HostFunction`; the full name carries a line
 number), an integration test's name, or `clippy` with a lint's name (`grift/clippy::disallowed_methods`):
 a guard the lint is, which catches the patch when `cargo clippy --all-targets -- -D warnings` on
-the package refuses it by that lint. Refused by another lint or by the compiler, the patch is broken. Several are separated by `; `. A doctest's file must be in the
+the package refuses it by that lint. Refused by another clippy lint or by the compiler, the patch is broken. Several are separated by `; `. A doctest's file must be in the
 workflow's pull_request paths, so a PR that changes it runs the gate; the script refuses otherwise.
 
 Linux only, like its workflow: some catching tests are Linux-only and a hang is ended by killing its
@@ -105,8 +105,8 @@ def cargo(package, target, *rest):
 
 
 def lint(tree, package, name, limit, env):
-    """What clippy says of `package`: "failed" (refused by lint `name`), "passed", "timeout", or why
-    it is broken. A lint is named with `-` in clippy's notes and `_` in the code."""
+    """What clippy says of `package`: "failed" (refused by clippy lint `name` and no other clippy
+    lint), "passed", "timeout", or why it is broken. A lint is named with `-` in clippy's notes and `_` in the code."""
     status, out = run(["cargo", "clippy", "--locked", "-p", package, "--all-targets", "--",
                        "-D", "warnings"], tree, limit, env)
     if status is None:
