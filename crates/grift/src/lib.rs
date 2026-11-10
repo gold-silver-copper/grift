@@ -1150,18 +1150,20 @@ impl<T> Grift<T> {
     pub(crate) fn import_error(&self, e: &Error) -> Result<local::Error, local::Error> {
         let (values, trace) = (self.imported(&e.values)?, self.imported(&e.trace)?);
         let kind = self.import_symbol(&e.kind)?;
-        let imported = local::Error::from_parts(kind, values, local::Trace::given(trace)?);
-        Ok(local::Error {
-            limit: e.limit,
-            ..imported
-        })
+        let mut imported = local::Error::from_parts(kind, values, local::Trace::given(trace)?);
+        if e.limit {
+            imported.began = local::Began::Limit;
+        }
+        Ok(imported)
     }
 
     /// An error the host hands in, as the reason a run unwinds. One that can't come in, its values
     /// reclaimed or another interpreter's, is that error instead, and stays a limit if it was one.
     pub(crate) fn incoming_error(&self, e: &Error) -> local::Error {
         self.import_error(e).unwrap_or_else(|mut failed| {
-            failed.limit |= e.limit;
+            if e.limit && !failed.limit() {
+                failed.began = local::Began::Limit;
+            }
             failed
         })
     }
@@ -1239,8 +1241,8 @@ impl<T> Grift<T> {
 
     /// An error as the host's. Memory refused here, not on its way through a run, asks for its
     /// collection now: the host's next try has that, as a run's cleanups do.
-    pub(crate) fn export_error(&self, e: local::Error) -> Error {
-        if e.refused {
+    pub(crate) fn export_error(&self, mut e: local::Error) -> Error {
+        if e.take_refusal() {
             self.heap.request_collection();
         }
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
@@ -1259,7 +1261,7 @@ impl<T> Grift<T> {
                 kind: self.export_symbol(e.kind),
                 values,
                 trace,
-                limit: e.limit,
+                limit: e.limit(),
             },
             _ => self.export_error(local::Error::oom()),
         }

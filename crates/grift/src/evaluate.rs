@@ -709,7 +709,7 @@ impl<T> Grift<T> {
     /// An error that began as refused memory: the next safe point collects, and the spare room is
     /// given up for what reports it. Once: whoever acts on it clears the mark.
     fn acting_on_refusal(&mut self, e: &mut Error) {
-        if std::mem::take(&mut e.refused) {
+        if e.take_refusal() {
             self.heap.request_collection();
             self.spare = Vec::new();
         }
@@ -730,7 +730,7 @@ impl<T> Grift<T> {
                     self.machine.here = at;
                     return self.start_cleanup(Err(e), cleanup, context, at);
                 }
-                What::Handler { handler, base } if !e.limit => {
+                What::Handler { handler, base } if !e.limit() => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
                     match self.handle(e, handler, context) {
@@ -746,8 +746,8 @@ impl<T> Grift<T> {
                     // The one rule: the newest reason wins, unless a program's would replace a
                     // limit.
                     if let Some(Err(waiting)) = self.machine.waiting.pop()
-                        && waiting.limit
-                        && !e.limit
+                        && waiting.limit()
+                        && !e.limit()
                     {
                         e = waiting;
                     }
