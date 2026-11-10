@@ -1,8 +1,7 @@
 //! The embedding's guarantees, from the host's side, through the public API alone:
 //! - a run its host function left is over, and a stop reaches only the run its handle was
 //!   taken for, never a later one;
-//! - a stop ends a walk of a parameter tree, and reading and printing, the host's own included,
-//!   are work a stop reaches.
+//! - a stop ends a walk of a parameter tree, and every host call that is a run.
 #![allow(
     clippy::disallowed_methods,
     clippy::disallowed_macros,
@@ -260,40 +259,47 @@ impl std::fmt::Write for Stopping {
     }
 }
 
-/// Reading and printing are work a stop ends wherever they happen: the host's own `write`, with
-/// no run in progress, is a run of its own, and the reader inside a run checks for its stop. A
-/// stop that ends host-side work is spent with it.
+/// Each host call that is a run (G-179's R1 (b)) is work a stop ends. With no run in progress,
+/// `write` and `describe` are runs of their own, which their sink stops at its first text, and a
+/// stop that ends one is spent with it. Inside a host function, `read`, `read_in` and `bind` join
+/// its run, which the function stops first; the reader finds the stop inside one long string,
+/// token or comment, before the text's end would fail or end it.
 #[test]
-fn a_stop_reaches_reading_and_printing() {
-    let mut g: Grift<Option<bool>> = Grift::new().unwrap();
-    let list = g.evaluate(&mut None, "(range 0 100000)").unwrap();
-    let mut sink = Stopping(g.interrupter(), None, String::new());
-    let e = g.write(&list, &mut sink).unwrap_err();
-    assert_eq!(sink.1, Some(true), "the write was the run in progress");
-    assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
-    assert!(sink.2.len() < 100_000, "it stopped part way");
-    assert!(!sink.0.stop(), "its run is over");
-    assert_eq!(g.evaluate(&mut None, "(add 1 2)"), Ok(Value::Integer(3)));
-
-    // Many short forms, or one long string: each byte read is charged.
-    for read in [
-        (|g, read, _| {
-            assert!(g.interrupter().stop(), "a run to stop");
-            let e = g.read(&"1 ".repeat(100_000)).unwrap_err();
-            *read = Some(g.symbol_name(&e.kind)? == "interrupted");
-            Ok(Answer::Now(Value::Inert))
-        }) as grift::HostFunction<Option<bool>>,
-        |g, read, _| {
-            assert!(g.interrupter().stop(), "a run to stop");
-            let e = g.read(&format!("\"{}\"", "a".repeat(100_000))).unwrap_err();
-            *read = Some(g.symbol_name(&e.kind)? == "interrupted");
-            Ok(Answer::Now(Value::Inert))
-        },
-    ] {
-        let read = g.host_function("read-long", read).unwrap();
-        let mut stopped = None;
-        let e = g.call(&mut stopped, &read, &[]).unwrap_err();
-        assert_eq!(stopped, Some(true), "the reader found the stop");
-        assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+fn a_stop_reaches_every_host_run() {
+    let mut g: Grift<usize> = Grift::new().unwrap();
+    let names = "(define! N (map string-to-symbol (map integer-to-string (range 0 100000)))) N";
+    let list = g.evaluate(&mut 0, names).unwrap();
+    let e = g.error("example", &vec![Value::Inert; 100_000]);
+    for describe in [false, true] {
+        let mut sink = Stopping(g.interrupter(), None, String::new());
+        let ended = match describe {
+            false => g.write(&list, &mut sink),
+            true => g.describe(&e, &mut sink, usize::MAX).map(drop),
+        };
+        let ended = ended.unwrap_err();
+        assert_eq!(sink.1, Some(true), "it was the run in progress");
+        assert_eq!(g.symbol_name(&ended.kind).unwrap(), "interrupted");
+        assert!(sink.2.len() < 100_000, "it stopped part way");
+        assert!(!sink.0.stop(), "its run is over");
     }
+    let f = g.host_function("joins", |g, run: &mut usize, n| {
+        assert!(g.interrupter().stop(), "a run to stop");
+        let a = "a".repeat(100_000);
+        let joined = match *run {
+            0 => g.read(&"1 ".repeat(100_000)),
+            1 => g.read(&format!("\"{a}")),
+            2 => g.read_in("t", &format!("#{a}")),
+            3 => g.read(&format!(";{a}")),
+            _ => g
+                .context(None)
+                .and_then(|c| g.bind(&c, &n[0], n[0]).map(|()| c)),
+        };
+        assert_eq!(g.symbol_name(&joined.unwrap_err().kind)?, "interrupted");
+        Ok(Answer::Now(Value::Inert))
+    });
+    g.define("joins", f.unwrap()).unwrap();
+    for mut run in 0..5 {
+        g.evaluate(&mut run, "(joins N)").unwrap_err();
+    }
+    assert_eq!(g.evaluate(&mut 0, "(add 1 2)"), Ok(Value::Integer(3)));
 }

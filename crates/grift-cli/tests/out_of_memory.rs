@@ -51,21 +51,29 @@ unsafe impl GlobalAlloc for Budgeted {
 #[global_allocator]
 static ALLOCATOR: Budgeted = Budgeted;
 
-/// However little the last refusal left, the report says the kind and all three places. The
-/// budgets are spread so that many run out on a small object with almost nothing left over.
+/// However little the last refusal left, the ending keeps every place of its trace, 3 or 302,
+/// and the report says the kind and all three. The budgets are spread so that many run out on a
+/// small object with almost nothing left over.
 #[test]
 fn an_out_of_memory_report_is_whole_with_nothing_left_to_allocate() {
+    let f = "(define! f (lambda! (n) (add 1 (f n))))\n";
+    let deep = format!("{f}{}(f 1){}", "(add 1 ".repeat(300), ")".repeat(300));
     let mut short = Vec::new();
-    for budget in (0..150).map(|k| (1 << 18) + k * 53003) {
-        let mut g: Grift = Grift::new().unwrap();
-        let mut text = String::with_capacity(4096);
-        LIMIT.set(LIVE.get() + budget);
-        let done = g.evaluate(&mut (), "(define! f (lambda! (n) (add 1 (f n))))\n(f 1)");
-        let written = done.as_ref().err().map(|e| g.describe(e, &mut text, 4096));
-        LIMIT.set(usize::MAX);
-        assert!(written.is_some(), "the program needs more than {budget}");
-        if text != "out-of-memory in (f n)\n  from (add 1 ...)\n  from (f 1)" {
-            short.push((budget, text));
+    for (program, places) in [(format!("{f}(f 1)"), 3), (deep, 302)] {
+        for budget in (0..150).map(|k| (1 << 18) + k * 53003) {
+            let mut g: Grift = Grift::new().unwrap();
+            let mut text = String::with_capacity(4096);
+            LIMIT.set(LIVE.get() + budget);
+            let done = g.evaluate(&mut (), &program);
+            let written = done.as_ref().err().map(|e| g.describe(e, &mut text, 4096));
+            LIMIT.set(usize::MAX);
+            assert!(written.is_some(), "the program needs more than {budget}");
+            let traced = done.map_or_else(|e| e.trace.len(), |_| 0);
+            if traced != places
+                || places == 3 && text != "out-of-memory in (f n)\n  from (add 1 ...)\n  from (f 1)"
+            {
+                short.push((budget, traced));
+            }
         }
     }
     assert!(

@@ -1,0 +1,12 @@
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -1785,9 +1785,6 @@
+         walked: &mut usize,
+     ) -> Result<Option<usize>, Error> {
+         for i in places {
+-            if self.walk_stopped(walked) {
+-                return Err(Error::interrupted());
+-            }
+             if a.get(i) != b.get(i) {
+                 return Ok(Some(i));
+             }

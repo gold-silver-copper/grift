@@ -133,10 +133,11 @@ fn probe(g: &mut HostCall<Probe>, s: &mut Probe, args: &[Value]) -> Result<Answe
     Ok(Answer::Now(Value::Inert))
 }
 
+/// A walk shorter than the check interval never asks, so a stop can't cut it; a long one it ends.
 #[test]
 fn a_stop_ends_every_walking_primitive_by_itself() {
     let mut missed = Vec::new();
-    for &p in Primitive::ALL {
+    for (&p, n) in Primitive::ALL.iter().flat_map(|p| [(p, 1 << 16), (p, 8)]) {
         let (Family::Walks, args) = family(p) else {
             continue;
         };
@@ -146,7 +147,8 @@ fn a_stop_ends_every_walking_primitive_by_itself() {
             p,
             said: String::new(),
         };
-        g.evaluate(&mut s, &operands(1 << 16, false, 20)).unwrap();
+        g.evaluate(&mut s, &operands(n, false, n.ilog2() as usize + 4))
+            .unwrap();
         // A handle taken between runs reaches the next one.
         s.stop = g.interrupter();
         let f = g.host_function("probe", probe).unwrap();
@@ -154,11 +156,14 @@ fn a_stop_ends_every_walking_primitive_by_itself() {
         // The run itself ends `interrupted` either way, at its next step: what counts is how
         // the primitive ended.
         let _ = g.evaluate(&mut s, &format!("(probe {args})"));
-        if s.said != "interrupted" {
-            missed.push(format!("{}: {}", p.name(), s.said));
+        if (s.said == "interrupted") != (n > 8) {
+            missed.push(format!("{} on {n}: {}", p.name(), s.said));
         }
     }
-    assert!(missed.is_empty(), "went on past a stop: {missed:?}");
+    assert!(
+        missed.is_empty(),
+        "a long walk went on past a stop, or a short one was cut: {missed:?}"
+    );
 }
 
 #[test]

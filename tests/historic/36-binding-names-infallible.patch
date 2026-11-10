@@ -1,0 +1,11 @@
+--- a/crates/grift/src/evaluate.rs
++++ b/crates/grift/src/evaluate.rs
+@@ -1665,7 +1665,7 @@
+     /// The symbols bound in `context` itself, sorted by name.
+     pub(crate) fn names_of(&self, context: Reference) -> Result<Vec<Symbol>, Error> {
+         let (_, bindings) = self.context_at(context)?;
+-        let mut names = collected(bindings.keys().copied())?;
++        let mut names: Vec<_> = bindings.keys().copied().collect();
+         names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));
+         Ok(names)
+     }
