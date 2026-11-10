@@ -15,7 +15,8 @@ that changes grift source (`*.grift`, read only when a test runs) must leave it 
 `.grift` file, or a typo would count as a catch; if it can't, the patch is broken too. Before any
 patch, the named tests run on the unpatched copy and must pass, or their failing proves nothing.
 A doctest is built as it runs, so a patch that breaks only a named doctest's compiling counts as a
-catch, not as broken (the build step builds its library).
+catch, not as broken. Its library is not: the build step builds what the doctest run builds first
+(the library without cfg(test)), and a test run that says a crate could not compile is broken too.
 
 INDEX.tsv columns: name, gated (yes/no), tests, description. A test is `package/target::name`:
 target `lib` (unit tests), `doc` (doctests: the start of the doctest's name, its file from the
@@ -103,9 +104,11 @@ def cargo(package, target, *rest):
 
 def build(tree, specs, env):
     """None, or why the test targets of `specs` don't build."""
-    # Doctests build as they run; their library is what builds first.
-    for package, target in sorted({(p, "lib" if t == "doc" else t) for p, t, _ in specs}):
-        status, out = run(cargo(package, target, "--no-run"), tree, BUILD_LIMIT, env)
+    # `--no-run` doesn't take doctests, and `--doc` builds the library without cfg(test): listing the
+    # doctests builds exactly that and compiles none of them (they build as they run).
+    for package, target in sorted({(p, t) for p, t, _ in specs}):
+        rest = ["--", "--list"] if target == "doc" else ["--no-run"]
+        status, out = run(cargo(package, target, *rest), tree, BUILD_LIMIT, env)
         if status != 0:
             tail = "\n".join(out.strip().split("\n")[-15:])
             return f"{package}/{target} does not build" + ("" if status is not None else " (timed out)") + f":\n{tail}"
@@ -113,7 +116,7 @@ def build(tree, specs, env):
 
 
 def run_tests(tree, specs, deadline, env):
-    """{spec: "failed" | "passed" | "ignored" | "missing" | "timeout"} for each spec."""
+    """{spec: "failed" | "passed" | "ignored" | "missing" | "timeout" | why it didn't build}."""
     found = {}
     for spec in specs:
         package, target, name = spec
@@ -127,6 +130,10 @@ def run_tests(tree, specs, deadline, env):
         results = [(t, r) for t, r in RESULT.findall(out) if (name in t if target == "doc" else t == name)]
         if status is None:
             found[spec] = "timeout"
+        elif "could not compile" in out or not results and "error[E" in out:
+            # The build step should have built it all; if a crate still didn't compile, it's broken.
+            tail = "\n".join(out.strip().split("\n")[-15:])
+            found[spec] = f"does not build:\n{tail}"
         elif any(r == "FAILED" for _, r in results):
             found[spec] = "failed"
         elif any(r == "ok" for _, r in results):
@@ -241,6 +248,11 @@ def main():
                 if status != 0:
                     sys.exit(f"could not take {name} back out of the scratch copy:\n{out}")
             took = f"{time.monotonic() - start:.0f} s"
+            broken = [f"{show(s)} {r}" for s, r in found.items() if r.startswith("does not build")]
+            if broken:
+                print(f"BROKEN      {name}: {'; '.join(broken)}\nre-port this patch: {name}")
+                bad.append(name)
+                continue
             caught = [show(s) for s, r in found.items() if r == "failed"]
             rest = [f"{show(s)} {r}" for s, r in found.items() if r != "failed"]
             if any(r in ("missing", "ignored") for r in found.values()):
