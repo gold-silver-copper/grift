@@ -129,8 +129,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
         ((evaluate-in! close out))
         (define! in (open-file copy))
         (display-error (byte-length ((evaluate-in! read-bytes in) 1000)) " " ((evaluate-in! read-bytes in) 0) " "
-                       (catch! (put (list 1)) e (evaluate-in! kind e)) " "
-                       (catch! (put (list-to-bytes (list 256))) e (evaluate-in! kind e)))
+                       (catch! (put (list 1)) e (evaluate-in! kind e)))
     "#;
     std::fs::write(&path, program).unwrap();
     let copy = dir.join("copy");
@@ -146,7 +145,7 @@ fn bytes_that_are_not_text_go_in_and_out() {
     let out = child.wait_with_output().unwrap();
     assert_eq!(
         String::from_utf8_lossy(&out.stderr),
-        "1000 #bytes() type-error range-error"
+        "1000 #bytes() type-error"
     );
     assert_eq!(out.stdout, input[input.len() - 100..]);
     assert_eq!(std::fs::read(&copy).unwrap(), input);

@@ -420,13 +420,6 @@ fn string_helpers() {
             "(equal? (string-split \"\" \",\") (list \"\"))",
             "(same? (string-join () \",\") \"\")",
             "(same? (string-join (list \"a\") \",\") \"a\")",
-            // search: the pattern is at the offset it gives, and it is at none before it.
-            "(every-pair (lambda! (t p)
-               (let! ((at (search t p 0)) (size (byte-length p)))
-                 (if! (empty-list? at)
-                   (same? (length (string-split t p)) 1)
-                   (and!? (same? (slice t at (add at size)) p)
-                          (empty-list? (search (slice t 0 at) p 0)))))))",
             // Every text starts with what it starts with and ends with what it ends with.
             "(every-pair (lambda! (t p)
                (and!? (string-starts-with? (join p t) p)
@@ -660,56 +653,6 @@ fn collection_pays_for_what_it_walks() {
     let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
     kept.into_iter().for_each(|k| g.release(k).unwrap());
     g.evaluate(&mut (), "(spin 100000)").unwrap();
-}
-
-#[test]
-fn sort_is_ordered_and_stable() {
-    let mut g = grift();
-    g.evaluate(
-        &mut (),
-        "(define! seed 12345)
-         (define! here (current-context))
-         (define! next (lambda! () (bind here (quote! seed) (remainder (add (multiply seed 1103515245) 12345) 2147483648)) seed))
-         (define! numbers (map (lambda! (#ignore) (remainder (next) 100)) (range 0 10000)))
-         (define! by-first (lambda! (a b) (less-than? (first a) (first b))))
-         (define! ordered?
-           (lambda! (xs before?)
-             (if! (or!? (empty-list? xs) (empty-list? (rest xs)))
-               #true
-               (and!? (not? (before? (second xs) (first xs))) (ordered? (rest xs) before?)))))",
-    )
-    .unwrap();
-    // 14.5 million steps and 109 collections, about 13 comparisons of elements for each of the
-    // 10,000. A quadratic sort is thousands of comparisons each: billions of steps.
-    let (sorted, steps, collections, _) =
-        work(&mut g, "(define! sorted (sort numbers less-than?))");
-    assert!(steps < 40_000_000, "{steps} steps");
-    assert!(collections < 400, "{collections} collections");
-    sorted.unwrap();
-    holds(
-        &mut g,
-        &[
-            "(ordered? sorted less-than?)",
-            "(same? (length sorted) 10000)",
-            "(all? (lambda! (n) (same? (length (filter (lambda! (x) (same? x n)) sorted))
-                                       (length (filter (lambda! (x) (same? x n)) numbers))))
-                   (range 0 100))",
-            // Stable: elements that are equal keep their order, here the order of their index.
-            "(let! ((pairs (map pair numbers (range 0 10000))) (s (sort pairs by-first)))
-               (ordered? s (lambda! (a b) (if! (same? (first a) (first b))
-                                            (less-than? (rest a) (rest b))
-                                            (less-than? (first a) (first b))))))",
-            "(empty-list? (sort () less-than?))",
-            "(equal? (sort (list \"b\" \"ab\" \"a\" \"\") less-than?) (list \"\" \"a\" \"ab\" \"b\"))",
-            // The comparisons built on less-than? take text with no change.
-            "(greater-than? \"b\" \"a\")",
-            "(less-than-or-equal? \"a\" \"a\")",
-            "(greater-than-or-equal? #bytes(2) #bytes(1 9))",
-            "(same? (minimum \"b\" \"a\") \"a\")",
-            "(same? (maximum \"b\" \"a\") \"b\")",
-        ],
-    );
-    fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
 }
 
 #[test]

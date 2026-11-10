@@ -45,12 +45,18 @@
       otherwise
       (raise e))))
 
+; Floats by sign: a zero's is its bit, read by same?.
+(define! negative? (lambda! (f) (or!? (less-than? f 0.0) (same? f -0.0))))
+(define! unsigned (lambda! (f) (if! (negative? f) (subtract 0.0 f) f)))
+; Not a not-a-number: only one is neither below 1 nor above 0.
+(define! number? (lambda! (f) (or!? (less-than? f 1.0) (less-than? 0.0 f))))
+
 ; Rust's as: not-a-number is 0, the integers' ends saturate, the rest is the integer part, read
 ; off in powers of two from 2 to the 62nd.
 (define! truncated
   (lambda! (f)
     (conditional!
-      ((not? (or!? (less-than? f 1.0) (less-than? 0.0 f))) 0)
+      ((not? (number? f)) 0)
       ((not? (less-than? f 9223372036854775807.0)) 9223372036854775807)
       ((not? (less-than? -9223372036854775808.0 f)) -9223372036854775808)
       ((less-than? f 0.0) (subtract 0 (magnitude (subtract 0.0 (truncate f)) 4611686018427387904.0 4611686018427387904 0)))
@@ -94,10 +100,12 @@
       low
       (let! ((middle (divide (add low high) 2)))
         (if! (not? (byte-at? s middle)) (missing s low middle) (missing s (add middle 1) high))))))
+; Below U+10FFFF and not a surrogate.
+(define! scalar? (lambda! (n) (and!? (less-than? n 1114112) (or!? (less-than? n 55296) (less-than? 57343 n)))))
 ; A Unicode scalar value's text: its escape, read.
 (define! character
   (lambda! (n)
-    (if! (and!? (not? (less-than? n 0)) (less-than? n 1114112) (or!? (less-than? n 55296) (less-than? 57343 n)))
+    (if! (and!? (not? (less-than? n 0)) (scalar? n))
       (head (read-form (join "\"\\x" (hexadecimal n ()) ";\"") 0))
       (raise (error (quote! range-error) n)))))
 (define! hexadecimal
@@ -220,8 +228,7 @@
 (define! continued-by
   (lambda! (b xs at start left scalar smallest done)
     (conditional!
-      ((and!? (same? left 0) (not? (less-than? scalar smallest)) (less-than? scalar 1114112)
-              (or!? (less-than? scalar 55296) (less-than? 57343 scalar)))
+      ((and!? (same? left 0) (not? (less-than? scalar smallest)) (scalar? scalar))
        (characters-of b xs at (pair (code-point-to-string scalar) done)))
       ((or!? (same? left 0) (same? xs ()) (less-than? (head xs) 128) (less-than? 191 (head xs)))
        (raise (error (quote! encoding-error) b start)))
@@ -235,8 +242,8 @@
 (define! whole
   (lambda! (f)
     (conditional!
-      ((not? (less-than? (if! (less-than? f 0.0) (subtract 0.0 f) f) 4503599627370496.0)) f)
-      ((or!? (less-than? f 0.0) (same? f -0.0)) (subtract -0.0 (powers (subtract 0.0 f) 2251799813685248.0 0.0)))
+      ((not? (less-than? (unsigned f) 4503599627370496.0)) f)
+      ((negative? f) (subtract -0.0 (powers (unsigned f) 2251799813685248.0 0.0)))
       (#true (powers f 2251799813685248.0 0.0)))))
 (define! powers
   (lambda! (f power t)
@@ -253,10 +260,6 @@
         ((or!? (less-than? 0.5 d) (same? d 0.5)) (add t 1.0))
         ((or!? (less-than? d -0.5) (same? d -0.5)) (subtract t 1.0))
         (#true t)))))
-; Floats by sign: a zero's is its bit, read by same?.
-(define! negative? (lambda! (f) (or!? (less-than? f 0.0) (same? f -0.0))))
-(define! unsigned (lambda! (f) (if! (negative? f) (subtract 0.0 f) f)))
-(define! number? (lambda! (f) (or!? (less-than? f 1.0) (less-than? 0.0 f))))
 ; absolute-value: an integer's, but the most negative's overflows; a float's without its sign, but
 ; a not-a-number's sign bit no grift operation reads, so that one is the native's.
 (define! rust-absolute-value absolute-value)
@@ -265,8 +268,7 @@
     (conditional!
       ((same? x -9223372036854775808) (raise (error (quote! overflow) x)))
       ((integer? x) (if! (less-than? x 0) (subtract 0 x) x))
-      ((and!? (float? x) (number? x)) (unsigned x))
-      ((float? x) (rust-absolute-value x))
+      ((float? x) (if! (number? x) (unsigned x) (rust-absolute-value x)))
       (#true (type-failed x)))))
 ; power: an integer's by squaring, as Rust's checked_pow, failing where the true power doesn't fit;
 ; a float's is libm's powf, so the native's.
@@ -274,53 +276,45 @@
 (define! powered
   (lambda! ((a b))
     (conditional!
-      ((not? (and!? (integer? a) (integer? b))) (apply rust-power (list a b)))
+      ((not? (and!? (integer? a) (integer? b))) (rust-power a b))
       ((less-than? b 0) (raise (error (quote! range-error) a b)))
       (#true (catch-kind! (raised a b 1) overflow #ignore (raise (error (quote! overflow) a b)))))))
 (define! raised
   (lambda! (base n done)
     (let! ((done (if! (same? (low-bit n) 1) (multiply done base) done)))
       (if! (less-than? n 2) done (raised (multiply base base) (halved n) done)))))
-; square-root, correctly rounded as IEEE's: the float is m times 2^e, m an integer and e even,
-; and the root of m times 2^54 is found a bit at a time, whose remainder fits an integer, then
-; rounded at its last bit (a root is never halfway). A not-a-number is quietened, as any operation
-; does, and below zero is what any invalid operation gives.
+; square-root, correctly rounded as IEEE's: the float is m times 4^k, m an integer from 2^52 to
+; 2^54, so its root is m's times 2^k, a scale no multiplying rounds. The root of m times 2^54 (so
+; the scale starts at 2^-26) is found a bit at a time, whose remainder fits an integer, then
+; rounded at its last bit (a root is never halfway). A not-a-number is quietened, as any
+; operation does, below zero is what any invalid operation gives, and zeros and infinity are
+; their own roots.
 (define! rooted
   (lambda! (f)
     (conditional!
       ((not? (number? f)) (add f 0.0))
       ((less-than? f 0.0) (divide 0.0 0.0))
-      ((or!? (same? f 0.0) (same? f -0.0) (same? f #infinity)) f)
-      (#true (root-of f 0)))))
+      ((or!? (not? (less-than? 0.0 f)) (same? f #infinity)) f)
+      (#true (root-of f 1.4901161193847656e-8)))))
 (define! root-of
-  (lambda! (m e)
+  (lambda! (m scale)
     (conditional!
-      ((less-than? m 4503599627370496.0) (root-of (multiply m 2.0) (subtract e 1)))
-      ((not? (less-than? m 9007199254740992.0)) (root-of (divide m 2.0) (add e 1)))
-      (#true (root-from (float-to-integer m) e)))))
-(define! root-from
-  (lambda! (n e)
-    (if! (same? (low-bit e) 1)
-      (root-from (multiply n 2) (subtract e 1))
-      (exponent (integer-to-float (root-bits n 4503599627370496 54 0 0)) (subtract (divide e 2) 26)))))
-; One bit of the root q a step, with remainder r, from m's base-4 digits from p down, then zeros.
+      ((less-than? m 4503599627370496.0) (root-of (multiply m 4.0) (divide scale 2.0)))
+      ((not? (less-than? m 18014398509481984.0)) (root-of (divide m 4.0) (multiply scale 2.0)))
+      (#true
+       (multiply (integer-to-float (root-bits (float-to-integer m) 54 0 0)) scale)))))
+; One bit of the root q a step, with remainder r, from m's base-4 digits from the top: m is
+; below 4^27, and each step takes its top digit off and moves the rest up one, zeros coming in.
 (define! root-bits
-  (lambda! (m p n q r)
+  (lambda! (m n q r)
     (if! (same? n 0)
       (add (halved q) (low-bit q))
-      (let! ((d (if! (same? p 0) 0 (divide m p)))
-             (r (add (multiply r 4) d))
+      (let! ((r (add (multiply r 4) (divide m 4503599627370496)))
              (t (add (multiply q 4) 1))
-             (m (subtract m (multiply d p))))
+             (m (multiply (remainder m 4503599627370496) 4)))
         (if! (less-than? r t)
-          (root-bits m (divide p 4) (subtract n 1) (multiply q 2) r)
-          (root-bits m (divide p 4) (subtract n 1) (add (multiply q 2) 1) (subtract r t)))))))
-(define! exponent
-  (lambda! (f k)
-    (conditional!
-      ((same? k 0) f)
-      ((less-than? k 0) (exponent (divide f 2.0) (add k 1)))
-      (#true (exponent (multiply f 2.0) (subtract k 1))))))
+          (root-bits m (subtract n 1) (multiply q 2) r)
+          (root-bits m (subtract n 1) (add (multiply q 2) 1) (subtract r t)))))))
 ; An integer remainder is what dividing leaves, with divide's errors. A float's is fmod, exact:
 ; what is left of |a| after taking |b| times each power of two from the largest that fits, which
 ; each subtraction leaves exact, with a's sign. Where fmod gives a not-a-number, the native's.
@@ -329,30 +323,33 @@
   (lambda! ((a b))
     (conditional!
       ((and!? (integer? a) (integer? b)) (subtract a (multiply (divide a b) b)))
-      ((and!? (float? a) (float? b) (less-than? (unsigned a) #infinity) (less-than? 0.0 (unsigned b)))
-       (let! ((x (left-of (unsigned a) (largest (unsigned b) (unsigned a)) (unsigned b))))
-         (if! (negative? a) (subtract -0.0 x) x)))
+      ((and!? (float? a) (float? b)) (fmod a b (unsigned a) (unsigned b)))
       (#true (apply rust-remainder (list a b))))))
+(define! fmod
+  (lambda! (a b x y)
+    (if! (and!? (less-than? x #infinity) (less-than? 0.0 y))
+      (let! ((x (left-of x (largest y x) y))) (if! (negative? a) (subtract -0.0 x) x))
+      (rust-remainder a b))))
 (define! largest (lambda! (m x) (if! (less-than? x (multiply m 2.0)) m (largest (multiply m 2.0) x))))
 (define! left-of
   (lambda! (x m y)
     (if! (less-than? x y) x (left-of (if! (less-than? x m) x (subtract x m)) (divide m 2.0) y))))
 ; less-than? on two strings or two bytes values: byte order, a text before every longer one it
 ; begins; the rest is the native's, and the twins here compare by it.
-(define! rust-less-than? less-than?)
-(define! less-than? rust-less-than?)
+(define! less-than? less-than?)
 (define! ordered
   (lambda! ((a b))
     (if! (and!? (or!? (string? a) (bytes? a)) (same? (type-of a) (type-of b)))
       (sequence! (byte-length a) (byte-length b) (before a b 0))
-      (apply rust-less-than? (list a b)))))
+      (less-than? a b))))
 (define! before
   (lambda! (a b at)
     (conditional!
       ((not? (byte-at? b at)) #false)
       ((not? (byte-at? a at)) #true)
-      ((same? (byte-at a at) (byte-at b at)) (before a b (add at 1)))
-      (#true (less-than? (byte-at a at) (byte-at b at))))))
+      (#true
+       (let! ((x (byte-at a at)) (y (byte-at b at)))
+         (if! (same? x y) (before a b (add at 1)) (less-than? x y)))))))
 
 (define! meanings
   (record
