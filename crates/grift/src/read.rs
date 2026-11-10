@@ -118,9 +118,10 @@ impl<T> Grift<T> {
 
     fn read_all(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
         let mut forms = List::new(0, 1);
-        let (mut at, mut line) = (0, 1);
-        while let Some((form, place, after)) =
-            self.read_form(src, at, line, source).map_err(|mut e| {
+        let (mut at, mut line, mut walked) = (0, 1, 0);
+        while let Some((form, place, after)) = self
+            .read_form(src, at, line, source, &mut walked)
+            .map_err(|mut e| {
                 // With no memory to spare the values stay as they are, as for any location.
                 if let Some(source) = source
                     && e.kind == K::ParseError.into()
@@ -138,12 +139,15 @@ impl<T> Grift<T> {
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
     /// form, where it is and the line it ends on, or `None` if only space and comments are left.
+    /// Each byte read is a step of the walk `walked`, which a stop ends between one item and the
+    /// next: a space, a comment, a parenthesis, a string or a token.
     pub(crate) fn read_form(
         &mut self,
         src: &str,
         from: usize,
         line: u32,
         source: Option<Symbol>,
+        walked: &mut usize,
     ) -> Result<Option<(Value, Range<usize>, u32)>, Error> {
         let mut cur = Cursor {
             src,
@@ -153,9 +157,14 @@ impl<T> Grift<T> {
         cur.skip_space();
         let start = cur.at;
         let mut open: Vec<List> = Vec::new();
+        let mut charged = from;
         loop {
             cur.skip_space();
             let begin = cur.at;
+            if self.walk_charged(walked, begin - charged) {
+                return Err(Error::interrupted());
+            }
+            charged = begin;
             let fail = |reason| parse_error(src, begin, reason);
             let Some(c) = cur.next() else {
                 return match open.last() {
@@ -211,6 +220,11 @@ impl<T> Grift<T> {
                     self.atom(token, fail)?
                 }
             };
+            // The datum's own bytes, a long string or symbol, are charged as it ends.
+            if self.walk_charged(walked, cur.at - charged) {
+                return Err(Error::interrupted());
+            }
+            charged = cur.at;
             let Some(list) = open.last_mut() else {
                 return Ok(Some((datum, start..cur.at, cur.line)));
             };
@@ -319,6 +333,10 @@ impl<T> Grift<T> {
                 c => c,
             };
             s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "reserved the character's length above"
+            )]
             s.push(c);
         }
         self.string_local(&s)

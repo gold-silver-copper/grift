@@ -77,6 +77,7 @@ impl Drop for Parked {
     fn drop(&mut self) {
         if let Some(control) = self.owner.0.upgrade() {
             // Its park made the room, so this needs no memory and the run can always be found.
+            #[expect(clippy::disallowed_methods, reason = "its park reserved this room")]
             control.forgotten().push(self.name);
         }
     }

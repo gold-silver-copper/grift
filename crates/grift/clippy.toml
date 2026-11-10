@@ -1,0 +1,32 @@
+# Allocation that aborts on refusal. The library reports `out-of-memory` instead: reserve first
+# (`try_reserve`) or use the fallible helpers in `local.rs`, and mark the push that follows a
+# reserve with `#[expect(clippy::disallowed_methods, reason = "…")]`.
+disallowed-methods = [
+  { path = "std::vec::Vec::push", reason = "aborts when memory is refused: use local::push or reserve first" },
+  { path = "std::vec::Vec::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::with_capacity", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::vec::Vec::extend_from_slice", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::resize", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::append", reason = "aborts when memory is refused: reserve first" },
+  { path = "slice::to_vec", reason = "aborts when memory is refused: reserve first" },
+  { path = "core::iter::traits::collect::Extend::extend", reason = "aborts when memory is refused: reserve first" },
+  { path = "core::iter::traits::iterator::Iterator::collect", reason = "aborts when memory is refused: use collected" },
+  { path = "std::string::String::push", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::string::String::push_str", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::string::String::with_capacity", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::boxed::Box::new", reason = "aborts when memory is refused" },
+  { path = "std::rc::Rc::new", reason = "aborts when memory is refused" },
+  { path = "std::sync::Arc::new", reason = "aborts when memory is refused" },
+  { path = "std::collections::HashMap::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::HashSet::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::BTreeMap::insert", reason = "aborts when memory is refused" },
+  { path = "std::collections::VecDeque::push_back", reason = "aborts when memory is refused: reserve first" },
+  { path = "alloc::borrow::ToOwned::to_owned", reason = "aborts when memory is refused: use local::boxed" },
+  { path = "alloc::string::ToString::to_string", reason = "aborts when memory is refused: use local::boxed" },
+  # A list walk goes through `evaluate::Items`, which a stop ends; one pair read per step says so.
+  { path = "grift::Grift::pair_at", reason = "walk a list with evaluate::Items, which a stop ends" },
+]
+disallowed-macros = [
+  { path = "std::format", reason = "aborts when memory is refused: write into a reserved buffer" },
+  { path = "std::vec", reason = "aborts when memory is refused: use try_reserve" },
+]

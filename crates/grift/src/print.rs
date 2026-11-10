@@ -80,6 +80,7 @@ impl<T> Grift<T> {
                     continue;
                 }
                 Item::Tail(Value::Pair(r), text) => {
+                    #[expect(clippy::disallowed_methods, reason = "the printer's loop is charged")]
                     let (element, rest) = self.pair_at(r)?;
                     out.write_char(' ')?;
                     push(&mut todo, Item::Tail(rest, text))?;
@@ -312,6 +313,7 @@ impl TextBuffer {
 impl Write for TextBuffer {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         self.0.try_reserve(text.len()).map_err(|_| fmt::Error)?;
+        #[expect(clippy::disallowed_methods, reason = "reserved text.len() above")]
         self.0.push_str(text);
         Ok(())
     }

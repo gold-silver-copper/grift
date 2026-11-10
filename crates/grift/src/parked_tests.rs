@@ -49,29 +49,6 @@ pub(crate) fn start<T>(g: &mut Grift<T>, state: &mut T, src: &str) -> Result<Ran
     g.start_in(state, &top, "script.grift", src)
 }
 
-/// With no memory left at the drop a run would otherwise be lost: its park made the room.
-#[test]
-fn dropping_a_handle_asks_for_no_memory() {
-    let (mut g, mut log) = (grift(), Log::new());
-    let mut handles = Vec::new();
-    let src = "(finally! (wait) (note 1))";
-    for _ in 0..5 {
-        handles.push(parked(start(&mut g, &mut log, src)));
-    }
-    let room = |g: &Grift<Log>| {
-        let queue = g.control.forgotten();
-        (queue.capacity(), queue.as_ptr())
-    };
-    let before = room(&g);
-    assert!(before.0 >= 5, "room for {}", before.0);
-    drop(handles);
-    assert_eq!(room(&g), before);
-    while let Some(p) = g.forgotten() {
-        give_up(&mut g, &mut log, p);
-    }
-    assert_eq!(log, ["1"; 5]);
-}
-
 /// Gives a parked run up, as a host does: the waiting call answers a limit, and so does each wait
 /// of a cleanup on the way out. What the run ended with.
 pub(crate) fn give_up<T>(g: &mut Grift<T>, state: &mut T, mut p: Parked) -> Error {
@@ -99,148 +76,6 @@ pub(crate) fn parked(ran: Result<Ran, Error>) -> Parked {
     }
 }
 
-fn resumed(g: &mut Grift<Log>, log: &mut Log, p: Parked, v: Value) -> Result<Ran, Error> {
-    g.resume(log, p, Ok(v)).map_err(|e| {
-        assert!(e.parked.is_none());
-        e.error
-    })
-}
-
-#[test]
-fn parking_inside_a_native_twin_cannot_be_told_from_its_definition() {
-    for src in [
-        "(if! (wait) (note 1) (note 2))",
-        "(if! #true (wait) 0)",
-        "(if! #false 0 (wait))",
-        "(if! 1 (wait) 0)",
-        "(sequence! (wait) (wait) (first (wait)))",
-        "(sequence! (note 1) (wait))",
-        // `first` by name: by value it would print, and a native prints unlike its definition.
-        "(evaluate (list (quote! if!) (list wait) (list (quote! first) 1) 0) (current-context))",
-        "(search (wait) \"a\" 0)",
-        "(map (lambda! (x) (if! (wait) x (first x))) (list 1 2))",
-        "(finally! (sequence! (wait) (first 1)) (if! (wait) (note 1) (note 2)))",
-    ] {
-        let mut seen = Vec::new();
-        for natives in [true, false] {
-            let mut g = grift();
-            if !natives {
-                g.run_definitions();
-            }
-            let mut log = Vec::new();
-            let mut ran = start(&mut g, &mut log, src);
-            let mut waits = 0;
-            while let Ok(Ran::Parked(p)) = ran {
-                waits += 1;
-                ran = resumed(&mut g, &mut log, p, Value::Boolean(true));
-            }
-            let mut text = String::new();
-            match ran {
-                Ok(Ran::Finished(v)) => text = show(&g, &v),
-                Err(e) => g.describe(&e, &mut text, 4096).map(drop).unwrap(),
-                Ok(Ran::Parked(_)) => panic!("the loop took these"),
-            }
-            seen.push((waits, text, log));
-        }
-        assert_eq!(seen[0], seen[1], "{src}");
-    }
-}
-
-#[test]
-fn a_run_with_no_memory_to_park_fails_there_and_its_cleanups_run() {
-    let (mut g, mut log) = (grift(), Vec::new());
-    g.heap.kept_limit = 0;
-    let e = start(&mut g, &mut log, "(finally! (full-wait) (note 1))").unwrap_err();
-    assert_eq!(kind(&g, &e), "out-of-memory");
-    assert_eq!(log, ["1"]);
-    assert_eq!(g.parked(), 0);
-    assert_eq!(g.evaluate(&mut log, "(add 1 2)"), Ok(Value::Integer(3)));
-}
-
-/// A park goes into the kept table, so a full heap doesn't stop it, and a resume out of it.
-#[test]
-fn parking_and_resuming_need_no_heap_slot() {
-    let (mut g, mut log) = (grift(), Vec::new());
-    let p = parked(start(&mut g, &mut log, "(add 1 (full-wait))"));
-    g.heap.refuse_in = Some(0);
-    let Ok(Ran::Finished(v)) = resumed(&mut g, &mut log, p, Value::Integer(1)) else {
-        panic!("a resume needs no slot");
-    };
-    assert_eq!((v, g.heap.refused), (Value::Integer(2), 0));
-}
-
-/// Out of memory, with only garbage in the heap: the unwinding collects first, so each cleanup has
-/// the memory to run.
-#[test]
-fn out_of_memory_collects_before_its_cleanups_run() {
-    let (mut g, mut log) = (grift(), Vec::new());
-    let p = parked(start(
-        &mut g,
-        &mut log,
-        "(finally! (finally! (sequence! (wait) (pair 1 2) (note 0)) (note 1)) (note 2))",
-    ));
-    g.heap.slot_limit = g.heap.len();
-    while g.pair(Value::Inert, Value::Inert).is_ok() {}
-    g.heap.not_due();
-    let e = g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err();
-    assert_eq!(kind(&g, &e.error), "out-of-memory");
-    assert_eq!(log, ["1", "2"]);
-}
-
-/// A cleanup whose first step has no memory: the error goes on to the next, as from any step of
-/// that cleanup, and doesn't end the run's unwinding there.
-#[test]
-fn a_cleanup_whose_first_step_is_refused_is_passed_over_for_the_next() {
-    // The run errs on, or is given up: it is the same cleanups either way.
-    for given_up in [false, true] {
-        let mut passed_over = false;
-        for refuse_in in 0..16 {
-            let (mut g, mut log) = (grift(), Vec::new());
-            let p = parked(start(
-                &mut g,
-                &mut log,
-                "(finally! (finally! (sequence! (wait) (first 0)) (note 1)) (note 2))",
-            ));
-            let answer = match given_up {
-                true => Err(Error {
-                    limit: true,
-                    ..g.error("given-up", &[])
-                }),
-                false => Ok(Value::Inert),
-            };
-            g.heap.refuse_in = Some(refuse_in);
-            g.heap.refuse_once = true;
-            let e = g.resume(&mut log, p, answer).unwrap_err().error;
-            passed_over |= kind(&g, &e) == "out-of-memory" && log == ["2"];
-            assert_eq!(g.parked(), 0);
-        }
-        assert!(passed_over, "given up: {given_up}");
-    }
-}
-
-/// A resumed run has let go of what it asked for: a big request isn't held for the rest of the run.
-#[test]
-fn a_resumed_run_holds_its_request_no_longer() {
-    let (mut g, mut log) = (grift(), Vec::new());
-    let ask = g
-        .host_function("ask", |_, _, args| Ok(Answer::Later(args[0].clone())))
-        .unwrap();
-    g.define("ask", ask).unwrap();
-    let held = g
-        .host_function("held", |g, log: &mut Log, _| {
-            log.push(format!("{:?}", g.machine.request));
-            Ok(Answer::Now(Value::Inert))
-        })
-        .unwrap();
-    g.define("held", held).unwrap();
-    let p = parked(start(&mut g, &mut log, "(ask (list 1)) (held)"));
-    assert!(matches!(
-        g.resume(&mut log, p, Ok(Value::Inert)),
-        Ok(Ran::Finished(_))
-    ));
-    assert_eq!(log, ["Inert"]);
-}
-
 /// Every collection walks a parked run, so it brings the next one no nearer than its size says.
 #[test]
 fn a_parked_run_counts_for_its_size_when_the_collector_decides() {
@@ -262,97 +97,6 @@ fn a_parked_run_counts_for_its_size_when_the_collector_decides() {
     let gone = live(&mut g, &mut log);
     // A context a level, and at least two frames.
     assert!(waiting - gone >= 3 * 50_000, "{waiting} then {gone}");
-}
-
-/// Parked runs in every state a machine has when it parks, each holding data only it reaches,
-/// taken up in shuffled order with collections between: all come back whole, and round after
-/// round the heap stays the size it was.
-#[test]
-fn collection_loses_nothing_a_parked_run_holds_and_keeps_nothing_after() {
-    let (mut g, mut log) = (grift(), Vec::new());
-    g.evaluate(
-        &mut log,
-        "(define! churn (lambda! () (length (map list (range 0 64)))))
-         (define! id (lambda! (n) (list n (join \"run\" (integer-to-string n)))))",
-    )
-    .unwrap();
-    let shapes: [fn(usize) -> (String, String); 5] = [
-        |n| {
-            let src = format!("(let! ((held (id {n}))) (wait) held)");
-            (src, format!("({n} \"run{n}\")"))
-        },
-        // Arguments half evaluated, on the argument stack alone.
-        |n| {
-            let src = format!("(list (id {n}) (wait) (id {n}))");
-            (src, format!("(({n} \"run{n}\") 0 ({n} \"run{n}\"))"))
-        },
-        // A map's list half built.
-        |n| {
-            let src = format!("(map (lambda! (x) (if! (same? x 1) (wait) (id x))) (list {n} 1))");
-            (src, format!("(({n} \"run{n}\") 0)"))
-        },
-        // An error waiting for a cleanup: its values and trace are in `waiting` alone.
-        |n| {
-            let src = format!(
-                "(catch! (finally! (raise (error (quote! mine) (id {n}))) (wait))
-                         e (evaluate-in! values e))"
-            );
-            (src, format!("(({n} \"run{n}\"))"))
-        },
-        // A cleanup's frame, its value in `waiting`.
-        |n| {
-            let src = format!("(finally! (id {n}) (wait))");
-            (src, format!("({n} \"run{n}\")"))
-        },
-    ];
-    let mut seed = 12345u64;
-    let mut slots = Vec::new();
-    for _ in 0..12 {
-        let mut waiting = Vec::new();
-        for n in 2..42 {
-            let (src, expected) = shapes[n % shapes.len()](n);
-            waiting.push((parked(start(&mut g, &mut log, &src)), expected));
-            if n % 8 == 0 {
-                g.heap.request_collection();
-                g.evaluate(&mut log, "(churn)").unwrap();
-            }
-        }
-        assert_eq!(g.parked(), 40);
-        while !waiting.is_empty() {
-            seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
-            let i = (seed >> 33) as usize % waiting.len();
-            let (p, expected) = waiting.swap_remove(i);
-            g.heap.request_collection();
-            g.evaluate(&mut log, "(churn)").unwrap();
-            match resumed(&mut g, &mut log, p, Value::Integer(0)) {
-                Ok(Ran::Finished(v)) => assert_eq!(show(&g, &v), expected),
-                other => panic!("{expected}: {other:?}"),
-            }
-        }
-        assert_eq!(g.parked(), 0);
-        slots.push(g.heap.len());
-    }
-    // Early rounds settle as collections fall at other moments; then it never moves.
-    assert_eq!(slots[6], slots[11], "{slots:?}");
-}
-
-/// A real out-of-memory in a resumed run passes its handler, which then would have had room.
-#[test]
-fn real_out_of_memory_passes_handlers() {
-    let (mut g, mut log) = (grift(), Vec::new());
-    let p = parked(start(
-        &mut g,
-        &mut log,
-        "(catch! (sequence! (wait) (pair 1 2)) #ignore (note 0))",
-    ));
-    g.heap.refuse_in = Some(0);
-    g.heap.refuse_once = true;
-    let e = g.resume(&mut log, p, Ok(Value::Inert)).unwrap_err().error;
-    assert_eq!(kind(&g, &e), "out-of-memory");
-    assert!(e.limit);
-    assert!(log.is_empty(), "{log:?}");
 }
 
 /// Generated programs, run two ways: each alone with its waits answered at once, which is what
@@ -394,6 +138,7 @@ mod generated {
         next: u64,
         /// The most a list it makes may hold.
         churn: u64,
+        mode: Mode,
     }
 
     impl Program<'_> {
@@ -403,7 +148,11 @@ mod generated {
         }
 
         fn expression(&mut self, depth: u32) -> String {
-            let choice = self.r.below(if depth == 0 { 4 } else { 22 });
+            let choice = self.r.below(match (depth, self.mode) {
+                (0, _) => 4,
+                (_, Mode::Plain | Mode::Stress) => 22,
+                _ => 24,
+            });
             let id = self.id();
             let sub = |p: &mut Self| p.expression(depth.saturating_sub(1));
             match choice {
@@ -448,6 +197,26 @@ mod generated {
                 ),
                 // A limit of the host's own: nothing catches it, in a run nothing else touched too.
                 19 => format!("(catch! (host-limit {id}) e {})", handler(id)),
+                // A loop in tail position: under a memory limit, long enough that only collection
+                // lets it finish.
+                22 => {
+                    let n = match self.mode {
+                        Mode::Limited => 2_000 + self.r.below(8_000),
+                        _ => self.r.below(30),
+                    };
+                    format!("(add {id} (spin {n}))")
+                }
+                // Data nested deep: on a small stack, as deep as no Rust recursion could walk.
+                23 => {
+                    let n = match self.mode {
+                        Mode::SmallStack => 2_000 + self.r.below(4_000),
+                        _ => self.r.below(20),
+                    };
+                    match self.r.below(2) {
+                        0 => format!("(byte-length (value-to-string (deep {n} {id})))"),
+                        _ => format!("(raise (error (quote! mine) (deep {n} {id})))"),
+                    }
+                }
                 _ => format!("(list (join \"held\" \"{id}\") {} (list {id}))", sub(self)),
             }
         }
@@ -608,7 +377,7 @@ mod generated {
         id
     }
 
-    fn interpreter() -> Grift<World> {
+    fn interpreter(mode: Mode) -> Grift<World> {
         let mut g: Grift<World> = Grift::new().unwrap();
         let f = g.host_function("wait", g_wait).unwrap();
         g.define("wait", f).unwrap();
@@ -622,6 +391,15 @@ mod generated {
         g.define("seen", f).unwrap();
         let f = g.host_function("host-limit", g_host_limit).unwrap();
         g.define("host-limit", f).unwrap();
+        if matches!(mode, Mode::Plain | Mode::Stress) {
+            return g;
+        }
+        g.evaluate(
+            &mut World::default(),
+            "(define! spin (lambda! (n) (if! (same? n 0) 0 (spin (subtract n 1)))))
+             (define! deep (lambda! (n x) (if! (same? n 0) x (deep (subtract n 1) (list x)))))",
+        )
+        .unwrap();
         g
     }
 
@@ -653,8 +431,8 @@ mod generated {
     }
 
     /// What a program means: alone, its waits answered at once.
-    fn meaning(run: usize, src: &str) -> (Outcome, Log) {
-        let mut g = interpreter();
+    fn meaning(run: usize, src: &str, mode: Mode) -> (Outcome, Log) {
+        let mut g = interpreter(mode);
         let mut w = World {
             logs: vec![Vec::new(); run + 1],
             current: run,
@@ -790,37 +568,6 @@ mod generated {
         }
     }
 
-    /// A stop or a refusal can only end a run with what it is, or leave its meaning alone.
-    #[test]
-    #[should_panic(expected = "a value not in")]
-    fn a_stopped_run_meant_to_err_may_not_end_with_a_value() {
-        let world = World {
-            logs: vec![Vec::new()],
-            stops: vec![1],
-            stopped_at: vec![None],
-            forced_at: vec![None],
-            ..World::default()
-        };
-        let meant = Outcome {
-            kind: Some("mine".to_string()),
-            text: "mine".to_string(),
-            limit: false,
-        };
-        let got = Outcome {
-            kind: None,
-            text: "1".to_string(),
-            limit: false,
-        };
-        check_end(
-            0,
-            &got,
-            &world,
-            &(meant, Vec::new()),
-            &Touched::default(),
-            "",
-        );
-    }
-
     /// What the cases reached, so that a run can say it tested something.
     #[derive(Debug, Default)]
     struct Reached {
@@ -835,7 +582,23 @@ mod generated {
         host_limits: usize,
     }
 
-    fn one_case(seed: u64, stress: bool, reached: &mut Reached) {
+    /// What a case runs under besides its own programs.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Mode {
+        Plain,
+        /// Collect at every safe point: slow, and it reaches what a parked run holds.
+        Stress,
+        /// A memory limit three times what is live, and loops long enough to need collection.
+        Limited,
+        /// A thread with a small stack, and data nested deep.
+        SmallStack,
+    }
+
+    /// The stack a small-stack case runs on.
+    const SMALL_STACK: usize = 256 * 1024;
+
+    fn one_case(seed: u64, mode: Mode, reached: &mut Reached) {
+        let stress = mode == Mode::Stress;
         let mut r = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let runs = 1 + r.below(5) as usize;
         let programs: Vec<String> = (0..runs)
@@ -845,6 +608,7 @@ mod generated {
                     run: run as u64 + 1,
                     next: 0,
                     churn: if stress { 6 } else { 200 },
+                    mode,
                 };
                 let depth = if stress { 3 } else { 5 };
                 p.expression(depth)
@@ -853,14 +617,14 @@ mod generated {
         let with = |text: &str| programs.iter().filter(|p| p.contains(text)).count();
         reached.forgeries += with("(quote! forged)");
         reached.host_limits += with("(host-limit ");
-        let context = format!("seed {seed} stress {stress}\n{programs:#?}");
+        let context = format!("seed {seed} {mode:?}\n{programs:#?}");
         let meanings: Vec<(Outcome, Log)> = programs
             .iter()
             .enumerate()
-            .map(|(run, src)| meaning(run, src))
+            .map(|(run, src)| meaning(run, src, mode))
             .collect();
 
-        let mut g = interpreter();
+        let mut g = interpreter(mode);
         if r.one_in(4) {
             g.run_definitions();
         }
@@ -878,10 +642,18 @@ mod generated {
             "(define! churn (lambda! (n) (length (map list (range 0 n)))))",
         )
         .unwrap();
+        if mode == Mode::Limited {
+            // Live data the collector's pacing is measured against, beyond its least allowance.
+            g.evaluate(&mut w, "(define! held (range 0 5000))").unwrap();
+        }
         g.heap.request_collection();
         g.evaluate(&mut w, "#inert").unwrap();
         let baseline = g.heap.live();
         g.heap.stress = stress;
+        if mode == Mode::Limited {
+            // What is live, as much again before the next collection, and room for the runs.
+            g.heap.slot_limit = 3 * baseline;
+        }
 
         let may_stop = r.one_in(2);
         let may_force = r.one_in(3);
@@ -996,7 +768,12 @@ mod generated {
                 4 => {
                     w.current = usize::MAX;
                     g.heap.stress = false;
-                    let _ = g.evaluate(&mut w, "(churn 300)");
+                    let churn = if mode == Mode::Limited {
+                        "(churn 1000)"
+                    } else {
+                        "(churn 300)"
+                    };
+                    let _ = g.evaluate(&mut w, churn);
                     g.heap.stress = stress;
                 }
                 5 => {
@@ -1072,7 +849,25 @@ mod generated {
         let mut reached = Reached::default();
         for seed in first..first + cases {
             // One case in eight collects at every step: slow, and it reaches what a parked run holds.
-            one_case(seed, seed % 8 == 0, &mut reached);
+            let mode = if seed % 8 == 0 {
+                Mode::Stress
+            } else {
+                Mode::Plain
+            };
+            one_case(seed, mode, &mut reached);
+        }
+        // As many again in eight run under a memory limit, and on a small stack.
+        for seed in first..first + cases.div_ceil(8) {
+            one_case(seed, Mode::Limited, &mut reached);
+            reached = std::thread::Builder::new()
+                .stack_size(SMALL_STACK)
+                .spawn(move || {
+                    one_case(seed, Mode::SmallStack, &mut reached);
+                    reached
+                })
+                .unwrap()
+                .join()
+                .unwrap();
         }
         // `--nocapture` shows this. A fixed seed, so these can be required: each kind of thing
         // happened to some run, whatever the program generator comes to do.

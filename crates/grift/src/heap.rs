@@ -42,6 +42,9 @@ pub(crate) enum Object {
     Free(u32),
     Pair(Value, Value, Origin),
     String(Box<str>),
+    /// A symbol's name. Symbols are compared by slot, so a name lives here once while anything
+    /// refers to it, and is collected like any value when nothing does.
+    Symbol(Box<str>),
     /// An optional parent and the bindings.
     Context(Option<Reference>, Bindings),
     Operative(Operative),
@@ -106,7 +109,7 @@ const GC_MIN: usize = 4096;
 #[inline]
 fn weight(obj: &Object) -> usize {
     match obj {
-        Object::String(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
+        Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
         _ => 1,
     }
@@ -124,15 +127,9 @@ pub(crate) struct Heap {
     /// What the last collection found alive, by weight, for tests of what a run keeps.
     #[cfg(test)]
     live: usize,
-    /// Operatives made, for tests of what a form costs.
-    #[cfg(test)]
-    pub operatives: usize,
     /// Refuse new slots past this length, to test recovery without replacing the allocator.
     #[cfg(test)]
     pub slot_limit: usize,
-    /// Refuse the kept table room past this length, to test a park with no memory to spare.
-    #[cfg(test)]
-    pub kept_limit: usize,
     /// Collect at every safe point, to test what a collection could lose.
     #[cfg(test)]
     pub stress: bool,
@@ -159,11 +156,7 @@ impl Default for Heap {
             #[cfg(test)]
             live: 0,
             #[cfg(test)]
-            operatives: 0,
-            #[cfg(test)]
             slot_limit: usize::MAX,
-            #[cfg(test)]
-            kept_limit: usize::MAX,
             #[cfg(test)]
             stress: false,
             #[cfg(test)]
@@ -193,7 +186,6 @@ impl Heap {
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
         {
-            self.operatives += usize::from(matches!(obj, Object::Operative(_)));
             match self.refuse_in {
                 Some(0) => {
                     self.refused += 1;
@@ -267,6 +259,19 @@ impl Heap {
         }
     }
 
+    /// The name in symbol slot `id` and its generation, if the slot holds a name.
+    #[inline]
+    pub fn symbol(&self, id: u32) -> Option<(&str, u32)> {
+        match self.slots.get(id as usize) {
+            Some(Slot {
+                obj: Object::Symbol(name),
+                generation,
+                ..
+            }) => Some((name, *generation)),
+            _ => None,
+        }
+    }
+
     /// What the last collection found alive, by weight.
     #[cfg(test)]
     pub fn live(&self) -> usize {
@@ -336,17 +341,20 @@ impl Heap {
     pub fn len(&self) -> usize {
         self.slots.len()
     }
-
-    /// The mark stack's room, for tests that every slot has an entry.
-    #[cfg(test)]
-    pub fn mark_room(&self) -> usize {
-        self.marks.capacity()
-    }
 }
 
 /// Puts `v`'s object on the mark stack, unless a collection already reached it.
 fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
     let r = match v {
+        // A name refers to nothing, so it is marked where it is.
+        Value::Symbol(id) => {
+            if let Some(s) = slots.get(id.0 as usize)
+                && matches!(s.obj, Object::Symbol(_))
+            {
+                s.marked.set(true);
+            }
+            return;
+        }
         Value::Pair(r)
         | Value::String(r)
         | Value::Bytes(r)
@@ -359,6 +367,10 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
         && s.generation == r.generation
         && !s.marked.replace(true)
     {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "alloc keeps one mark-stack entry per slot"
+        )]
         marks.push(r.idx);
     }
 }
@@ -366,8 +378,11 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
 /// What `obj` refers to.
 fn children(obj: &Object, mut f: impl FnMut(Value)) {
     match obj {
-        Object::Free(_) | Object::String(_) | Object::Bytes(_) => {}
-        Object::Pair(a, d, _) => {
+        Object::Free(_) | Object::String(_) | Object::Symbol(_) | Object::Bytes(_) => {}
+        Object::Pair(a, d, origin) => {
+            if let Some((source, _)) = origin.place {
+                f(Value::Symbol(source));
+            }
             f(*a);
             f(*d);
         }
@@ -375,10 +390,14 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
             if let Some(p) = parent {
                 f(Value::Context(*p));
             }
-            bindings.values().copied().for_each(f);
+            for (&name, &value) in bindings {
+                f(Value::Symbol(name));
+                f(value);
+            }
         }
         Object::Operative(op) => {
             f(op.parameters);
+            f(op.context_parameter);
             f(op.body);
             f(Value::Context(op.context));
         }

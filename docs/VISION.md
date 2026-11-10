@@ -186,7 +186,8 @@ whatever it is, so one made by `string-to-symbol` may not read back as itself.
 - **Operand / argument:** what a combination is given / the value of an operand.
 - **Parameters:** the tree of symbols an operative or applicative binds its operands or arguments
   to; a `vau!` also has a context parameter.
-- **Trace:** the combinations an error happened in, innermost first.
+- **Trace:** the combinations an error happened in; a program reads it newest first (the innermost
+  last), a host innermost first.
 
 ## The ontology
 1. **What exists.** The values listed under Values; errors (a kind, values, a trace); the machine

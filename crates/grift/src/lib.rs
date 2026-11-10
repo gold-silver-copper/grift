@@ -1,17 +1,39 @@
 #![doc = include_str!("../README.md")]
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 mod ending_tests;
 mod evaluate;
+#[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
+mod family_tests;
 mod heap;
 mod interrupt;
 mod local;
 mod parked;
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 mod parked_tests;
 mod print;
 mod read;
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 mod tests;
 
 use heap::{Heap, Object};
@@ -86,11 +108,16 @@ enum OperativeKind {
     Host(Owner, u32),
 }
 
-/// An interned symbol of one [`Grift`]; its name is [`Grift::symbol_name`].
+/// An interned symbol of one [`Grift`]; its name is [`Grift::symbol_name`]. A name is collected
+/// like any value once nothing in the interpreter refers to it, so a symbol handed to the host
+/// lasts as a [`Value`] does: until the next run, unless something the program holds, such as a
+/// binding, a list or a [`Kept`] value, has it. A reclaimed one is `stale-value`, never another
+/// name, and interning its spelling again gives a new symbol, unequal to it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Symbol {
     owner: Owner,
     index: u32,
+    generation: u32,
 }
 
 /// An object in the heap of one [`Grift`]: a slot and its generation.
@@ -318,8 +345,8 @@ const SPARE: usize = 64 * 1024;
 /// they pass on to host functions.
 pub struct Grift<T = ()> {
     heap: Heap,
-    names: Vec<Box<str>>,
-    /// Names to symbol ids, for interning; `names` gives the spelling by id.
+    /// Names to the slots that hold them, for interning: only live ones, pruned as names are
+    /// collected.
     symbols: HashMap<Box<str>, u32>,
     hosts: Vec<(local::Symbol, HostFunction<T>)>,
     built_in: heap::Reference,
@@ -344,9 +371,12 @@ impl<T> Grift<T> {
     /// shared control block, which its interrupters and values point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "Arc::try_new is unstable: the one abort `new` documents"
+        )]
         let mut g = Grift {
             heap: Heap::default(),
-            names: Vec::new(),
             symbols: HashMap::new(),
             hosts: Vec::new(),
             built_in: heap::Reference::NONE,
@@ -363,11 +393,12 @@ impl<T> Grift<T> {
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
-        self.built_in = self.heap.context(None)?;
-        self.top = self.heap.context(Some(self.built_in))?;
+        // The known names come first, so their slots are their ids, and they are always roots.
         for name in local::K_NAMES {
             self.intern(name)?;
         }
+        self.built_in = self.heap.context(None)?;
+        self.top = self.heap.context(Some(self.built_in))?;
         for &p in evaluate::Primitive::ALL {
             let s = self.intern(p.name())?;
             let wrapped = Object::Applicative(local::Value::Primitive(p));
@@ -385,7 +416,7 @@ impl<T> Grift<T> {
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
         let forms = self
             .prepare(std::iter::empty())
-            .and_then(|()| self.read_local(src, None, false));
+            .and_then(|()| self.read_to_run(src, None, false));
         let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
         self.exported(done)
     }
@@ -457,8 +488,24 @@ impl<T> Grift<T> {
         let c = self.context_of(context)?;
         self.prepare(std::iter::once(local::Value::Context(c)))?;
         let source = self.intern(source)?;
-        let forms = self.read_local(src, Some(source), library)?;
+        let forms = self.read_to_run(src, Some(source), library)?;
         self.evaluate_forms(Some(state), forms, c, parks)
+    }
+
+    /// Reads `src` as the first part of the run that then evaluates it, so a stop reaches the
+    /// reading too; text that doesn't read ends the run.
+    fn read_to_run(
+        &mut self,
+        src: &str,
+        source: Option<local::Symbol>,
+        library: bool,
+    ) -> Result<local::Value, local::Error> {
+        self.begin_run();
+        let forms = self.read_local(src, source, library);
+        if forms.is_err() {
+            self.control.end();
+        }
+        forms
     }
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
@@ -557,7 +604,8 @@ impl<T> Grift<T> {
     /// ```
     pub fn bind(&mut self, context: &Value, parameters: &Value, value: Value) -> Result<(), Error> {
         // Every value is checked before the context's kind, as the primitive's arguments are.
-        let done = self.import(context).and_then(|c| {
+        let done = Control::host_run(&self.control).and_then(|_run| {
+            let c = self.import(context)?;
             let (parameters, value) = (self.import(parameters)?, self.import(&value)?);
             let c = context_kind(c)?;
             self.bind_tree(c, parameters, value)
@@ -670,6 +718,7 @@ impl<T> Grift<T> {
     /// The first and the rest of a pair; `None` for anything else.
     pub fn as_pair(&self, v: &Value) -> Result<Option<(Value, Value)>, Error> {
         let p = self.import(v).and_then(|v| match v {
+            #[expect(clippy::disallowed_methods, reason = "one pair for the host")]
             local::Value::Pair(r) => self.pair_at(r).map(Some),
             _ => Ok(None),
         });
@@ -715,7 +764,8 @@ impl<T> Grift<T> {
     /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
     /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let forms = self.read_local(src, None, false);
+        let forms =
+            Control::host_run(&self.control).and_then(|_run| self.read_local(src, None, false));
         self.exported(forms)
     }
 
@@ -735,9 +785,10 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error> {
-        let forms = self
-            .intern(source)
-            .and_then(|source| self.read_local(text, Some(source), false));
+        let forms = Control::host_run(&self.control).and_then(|_run| {
+            let source = self.intern(source)?;
+            self.read_local(text, Some(source), false)
+        });
         self.exported(forms)
     }
 
@@ -760,7 +811,8 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn write(&self, v: &Value, out: &mut dyn fmt::Write) -> Result<(), Error> {
-        let written = self.import(v).and_then(|v| self.print(v, out));
+        let written = Control::host_run(&self.control)
+            .and_then(|_run| self.import(v).and_then(|v| self.print(v, out)));
         self.out(written)
     }
 
@@ -802,7 +854,8 @@ impl<T> Grift<T> {
         out: &mut dyn fmt::Write,
         bytes: usize,
     ) -> Result<ReportStatus, Error> {
-        self.out(self.report(error, out, bytes))
+        let run = Control::host_run(&self.control);
+        self.out(run.and_then(|_run| self.report(error, out, bytes)))
     }
 
     /// The source and line of a combination read by [`Grift::read_in`] or [`Grift::evaluate_in`],
@@ -846,10 +899,6 @@ impl<T> Grift<T> {
     pub(crate) fn free_name(&mut self) -> Result<u32, local::Error> {
         if let Some(name) = self.kept_free {
             return Ok(name);
-        }
-        #[cfg(test)]
-        if self.kept.len() >= self.heap.kept_limit {
-            return Err(local::Error::oom());
         }
         let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
         push(&mut self.kept, Entry::Free(None))?;
@@ -901,21 +950,36 @@ impl<T> Grift<T> {
         if let Some(symbol) = self.symbols.get(name).copied().map(local::Symbol) {
             return Ok(symbol);
         }
-        let id = u32::try_from(self.names.len()).map_err(|_| local::Error::oom())?;
         let (spelling, key) = (boxed(name)?, boxed(name)?);
-        self.names.try_reserve(1).map_err(|_| local::Error::oom())?;
         self.symbols
             .try_reserve(1)
             .map_err(|_| local::Error::oom())?;
-        // Neither table changes until both spellings and both collections have room.
-        self.names.push(spelling);
+        // The index has room, so it changes only once the name has its slot.
+        let id = self.heap.alloc(Object::Symbol(spelling))?.idx;
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.symbols.insert(key, id);
         Ok(local::Symbol(id))
     }
 
     /// The name of symbol `s`.
     pub(crate) fn name(&self, s: local::Symbol) -> &str {
-        self.names.get(s.0 as usize).map_or("", |n| n)
+        self.heap.symbol(s.0).map_or("", |(name, _)| name)
+    }
+
+    /// Drops the names the last collection freed from the index, and gives back its storage once
+    /// it is under a quarter used, if memory allows.
+    pub(crate) fn tidy_symbols(&mut self) {
+        let heap = &self.heap;
+        self.symbols.retain(|_, id| heap.symbol(*id).is_some());
+        if self.symbols.capacity() / 4 > self.symbols.len() {
+            let mut smaller = HashMap::new();
+            if smaller.try_reserve(self.symbols.len()).is_ok() {
+                // It has room for all, so this allocates nothing.
+                #[expect(clippy::disallowed_methods, reason = "reserved symbols.len() above")]
+                smaller.extend(self.symbols.drain());
+                self.symbols = smaller;
+            }
+        }
     }
 
     /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
@@ -1018,14 +1082,17 @@ impl<T> Grift<T> {
 
     fn import_symbol(&self, s: &Symbol) -> Result<local::Symbol, local::Error> {
         self.owns(&s.owner)?;
-        Ok(local::Symbol(s.index))
+        match self.heap.symbol(s.index) {
+            Some((_, generation)) if generation == s.generation => Ok(local::Symbol(s.index)),
+            _ => Err(local::Error::new(K::StaleValue, &[])),
+        }
     }
 
     /// An error a host function returned, as this interpreter's.
     pub(crate) fn import_error(&self, e: &Error) -> Result<local::Error, local::Error> {
         let (values, trace) = (self.imported(&e.values)?, self.imported(&e.trace)?);
         let kind = self.import_symbol(&e.kind)?;
-        let imported = local::Error::from_parts(kind, values, trace)?;
+        let imported = local::Error::from_parts(kind, values, local::Trace::given(trace)?);
         Ok(local::Error {
             limit: e.limit,
             ..imported
@@ -1060,6 +1127,7 @@ impl<T> Grift<T> {
             | Value::Context(r)
             | Value::Operative(Operative(OperativeKind::Compound(r)))
             | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
+            Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
             _ => None,
         });
         self.prepare(std::iter::once(f).chain(roots))?;
@@ -1104,6 +1172,10 @@ impl<T> Grift<T> {
         Symbol {
             owner: self.owner(),
             index: s.0,
+            generation: self
+                .heap
+                .symbol(s.0)
+                .map_or(0, |(_, generation)| generation),
         }
     }
 
@@ -1114,7 +1186,17 @@ impl<T> Grift<T> {
             self.heap.request_collection();
         }
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
-        match (exported(&e.values), exported(&e.trace)) {
+        // The host's trace is innermost first: the shared list's places reversed, then the rest.
+        let (shared, added) = e.trace.parts();
+        let trace = self.items(shared, shared).and_then(|mut v| {
+            v.reverse();
+            v.try_reserve_exact(added.len())
+                .map_err(|_| local::Error::oom())?;
+            #[expect(clippy::disallowed_methods, reason = "reserved added.len() above")]
+            v.extend_from_slice(added);
+            exported(&v)
+        });
+        match (exported(&e.values), trace) {
             (Ok(values), Ok(trace)) => Error {
                 kind: self.export_symbol(e.kind),
                 values,
@@ -1147,6 +1229,7 @@ fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local
     let mut v = Vec::new();
     v.try_reserve_exact(items.len())
         .map_err(|_| local::Error::oom())?;
+    #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     v.extend(items);
     Ok(v)
 }

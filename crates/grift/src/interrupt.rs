@@ -86,16 +86,44 @@ impl Control {
         self.update(|word| (word & ASKED == 0).then(|| after(word)))
     }
 
+    /// Begins a run for host-side work, reading, printing or binding, unless one is in progress, so a stop
+    /// reaches it; inside a run it is part of that run. A stop already asked of the run it began
+    /// is `interrupted` before it does anything. The run ends as the guard drops, even as a panic
+    /// in the host's sink unwinds through it.
+    pub fn host_run(control: &Arc<Control>) -> Result<HostRun, crate::local::Error> {
+        let began = control.update(|word| (word & RUNNING == 0).then_some(word | RUNNING));
+        let run = HostRun(began.then(|| Arc::clone(control)));
+        match began && control.asked() {
+            true => Err(crate::local::Error::interrupted()),
+            false => Ok(run),
+        }
+    }
+
     /// The parked runs no handle holds. Nothing panics under the lock.
     pub fn forgotten(&self) -> MutexGuard<'_, Vec<u32>> {
         self.forgotten.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
+/// The run [`Control::host_run`] began, if it began one: it ends as this drops.
+pub(crate) struct HostRun(Option<Arc<Control>>);
+
+impl Drop for HostRun {
+    fn drop(&mut self) {
+        if let Some(control) = &self.0 {
+            control.end();
+        }
+    }
+}
+
 /// Stops the one run of its [`Grift`](crate::Grift) it was taken for, from any thread: the run in
 /// progress when [`Grift::interrupter`](crate::Grift::interrupter) made it, or, if none was, the
-/// next to begin. That run ends with the error `interrupted` at its next step, or inside a long
-/// walk of a tree. That error runs cleanups on its way out as any error does, but a stop can also
+/// next to begin. Reading and printing the host asks for with no run in progress
+/// ([`Grift::read`](crate::Grift::read), [`Grift::read_in`](crate::Grift::read_in),
+/// [`Grift::write`](crate::Grift::write), [`Grift::describe`](crate::Grift::describe),
+/// [`Grift::bind`](crate::Grift::bind)) are each a
+/// run of their own, and reading a text to evaluate is part of the run that evaluates it. That run
+/// ends with the error `interrupted` at its next step, or inside a long walk of a tree or a text. That error runs cleanups on its way out as any error does, but a stop can also
 /// land in a cleanup that has begun, and cut it, even before its first form. A stop while its run
 /// is not in progress does nothing and says so: before it begins, after it ends, while it is
 /// parked, and in every other run, so no handle, however old, reaches a run its host didn't mean.

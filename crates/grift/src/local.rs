@@ -32,8 +32,7 @@ pub(crate) enum Value {
 }
 
 // Two words, and aligned to one: every step copies values, so a bigger one costs every program.
-// The size can't show the tag's width (a one-byte tag pads to the same 16 bytes):
-// `a_values_tag_is_a_whole_word` checks that.
+// The size can't show the tag's width: a one-byte tag pads to the same 16 bytes.
 const _: () = assert!(size_of::<Value>() == 16 && align_of::<Value>() == 8);
 
 /// An interned symbol: its index among the names.
@@ -63,7 +62,7 @@ impl PartialEq for Symbol {
 pub(crate) struct Host(pub u32);
 
 /// An error as the machine carries it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct Error {
     /// Whether the host or the machine began this, not a program: whatever its kind is called,
     /// this alone says a handler may not catch it, and a program can't set it.
@@ -73,9 +72,88 @@ pub(crate) struct Error {
     pub refused: bool,
     pub kind: Symbol,
     pub values: Vec<Value>,
-    pub trace: Vec<Value>,
-    /// The combinations in `trace`, so adding one searches nothing.
-    pub seen: Seen,
+    pub trace: Trace,
+}
+
+/// An error's trace as the machine carries it: the list handlers got or a program gave, newest
+/// first, shared and never copied, then the places added since. Nothing copies it: a handler gets
+/// the added places put on the list's front ([`Trace::onto`]), raising the list it got takes it
+/// back whole ([`Trace::handed`]), and only the host's export reads all of it ([`Trace::parts`]).
+/// So a catch and raise at every level costs only the places each level adds. Only the last
+/// handler's list is remembered: a handler that catches another error before raising its own
+/// raises a list given back, which is walked once.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Trace {
+    shared: Value,
+    /// Innermost first.
+    added: Vec<Value>,
+    /// The combinations in `shared` and `added`, so adding one searches nothing.
+    seen: Seen,
+}
+
+impl Trace {
+    /// No places.
+    pub fn new() -> Trace {
+        Trace::handed(Value::EmptyList, Seen::default())
+    }
+
+    /// A list a handler got, `seen` its combinations, as [`Trace::onto`] gave them.
+    pub fn handed(shared: Value, seen: Seen) -> Trace {
+        Trace {
+            shared,
+            added: Vec::new(),
+            seen,
+        }
+    }
+
+    /// The places a program or host gave, innermost first, kept as they are, repeats and all.
+    pub fn given(places: Vec<Value>) -> Result<Trace, Error> {
+        let mut seen = Seen::default();
+        seen.try_reserve(places.len()).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved places.len() above")]
+        seen.extend(places.iter().filter_map(|v| match v {
+            Value::Pair(r) => Some(r.idx),
+            _ => None,
+        }));
+        Ok(Trace {
+            shared: Value::EmptyList,
+            added: places,
+            seen,
+        })
+    }
+
+    /// Adds program combination `r`, unless it is there already. With no memory to spare the
+    /// trace stays as it is: the error matters more than its last location.
+    #[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
+    pub fn add(&mut self, r: Reference) {
+        if r != Reference::NONE
+            && self.seen.try_reserve(1).is_ok()
+            && self.added.try_reserve(1).is_ok()
+            && self.seen.insert(r.idx)
+        {
+            self.added.push(Value::Pair(r));
+        }
+    }
+
+    /// The trace as one list, newest first, the added places put on the shared list's front with
+    /// `pair`, and its combinations.
+    pub fn onto(
+        self,
+        mut pair: impl FnMut(Value, Value) -> Result<Value, Error>,
+    ) -> Result<(Value, Seen), Error> {
+        let list = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
+        Ok((list, self.seen))
+    }
+
+    /// The shared list, newest first, and the places added since, innermost first.
+    pub fn parts(&self) -> (Value, &[Value]) {
+        (self.shared, &self.added)
+    }
+
+    /// The values a collection must keep for it.
+    pub fn roots(&self) -> impl Iterator<Item = Value> {
+        std::iter::once(self.shared).chain(self.added.iter().copied())
+    }
 }
 
 /// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core
@@ -118,27 +196,24 @@ impl Error {
             e.limit = false;
             e.refused = false;
             e.kind = kind.into();
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "reserved exactly in the condition"
+            )]
             e.values.extend_from_slice(values);
         }
         e
     }
 
-    /// An error a program describes, from its parts: `seen` follows from `trace`.
-    pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Vec<Value>) -> Result<Error, Error> {
-        let mut seen = Seen::default();
-        seen.try_reserve(trace.len()).map_err(|_| Error::oom())?;
-        seen.extend(trace.iter().filter_map(|v| match v {
-            Value::Pair(r) => Some(r.idx),
-            _ => None,
-        }));
-        Ok(Error {
+    /// An error a program or host describes, from its parts.
+    pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Trace) -> Error {
+        Error {
             limit: false,
             refused: false,
             kind,
             values,
             trace,
-            seen,
-        })
+        }
     }
 
     /// The machine ran out of memory.
@@ -148,8 +223,7 @@ impl Error {
             refused: true,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
-            trace: Vec::new(),
-            seen: Seen::default(),
+            trace: Trace::new(),
         }
     }
 
@@ -173,6 +247,7 @@ impl From<fmt::Error> for Error {
 pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     let mut b = String::new();
     b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+    #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     b.push_str(s);
     Ok(b.into_boxed_str())
 }
@@ -180,6 +255,7 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
 pub(crate) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), Error> {
     v.try_reserve(1).map_err(|_| Error::oom())?;
+    #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
     v.push(x);
     Ok(())
 }

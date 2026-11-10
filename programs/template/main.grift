@@ -284,9 +284,9 @@
               (look-up path scope file line)
               filters)))
 
-    ; " in" and the innermost combination of a trace, if it has one.
+    ; " in" and the innermost combination of a trace, its last, if it has one.
     (define! where
-      (lambda! (trace) (if! (same? trace ()) "" (join " in " (show (first trace))))))
+      (lambda! (trace) (if! (same? trace ()) "" (join " in " (show (last trace))))))
 
     (define! value-text
       (lambda! (value file line)

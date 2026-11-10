@@ -214,7 +214,9 @@ fn main() -> Result<(), Error> {
 - **Contexts, without running anything:** `context(Some(&parent))` or `context(None)` (a record);
   `private_context()`, a new child of the built-in context, a private top level; `top_level()`;
   `bind(&context, &parameters, value)`, as the primitive: `symbol(name)` gives a `Symbol`, and one
-  name is `Value::Symbol(g.symbol("x")?)`;
+  name is `Value::Symbol(g.symbol("x")?)`. A `Symbol` lasts as a `Value` does: a name nothing in
+  the interpreter refers to may be collected by any later collection, which comes as an evaluation
+  or call uses memory, and its `Symbol` is then `stale-value`;
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
   grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
@@ -262,8 +264,10 @@ fn main() -> Result<(), Error> {
   `symbol_name(&e.kind)` reads its kind; `error(kind, &[Value])` makes one.
 - **Interrupting.** `g.interrupter()` gives an `Interrupter`, `Send`, `Sync` and cloneable, for one
   run: the run in progress when it is taken, or, taken between runs, the next to begin; a clone is
-  for the same run. `stop()` from any thread stops that run at its next step, inside a long walk of a
-  tree, or as its last host call returns, with the error `interrupted`, and says whether it was in
+  for the same run. Reading, printing and binding the host asks for between runs (`read`, `read_in`,
+  `write`, `describe`, `bind`) are each a run of their own, and reading the text an `evaluate` is given
+  is part of its run. `stop()` from any thread stops that run at its next step, inside a long walk of a
+  tree, between the items of a text, or as its last host call returns, with the error `interrupted`, and says whether it was in
   progress. `true` doesn't say the stop acted: a run about to end can still return its value.
   `interrupted` runs cleanups on its way out as any error does, but a stop can also land in a cleanup
   that has begun, and cut it, even before its first form. Before its run begins, after it ends, and
@@ -467,6 +471,7 @@ waiting function forces the run before it answers.
 use grift::{Answer, Grift, Ran, Value};
 
 fn main() -> Result<(), grift::Error> {
+#   std::thread::spawn(|| { std::thread::sleep(std::time::Duration::from_secs(60)); std::process::exit(1) });
     let mut g: Grift<bool> = Grift::new()?; // the state: whether the host is ending this run
     let wait = g.host_function("wait", |g, ending, _| {
         if *ending {

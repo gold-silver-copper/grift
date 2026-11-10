@@ -18,9 +18,9 @@
 //! flagged, and run in Rust when their operands have the shape the twin handles; any other shape
 //! runs the operative's body, so what a program sees never differs.
 
-use crate::heap::{Bindings, Object, Operative, Origin, Reference};
+use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
-use crate::local::{Error, Host, K, Symbol, Value, boxed, push};
+use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, collected, context_kind};
 use std::sync::Arc;
@@ -119,6 +119,42 @@ primitives! {
     BytesToString "bytes-to-string" 1 1;
     ListToBytes "list-to-bytes" 1 1;
     BytesToList "bytes-to-list" 1 1;
+}
+
+/// A walk along a list's items inside one step, charged to [`Grift::walk_stopped`], so a stop
+/// ends it however long the list is. Every list walk goes through one: the lint on
+/// [`Grift::pair_at`] (`clippy.toml`) refuses another.
+pub(crate) struct Items {
+    rest: Value,
+    walked: usize,
+}
+
+impl Items {
+    pub(crate) fn new(list: Value) -> Items {
+        Items {
+            rest: list,
+            walked: 0,
+        }
+    }
+
+    /// The next item, or `None` once what is left isn't a pair.
+    pub(crate) fn next<T>(&mut self, g: &Grift<T>) -> Result<Option<Value>, Error> {
+        let Value::Pair(r) = self.rest else {
+            return Ok(None);
+        };
+        if g.walk_stopped(&mut self.walked) {
+            return Err(Error::interrupted());
+        }
+        #[expect(clippy::disallowed_methods, reason = "the one list walk")]
+        let (x, rest) = g.pair_at(r)?;
+        self.rest = rest;
+        Ok(Some(x))
+    }
+
+    /// What is left: `()` after a proper list.
+    pub(crate) fn rest(&self) -> Value {
+        self.rest
+    }
 }
 
 /// The library forms with a native twin.
@@ -303,6 +339,9 @@ pub(crate) struct Machine {
     pub request: Value,
     /// Whether this run may park: only one the host began to, with [`Grift::start`] or the like.
     pub(crate) may_park: bool,
+    /// The trace the last handler got, and its combinations: raising that trace again takes them
+    /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
+    handed: Option<(Value, Seen)>,
     /// Steps taken, for tests of what a form costs.
     #[cfg(test)]
     pub steps: u64,
@@ -311,10 +350,15 @@ pub(crate) struct Machine {
 /// What an ending holds for the collector: its value, or its error's values and trace.
 pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
     let (value, values, trace) = match ending {
-        Ok(v) => (Some(*v), &[][..], &[][..]),
-        Err(e) => (None, e.values.as_slice(), e.trace.as_slice()),
+        Ok(v) => (Some(*v), &[][..], None),
+        Err(e) => (
+            Some(Value::Symbol(e.kind)),
+            e.values.as_slice(),
+            Some(&e.trace),
+        ),
     };
-    value.into_iter().chain(values.iter().chain(trace).copied())
+    let trace = trace.into_iter().flat_map(Trace::roots);
+    value.into_iter().chain(values.iter().copied()).chain(trace)
 }
 
 impl Machine {
@@ -338,24 +382,12 @@ impl Machine {
         self.library = false;
         self.request = Value::Inert;
         self.may_park = false;
+        self.handed = None;
     }
 
     /// How many objects a parked machine counts as, for when to collect: every collection walks it.
     pub(crate) fn weight(&self) -> usize {
         1 + self.frames.len() + self.arguments.len() + self.waiting.len()
-    }
-}
-
-#[cfg(test)]
-impl Machine {
-    /// The most frames there were at once.
-    pub fn frames_high(&self) -> usize {
-        self.frames.capacity()
-    }
-
-    /// Only this much room above the frames, as if no more could be had.
-    pub fn leave_room(&mut self, room: usize) {
-        self.frames.shrink_to(self.frames.len() + room);
     }
 }
 
@@ -370,6 +402,7 @@ impl Default for Machine {
             work: Vec::new(),
             request: Value::Inert,
             may_park: false,
+            handed: None,
             #[cfg(test)]
             steps: 0,
         }
@@ -488,6 +521,10 @@ impl<T> Grift<T> {
             return Err(Error::interrupted());
         }
         self.machine.request = request;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "room was reserved above, before anything could fail"
+        )]
         room.push(std::mem::take(&mut self.machine));
         self.fill_kept(name, Entry::Run(room));
         self.parked_as = Some(name);
@@ -571,6 +608,7 @@ impl<T> Grift<T> {
                     What::Forms {
                         rest: Value::Pair(r),
                     } => {
+                        #[expect(clippy::disallowed_methods, reason = "one form per step")]
                         let (form, rest) = self.pair_at(r)?;
                         let at = match form {
                             Value::Pair(f) if !self.origin_at(f)?.library => f,
@@ -672,11 +710,11 @@ impl<T> Grift<T> {
         // a level at a time, and a collection walks all the levels left. A cleanup refused memory
         // is a new refusal, and asks again.
         self.acting_on_refusal(&mut e);
-        locate(&mut e, self.machine.here);
+        e.trace.add(self.machine.here);
         while let Some(Frame { what, context, at }) = self.machine.frames.pop() {
             match what {
                 What::Cleanup { cleanup, base } => {
-                    locate(&mut e, at);
+                    e.trace.add(at);
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
                     return self.start_cleanup(Err(e), cleanup, context, at);
@@ -684,12 +722,12 @@ impl<T> Grift<T> {
                 What::Handler { handler, base } if !e.limit => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
-                    match self.handle(&e, handler, context) {
+                    match self.handle(e, handler, context) {
                         Ok(mode) => return Ok(mode),
                         Err(mut failed) => {
                             self.acting_on_refusal(&mut failed);
                             e = failed;
-                            locate(&mut e, at);
+                            e.trace.add(at);
                         }
                     }
                 }
@@ -703,7 +741,7 @@ impl<T> Grift<T> {
                         e = waiting;
                     }
                 }
-                _ => locate(&mut e, at),
+                _ => e.trace.add(at),
             }
         }
         Err(e)
@@ -722,12 +760,20 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         let m = &mut self.machine;
         m.waiting.pop();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the frame's install reserved this room"
+        )]
         m.waiting.push(ending);
         #[cfg(test)]
         assert!(
             m.frames.len() + 2 <= m.frames.capacity(),
             "its install made the room"
         );
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the frame's install reserved this room"
+        )]
         m.frames.push(Frame {
             what: What::Finish,
             context: Reference::NONE,
@@ -742,16 +788,22 @@ impl<T> Grift<T> {
     }
 
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
-    /// `values` and `trace`.
-    fn handle(&mut self, e: &Error, handler: Value, context: Reference) -> Result<Mode, Error> {
-        let (values, trace) = (self.list_local(&e.values)?, self.list_local(&e.trace)?);
+    /// `values` and `trace`. The trace is the error's shared list with the places added since on
+    /// its front, so this costs those places only.
+    fn handle(&mut self, e: Error, handler: Value, context: Reference) -> Result<Mode, Error> {
+        let values = self.list_local(&e.values)?;
+        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Kind.into(), Value::Symbol(e.kind));
+        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Values.into(), values);
+        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
         let operands = self.list_local(&[v])?;
+        self.machine.handed = Some((trace, seen));
         self.combine(handler, operands, context)
     }
 
@@ -780,7 +832,11 @@ impl<T> Grift<T> {
             .chain(current)
             .chain(kept)
             .chain([Value::Context(self.built_in), Value::Context(self.top)]);
-        self.heap.collect(roots, parked)
+        // Names are heap objects: the known ones and host functions' are roots too.
+        let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
+        let hosts = self.hosts.iter().map(|&(name, _)| Value::Symbol(name));
+        self.heap.collect(roots.chain(known).chain(hosts), parked);
+        self.tidy_symbols();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -899,13 +955,11 @@ impl<T> Grift<T> {
     /// Applies a primitive or a host function to its operands as they are.
     fn spread(&mut self, f: Value, operands: Value, context: Reference) -> Result<Mode, Error> {
         let base = self.machine.arguments.len();
-        let mut rest = operands;
-        while let Value::Pair(r) = rest {
-            let (x, next) = self.pair_at(r)?;
+        let mut items = Items::new(operands);
+        while let Some(x) = items.next(self)? {
             push(&mut self.machine.arguments, x)?;
-            rest = next;
         }
-        if rest != Value::EmptyList {
+        if items.rest() != Value::EmptyList {
             return Err(Error::new(K::TypeError, &[f, operands]));
         }
         self.apply(f, context, base)
@@ -921,6 +975,7 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         match rest {
             Value::Pair(r) => {
+                #[expect(clippy::disallowed_methods, reason = "one operand per step")]
                 let (x, rest) = self.pair_at(r)?;
                 let arguments = What::Arguments {
                     combiner,
@@ -988,6 +1043,10 @@ impl<T> Grift<T> {
             .map_err(|_| Error::oom())?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Value::Symbol(s) = op.context_parameter {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "reserved the operative's size above"
+            )]
             bindings.insert(s, Value::Context(context));
         }
         let local = self
@@ -1018,11 +1077,9 @@ impl<T> Grift<T> {
                 Mode::Evaluate(test, context)
             }
             Native::Sequence => {
-                let mut rest = operands;
-                while let Value::Pair(r) = rest {
-                    rest = self.pair_at(r)?.1;
-                }
-                if rest != Value::EmptyList {
+                let mut items = Items::new(operands);
+                while items.next(self)?.is_some() {}
+                if items.rest() != Value::EmptyList {
                     return Ok(None);
                 }
                 self.next_form(operands, context, at)?
@@ -1032,6 +1089,7 @@ impl<T> Grift<T> {
     }
 
     #[inline(always)]
+    #[expect(clippy::disallowed_methods, reason = "three items at most")]
     fn three(&self, list: Value) -> Result<Option<[Value; 3]>, Error> {
         let mut items = [Value::EmptyList; 3];
         let mut rest = list;
@@ -1070,6 +1128,7 @@ impl<T> Grift<T> {
         let Value::Pair(r) = forms else {
             return Ok(Mode::Return(Value::Inert));
         };
+        #[expect(clippy::disallowed_methods, reason = "one form per step")]
         let (form, rest) = self.pair_at(r)?;
         if rest != Value::EmptyList {
             self.frame(What::Body { rest }, context, at)?;
@@ -1082,8 +1141,17 @@ impl<T> Grift<T> {
     #[inline(never)]
     fn names_list(&mut self, context: Reference) -> Result<Value, Error> {
         let names = self.names_of(context)?;
-        names.iter().rev().try_fold(Value::EmptyList, |list, &s| {
-            self.pair_local(Value::Symbol(s), list)
+        self.list_of(names.iter().map(|&s| Value::Symbol(s)))
+    }
+
+    /// A new list of `items`, built from the last: charged like [`Items`], so a stop ends it.
+    fn list_of(&mut self, items: impl DoubleEndedIterator<Item = Value>) -> Result<Value, Error> {
+        let mut walked = 0;
+        items.rev().try_fold(Value::EmptyList, |list, x| {
+            if self.walk_stopped(&mut walked) {
+                return Err(Error::interrupted());
+            }
+            self.pair_local(x, list)
         })
     }
 
@@ -1144,6 +1212,7 @@ impl<T> Grift<T> {
             P::Pair => self.pair_local(x, y)?,
             P::First | P::Rest => match x {
                 Value::Pair(r) => {
+                    #[expect(clippy::disallowed_methods, reason = "one pair: first or rest")]
                     let (a, b) = self.pair_at(r)?;
                     if p == P::First { a } else { b }
                 }
@@ -1190,6 +1259,7 @@ impl<T> Grift<T> {
                     m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
                     m.frames.try_reserve(2).map_err(|_| Error::oom())?;
                     self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
+                    #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
                     self.machine.waiting.push(Ok(Value::Inert));
                 }
                 return Ok(Mode::Evaluate(x, c));
@@ -1241,7 +1311,7 @@ impl<T> Grift<T> {
                 let text = std::mem::take(text);
                 let read = offset
                     .filter(|&i| text.is_char_boundary(i))
-                    .map(|i| self.read_form(&text, i, 1, None));
+                    .map(|i| self.read_form(&text, i, 1, None, &mut 0));
                 if let Object::String(s) = self.heap.get_mut(r)? {
                     *s = text;
                 }
@@ -1325,6 +1395,10 @@ impl<T> Grift<T> {
                     let mut joined = Vec::new();
                     joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
                     for &v in given {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "reserved the exact joined length above"
+                        )]
                         joined.extend_from_slice(self.bytes_of(v)?);
                     }
                     Object::Bytes(joined)
@@ -1332,6 +1406,10 @@ impl<T> Grift<T> {
                     let mut joined = String::new();
                     joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
                     for &v in given {
+                        #[expect(
+                            clippy::disallowed_methods,
+                            reason = "reserved the exact joined length above"
+                        )]
                         joined.push_str(self.text(v)?);
                     }
                     Object::String(joined.into_boxed_str())
@@ -1368,9 +1446,8 @@ impl<T> Grift<T> {
             }
             P::ListToBytes => {
                 let mut bytes = Vec::new();
-                let mut rest = x;
-                while let Value::Pair(r) = rest {
-                    let (v, next) = self.pair_at(r)?;
+                let mut items = Items::new(x);
+                while let Some(v) = items.next(self)? {
                     let at = integer(bytes.len());
                     let byte = match v {
                         Value::Integer(n) => {
@@ -1379,19 +1456,16 @@ impl<T> Grift<T> {
                         _ => return Err(Error::new(K::TypeError, &[v, at])),
                     };
                     push(&mut bytes, byte)?;
-                    rest = next;
                 }
-                if rest != Value::EmptyList {
+                if items.rest() != Value::EmptyList {
                     let at = integer(bytes.len());
-                    return Err(Error::new(K::TypeError, &[rest, at]));
+                    return Err(Error::new(K::TypeError, &[items.rest(), at]));
                 }
                 self.bytes_local(bytes)?
             }
             P::BytesToList => {
                 let b = collected(self.bytes_of(x)?.iter().copied())?;
-                b.iter().rev().try_fold(Value::EmptyList, |list, &byte| {
-                    self.pair_local(Value::Integer(i64::from(byte)), list)
-                })?
+                self.list_of(b.iter().map(|&byte| Value::Integer(i64::from(byte))))?
             }
             _ => return Err(type_error(x)),
         })
@@ -1407,7 +1481,7 @@ impl<T> Grift<T> {
     }
 
     /// The error an error context describes: one `error` made, or a handler got.
-    fn error_of(&self, e: Value) -> Result<Error, Error> {
+    fn error_of(&mut self, e: Value) -> Result<Error, Error> {
         let bad = || type_error(e);
         let Value::Context(r) = e else {
             return Err(bad());
@@ -1417,19 +1491,24 @@ impl<T> Grift<T> {
             return Err(bad());
         };
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
-        let (values, trace) = (self.items(values, e)?, self.items(trace, e)?);
-        Error::from_parts(kind, values, trace)
+        let values = self.items(values, e)?;
+        // The trace the last handler got comes back whole, its combinations with it.
+        if let Some((_, seen)) = self.machine.handed.take_if(|(h, _)| *h == trace) {
+            return Ok(Error::from_parts(kind, values, Trace::handed(trace, seen)));
+        }
+        let mut given = self.items(trace, e)?;
+        given.reverse();
+        Ok(Error::from_parts(kind, values, Trace::given(given)?))
     }
 
     /// The elements of a proper list; anything else is a `type-error` naming `culprit`.
-    pub(crate) fn items(&self, mut list: Value, culprit: Value) -> Result<Vec<Value>, Error> {
+    pub(crate) fn items(&self, list: Value, culprit: Value) -> Result<Vec<Value>, Error> {
         let mut v = Vec::new();
-        while let Value::Pair(r) = list {
-            let (x, rest) = self.pair_at(r)?;
+        let mut items = Items::new(list);
+        while let Some(x) = items.next(self)? {
             push(&mut v, x)?;
-            list = rest;
         }
-        if list == Value::EmptyList {
+        if items.rest() == Value::EmptyList {
             Ok(v)
         } else {
             Err(type_error(culprit))
@@ -1576,12 +1655,14 @@ impl<T> Grift<T> {
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = match (t, v) {
                 _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
+                #[expect(clippy::disallowed_methods, reason = "reserved 1 in the arm")]
                 (Value::Symbol(s), _) => match bindings.try_reserve(1) {
                     Ok(()) if bindings.insert(s, v).is_none() => Ok(()),
                     Ok(()) => Err(Error::new(K::ParameterError, &[tree])),
                     Err(_) => Err(Error::oom()),
                 },
                 (Value::Ignore, _) | (Value::EmptyList, Value::EmptyList) => Ok(()),
+                #[expect(clippy::disallowed_methods, reason = "a tree walk charged above")]
                 (Value::Pair(t), Value::Pair(v)) => self.pair_at(t).and_then(|(ta, tb)| {
                     let (va, vb) = self.pair_at(v)?;
                     push(&mut work, (tb, vb))?;
@@ -1609,6 +1690,7 @@ impl<T> Grift<T> {
         bindings
             .try_reserve(matched.len())
             .map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved matched.len() above")]
         bindings.extend(matched);
         Ok(())
     }
@@ -1622,6 +1704,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let bindings = self.bindings_mut(context)?;
         bindings.try_reserve(1).map_err(|_| Error::oom())?;
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         bindings.insert(s, v);
         Ok(())
     }
@@ -1670,6 +1753,24 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
+    /// Runs primitive `p` on `args` in `context`, for the sweeps in `family_tests`.
+    #[cfg(test)]
+    pub(crate) fn call_primitive(
+        &mut self,
+        p: Primitive,
+        args: &[Value],
+        context: Reference,
+    ) -> Result<Mode, Error> {
+        let base = self.machine.arguments.len();
+        for &a in args {
+            push(&mut self.machine.arguments, a)?;
+        }
+        let r = self.primitive(p, context, base);
+        self.machine.arguments.truncate(base);
+        r
+    }
+
+    /// One pair's two halves. A walk along a list goes through [`Items`], which a stop ends.
     pub(crate) fn pair_at(&self, r: Reference) -> Result<(Value, Value), Error> {
         match self.heap.get(r)? {
             Object::Pair(a, b, _) => Ok((*a, *b)),
@@ -1689,18 +1790,6 @@ impl<T> Grift<T> {
             Object::Applicative(c) => Ok(*c),
             _ => Err(Error::new(K::StaleValue, &[Value::Applicative(r)])),
         }
-    }
-}
-
-/// Adds program combination `r` to the error's trace, unless it is there already. With no
-/// memory to spare the trace stays as it is: the error matters more than its last location.
-fn locate(e: &mut Error, r: Reference) {
-    if r != Reference::NONE
-        && e.seen.try_reserve(1).is_ok()
-        && e.trace.try_reserve(1).is_ok()
-        && e.seen.insert(r.idx)
-    {
-        e.trace.push(Value::Pair(r));
     }
 }
 
