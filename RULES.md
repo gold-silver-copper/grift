@@ -141,8 +141,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   in progress, not that it acted ([G-168], [G-170]).
 - A stop asked before its run starts does nothing ([G-179]). The host's `read`, `read_in`, `write`,
   `describe` and `bind` are runs a stop reaches, or join the run in progress inside a host function
-  ([G-179], [G-181]). Inside a step, list walks, `search` and the printer look for stops as they go
-  ([G-178], [G-179]).
+  ([G-179], [G-181]). Inside a step, list walks, `search`, the reader and the printer look for stops
+  as they go ([G-178], [G-179]).
 - A host function that panics ends its run: the panic goes on to the host, no cleanup runs, and the
   next evaluation starts afresh ([G-168]).
 
@@ -238,7 +238,7 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   new baseline to write ([G-179]).
 - A test is deleted only when the held-back bug set shows the suite still catches all it caught
   ([G-179]). `scripts/historic-bugs.py` re-applies the gated bugs in `tests/historic/` and checks
-  their tests still fail, nightly and on PRs that change tests ([CONTRIBUTING.md](CONTRIBUTING.md)).
+  that each is still caught, nightly and on PRs that change tests ([CONTRIBUTING.md](CONTRIBUTING.md)).
 - The workspace tests run every program's own `test.sh` (`every_program_passes_its_own_test`)
   ([G-84], [G-166]).
 - Every primitive is classed in one test-side `match` with no catch-all arm, which puts it in the
