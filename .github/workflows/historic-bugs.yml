@@ -15,6 +15,7 @@ on:
       - "**/natives.grift"
       - "programs/**"
       - "crates/grift/src/lib.rs"  # the doctest that catches 28; the script checks doctests are here
+      - "crates/*/clippy.toml"  # the lint that catches 36
       - "tests/historic/**"
       - "scripts/historic-bugs.py"
       - ".github/workflows/historic-bugs.yml"
@@ -40,4 +41,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - run: scripts/historic-bugs.py --shard ${{ matrix.shard }}/4

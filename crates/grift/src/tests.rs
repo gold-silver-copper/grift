@@ -1533,13 +1533,12 @@ fn searches_with_a_stop_waiting(
     Ok(Answer::Now(Value::Inert))
 }
 
-/// Bytes and strings, a text the pattern nearly matches everywhere, and an empty text, where only
-/// the preparation of the search reads the pattern.
+/// Bytes and strings: a long text a short pattern nearly matches everywhere, where the search is
+/// all comparison, and an empty text, where only the preparation reads the long pattern.
 #[test]
 fn a_long_search_finds_a_stop_by_itself() {
-    let mut pattern = "a".repeat((1 << 15) - 1);
-    pattern.push('b');
-    for text in ["a".repeat(1 << 16), String::new()] {
+    let pattern = format!("{}b", "a".repeat((1 << 15) - 1));
+    for (text, pattern) in [("a".repeat(1 << 16), "ab".into()), (String::new(), pattern)] {
         for bytes in [true, false] {
             let mut g: Grift<Interrupter> = Grift::new().unwrap();
             define(&mut g, "walk", searches_with_a_stop_waiting);

@@ -1,8 +1,7 @@
 //! The embedding's guarantees, from the host's side, through the public API alone:
 //! - a run its host function left is over, and a stop reaches only the run its handle was
 //!   taken for, never a later one;
-//! - a stop ends a walk of a parameter tree, and reading and printing, the host's own included,
-//!   are work a stop reaches.
+//! - a stop ends a walk of a parameter tree, and every host call that is a run.
 #![allow(
     clippy::disallowed_methods,
     clippy::disallowed_macros,
@@ -260,40 +259,71 @@ impl std::fmt::Write for Stopping {
     }
 }
 
-/// Reading and printing are work a stop ends wherever they happen: the host's own `write`, with
-/// no run in progress, is a run of its own, and the reader inside a run checks for its stop. A
-/// stop that ends host-side work is spent with it.
-#[test]
-fn a_stop_reaches_reading_and_printing() {
-    let mut g: Grift<Option<bool>> = Grift::new().unwrap();
-    let list = g.evaluate(&mut None, "(range 0 100000)").unwrap();
-    let mut sink = Stopping(g.interrupter(), None, String::new());
-    let e = g.write(&list, &mut sink).unwrap_err();
-    assert_eq!(sink.1, Some(true), "the write was the run in progress");
-    assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
-    assert!(sink.2.len() < 100_000, "it stopped part way");
-    assert!(!sink.0.stop(), "its run is over");
-    assert_eq!(g.evaluate(&mut None, "(add 1 2)"), Ok(Value::Integer(3)));
+/// What a host function runs after it stops its own run, and how that ended.
+type Run = fn(&mut HostCall<Joining>, &[Value]) -> Result<(), Error>;
+struct Joining(Run, Option<String>);
 
-    // Many short forms, or one long string: each byte read is charged.
-    for read in [
-        (|g, read, _| {
-            assert!(g.interrupter().stop(), "a run to stop");
-            let e = g.read(&"1 ".repeat(100_000)).unwrap_err();
-            *read = Some(g.symbol_name(&e.kind)? == "interrupted");
-            Ok(Answer::Now(Value::Inert))
-        }) as grift::HostFunction<Option<bool>>,
-        |g, read, _| {
-            assert!(g.interrupter().stop(), "a run to stop");
-            let e = g.read(&format!("\"{}\"", "a".repeat(100_000))).unwrap_err();
-            *read = Some(g.symbol_name(&e.kind)? == "interrupted");
-            Ok(Answer::Now(Value::Inert))
+/// Each host call that is a run (G-179's R1 (b)) is work a stop ends. With no run in progress,
+/// `write` and `describe` are runs of their own, which their sink stops at its first text, and a
+/// stop that ends one is spent with it. Inside a host function, `read`, `read_in`, `bind` and
+/// `describe` join its run, which the function stops first; the reader finds the stop inside one
+/// long string or token, before the text's end would fail it.
+#[test]
+fn a_stop_reaches_every_host_run() {
+    let mut g: Grift<Joining> = Grift::new().unwrap();
+    let mut s = Joining(|_, _| Ok(()), None);
+    let list = g.evaluate(&mut s, "(range 0 100000)").unwrap();
+    let e = g.error("example", &vec![Value::Inert; 100_000]);
+    type Own = fn(&Grift<Joining>, &mut Stopping, &Value, &Error) -> Result<(), Error>;
+    let own: [Own; 2] = [
+        |g, out, list, _| g.write(list, out),
+        |g, out, _, e| g.describe(e, out, usize::MAX).map(drop),
+    ];
+    for run in own {
+        let mut sink = Stopping(g.interrupter(), None, String::new());
+        let e = run(&g, &mut sink, &list, &e).unwrap_err();
+        assert_eq!(sink.1, Some(true), "it was the run in progress");
+        assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+        assert!(sink.2.len() < 100_000, "it stopped part way");
+        assert!(!sink.0.stop(), "its run is over");
+    }
+    let joined: [Run; 5] = [
+        |g, _| g.read(&"1 ".repeat(100_000)).map(drop),
+        |g, _| g.read(&format!("\"{}", "a".repeat(100_000))).map(drop),
+        |g, _| {
+            g.read_in("t", &format!("#{}", "a".repeat(100_000)))
+                .map(drop)
         },
-    ] {
-        let read = g.host_function("read-long", read).unwrap();
-        let mut stopped = None;
-        let e = g.call(&mut stopped, &read, &[]).unwrap_err();
-        assert_eq!(stopped, Some(true), "the reader found the stop");
+        |g, a| {
+            let c = g.context(None)?;
+            g.bind(&c, &a[0], a[1])
+        },
+        |g, _| {
+            let e = g.error("example", &vec![Value::Inert; 100_000]);
+            g.describe(&e, &mut String::new(), usize::MAX).map(drop)
+        },
+    ];
+    let f = g.host_function("joins", |g, s: &mut Joining, args| {
+        assert!(g.interrupter().stop(), "a run to stop");
+        let ended = (s.0)(g, args).map_or_else(
+            |e| g.symbol_name(&e.kind).map(String::from),
+            |()| Ok("done".into()),
+        );
+        s.1 = Some(ended?);
+        Ok(Answer::Now(Value::Inert))
+    });
+    g.define("joins", f.unwrap()).unwrap();
+    g.evaluate(
+        &mut s,
+        "(define! L (range 0 100000))
+         (define! N (map (lambda! (i) (string-to-symbol (join \"n\" (integer-to-string i)))) L))",
+    )
+    .unwrap();
+    for (i, run) in joined.into_iter().enumerate() {
+        s.0 = run;
+        let e = g.evaluate(&mut s, "(joins N L)").unwrap_err();
+        assert_eq!(s.1.take().as_deref(), Some("interrupted"), "run {i}");
         assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
     }
+    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
 }

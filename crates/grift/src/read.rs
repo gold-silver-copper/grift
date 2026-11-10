@@ -3,8 +3,10 @@
 use crate::Grift;
 use crate::evaluate::integer;
 use crate::heap::{Object, Reference};
+use crate::interrupt::Control;
 use crate::local::{Error, K, Symbol, Value, push};
 use std::ops::Range;
+use std::sync::Arc;
 
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
 /// and line of its `(`. A `#bytes(` literal is a list whose elements go in `bytes` instead.
@@ -39,11 +41,15 @@ enum Dot {
     Done,
 }
 
+/// Where the reader is in its text. Each byte it moves past is a step of the walk `walked`, which
+/// a stop ends: inside one long string, token or comment too.
 struct Cursor<'a> {
     src: &'a str,
     /// The byte offset of the next character, and its line.
     at: usize,
     line: u32,
+    walked: &'a mut usize,
+    control: Arc<Control>,
 }
 
 impl Cursor<'_> {
@@ -51,27 +57,41 @@ impl Cursor<'_> {
         self.src.get(self.at..)?.chars().next()
     }
 
-    fn next(&mut self) -> Option<char> {
-        let c = self.peek()?;
-        self.at += c.len_utf8();
+    fn next(&mut self) -> Result<Option<char>, Error> {
+        let Some(c) = self.peek() else {
+            return Ok(None);
+        };
+        self.skip(c.len_utf8())?;
         if c == '\n' {
             self.line = self.line.saturating_add(1);
         }
-        Some(c)
+        Ok(Some(c))
     }
 
-    fn skip_space(&mut self) {
+    /// Moves past `bytes` bytes of the line, charging them to the walk.
+    fn skip(&mut self, bytes: usize) -> Result<(), Error> {
+        self.at += bytes;
+        match self.control.charged(self.walked, bytes) {
+            true => Err(Error::interrupted()),
+            false => Ok(()),
+        }
+    }
+
+    fn skip_space(&mut self) -> Result<(), Error> {
         while let Some(c) = self.peek() {
             let rest = self.src.get(self.at..).unwrap_or_default();
             match c {
+                // A comment is found at memory speed, as a copy is, then charged.
                 _ if c == ';' || rest.starts_with("#!") => {
-                    self.at += rest.find('\n').unwrap_or(rest.len());
+                    self.skip(rest.find('\n').unwrap_or(rest.len()))?;
+                    continue;
                 }
                 c if c.is_whitespace() => {}
-                _ => return,
+                _ => return Ok(()),
             }
-            self.next();
+            self.next()?;
         }
+        Ok(())
     }
 }
 
@@ -132,9 +152,8 @@ impl<T> Grift<T> {
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
     /// form, where it is and the line it ends on, or `None` if only space and comments are left.
-    /// Each byte read is a step of the walk `walked`, which a stop ends between one item and the
-    /// next: a space, a comment, a parenthesis, a string or a token. The form is the library's code
-    /// if `library`, else the program's.
+    /// Each byte read is a step of the walk `walked`, which a stop ends. The form is the library's
+    /// code if `library`, else the program's.
     pub(crate) fn read_form(
         &mut self,
         src: &str,
@@ -148,20 +167,17 @@ impl<T> Grift<T> {
             src,
             at: from,
             line,
+            walked,
+            control: Arc::clone(&self.control),
         };
-        cur.skip_space();
+        cur.skip_space()?;
         let start = cur.at;
         let mut open: Vec<List> = Vec::new();
-        let mut charged = from;
         loop {
-            cur.skip_space();
+            cur.skip_space()?;
             let begin = cur.at;
-            if self.walk_charged(walked, begin - charged) {
-                return Err(Error::interrupted());
-            }
-            charged = begin;
             let fail = |reason| parse_error(src, begin, reason);
-            let Some(c) = cur.next() else {
+            let Some(c) = cur.next()? else {
                 return match open.last() {
                     None => Ok(None),
                     Some(list) => Err(parse_error(src, list.start, K::UnclosedList)),
@@ -191,7 +207,7 @@ impl<T> Grift<T> {
                 '"' => self.read_string(&mut cur, begin)?,
                 _ => {
                     while cur.peek().is_some_and(|c| !delimiter(c)) {
-                        cur.next();
+                        cur.next()?;
                     }
                     let token = src.get(begin..cur.at).unwrap_or_default();
                     if token == "." {
@@ -209,17 +225,12 @@ impl<T> Grift<T> {
                             ..List::new(cur.at, cur.line)
                         };
                         push(&mut open, list)?;
-                        cur.next();
+                        cur.next()?;
                         continue;
                     }
                     self.atom(token, fail)?
                 }
             };
-            // The datum's own bytes, a long string or symbol, are charged as it ends.
-            if self.walk_charged(walked, cur.at - charged) {
-                return Err(Error::interrupted());
-            }
-            charged = cur.at;
             let Some(list) = open.last_mut() else {
                 return Ok(Some((datum, start..cur.at, cur.line)));
             };
@@ -303,9 +314,9 @@ impl<T> Grift<T> {
         let mut s = String::new();
         loop {
             let escape = cur.at;
-            let c = match cur.next().ok_or_else(unclosed)? {
+            let c = match cur.next()?.ok_or_else(unclosed)? {
                 '"' => break,
-                '\\' => match cur.next().ok_or_else(unclosed)? {
+                '\\' => match cur.next()?.ok_or_else(unclosed)? {
                     '\\' => '\\',
                     '"' => '"',
                     'n' => '\n',
@@ -314,11 +325,11 @@ impl<T> Grift<T> {
                     'x' => {
                         let begin = cur.at;
                         while cur.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
-                            cur.next();
+                            cur.next()?;
                         }
                         let hex = src.get(begin..cur.at).unwrap_or_default();
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
-                        match (cur.next().ok_or_else(unclosed)?, c) {
+                        match (cur.next()?.ok_or_else(unclosed)?, c) {
                             (';', Some(c)) => c,
                             _ => return Err(parse_error(src, escape, K::BadEscape)),
                         }

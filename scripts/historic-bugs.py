@@ -21,7 +21,9 @@ catch, not as broken. Its library is not: the build step builds what the doctest
 INDEX.tsv columns: name, gated (yes/no), tests, description. A test is `package/target::name`:
 target `lib` (unit tests), `doc` (doctests: the start of the doctest's name, its file from the
 root and the item, as in `crates/grift/src/lib.rs - HostFunction`; the full name carries a line
-number) or an integration test's name. Several are separated by `; `. A doctest's file must be in the
+number), an integration test's name, or `clippy` with a lint's name (`grift/clippy::disallowed_methods`):
+a guard the lint is, which catches the patch when `cargo clippy --all-targets -- -D warnings` on
+the package refuses it by that lint. Refused by another lint or by the compiler, the patch is broken. Several are separated by `; `. A doctest's file must be in the
 workflow's pull_request paths, so a PR that changes it runs the gate; the script refuses otherwise.
 
 Linux only, like its workflow: some catching tests are Linux-only and a hang is ended by killing its
@@ -102,11 +104,27 @@ def cargo(package, target, *rest):
     return ["cargo", "test", "--locked", "-p", package, *select, *rest]
 
 
+def lint(tree, package, name, limit, env):
+    """What clippy says of `package`: "failed" (refused by lint `name`), "passed", "timeout", or why
+    it is broken. A lint is named with `-` in clippy's notes and `_` in the code."""
+    status, out = run(["cargo", "clippy", "--locked", "-p", package, "--all-targets", "--",
+                       "-D", "warnings"], tree, limit, env)
+    if status is None:
+        return "timeout"
+    if status == 0:
+        return "passed"
+    refused = re.findall(r"clippy::([\w-]+)", out.replace("-", "_"))
+    if "error[E" not in out and refused and set(refused) == {name}:
+        return "failed"
+    tail = "\n".join(out.strip().split("\n")[-15:])
+    return f"does not build: clippy refuses it for more than {name}:\n{tail}"
+
+
 def build(tree, specs, env):
     """None, or why the test targets of `specs` don't build."""
     # `--no-run` doesn't take doctests, and `--doc` builds the library without cfg(test): listing the
     # doctests builds exactly that and compiles none of them (they build as they run).
-    for package, target in sorted({(p, t) for p, t, _ in specs}):
+    for package, target in sorted({(p, t) for p, t, _ in specs if t != "clippy"}):
         rest = ["--", "--list"] if target == "doc" else ["--no-run"]
         status, out = run(cargo(package, target, *rest), tree, BUILD_LIMIT, env)
         if status != 0:
@@ -123,6 +141,9 @@ def run_tests(tree, specs, deadline, env):
         left = deadline - time.monotonic()
         if left <= 0:
             found[spec] = "timeout"
+            continue
+        if target == "clippy":
+            found[spec] = lint(tree, package, name, left, env)
             continue
         # A doctest's name carries its line number, so it's matched as a part; the rest exactly.
         args = [] if target == "doc" else ["--exact"]

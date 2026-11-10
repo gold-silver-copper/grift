@@ -27,7 +27,7 @@ held-back bug set shows the suite still catches everything it caught.
 ## Caught bugs stay caught
 
 `tests/historic/` holds bugs from grift's history as patches that put them back, and `INDEX.tsv`
-names the tests that fail with each. `scripts/historic-bugs.py` applies each one to a scratch copy
+names the tests that fail with each, or the clippy lint that refuses it (a guard is a catch too). `scripts/historic-bugs.py` applies each one to a scratch copy
 and checks its tests still fail; CI runs it nightly and on a PR that changes tests. A PR that changes
 code a patch touches re-ports the patch: run `scripts/historic-bugs.py --only <name>`; a patch that
 no longer applies or builds says "re-port this patch", and you write the same bug into the new code

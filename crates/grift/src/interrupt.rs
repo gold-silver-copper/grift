@@ -9,6 +9,7 @@
 //! the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]: never repeated, at a
 //! run a nanosecond they wrap after seventy years.
 
+use crate::WALK_CHECK;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -55,6 +56,14 @@ impl Control {
     #[inline(always)]
     pub fn asked(&self) -> bool {
         self.word.load(Relaxed) & ASKED != 0
+    }
+
+    /// Whether a walk, now `walked` items long, must give up for a stop after `cost` more items:
+    /// it asks once every [`WALK_CHECK`] items.
+    pub fn charged(&self, walked: &mut usize, cost: usize) -> bool {
+        let before = *walked;
+        *walked = before.wrapping_add(cost);
+        before / WALK_CHECK != *walked / WALK_CHECK && self.asked()
     }
 
     /// Replaces the word as `change` says, in one atomic step; whether it said to.

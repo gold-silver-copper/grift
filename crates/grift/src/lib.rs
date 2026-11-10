@@ -1056,9 +1056,7 @@ impl<T> Grift<T> {
 
     /// [`Grift::walk_stopped`] for `cost` items at once, such as the bytes of a piece of text.
     pub(crate) fn walk_charged(&self, walked: &mut usize, cost: usize) -> bool {
-        let before = *walked;
-        *walked = before.wrapping_add(cost);
-        before / WALK_CHECK != *walked / WALK_CHECK && self.control.asked()
+        self.control.charged(walked, cost)
     }
 
     /// Starts a run, which `Control::end` then ends. A host function, given a [`HostCall`], begins
