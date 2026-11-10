@@ -5,9 +5,8 @@
 //! at the top of the loop and before a host's evaluation or call needs its first slot, with that
 //! state, the root contexts and the new call's checked inputs as its roots. Allocation never
 //! collects: Rust locals stay valid until the next run entry or machine safe point. The loop
-//! checks for a stop just after each step. A run is over when its frames are gone, and a run a
-//! host function starts inside a run is a machine of its own, the caller's waiting whole, a root
-//! of the collector, until it ends.
+//! checks for a stop just after each step. A run is over when its frames are gone. A host
+//! function begins none: its [`HostCall`] has no way to begin one.
 //!
 //! A run ends one way: an error unwinds it. An error the host or the machine began is a limit,
 //! whatever its kind is called, and two things follow: handlers pass it, and when a new error meets
@@ -22,7 +21,7 @@ use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
-use crate::{Answer, Entry, Grift, collected, context_kind};
+use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -422,8 +421,8 @@ impl Default for Machine {
     }
 }
 
-/// Held while a host function runs: if it doesn't return to the interpreter it was called from,
-/// by a panic or by replacing it, that interpreter's run ends, and its next one clears its machine.
+/// Held while a host function runs: if it panics, the run ends, and the next one clears its
+/// machine.
 struct Hosting(Option<Arc<Control>>);
 
 impl Drop for Hosting {
@@ -710,7 +709,7 @@ impl<T> Grift<T> {
     /// An error that began as refused memory: the next safe point collects, and the spare room is
     /// given up for what reports it. Once: whoever acts on it clears the mark.
     fn acting_on_refusal(&mut self, e: &mut Error) {
-        if std::mem::take(&mut e.refused) {
+        if e.take_refusal() {
             self.heap.request_collection();
             self.spare = Vec::new();
         }
@@ -731,7 +730,7 @@ impl<T> Grift<T> {
                     self.machine.here = at;
                     return self.start_cleanup(Err(e), cleanup, context, at);
                 }
-                What::Handler { handler, base } if !e.limit => {
+                What::Handler { handler, base } if !e.limit() => {
                     self.machine.arguments.truncate(base);
                     self.machine.here = at;
                     match self.handle(e, handler, context) {
@@ -747,8 +746,8 @@ impl<T> Grift<T> {
                     // The one rule: the newest reason wins, unless a program's would replace a
                     // limit.
                     if let Some(Err(waiting)) = self.machine.waiting.pop()
-                        && waiting.limit
-                        && !e.limit
+                        && waiting.limit()
+                        && !e.limit()
                     {
                         e = waiting;
                     }
@@ -820,18 +819,12 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    /// Every way into a run comes here first. One inside a host call is refused, `cannot-nest`: it
-    /// would stack the program's depth on the host function's Rust frame, where a host function
-    /// answers [`Answer::Call`] instead. Then, as the run may need slots before reaching the
+    /// Every way into a run comes here first: as the run may need slots before reaching the
     /// machine loop, collect first if due, or after a peak, with its checked inputs as roots.
-    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
-        if self.control.running() {
-            return Err(Error::new(K::CannotNest, &[]));
-        }
+    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) {
         if self.heap.due_before_run() {
             self.collect(current);
         }
-        Ok(())
     }
 
     // Root iterators and marking temporaries belong only to collection.
@@ -867,18 +860,7 @@ impl<T> Grift<T> {
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let arguments = collected(given.iter().map(|&v| self.export(v)))?;
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
-        let v = f(self, state, &arguments);
-        // Replaced: the run is over, and what is on this machine is no part of it. The replaced
-        // interpreter's run ends as `hosting` drops. Nothing else ends a run in a host call, which
-        // begins none.
-        let same = hosting
-            .0
-            .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(c, &self.control));
-        if !same {
-            self.control.end();
-            return Err(Error::new(K::ForeignValue, &[]));
-        }
+        let v = f(&mut HostCall::from(&mut *self), state, &arguments);
         hosting.0 = None;
         self.machine.arguments.truncate(base);
         self.answered(v)
@@ -1058,7 +1040,7 @@ impl<T> Grift<T> {
             .try_reserve(op.size as usize)
             .map_err(|_| Error::oom())?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
-        if let Value::Symbol(s) = op.context_parameter {
+        if let Some(s) = op.context_parameter {
             #[expect(
                 clippy::disallowed_methods,
                 reason = "reserved the operative's size above"
@@ -1183,11 +1165,11 @@ impl<T> Grift<T> {
         let [x, y, z] = a;
         let v = match p {
             P::Vau => {
-                let size = self.check_parameters(x, y)?;
+                let (size, context_parameter) = self.check_parameters(x, y)?;
                 let body = self.arguments_list(base + 2)?;
                 let op = Operative {
                     parameters: x,
-                    context_parameter: y,
+                    context_parameter,
                     body,
                     context,
                     size: u32::try_from(size).map_err(|_| Error::oom())?,
@@ -1247,7 +1229,23 @@ impl<T> Grift<T> {
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
             }
-            P::Power => Value::Float(float_of(x)?.powf(float_of(y)?)),
+            P::Power => match (x, y) {
+                (Value::Integer(_), Value::Integer(b)) if b < 0 => {
+                    return Err(Error::new(K::RangeError, &[x, y]));
+                }
+                (Value::Integer(a), Value::Integer(b)) => {
+                    // Past u32's exponents only 0 and ±1 have powers that fit, and those the
+                    // exponent's parity decides, as it does for the largest u32 of that parity.
+                    let b = u32::try_from(b).unwrap_or(if b & 1 == 0 {
+                        u32::MAX - 1
+                    } else {
+                        u32::MAX
+                    });
+                    let n = a.checked_pow(b);
+                    Value::Integer(n.ok_or_else(|| Error::new(K::Overflow, &[x, y]))?)
+                }
+                _ => Value::Float(float_of(x)?.powf(float_of(y)?)),
+            },
             P::SquareRoot => Value::Float(float_of(x)?.sqrt()),
             P::Sine => Value::Float(float_of(x)?.sin()),
             P::Cosine => Value::Float(float_of(x)?.cos()),
@@ -1258,7 +1256,13 @@ impl<T> Grift<T> {
             P::Ceiling => Value::Float(float_of(x)?.ceil()),
             P::Round => Value::Float(float_of(x)?.round()),
             P::Truncate => Value::Float(float_of(x)?.trunc()),
-            P::AbsoluteValue => Value::Float(float_of(x)?.abs()),
+            P::AbsoluteValue => match x {
+                Value::Integer(a) => Value::Integer(
+                    a.checked_abs()
+                        .ok_or_else(|| Error::new(K::Overflow, &[x]))?,
+                ),
+                _ => Value::Float(float_of(x)?.abs()),
+            },
             P::IntegerToFloat => Value::Float(integer_of(x)? as f64),
             // Rust's `as`: saturating, and not-a-number becomes 0.
             P::FloatToInteger => Value::Integer(float_of(x)? as i64),
@@ -1648,17 +1652,18 @@ impl<T> Grift<T> {
     }
 
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
-    /// symbol not in the tree. The number of bindings a call makes.
+    /// symbol not in the tree. The number of bindings a call makes, and the context parameter's
+    /// symbol unless it is `#ignore`.
     pub(crate) fn check_parameters(
         &mut self,
         tree: Value,
         context_parameter: Value,
-    ) -> Result<usize, Error> {
+    ) -> Result<(usize, Option<Symbol>), Error> {
         let mut bound = Bindings::default();
         self.match_tree(&mut bound, tree, tree)?;
         match context_parameter {
-            Value::Symbol(s) if !bound.contains_key(&s) => Ok(bound.len() + 1),
-            Value::Ignore => Ok(bound.len()),
+            Value::Symbol(s) if !bound.contains_key(&s) => Ok((bound.len() + 1, Some(s))),
+            Value::Ignore => Ok((bound.len(), None)),
             _ => Err(Error::new(K::ParameterError, &[context_parameter])),
         }
     }

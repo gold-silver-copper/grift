@@ -23,8 +23,7 @@ fn after(word: u64) -> u64 {
     (word & !(ASKED | RUNNING)).wrapping_add(NEXT)
 }
 
-/// What an interpreter shares with its interrupters. Its allocation is also the interpreter's
-/// identity: the values it hands out point to it.
+/// What an interpreter shares with its interrupters and the handles of its parked runs.
 #[derive(Default)]
 pub(crate) struct Control {
     word: AtomicU64,

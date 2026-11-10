@@ -7,7 +7,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Answer, Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
+use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -89,7 +89,7 @@ impl<T> Grift<T> {
     fn underlying(&self, v: &Value) -> Value {
         match self.import(v).unwrap() {
             local::Value::Applicative(r) => self.export(self.unwrapped(r).unwrap()),
-            _ => v.clone(),
+            _ => *v,
         }
     }
 
@@ -345,11 +345,11 @@ fn a_token_with_two_signs_is_a_symbol() {
 /// What evaluating `src` does: machine steps, collections, and references and symbols compared.
 /// Counts, so they say the same on a loaded machine.
 fn work(g: &mut Grift, src: &str) -> (Result<Value, Error>, u64, usize, u64) {
-    (g.machine.steps, g.heap.collections) = (0, 0);
+    (g.machine.steps, g.heap.probe.collections) = (0, 0);
     local::COMPARED.with(|n| n.set(0));
     let value = g.evaluate(&mut (), src);
     let compared = local::COMPARED.with(std::cell::Cell::get);
-    (value, g.machine.steps, g.heap.collections, compared)
+    (value, g.machine.steps, g.heap.probe.collections, compared)
 }
 
 #[test]
@@ -670,13 +670,13 @@ fn collection_pays_for_what_it_walks() {
     // for its start: a deep stack, gone when the cleanup is installed, and a collection just
     // before the cleanup starts.
     define(&mut g, "collect-always", |g, _, _| {
-        g.heap.stress = true;
+        g.0.heap.probe.stress = true;
         Ok(crate::Answer::Now(Value::Inert))
     });
     let cleanup = "(define! down (lambda! (n) (if! (same? n 0) 0 (add 1 (down (subtract n 1))))))
         (sequence! (down 30000) (evaluate-with-cleanup (quote! (collect-always)) (current-context) (lambda! () 0)))";
     g.evaluate(&mut (), cleanup).unwrap();
-    g.heap.stress = false;
+    g.heap.probe.stress = false;
     let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
     kept.into_iter().for_each(|k| g.release(k).unwrap());
     g.evaluate(&mut (), "(spin 100000)").unwrap();
@@ -1093,7 +1093,7 @@ impl Comparison<'_> {
 
     fn values(&mut self, a: &Value, b: &Value) -> Result<(), String> {
         let (l, r) = (self.left, self.right);
-        let mut todo = vec![(a.clone(), b.clone())];
+        let mut todo = vec![(*a, *b)];
         while let Some((a, b)) = todo.pop() {
             let differ = || Err(format!("{} against {}", show(l, &a), show(r, &b)));
             match (&a, &b) {
@@ -1139,7 +1139,7 @@ impl Comparison<'_> {
                     match known {
                         Some((x, y)) if *x == a && *y == b => continue,
                         Some(_) => return Err(format!("aliasing differs at {}", show(l, &a))),
-                        None => self.matched.push((a.clone(), b.clone())),
+                        None => self.matched.push((a, b)),
                     }
                     if let (Some((a1, a2)), Some((b1, b2))) =
                         (l.as_pair(&a).unwrap(), r.as_pair(&b).unwrap())
@@ -1226,7 +1226,7 @@ impl Comparison<'_> {
 
 /// `(note x)`: logs x as it prints, and gives it back: the order and number of evaluations.
 fn note(
-    g: &mut Grift<Vec<String>>,
+    g: &mut HostCall<Vec<String>>,
     log: &mut Vec<String>,
     args: &[Value],
 ) -> Result<Answer, Error> {
@@ -1241,7 +1241,7 @@ fn note(
 
 /// What a host might hand back wrongly: an object's reference in another kind's variant.
 fn malformed(
-    g: &mut Grift<Vec<String>>,
+    g: &mut HostCall<Vec<String>>,
     _: &mut Vec<String>,
     args: &[Value],
 ) -> Result<Answer, Error> {
@@ -1264,7 +1264,7 @@ fn twins() -> [Grift<Vec<String>>; 2] {
         let mut g: Grift<Vec<String>> = Grift::new().unwrap();
         // A memory limit far over what any case holds: a collector that stops keeping up runs
         // out here, in seconds, instead of growing until the machine does.
-        g.heap.slot_limit = 1 << 18;
+        g.heap.probe.slot_limit = Some(1 << 18);
         if !natives {
             g.run_definitions();
         }
@@ -1384,19 +1384,16 @@ fn natives_are_their_definitions() {
     ] {
         let f = Value::Float(f64::from_bits(bits));
         for (name, arguments) in [
-            ("float-to-integer", vec![f.clone()]),
-            (
-                "select",
-                vec![Value::Boolean(true), f.clone(), Value::Integer(0)],
-            ),
+            ("float-to-integer", vec![f]),
+            ("select", vec![Value::Boolean(true), f, Value::Integer(0)]),
             (
                 "(wrap if!)",
-                vec![Value::Boolean(false), Value::Integer(0), f.clone()],
+                vec![Value::Boolean(false), Value::Integer(0), f],
             ),
-            ("(wrap sequence!)", vec![Value::Integer(0), f.clone()]),
-            ("integer-to-float", vec![f.clone()]),
-            ("truncate", vec![f.clone()]),
-            ("remainder", vec![f.clone(), Value::Float(1.5)]),
+            ("(wrap sequence!)", vec![Value::Integer(0), f]),
+            ("integer-to-float", vec![f]),
+            ("truncate", vec![f]),
+            ("remainder", vec![f, Value::Float(1.5)]),
         ] {
             let (fa, fb) = (
                 native.evaluate(&mut Vec::new(), name),
@@ -1559,13 +1556,13 @@ fn boundary_cases() -> Vec<String> {
 /// Asks for a stop of the run in progress, then searches `(search text pattern 0)` with no step of
 /// the machine around it: a long search must find the stop itself, in whichever phase it is.
 fn searches_with_a_stop_waiting(
-    g: &mut Grift<Interrupter>,
+    g: &mut HostCall<Interrupter>,
     stop: &mut Interrupter,
     args: &[Value],
 ) -> Result<Answer, Error> {
     assert!(stop.stop(), "a run to stop");
     let (text, pattern) = (g.import(&args[0]).unwrap(), g.import(&args[1]).unwrap());
-    match g.search_directly(text, pattern) {
+    match g.0.search_directly(text, pattern) {
         Err(e) => assert_eq!(kind(g, &g.export_error(e)), "interrupted"),
         Ok(v) => panic!("the search went on past a stop and answered {v:?}"),
     }
@@ -1598,7 +1595,7 @@ fn a_long_search_finds_a_stop_by_itself() {
 /// Asks for a stop of the run in progress, then writes the value it was given: the printer must
 /// find the stop by what it has written, however few items that took.
 fn writes_with_a_stop_waiting(
-    g: &mut Grift<Interrupter>,
+    g: &mut HostCall<Interrupter>,
     stop: &mut Interrupter,
     args: &[Value],
 ) -> Result<Answer, Error> {
@@ -1721,7 +1718,11 @@ impl std::fmt::Write for Discard {
 
 /// Forces its run, then describes into no room at all an error whose values and trace a report
 /// must check before it writes: the checking is work like any other, which the force ends.
-fn checks_with_a_force_waiting(g: &mut Grift, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+fn checks_with_a_force_waiting(
+    g: &mut HostCall<()>,
+    _: &mut (),
+    _: &[Value],
+) -> Result<Answer, Error> {
     let mut e = g.error("example", &vec![Value::Inert; 8_192]);
     e.trace = vec![Value::Inert; 8_192];
     assert!(g.interrupter().force());
@@ -1776,13 +1777,13 @@ fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
     assert_eq!(g.symbol("bound-name").unwrap(), bound);
     assert_eq!(g.lookup(&top, &bound).unwrap(), Some(Value::Integer(42)));
     // An error's kind made as the program runs is held by the error alone while a cleanup runs.
-    g.heap.stress = true;
+    g.heap.probe.stress = true;
     let e = g
         .evaluate(
             &mut (),
             "(finally! (raise (error (string-to-symbol (join \"pending-\" \"kind\")))) (list 1 2 3))",
         )
         .unwrap_err();
-    g.heap.stress = false;
+    g.heap.probe.stress = false;
     assert_eq!(g.symbol_name(&e.kind).unwrap(), "pending-kind");
 }

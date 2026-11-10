@@ -16,7 +16,7 @@
 //! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
 //! `elapsed-nanoseconds` and `exit`.
 
-use grift::{Answer, Error, Grift, HostFunction, Ran, ReportStatus, Value};
+use grift::{Answer, Error, Grift, HostCall, HostFunction, Ran, ReportStatus, Value};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -51,6 +51,8 @@ struct Runner {
 }
 
 type G = Grift<Runner>;
+/// What the runner's host functions are given.
+type H<'a> = HostCall<'a, Runner>;
 
 /// A `fmt::Write` straight into an `io::Write`, keeping what failed first, so printing a value
 /// needs no buffer that could grow without bound.
@@ -79,7 +81,7 @@ const STANDARD_OUTPUT: i64 = 2;
 
 /// Writes the values to file `id`, strings without quotes and everything else as written, and
 /// flushes.
-fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
+fn put(g: &mut H, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
     let id = Value::Integer(id);
     let (path, Stream::Writing(w)) = file(g, r, &id)? else {
         return Err(g.error("type-error", values));
@@ -100,18 +102,18 @@ fn put(g: &mut G, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Er
 }
 
 /// `(display v ...)`: strings without quotes, everything else as written.
-fn display(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn display(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     put(g, r, STANDARD_OUTPUT, args)
 }
 
 /// `(display-error v ...)`: as `display`, to stderr.
-fn display_error(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn display_error(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     put(g, r, STANDARD_ERROR, args)
 }
 
 /// `(wall-clock-nanoseconds)`: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock,
 /// which may be set back.
-fn wall_clock_nanoseconds(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn wall_clock_nanoseconds(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     nanoseconds(
         g,
         args,
@@ -122,17 +124,17 @@ fn wall_clock_nanoseconds(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<V
 }
 
 /// `(elapsed-nanoseconds)`: the nanoseconds since the run started, by a clock that never goes back.
-fn elapsed_nanoseconds(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn elapsed_nanoseconds(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     nanoseconds(g, args, Some(r.started.elapsed()))
 }
 
 /// The arguments of a host function that takes exactly `N`; `arity-error` for any other count.
-fn exactly<'a, const N: usize>(g: &mut G, args: &'a [Value]) -> Result<&'a [Value; N], Error> {
+fn exactly<'a, const N: usize>(g: &mut H, args: &'a [Value]) -> Result<&'a [Value; N], Error> {
     args.try_into().map_err(|_| g.error("arity-error", args))
 }
 
 /// A duration as an integer of nanoseconds; `range-error` before 1970 or after 2262.
-fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, Error> {
+fn nanoseconds(g: &mut H, args: &[Value], d: Option<Duration>) -> Result<Value, Error> {
     let [] = exactly(g, args)?;
     match d.and_then(|d| i64::try_from(d.as_nanos()).ok()) {
         Some(n) => Ok(Value::Integer(n)),
@@ -142,7 +144,7 @@ fn nanoseconds(g: &mut G, args: &[Value], d: Option<Duration>) -> Result<Value, 
 
 /// A copy of a string value's contents, `None` for anything else; a program that fills memory gets
 /// the limit `out-of-memory`, not an abort.
-fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
+fn owned_string(g: &mut H, v: &Value) -> Result<Option<String>, Error> {
     let Some(s) = g.as_str(v)? else {
         return Ok(None);
     };
@@ -155,7 +157,7 @@ fn owned_string(g: &mut G, v: &Value) -> Result<Option<String>, Error> {
 }
 
 /// The one string argument, or a `type-error` or an `arity-error`.
-fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
+fn one_string(g: &mut H, args: &[Value]) -> Result<String, Error> {
     let [v] = exactly(g, args)?;
     match owned_string(g, v)? {
         Some(s) => Ok(s),
@@ -164,7 +166,7 @@ fn one_string(g: &mut G, args: &[Value]) -> Result<String, Error> {
 }
 
 /// A limit of `kind`: the runner's are `out-of-memory`, `broken-pipe` and `exit`.
-fn limit(g: &mut G, kind: &str, values: &[Value]) -> Error {
+fn limit(g: &mut H, kind: &str, values: &[Value]) -> Error {
     Error {
         limit: true,
         ..g.error(kind, values)
@@ -173,7 +175,7 @@ fn limit(g: &mut G, kind: &str, values: &[Value]) -> Error {
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
 /// aren't UTF-8, else `kind` with the system's message.
-fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
+fn failed(g: &mut H, kind: &str, what: &str, e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::OutOfMemory {
         return limit(g, "out-of-memory", &[]);
     }
@@ -192,7 +194,7 @@ fn failed(g: &mut G, kind: &str, what: &str, e: &io::Error) -> Error {
 
 /// Opens a file as `open` does, and gives its number.
 fn opened(
-    g: &mut G,
+    g: &mut H,
     r: &mut Runner,
     args: &[Value],
     open: fn(&str) -> io::Result<Stream>,
@@ -208,20 +210,20 @@ fn opened(
     }
 }
 
-fn open_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn open_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     opened(g, r, args, |path| {
         Ok(Stream::Reading(Box::new(BufReader::new(File::open(path)?))))
     })
 }
 
-fn create_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn create_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     opened(g, r, args, |path| {
         Ok(Stream::Writing(Box::new(File::create(path)?)))
     })
 }
 
 /// The open file whose number is `id`, and its path; `closed` once it is closed.
-fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mut Stream), Error> {
+fn file<'r>(g: &mut H, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mut Stream), Error> {
     let opened = match id {
         Value::Integer(n) => usize::try_from(*n).ok().and_then(|i| r.files.get_mut(i)),
         _ => None,
@@ -241,7 +243,7 @@ fn file<'r>(g: &mut G, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mu
 
 /// Reads with `read` from the file whose number is the only argument.
 fn reading(
-    g: &mut G,
+    g: &mut H,
     r: &mut Runner,
     args: &[Value],
     read: fn(&mut dyn BufRead, &mut String) -> io::Result<usize>,
@@ -259,19 +261,19 @@ fn reading(
 
 /// `(read-line)` on a file: the next line with its newline, `""` at the end (Rust's
 /// `BufRead::read_line`).
-fn read_line_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn read_line_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     reading(g, r, args, |input, s| input.read_line(s))
 }
 
 /// `(read-all)` on a file: the rest of it.
-fn read_all_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn read_all_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     reading(g, r, args, |input, s| input.read_to_string(s))
 }
 
 /// `(read-bytes count)` on a file: the next `count` bytes, fewer at the end, as a bytes value;
 /// `#bytes()` at the end. It reads only as much as it gives, so a pipe that stays open answers as
 /// soon as `count` bytes have come.
-fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn read_bytes_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id, count] = exactly(g, args)?;
     let &Value::Integer(n) = count else {
         return Err(g.error("type-error", std::slice::from_ref(count)));
@@ -300,7 +302,7 @@ fn read_bytes_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, E
 }
 
 /// `(write data)` on a file: all of the bytes of a string or a bytes value.
-fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn write_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id, data] = exactly(g, args)?;
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
         return Err(g.error("type-error", args));
@@ -318,7 +320,7 @@ fn write_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
 
 /// After a write to the file `path`: `#inert`, or a `file-error`, except that a pipe no one reads
 /// is the limit that ends the run quietly, as [`exit_status`] says, and only a real write makes it.
-fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
+fn written(g: &mut H, path: &str, wrote: io::Result<()>) -> Result<Value, Error> {
     match wrote {
         Ok(()) => Ok(Value::Inert),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
@@ -330,14 +332,14 @@ fn written(g: &mut G, path: &str, wrote: io::Result<()>) -> Result<Value, Error>
 }
 
 /// `(close)` on a file: closes it; using it after this is the error `closed`.
-fn close_host(g: &mut G, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn close_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id] = exactly(g, args)?;
     *file(g, r, id)?.1 = Stream::Closed;
     Ok(Value::Inert)
 }
 
 /// `(read-file path)`: the file's whole text.
-fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn read_file(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let path = one_string(g, args)?;
     match std::fs::read_to_string(&path) {
         Ok(text) => g.string(&text),
@@ -346,7 +348,7 @@ fn read_file(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> 
 }
 
 /// `(environment-variable name)`: its value; `unset-variable` when it has none.
-fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn environment_variable(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let name = one_string(g, args)?;
     match std::env::var(&name) {
         Ok(value) => g.string(&value),
@@ -358,7 +360,7 @@ fn environment_variable(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Val
 /// `(exit status)`: ends the run with `status`, 0 to 255, by a limit of kind `exit`: no `catch!`
 /// keeps it, each `finally!` it leaves runs its cleanup forms, and [`exit_status`] reads it at the
 /// end.
-fn exit(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn exit(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [status] = exactly(g, args)?;
     let &Value::Integer(n) = status else {
         return Err(g.error("type-error", args));
@@ -432,7 +434,7 @@ fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
 
 /// `(run-host program argument ...)`: runs it to its end, with no input, and gives its exit code
 /// (`#inert` if a signal ended it) and what it wrote to stdout and stderr, as a list.
-fn run_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn run_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let mut words = Vec::new();
     for v in args {
         match owned_string(g, v)? {
@@ -520,9 +522,9 @@ impl<W: Write> Write for Gathered<W> {
 /// `(report-host thunk)`: has the host's loop call `thunk` as a run of its own, so an error that
 /// ends it, even one no `catch!` could stop, is reported as any run's is and the session goes on:
 /// the session's run waits for it, in [`run_session`].
-fn report_host(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Answer, Error> {
+fn report_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Answer, Error> {
     let [thunk] = exactly(g, args)?;
-    Ok(Answer::Later(thunk.clone()))
+    Ok(Answer::Later(*thunk))
 }
 
 /// Runs the terminal session, a run that waits at each `report-host` while its thunk runs here,
@@ -534,7 +536,7 @@ fn run_session(g: &mut G, r: &mut Runner, session: &Value) -> Result<Value, Erro
             Ran::Finished(v) => return Ok(v),
             Ran::Parked(parked) => parked,
         };
-        let thunk = parked.request().clone();
+        let thunk = *parked.request();
         let answer = match g.call(r, &thunk, &[]) {
             Err(e) if exit_status(g, &e).is_none() => {
                 report(g, "stdin", &e);
@@ -577,7 +579,7 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
 ];
 
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
-fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn read_forms(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [source, text] = exactly(g, args)?;
     let (Some(source), Some(text)) = (owned_string(g, source)?, owned_string(g, text)?) else {
         return Err(g.error("type-error", args));
@@ -587,7 +589,7 @@ fn read_forms(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error>
 
 /// `(position form)`: the source and line of a combination `read-forms` or an evaluated text read,
 /// as a list; `()` for any other value.
-fn position(g: &mut G, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
+fn position(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [form] = exactly(g, args)?;
     let Some((source, line)) = g.position(form)? else {
         return Ok(Value::EmptyList);
@@ -686,7 +688,7 @@ fn main() -> ExitCode {
             }
             Err(e) => {
                 let missing = e.kind() == io::ErrorKind::NotFound;
-                let e = failed(&mut g, "file-error", name, &e);
+                let e = failed(&mut HostCall::from(&mut g), "file-error", name, &e);
                 let status = report(&g, "grift", &e);
                 if missing {
                     say(format_args!("{USAGE}\n"));

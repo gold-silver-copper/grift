@@ -12,7 +12,7 @@
     clippy::indexing_slicing
 )]
 
-use grift::{Answer, Error, Grift, Parked, Ran, ResumeError, Value};
+use grift::{Answer, Error, Grift, HostCall, Parked, Ran, ResumeError, Value};
 
 #[derive(Default)]
 struct World {
@@ -41,11 +41,11 @@ fn give_up(g: &mut G, w: &mut World, mut p: Parked) -> Result<Error, ResumeError
     }
 }
 
-fn wait(_: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
+fn wait(_: &mut HostCall<World>, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Later(Value::Inert))
 }
 
-fn note(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
+fn note(g: &mut HostCall<World>, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
     for v in args {
         let mut text = String::new();
         g.write(v, &mut text).unwrap();
@@ -54,7 +54,7 @@ fn note(g: &mut G, world: &mut World, args: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
 }
 
-fn boom(_: &mut G, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
+fn boom(_: &mut HostCall<World>, _: &mut World, _: &[Value]) -> Result<Answer, Error> {
     panic!("a host function panics");
 }
 
@@ -129,11 +129,11 @@ fn refused_handles_survive_the_question_mark() {
 }
 
 /// `(call-then f then)`: calls `f` on the machine, then `then` with its value.
-fn call_then(_: &mut G, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
+fn call_then(_: &mut HostCall<World>, _: &mut World, args: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Call {
-        function: args[0].clone(),
+        function: args[0],
         arguments: Vec::new(),
-        then: Some((args[1].clone(), Vec::new())),
+        then: Some((args[1], Vec::new())),
     })
 }
 

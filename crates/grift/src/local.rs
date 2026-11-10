@@ -64,15 +64,24 @@ pub(crate) struct Host(pub u32);
 /// An error as the machine carries it.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Error {
-    /// Whether the host or the machine began this, not a program: whatever its kind is called,
-    /// this alone says a handler may not catch it, and a program can't set it.
-    pub limit: bool,
-    /// Whether memory really was refused to make this: then what the frames it unwinds held is
-    /// worth collecting. A fact about how it began, which no name and no host can claim.
-    pub refused: bool,
+    pub began: Began,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Trace,
+}
+
+/// Who began an error, which alone says whether a handler may catch it, whatever its kind is
+/// called.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Began {
+    /// A program: a handler may catch it.
+    Program,
+    /// The host or the machine: a limit, which no handler catches and no program can make.
+    Limit,
+    /// Memory really refused, a limit too: what the frames it unwinds held is worth collecting.
+    /// A fact about how it began, which no name and no host can claim. Whoever acts on it makes
+    /// it a plain `Limit`, so it is acted on once.
+    Refused,
 }
 
 /// An error's trace as the machine carries it: the list handlers got or a program gave, newest
@@ -176,8 +185,7 @@ known_symbols! {
     NotACombiner "not-a-combiner" ParameterError "parameter-error" Overflow "overflow"
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
-    RangeError "range-error" CannotPark "cannot-park" CannotNest "cannot-nest"
-    OutputError "output-error"
+    RangeError "range-error" CannotPark "cannot-park" OutputError "output-error"
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
@@ -198,8 +206,7 @@ impl Error {
     pub fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
         let mut e = Error::oom();
         if e.values.try_reserve_exact(values.len()).is_ok() {
-            e.limit = false;
-            e.refused = false;
+            e.began = Began::Program;
             e.kind = kind.into();
             #[expect(
                 clippy::disallowed_methods,
@@ -213,19 +220,31 @@ impl Error {
     /// An error a program or host describes, from its parts.
     pub fn from_parts(kind: Symbol, values: Vec<Value>, trace: Trace) -> Error {
         Error {
-            limit: false,
-            refused: false,
+            began: Began::Program,
             kind,
             values,
             trace,
         }
     }
 
+    /// Whether a handler may not catch it.
+    pub fn limit(&self) -> bool {
+        self.began != Began::Program
+    }
+
+    /// Whether memory was refused to make it and nobody acted on that yet; and nobody will again.
+    pub fn take_refusal(&mut self) -> bool {
+        let refused = self.began == Began::Refused;
+        if refused {
+            self.began = Began::Limit;
+        }
+        refused
+    }
+
     /// The machine ran out of memory.
     pub fn oom() -> Error {
         Error {
-            limit: true,
-            refused: true,
+            began: Began::Refused,
             kind: K::OutOfMemory.into(),
             values: Vec::new(),
             trace: Trace::new(),
@@ -235,7 +254,7 @@ impl Error {
     /// The run was stopped.
     pub fn interrupted() -> Error {
         Error {
-            limit: true,
+            began: Began::Limit,
             ..Error::new(K::Interrupted, &[])
         }
     }

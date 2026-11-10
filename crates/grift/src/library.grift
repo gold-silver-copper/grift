@@ -236,31 +236,6 @@
 (define! minimum (lambda! (a b) (if! (less-than? b a) b a)))
 (define! maximum (lambda! (a b) (if! (less-than? a b) b a)))
 
-; absolute-value and power (12.5.12, abs; 12.9.6, expt), of integers or floats, as add is: Rust's
-; checked abs and pow on integers, abs and powf on floats. The most negative integer has no
-; absolute value, and an integer power with a negative exponent isn't an integer (Rust's pow takes
-; a u32): the arithmetic's overflow, a range-error.
-(define! (absolute-value power)
-  ((lambda! (float-absolute float-power)
-     ; product times base to the exponent, by squaring; base is squared only while a bit of the
-     ; exponent is left, so nothing overflows unless the result does.
-     (define! raised
-       (lambda! (product base exponent)
-         (let! ((result (if! (same? (remainder exponent 2) 0) product (multiply product base)))
-                (left (divide exponent 2)))
-           (if! (same? left 0) result (raised result (multiply base base) left)))))
-     (list
-       (lambda! (x)
-         (if! (integer? x) (if! (less-than? x 0) (subtract 0 x) x) (float-absolute x)))
-       (lambda! (x y)
-         (if! (and!? (integer? x) (integer? y))
-           (if! (less-than? y 0)
-             (raise (error (quote! range-error) x y))
-             (raised 1 x y))
-           (float-power x y)))))
-   absolute-value
-   power))
-
 ; find-association (6.3.6, assoc): the first pair in the list whose first is equal? to x, or ()
 ; if there is none.
 (define! find-association

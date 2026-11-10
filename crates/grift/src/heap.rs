@@ -30,7 +30,7 @@ impl PartialEq for Reference {
 #[derive(Clone, Copy)]
 pub(crate) struct Operative {
     pub parameters: Value,
-    pub context_parameter: Value,
+    pub context_parameter: Option<Symbol>,
     pub body: Value,
     pub context: Reference,
     pub size: u32,
@@ -85,7 +85,7 @@ struct Slot {
 }
 
 // A pair's origin fits in the room an operative already needs.
-const _: () = assert!(size_of::<Slot>() == 72);
+const _: () = assert!(size_of::<Slot>() == 64);
 
 /// Where a pair came from: the source and line it was read at, if under a name; whether the
 /// library made it, by reading its text or by running its code; and whether it is one of its
@@ -146,32 +146,8 @@ pub(crate) struct Heap {
     early: bool,
     /// Whether the next collection was asked for, not paced: it brings no early one.
     asked: Cell<bool>,
-    /// What the last collection found alive, by weight, for tests of what a run keeps.
     #[cfg(test)]
-    live: usize,
-    /// Refuse new slots past this length, to test recovery without replacing the allocator.
-    #[cfg(test)]
-    pub slot_limit: usize,
-    /// Collect at every safe point, to test what a collection could lose.
-    #[cfg(test)]
-    pub stress: bool,
-    /// Refuse a slot after this many more, to choose where memory runs out; and how many were
-    /// refused. `refuse_once` lets the next one through.
-    #[cfg(test)]
-    pub refuse_in: Option<usize>,
-    #[cfg(test)]
-    pub refuse_once: bool,
-    #[cfg(test)]
-    pub refused: usize,
-    /// Collections so far.
-    #[cfg(test)]
-    pub collections: usize,
-    /// Weight allocated, and slots and roots outside the heap that collections walked, so far.
-    #[cfg(test)]
-    pub work: (usize, usize),
-    /// `work.0` at the last two collections, and what the last walked.
-    #[cfg(test)]
-    paced: ([usize; 2], usize),
+    pub probe: probe::Probe,
 }
 
 impl Default for Heap {
@@ -185,23 +161,7 @@ impl Default for Heap {
             early: false,
             asked: Cell::new(false),
             #[cfg(test)]
-            live: 0,
-            #[cfg(test)]
-            slot_limit: usize::MAX,
-            #[cfg(test)]
-            stress: false,
-            #[cfg(test)]
-            refuse_in: None,
-            #[cfg(test)]
-            refuse_once: false,
-            #[cfg(test)]
-            refused: 0,
-            #[cfg(test)]
-            collections: 0,
-            #[cfg(test)]
-            work: (0, 0),
-            #[cfg(test)]
-            paced: ([0; 2], 0),
+            probe: probe::Probe::default(),
         }
     }
 }
@@ -217,20 +177,21 @@ impl Reference {
 impl Heap {
     #[inline]
     pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
+        debug_assert!(weight(&obj) > 0, "an object weighs at least its own slot");
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
         {
-            self.work.0 += weight(&obj);
-            match self.refuse_in {
+            self.probe.work.0 += weight(&obj);
+            match self.probe.refuse_in {
                 Some(0) => {
-                    self.refused += 1;
-                    if self.refuse_once {
-                        self.refuse_in = None;
+                    self.probe.refused += 1;
+                    if self.probe.refuse_once {
+                        self.probe.refuse_in = None;
                     }
                     return Err(self.refused());
                 }
-                Some(n) => self.refuse_in = Some(n - 1),
+                Some(n) => self.probe.refuse_in = Some(n - 1),
                 None => {}
             }
         }
@@ -246,7 +207,7 @@ impl Heap {
             });
         }
         #[cfg(test)]
-        if self.slots.len() >= self.slot_limit {
+        if (self.probe.slot_limit).is_some_and(|limit| self.slots.len() >= limit) {
             return Err(self.refused());
         }
         let idx = u32::try_from(self.slots.len())
@@ -283,7 +244,7 @@ impl Heap {
         *until_gc = until_gc.saturating_sub(grown);
         #[cfg(test)]
         {
-            self.work.0 += grown;
+            self.probe.work.0 += grown;
         }
         Ok(bindings)
     }
@@ -295,7 +256,7 @@ impl Heap {
         *until_gc = until_gc.saturating_sub(n);
         #[cfg(test)]
         {
-            self.work.0 += n;
+            self.probe.work.0 += n;
         }
     }
 
@@ -342,23 +303,11 @@ impl Heap {
         }
     }
 
-    /// What the last collection found alive, by weight.
-    #[cfg(test)]
-    pub fn live(&self) -> usize {
-        self.live
-    }
-
-    /// Puts the next collection off, as if the last had just been.
-    #[cfg(test)]
-    pub fn not_due(&self) {
-        self.until_gc.set(self.live.max(GC_MIN));
-    }
-
     /// Whether collection is due at a machine safe point or before a host's run needs slots.
     #[inline]
     pub fn due(&self) -> bool {
         #[cfg(test)]
-        if self.stress {
+        if self.probe.stress {
             return true;
         }
         self.until_gc.get() == 0
@@ -386,7 +335,7 @@ impl Heap {
         let early = self.early && !asked && self.until_gc.get() > 0;
         #[cfg(test)]
         {
-            self.collections += 1;
+            self.probe.collections += 1;
             // Marking walks each context's bindings too.
             let bindings: usize = (self.slots.iter())
                 .map(|s| match &s.obj {
@@ -395,25 +344,25 @@ impl Heap {
                 })
                 .sum();
             let walks = self.slots.len() + walked + bindings;
-            self.work.1 += walks;
+            self.probe.work.1 += walks;
             // A collection that came when pacing said walks a constant factor of what was
             // allocated since the last one; an early one, with the one before it, of what was
             // allocated since the one before that.
-            let ([before, last], walked_last) = &self.paced;
+            let ([before, last], walked_last) = &self.probe.paced;
             let (since, before_too) = if early {
                 (*before, walked_last)
             } else {
                 (*last, &0)
             };
-            let allocated = self.work.0 - since;
+            let allocated = self.probe.work.0 - since;
             let paced = early || self.until_gc.get() == 0;
-            if !self.stress && !asked && paced {
+            if !self.probe.stress && !asked && paced {
                 assert!(
                     walks + before_too <= 8 * allocated,
                     "a paced collection walked {walks} (and {before_too} before) for {allocated} allocated"
                 );
             }
-            self.paced = ([*last, self.work.0], walks);
+            self.probe.paced = ([*last, self.probe.work.0], walks);
         }
         let slots = &self.slots;
         let marks = &mut self.marks;
@@ -462,9 +411,9 @@ impl Heap {
         *self.until_gc.get_mut() = paced.max(free / 2);
         #[cfg(test)]
         {
-            self.live = live.saturating_add(walked);
+            self.probe.live = live.saturating_add(walked);
             // A collection stress mode forced is not paced, as one asked for isn't.
-            self.early &= !self.stress;
+            self.early &= !self.probe.stress;
         }
     }
 
@@ -509,11 +458,6 @@ impl Heap {
             self.marks = marks;
         }
         given
-    }
-
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.slots.len()
     }
 }
 
@@ -601,10 +545,55 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
         }
         Object::Operative(op) => {
             f(op.parameters);
-            f(op.context_parameter);
+            if let Some(s) = op.context_parameter {
+                f(Value::Symbol(s));
+            }
             f(op.body);
             f(Value::Context(op.context));
         }
         Object::Applicative(c) => f(*c),
+    }
+}
+
+/// What tests ask of the heap and how they steer it, kept out of the heap's own fields.
+#[cfg(test)]
+mod probe {
+    use super::*;
+
+    #[derive(Default)]
+    pub(crate) struct Probe {
+        /// What the last collection found alive, by weight, for tests of what a run keeps.
+        pub live: usize,
+        /// Refuse new slots past this length, to test recovery without replacing the allocator.
+        pub slot_limit: Option<usize>,
+        /// Collect at every safe point, to test what a collection could lose.
+        pub stress: bool,
+        /// Refuse a slot after this many more, to choose where memory runs out; and how many were
+        /// refused. `refuse_once` lets the next one through.
+        pub refuse_in: Option<usize>,
+        pub refuse_once: bool,
+        pub refused: usize,
+        /// Collections so far.
+        pub collections: usize,
+        /// Weight allocated, and slots and roots outside the heap that collections walked, so far.
+        pub work: (usize, usize),
+        /// `work.0` at the last two collections, and what the last walked.
+        pub paced: ([usize; 2], usize),
+    }
+
+    impl Heap {
+        /// What the last collection found alive, by weight.
+        pub fn live(&self) -> usize {
+            self.probe.live
+        }
+
+        /// Puts the next collection off, as if the last had just been.
+        pub fn not_due(&self) {
+            self.until_gc.set(self.probe.live.max(GC_MIN));
+        }
+
+        pub fn len(&self) -> usize {
+            self.slots.len()
+        }
     }
 }

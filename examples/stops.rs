@@ -2,7 +2,7 @@
 //! cuts them, `limit` tells what the host began from what a program named the same, and a parked
 //! run is given up by answering its wait with a limit.
 
-use grift::{Answer, Grift, Interrupter, Ran, ResumeError, Value};
+use grift::{Answer, Grift, HostCall, Interrupter, Ran, ResumeError, Value};
 use std::thread;
 use std::time::Duration;
 
@@ -21,7 +21,7 @@ struct Host {
 /// real watchdog starts with its run; this one starts inside it, so that the stop can't come before
 /// the program's cleanups are in place. Its handle is for this run and no other, so it can't stop
 /// the next even late. Nothing joins it: it ends by itself.
-fn watch(g: &mut Grift<Host>, host: &mut Host, _: &[Value]) -> Result<Answer, grift::Error> {
+fn watch(g: &mut HostCall<Host>, host: &mut Host, _: &[Value]) -> Result<Answer, grift::Error> {
     let mut handle: Interrupter = g.interrupter();
     let force = host.force;
     thread::spawn(move || {

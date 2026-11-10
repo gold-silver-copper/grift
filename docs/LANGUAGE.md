@@ -110,7 +110,8 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(add a b)`, `(subtract a b)`, `(multiply a b)`, `(divide a b)`, `(remainder a b)` | Of two integers or two floats; mixing them is a `type-error`. On integers, Rust's checked arithmetic: `divide` and `remainder` are Rust's `/` and `%`, truncating toward zero, so `(remainder -7 2)` is `-1`; dividing by 0 is `division-by-zero`, and a result beyond 64 bits, `(divide -9223372036854775808 -1)` included, is `overflow`. On floats, IEEE: `(divide 1.0 0.0)` is `#infinity`. |
 | `(less-than? a b)` | Whether `a < b`, of two integers, two floats, two strings or two bytes values; mixing kinds is a `type-error`. With `#not-a-number`, `#false`. Strings and bytes compare in byte order, as Rust's `<` on `str`: at the first byte where they differ, or the shorter first when one starts the other. |
 | `(bitwise-and a b)` `(bitwise-or a b)` `(bitwise-exclusive-or a b)` `(shift-left a n)` `(shift-right a n)` | Rust's `&` `\|` `^` `<<` `>>` on two integers: the bits shifted out are lost, as in Rust, and `shift-right` keeps the sign (`(shift-right -8 1)` is `-4`). A shift by an amount outside 0 to 63, where Rust's checked shift gives none, is `overflow`. |
-| `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) and `trunc`, of floats only. Results may differ slightly between platforms, as in Rust. `absolute-value` and `power` are the library's, below. |
+| `(square-root x)` `(sine x)` `(cosine x)` `(tangent x)` `(exponential x)` `(natural-logarithm x)` `(floor x)` `(ceiling x)` `(round x)` `(truncate x)` | Rust `std`'s `sqrt` `sin` `cos` `tan` `exp` `ln` `floor` `ceil` `round` (half away from zero) and `trunc`, of floats only. Results may differ slightly between platforms, as in Rust. |
+| `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.12, 12.9.6). |
 | `(integer-to-float n)`, `(float-to-integer x)` | Rust's `as`: the nearest float; the integer part, saturating at the ends of the 64-bit range, and 0 for `#not-a-number`. |
 | `(evaluate-with-cleanup x c cleanup)` | Evaluates `x` in `c`; when that ends, with a value or an error, calls the combiner `cleanup` with no arguments, then returns the value or lets the error go on. An error in `cleanup` meets the error leaving by the one rule (see Errors). A stop from the host can cut `cleanup`, even before it does anything. If memory is refused at its first step, `cleanup` has done nothing and `out-of-memory` goes on, by the same rule; the cleanups around it are still tried. Not a tail call. |
 | `(evaluate-with-handler x c handler)` | Evaluates `x` in `c` and returns its value. If an error leaves it, the cleanups inside run first, then the combiner `handler` is called in `c` with the error as a new context with no parent, binding `kind` (a symbol), `values` (a list) and `trace` (a list, see Errors); its value is `evaluate-with-handler`'s, as a tail call. A limit (see Errors) is never caught. |
@@ -164,7 +165,6 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(equal? a b)` | Pairs by structure, floats as IEEE does (`(equal? 0.0 -0.0)` is `#true`, `#not-a-number` is equal to nothing), everything else as `same?`. Values of different types are never equal: `(equal? 1 1.0)` is `#false` (6.6.1). |
 | `(greater-than? a b)`, `(less-than-or-equal? a b)`, `(greater-than-or-equal? a b)` | The rest of the comparisons, as Rust's `>`, `<=`, `>=` (12.5.3). |
 | `(minimum a b)`, `(maximum a b)` | The smaller, the larger, of two values of one kind `less-than?` orders (12.5.13). |
-| `(absolute-value x)`, `(power x y)` | Of an integer or a float, as `add` is: two integers give an integer (Rust's checked `abs` and `pow`), two floats a float (`abs` and `powf`), and mixing them is a `type-error`. `(absolute-value -9223372036854775808)` is `overflow`, and so is an integer power beyond 64 bits; an integer power with an exponent below 0, which isn't an integer, is a `range-error` (12.5.12, 12.9.6). |
 | `(find-association x pairs)`, `(member? x list)` | The first pair whose `first` is `equal?` to `x`, or `()`; whether `x` is `equal?` to an element (6.3.6, 6.3.7). |
 | `(binds? c symbol)` | Whether the symbol is bound in context `c` or one of its parents (6.7.1), with both evaluated, so the symbol can be computed: `(binds? table (string-to-symbol key))`. It is `lookup` with a value no program holds as `otherwise`, so its `type-error` is `lookup`'s. |
 | `(symbol-to-string s)` | A symbol's name. |
@@ -293,7 +293,7 @@ its cleanups do.
 | `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the operands, as one list: `(add 1)` gives `arity-error (1)`, `(if! #true 1)` `arity-error (#true 1)`; for a parameter tree, the whole of what it was matched against, which for a library form's helper can hold the caller's context |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
-| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included, where the arithmetic inside them reports it; a shift by an amount outside 0 to 63 | the operands of the arithmetic that overflowed |
+| `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the operands of the arithmetic that overflowed |
 | `division-by-zero` | integer `divide` or `remainder` by 0 | the operands |
 | `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative exponent; a fill that isn't one byte | the operands; for `list-to-bytes`, the integer and its position |
 | `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
@@ -303,7 +303,6 @@ its cleanups do.
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
-| `cannot-nest` | a host function began a run of its own, which would put the program's depth on its Rust stack; it hands grift the call to make instead | none |
 | `output-error` | a host's output refused what `write` or `describe` wrote: a host may pass it on | none |
 | any symbol | a program raised an error it made | the values given |
 
@@ -314,7 +313,6 @@ at the `(` or `"` left open (the innermost, for lists), not at the end of the te
 as a number and isn't one; `unknown-constant` at a `#` name that isn't one; `bad-byte` at a value
 inside `#bytes(` that isn't an integer 0 to 255. `(read-form "(a\n (b" 0)`
 is `parse-error unclosed-list 2 2`.
-A host function that replaces its interpreter ends the run with `foreign-value` too.
 
 The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
 describes each.

@@ -14,12 +14,5 @@ categories = ["compilers"]
 name = "stops"
 path = "../../examples/stops.rs"
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-panic = "deny"
-indexing_slicing = "deny"
-unreachable = "deny"
+[lints]
+workspace = true

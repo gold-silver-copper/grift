@@ -4,10 +4,22 @@ members = ["crates/grift", "crates/grift-cli"]
 exclude = ["examples/emacs"]
 
 [workspace.package]
-version = "3.0.0"
+version = "4.0.0"
 edition = "2024"
 rust-version = "1.88.0"
 license = "MIT OR Apache-2.0"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
 
 # The tests run whole grift programs, a loop of a million steps among them: optimize them, keeping
 # the debug assertions and overflow checks.

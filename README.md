@@ -156,14 +156,14 @@ script, run by the runner's tests.
 ## Embedding
 
 ```rust
-use grift::{Answer, Error, Grift, Value};
+use grift::{Answer, Error, Grift, HostCall, Value};
 
 /// The host's state: here, how often `twice` ran. The host lends it to each `evaluate` and `call`.
 struct Board {
     calls: u32,
 }
 
-fn twice(g: &mut Grift<Board>, board: &mut Board, args: &[Value]) -> Result<Answer, Error> {
+fn twice(g: &mut HostCall<Board>, board: &mut Board, args: &[Value]) -> Result<Answer, Error> {
     board.calls += 1;
     match args {
         [Value::Integer(n)] => n.checked_mul(2).map(|n| Answer::Now(Value::Integer(n))).ok_or_else(|| g.error("overflow", args)),
@@ -183,7 +183,7 @@ fn main() -> Result<(), Error> {
     assert_eq!(g.call(&mut board, &f, &[Value::Integer(1)])?, Value::Integer(4)); // values, not text
     assert_eq!(board.calls, 2);
     let hi = g.string("hi")?; // data made by the host
-    let list = g.list(&[hi.clone(), Value::Integer(1)])?; // or pair by pair, from its end
+    let list = g.list(&[hi, Value::Integer(1)])?; // or pair by pair, from its end
     assert_eq!(g.list_items(&list)?, [hi, Value::Integer(1)]); // or as_pair, from its start
     let forms = g.read("(f 1) (first 1)")?; // read without evaluating
     let mut s = grift::TextBuffer::new(); // or any std::fmt::Write
@@ -202,7 +202,7 @@ fn main() -> Result<(), Error> {
 
 - `Grift<T = ()>`: `T` is the host's state. The host owns it and lends it, `&mut T`, to each
   `evaluate` and `call`, which pass it to host functions. A host function gets it as an argument
-  of its own beside `&mut Grift<T>`, so the borrow checker sees both borrows; no globals.
+  of its own beside `&mut HostCall<T>`, so the borrow checker sees both borrows; no globals.
 - **Evaluating:** `evaluate(&mut T, &str)` at top level; `evaluate_in(&mut T, &context, source,
   &str)` in a given context, each combination keeping its line in `source`, so errors say
   `at config.grift:12`; `call(&mut T, &f, &[Value])` (Kernel's `apply`: an applicative's combiner
@@ -233,16 +233,17 @@ fn main() -> Result<(), Error> {
   then `write`, or with `grift::write_string(text, out)`, into any `std::fmt::Write`, without an
   interpreter or allocation; it returns `std::fmt::Result`. A `Value::Operative` is opaque: a host compares and writes it,
   which shows how it was made, and can't look inside or make one.
-- `HostFunction<T>` is `fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>`; it gets
+- `HostFunction<T>` is `fn(&mut HostCall<T>, &mut T, &[Value]) -> Result<Answer, Error>`; it gets
   evaluated arguments and answers `Answer::Now(value)`, `Answer::Later(request)` to wait (see
   below), or `Answer::Call { function, arguments, then }` to have grift call something: the machine
   makes that call once the host function has returned, on its own frames, so a program can recurse
   through a host function as deep as memory goes, and a wait inside the call parks the run. With
   `then: Some((after, saved))`, the call's value goes to `after` behind the `saved` values, and
   `after` may answer `Call` again, which is how a host function loops; an error passes it by. A host
-  function begins no run of its own: `evaluate`, `call`, `start`, `resume` and every other way in
-  are the error `cannot-nest` inside a host call, since a run there would put the program's depth
-  on the host function's Rust stack.
+  function begins no run of its own, since a run there would put the program's depth on its Rust
+  stack: its `HostCall<T>` reads like a `Grift<T>` and has the methods that make, bind and keep
+  values, but no `evaluate`, `call`, `start`, `resume` or other way in, so one doesn't compile.
+  `HostCall::from(&mut grift)` gives one outside a run, for helpers shared with host functions.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
   context of operations on it, never as a number a program could forge. Keep the host functions
   that take a resource's number private: don't `define` them; hand them to grift code, evaluated
@@ -279,8 +280,7 @@ fn main() -> Result<(), Error> {
   form, and the run ends with `interrupted`, whatever else fails on the way.
   `examples/stops.rs` shows stop, force, `limit` and giving a run up: `cargo run -p grift --example stops`. grift sets no limit of its own; a timer thread holding an interrupter is how the
   host applies one. A host function that panics ends the run it was called from: the panic goes on
-  to the host, no cleanup runs, and the next evaluation starts afresh. One that replaces the
-  interpreter it was given ends the run with `foreign-value`.
+  to the host, no cleanup runs, and the next evaluation starts afresh.
 - **Limits.** `e.limit` says the host or the machine began an error, not a program: handlers
   pass it, a program's error in a cleanup doesn't replace it, and a host function passing it on
   keeps it one.
@@ -354,18 +354,18 @@ sharing bindings. When the event comes, `resume(state, parked, Ok(value))` makes
 and `finally!` around the call still in place.
 
 ```rust
-use grift::{Answer, Error, Grift, Parked, Ran, Value};
+use grift::{Answer, Error, Grift, HostCall, Parked, Ran, Value};
 
 /// A script's `(sleep ms)`. The value in `Later` says what's wanted: the run holds it, and
 /// `Parked::request` gives it to the loop. Do the work there, since a run may not get to park.
-fn sleep(g: &mut Grift<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
+fn sleep(g: &mut HostCall<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
     match args {
-        [ms] => Ok(Answer::Later(ms.clone())),
+        [ms] => Ok(Answer::Later(*ms)),
         _ => Err(g.error("arity-error", args)),
     }
 }
 
-fn say(g: &mut Grift<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
+fn say(g: &mut HostCall<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
     let [name] = args else {
         return Err(g.error("arity-error", args));
     };
@@ -450,11 +450,10 @@ fn main() -> Result<(), Error> {
   refused the little it does need, the run waits still and the handle comes back.
 - **What can't wait.** A run under `evaluate` or `call` has Rust frames that can't be set aside. A
   waiting call there is the error `cannot-park`, its trace saying which call, and `can_park()` lets
-  a host function do something else instead; it is `false` too with no run in progress. `resume` inside a host call is refused
-  (`cannot-nest`), the handle coming back in `ResumeError::parked` with the run untouched: queue it
-  for your loop. Another
-  interpreter's handle comes back the same way, with `foreign-value`, an error of the interpreter you
-  called.
+  a host function do something else instead; it is `false` too with no run in progress. A host
+  function has no `resume`: it queues the handle for your loop. Another interpreter's handle comes
+  back in `ResumeError::parked` with the run untouched, with `foreign-value`, an error of the
+  interpreter you called.
 - **Hosts that never park** keep the signatures of `evaluate` and `call`, but two
   things reach every host. Memory refused makes one collection due, before the nearest cleanup's first
   step, and a cleanup refused memory all the same is passed over for the next, which that new refusal

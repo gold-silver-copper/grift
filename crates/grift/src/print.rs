@@ -168,7 +168,8 @@ impl<T> Grift<T> {
                         Ok(Object::Operative(op)) => {
                             out.write_str("#[operative ")?;
                             push(&mut todo, Item::Tail(op.body, "]"))?;
-                            push(&mut todo, Item::Value(op.context_parameter))?;
+                            let c = op.context_parameter.map_or(Value::Ignore, Value::Symbol);
+                            push(&mut todo, Item::Value(c))?;
                             push(&mut todo, Item::Tail(Value::EmptyList, " "))?;
                             push(&mut todo, Item::Value(op.parameters))?;
                         }

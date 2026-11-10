@@ -39,7 +39,13 @@
   (test! "absolute-value and power take integers too, never mixed with floats"
     (expect-equal! (absolute-value -1) 1)
     (expect-equal! (power 2 10) 1024)
-    (expect-error! type-error (power 2 0.5)))
+    (expect-error! type-error (power 2 0.5))
+    (expect-error! overflow (absolute-value -9223372036854775808))
+    (expect-error! overflow (power 2 63))
+    (expect-error! range-error (power 2 -1))
+    (expect-equal! (power -1 9223372036854775807) -1)
+    (expect-equal! (power -1 4294967296) 1)
+    (expect-error! overflow (power 2 4294967296)))
   (test! "conversions are Rust's as"
     (expect-equal! (integer-to-float 2) 2.0)
     (expect-equal! (float-to-integer -1.9) -1)

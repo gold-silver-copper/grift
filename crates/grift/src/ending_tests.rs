@@ -19,7 +19,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         // `(on-machine thunk)`: the machine calls `thunk` for this host function.
         ("on-machine", |_, _, args| {
             Ok(Answer::Call {
-                function: args[0].clone(),
+                function: args[0],
                 arguments: Vec::new(),
                 then: None,
             })
@@ -28,7 +28,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         ("swallow", |g, _, args| {
             let (top, list) = (g.top_level(), g.symbol("list")?);
             Ok(Answer::Call {
-                function: args[0].clone(),
+                function: args[0],
                 arguments: Vec::new(),
                 then: Some((g.lookup(&top, &list)?.unwrap(), Vec::new())),
             })
@@ -68,7 +68,7 @@ fn memory_refused_collects_once_however_many_cleanups_it_passes() {
     let mut collections = Vec::new();
     let seen = g
         .host_function("seen", |g, seen: &mut Vec<usize>, _| {
-            seen.push(g.heap.collections);
+            seen.push(g.heap.probe.collections);
             Ok(Answer::Now(Value::Inert))
         })
         .unwrap();
@@ -78,7 +78,7 @@ fn memory_refused_collects_once_however_many_cleanups_it_passes() {
         "(define! down (lambda! (n) (finally! (down (add n 1)) (seen))))",
     )
     .unwrap();
-    g.heap.slot_limit = g.heap.len() + 20_000;
+    g.heap.probe.slot_limit = Some(g.heap.len() + 20_000);
     let e = g.evaluate(&mut collections, "(down 0)").unwrap_err();
     assert_eq!(kind(&g, &e), "out-of-memory");
     assert!(collections.len() > 500, "{} cleanups", collections.len());

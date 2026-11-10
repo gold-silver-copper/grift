@@ -1,6 +1,7 @@
 //! What a program's `out-of-memory` report needs, when the allocator refuses for real. A budget
 //! on this thread's allocations stands in for the operating system's limit, at the same point in
 //! a program every time; it lives in this package because the core forbids `unsafe`.
+#![allow(unsafe_code, clippy::unwrap_used, clippy::indexing_slicing)]
 
 use grift::Grift;
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -142,4 +143,19 @@ fn an_out_of_memory_report_of_deep_quoted_data_needs_no_more_than_its_budget() {
             "{spare}: {why:?}"
         );
     }
+}
+
+/// A host's call collects before it copies its arguments: with the budget spent on garbage, a call
+/// with an argument still runs.
+#[test]
+fn a_call_collects_before_copying_its_arguments() {
+    let mut g: Grift = Grift::new().unwrap();
+    let f = g.evaluate(&mut (), "(lambda! (x) x)").unwrap();
+    LIMIT.set(LIVE.get() + (2 << 20));
+    let _garbage = g.string(&"x".repeat(1 << 20)).unwrap();
+    LIMIT.set(LIVE.get());
+    assert!(g.string("refused").is_err());
+    let called = g.call(&mut (), &f, &[grift::Value::Integer(3)]);
+    LIMIT.set(usize::MAX);
+    assert_eq!(called, Ok(grift::Value::Integer(3)));
 }
