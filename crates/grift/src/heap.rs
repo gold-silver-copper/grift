@@ -99,22 +99,22 @@ pub(crate) struct Origin {
 
 const NONE: u32 = u32::MAX;
 
-/// A collection pays for itself: the next one starts once as much was allocated as the largest
-/// part of what this one walked, at least this much. It walks what survived, the roots outside the
-/// heap (the running machine, the kept table and its parked runs) and every slot, so the next waits
-/// for the largest of those three, the slots counted as half the free ones, so it walks at most
-/// four times what was allocated. The heap stays within about twice the larger of the live data
-/// and those roots. A free third at the top of the slots is given back. New objects take the
-/// lowest free slots, so the newest live ones, such as a running loop's, sit as high as what was
-/// allocated since the last collection, and keep the slots below them, as a run's source read then
-/// does. So after a dropped peak, when the free slots are what the next collection would wait for,
-/// the next run to begin collects first, once: what the runs before made is garbage by then, so
-/// it gives back the rest, and the two walk at most eight times what was allocated. Objects never
-/// move, so one long-lived object made high keeps the slots below it, never more than the peak. A
-/// retired slot counts as live. A string, bytes value or name counts as many objects as its
-/// storage would fill slots, and a context's bindings as many as they grow by once it is made, so
-/// large chunks dropped one after another bring the next collection nearer as their size, not
-/// their number, says.
+/// A collection pays for itself: the next one starts once as much was allocated as the largest part
+/// of what this one walked, at least this much. It walks what survived, the roots outside the heap
+/// (the running machine, the kept table and its parked runs) and every slot, so the next waits for
+/// the largest of those three, the slots counted as half the free ones, so it walks at most four
+/// times what was allocated. The heap stays within about twice the larger of the live data and
+/// those roots. Free slots at the top, past the room the next collection waits for, are given back
+/// when they are a third of all. New objects take the lowest free slots, so the newest live ones,
+/// such as a running loop's, sit as high as what was allocated since the last collection, and keep
+/// the slots below them, as a run's source read then does. So after a dropped peak, when the free
+/// slots are what the next collection would wait for, the next run to begin collects first, once:
+/// what the runs before made is garbage by then, so it gives back the rest, and the two walk at
+/// most eight times what was allocated. Objects never move, so one long-lived object made high
+/// keeps the slots below it, never more than the peak. A retired slot counts as live. A string,
+/// bytes value or name counts as many objects as its storage would fill slots, and a context's
+/// bindings as many as they grow by once it is made, so large chunks dropped one after another
+/// bring the next collection nearer as their size, not their number, says.
 const GC_MIN: usize = 4096;
 
 /// How many objects `obj` counts as, for when to collect.
@@ -426,7 +426,7 @@ impl Heap {
         }
         #[cfg(test)]
         assert_eq!(marks.capacity(), room, "marking grew the mark stack");
-        let (mut live, mut free, mut top) = (0usize, 0, None);
+        let (mut live, mut free, mut top) = (0usize, 0usize, None);
         self.free = NONE;
         for (idx, s) in (0..NONE).zip(self.slots.iter_mut()).rev() {
             if s.marked.take() {
@@ -451,8 +451,10 @@ impl Heap {
             }
         }
         let used = top.map_or(0, |i| i as usize + 1);
-        free -= self.give_back(used).min(free);
         let paced = live.max(walked).max(GC_MIN);
+        // What is allocated before the next collection fills the free slots below `used` first.
+        let below = free.saturating_sub(self.slots.len() - used);
+        free -= self.give_back(used, paced.saturating_sub(below)).min(free);
         self.early = free / 2 > paced && !early && !asked;
         *self.until_gc.get_mut() = paced.max(free / 2);
         #[cfg(test)]
@@ -463,14 +465,18 @@ impl Heap {
         }
     }
 
-    /// Gives back the free slots above `used`, when they are at least a third of all, and says
-    /// how many it gave. The free list runs from the bottom up, so they are its end. A slot made
-    /// in their place starts past their generations, unless those ran so far that it couldn't.
-    fn give_back(&mut self, used: usize) -> usize {
-        let top = self.slots.get(used..).unwrap_or_default();
-        if top.len() < GC_MIN || top.len() < self.slots.len() / 3 {
+    /// When the free slots above `used` are at least a third of all, gives back those past the
+    /// first `room` of them, and says how many it gave: `room` is what the next collection waits
+    /// for, which given back the heap would only grow into again. The free list runs from the
+    /// bottom up, so they are its end. A slot made in their place starts past their generations,
+    /// unless those ran so far that it couldn't.
+    fn give_back(&mut self, used: usize, room: usize) -> usize {
+        let above = self.slots.len().saturating_sub(used);
+        if above < GC_MIN || above < self.slots.len() / 3 || above <= room {
             return 0;
         }
+        let from = used.saturating_add(room);
+        let top = self.slots.get(from..).unwrap_or_default();
         // New slots all start past this, so one slot reused billions of times would make every
         // new one retire soon: past half their generations, nothing is given back.
         let past = top.iter().map(|s| s.generation).max().unwrap_or(0);
@@ -479,16 +485,16 @@ impl Heap {
         }
         let given = top.len();
         self.fresh = self.fresh.max(past);
-        self.slots.truncate(used);
+        self.slots.truncate(from);
         // The last free slot below now ends the list, or the list is empty.
-        if self.free as usize >= used {
+        if self.free as usize >= from {
             self.free = NONE;
         }
         if let Some(Slot {
             obj: Object::Free(next),
             ..
         }) = self.slots.iter_mut().rev().find(|s| match s.obj {
-            Object::Free(next) => next != NONE && next as usize >= used,
+            Object::Free(next) => next != NONE && next as usize >= from,
             _ => false,
         }) {
             *next = NONE;
@@ -496,7 +502,7 @@ impl Heap {
         shrink(&mut self.slots, 0);
         // The mark stack is empty between collections, and needs room for every slot.
         let mut marks = Vec::new();
-        if marks.try_reserve_exact(used + 1).is_ok() {
+        if marks.try_reserve_exact(from + 1).is_ok() {
             self.marks = marks;
         }
         given
