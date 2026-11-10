@@ -439,6 +439,8 @@ impl Heap {
         #[cfg(test)]
         {
             self.live = live.saturating_add(walked);
+            // A collection stress mode forced is not paced, as one asked for isn't.
+            self.early &= !self.stress;
         }
     }
 
@@ -472,7 +474,7 @@ impl Heap {
         }) {
             *next = NONE;
         }
-        shrink(&mut self.slots);
+        shrink(&mut self.slots, 0);
         // The mark stack is empty between collections, and needs room for every slot.
         let mut marks = Vec::new();
         if marks.try_reserve_exact(used + 1).is_ok() {
@@ -493,18 +495,21 @@ fn bindings_weight(b: &Bindings) -> usize {
 }
 
 /// Gives back `v`'s room once it holds under a quarter of it and that is more than [`GC_MIN`]
-/// entries: a stack or table that was deep once costs nothing after.
+/// entries: a stack or table that was deep once costs nothing after. It keeps twice its length,
+/// and at least [`GC_MIN`], so room set aside for a later step (a cleanup's start) stays.
 pub(crate) fn tidy<X>(v: &mut Vec<X>) {
     if v.capacity() / 4 > v.len().max(GC_MIN) {
-        shrink(v);
+        shrink(v, v.len().saturating_mul(2).max(GC_MIN));
     }
 }
 
-/// Moves `v` into storage of its own length, if memory allows; else leaves it as it is.
-pub(crate) fn shrink<X>(v: &mut Vec<X>) {
+/// Moves `v` into storage for `room` entries, at least its length, if that is less than it has and
+/// memory allows; else leaves it as it is.
+pub(crate) fn shrink<X>(v: &mut Vec<X>, room: usize) {
+    let room = room.max(v.len());
     let mut smaller = Vec::new();
-    if v.capacity() > v.len() && smaller.try_reserve_exact(v.len()).is_ok() {
-        #[expect(clippy::disallowed_methods, reason = "reserved v.len() above")]
+    if v.capacity() > room && smaller.try_reserve_exact(room).is_ok() {
+        #[expect(clippy::disallowed_methods, reason = "reserved at least v.len() above")]
         smaller.append(v);
         *v = smaller;
     }

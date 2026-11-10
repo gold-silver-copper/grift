@@ -638,6 +638,17 @@ fn collection_pays_for_what_it_walks() {
           (add 1 (sequence! (bind c (quote! d) (add d 1)) (evaluate body c))))))
         (evaluate body c)";
     g.evaluate(&mut (), deep).unwrap();
+    // The stacks give back room as collections come, all but what a cleanup's install set aside
+    // for its start: a deep stack, gone when the cleanup is installed, and a collection just
+    // before the cleanup starts.
+    define(&mut g, "collect-always", |g, _, _| {
+        g.heap.stress = true;
+        Ok(crate::Answer::Now(Value::Inert))
+    });
+    let cleanup = "(define! down (lambda! (n) (if! (same? n 0) 0 (add 1 (down (subtract n 1))))))
+        (sequence! (down 30000) (evaluate-with-cleanup (quote! (collect-always)) (current-context) (lambda! () 0)))";
+    g.evaluate(&mut (), cleanup).unwrap();
+    g.heap.stress = false;
     let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
     kept.into_iter().for_each(|k| g.release(k).unwrap());
     g.evaluate(&mut (), "(spin 100000)").unwrap();
