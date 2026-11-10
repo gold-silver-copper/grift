@@ -3,6 +3,8 @@
 What holds on master today, by topic. A link such as [G-170] opens the section of
 [`DECISIONS.md`](DECISIONS.md), the history, that holds the entry: find its id in bold there. Only
 the latest word on each question is here. Where this file and the code disagree, this file is wrong.
+Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
+[`docs/VISION.md`](docs/VISION.md).
 
 ## What grift is
 
@@ -47,7 +49,8 @@ the latest word on each question is here. Where this file and the code disagree,
   floats as IEEE does. Values of different kinds are never equal ([G-51], [G-145]).
 - Strings are immutable UTF-8 with byte offsets, and a code point is an integer ([G-27]); bytes are
   a kind of their own, never equal to a string ([G-142]). Both share `byte-length`, `byte-at`,
-  `slice`, `join` and `search`, the first argument's kind being the answer's ([G-173]).
+  `slice`, `join` and `search`: `slice` and `join` answer in their first argument's kind,
+  `byte-length` and `byte-at` give integers, and `search` an offset or `()` ([G-173]).
 - An offset out of range is `range-error`, and so is a `slice` or `search` offset off a string's
   character boundary ([G-27]). `less-than?` orders two integers, floats, strings or bytes values
   ([G-177]). Bytes that aren't UTF-8 are `encoding-error` from `bytes-to-string` ([G-144]).
@@ -61,8 +64,9 @@ the latest word on each question is here. Where this file and the code disagree,
   element is read like any datum and must then be an integer 0 to 255, else `parse-error bad-byte`
   ([G-142], [G-177]). `#!` starts a comment wherever a token can ([G-172]).
 - `(read-form text offset)` gives `(form start end)`, or `()` at the end, through the host's reader
-  ([G-77]). A `parse-error`'s values are `(reason line column)`, an unclosed list or string placed
-  at its opening character; under a source name, the source is the last value ([G-97], [G-177]).
+  ([G-77]). A reader's `parse-error` has the values `(reason line column)`, an unclosed list or
+  string placed at its opening character; under a source name, the source is the last value
+  ([G-97], [G-177]). From `string-to-integer` and `string-to-float` its one value is the text.
 - A context prints as its own names, sorted, never its values ([G-54]); in an error report it shows
   only how many names it has ([G-178]).
 
@@ -99,8 +103,8 @@ the latest word on each question is here. Where this file and the code disagree,
   apart, except by printing the native itself ([G-110], [G-115], [G-172]). `absolute-value`,
   `power`, `remainder` and `less-than?` are defined in grift for part of their inputs only and call
   the Rust primitive for the rest (`natives.grift`).
-- `if!` and `sequence!` stay grift in `library.grift`, with native twins for the shapes they handle
-  ([G-117], [G-173]). `error`, `equal?`, `catch!`, `finally!`, `catch-kind!`, `float-to-string` and
+- `if!` and `sequence!` stay grift in `library.grift`, with native twins: Rust that runs in their
+  place only for the operand shapes it handles ([G-117], [G-173]). `error`, `equal?`, `catch!`, `finally!`, `catch-kind!`, `float-to-string` and
   `symbol-to-string` are library grift ([G-48], [G-64], [G-66], [G-86], [G-93], [G-99]).
 
 ## Errors and traces
@@ -115,8 +119,8 @@ the latest word on each question is here. Where this file and the code disagree,
   the top-level form; a finished tail call isn't listed ([G-29]). Library code is skipped, by a mark
   set when a pair is made ([G-173], [G-180]). Every `raise` adds its own combination, a re-raise
   included ([G-170]).
-- The host's `Error::trace` is innermost first. A program reads it the other way round, places added
-  last first, and a catch and raise adds only the places since ([G-179]).
+- The host's `Error::trace` is innermost first. A program reads a trace newest first, so the place
+  the error began is its last, and a catch and raise adds only the places since ([G-179]).
 - Where a combination was read lives in its pair; `Grift::position` gives its source and line
   ([G-177]). A named outer form keeps its place through its tail calls, until a tail call evaluates
   another named outer form, which takes its place ([G-154], [G-157]).
@@ -126,9 +130,9 @@ the latest word on each question is here. Where this file and the code disagree,
 - A run ends one way: it unwinds with a reason. An error carries one bit, `limit`, which only the
   host (a stop, a force, a host function's error with `limit` set) and the machine (memory refused)
   can set; a handler runs only if it is clear, and no kind's name decides anything ([G-170]).
-- So a program can't forge a limit: its error of any kind, `interrupted` included, is caught. Of
-  reasons arriving during a cleanup the newest wins, unless a program's would replace a limit
-  ([G-170]).
+- So a program can't forge a limit: its error of any kind, `interrupted` included, is caught. If
+  several reasons arrive during a cleanup the newest wins, except that a program's error never
+  replaces a limit ([G-170]).
 - The host can always end a run, and that beats "cleanups always finish": a stop can cut a cleanup
   that has begun ([G-168], [G-170]). A cleanup's install makes the room its start needs ([G-170]).
 - `Grift::interrupter` gives a handle for the run in progress, or else the next to begin; its `stop`
@@ -165,11 +169,8 @@ the latest word on each question is here. Where this file and the code disagree,
   ([G-178]); it is a value bound nowhere, which the host binds or hands to grift code that keeps it
   private ([G-60]). A host resource is a context of operations on it, closed explicitly, and use
   after closing is `closed` ([G-41]).
-- `context`, `private_context`, `top_level`, `bind`, `lookup` and `names` follow the primitives'
-  rules; `evaluate_in` reads a named text whole before running it, `read_in` reads one without
-  running it, and `evaluate_library_in` marks what it runs as library code ([G-118], [G-151],
-  [G-173]). `list`, `list_items`, `as_str`, `bytes` and `as_bytes` convert ([G-114], [G-147],
-  [G-174]).
+- The host's methods follow the primitives' rules; they are listed in the rustdoc and in
+  [the README](README.md#embedding).
 - `Value`, `Symbol`, `Reference` and `Operative` are `Copy`. One that belongs to an interpreter
   (anything but immediate data and primitives) carries its number, and another interpreter's is
   `foreign-value` ([G-181]). Every value handed in is checked for its interpreter, generation and
@@ -184,6 +185,11 @@ the latest word on each question is here. Where this file and the code disagree,
   the core, collections grow fallibly and memory refused is `out-of-memory`, not an abort ([G-32]);
   clippy's `disallowed_methods` refuses aborting allocations ([G-179]). The exception is
   `Grift::new`'s shared control block, an `Arc::new` ([G-178]).
+- Tail calls run in constant space: a compound operative's body, `evaluate` and a `catch!`'s
+  handler are tail calls, and a trace records nothing per call ([G-29],
+  [`docs/LANGUAGE.md`](docs/LANGUAGE.md#evaluation)). Evaluation and every primitive's walk use the
+  machine's own frames, not the Rust stack, so deep data and deep recursion cost heap ([G-178];
+  the test `deep_and_long_operands_need_no_rust_stack`).
 - Collection happens only at safe points: the top of the machine loop, and a host's entry before its
   run needs a slot. Allocation never collects, and nothing roots by hand ([G-12], [G-155]).
 - A reference carries its slot's generation: a collected value is `stale-value`, never another
@@ -210,11 +216,10 @@ the latest word on each question is here. Where this file and the code disagree,
 - `exit` is a limit of kind `exit` carrying the status: nothing catches it and cleanups run
   ([G-170]). A write to a pipe no one reads is a `broken-pipe` limit, ending quietly with 141
   ([G-170], [G-173]). An uncaught error ends a script with status 1, its description cut at 4,096
-  bytes and written at once; at a terminal the session reports it and goes on ([G-175], [G-178]).
-- Programs get `display`, `display-error`, `read-file`, `read-forms`, `position`, `standard-input`,
-  `standard-output`, `standard-error`, `open-file`, `create-file`, `run-process`, `load`,
-  `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
-  `elapsed-nanoseconds` and `exit` ([G-55], [G-106], [G-172]).
+  bytes, and a report up to 4 KiB is one write; at a terminal the session reports it and goes on
+  ([G-175], [G-178]).
+- The runner's operations are listed in [the README](README.md#the-runner) ([G-55], [G-106],
+  [G-172]).
 - Standard streams are files like any other, with `path` and `close`; `write` takes a string or
   bytes ([G-172]). Memory refused for a process's output is the `out-of-memory` limit ([G-175]).
 - `(load path)` evaluates a file in the caller's context, a relative path resolved against the
@@ -239,7 +244,7 @@ the latest word on each question is here. Where this file and the code disagree,
 - Every primitive is classed in one test-side `match` with no catch-all arm, which puts it in the
   deep-data and memory-refusal sweeps, and in the stop sweep if it walks data ([G-179]).
 - The machine loop's data shape is asserted at compile time (a frame 56 bytes, a value 16); that
-  can't catch code layout, so speed is measured on desk, the quiet machine ([G-175], [G-177]).
+  can't catch code layout, so speed is measured on a quiet machine, not in CI ([G-175], [G-177]).
 
 [G-1]: DECISIONS.md#owner-decisions-2026-10-31
 [G-2]: DECISIONS.md#owner-decisions-2026-10-31
@@ -312,7 +317,6 @@ the latest word on each question is here. Where this file and the code disagree,
 [G-114]: DECISIONS.md#settled-by-the-design-ballot-2026-11-03-four-models-the-owner-may-overrule-any
 [G-115]: DECISIONS.md#settled-by-the-design-ballot-2026-11-03-four-models-the-owner-may-overrule-any
 [G-117]: DECISIONS.md#settled-by-the-design-ballot-2026-11-03-four-models-the-owner-may-overrule-any
-[G-118]: DECISIONS.md#settled-by-the-design-ballot-2026-11-03-four-models-the-owner-may-overrule-any
 [G-121]: DECISIONS.md#settled-by-the-design-ballot-2026-11-03-four-models-the-owner-may-overrule-any
 [G-122]: DECISIONS.md#settled-by-the-design-ballot-2026-11-03-four-models-the-owner-may-overrule-any
 [G-124]: DECISIONS.md#made-while-building-g-108-to-g-123-2026-11-03-the-owner-may-overrule-any
@@ -322,8 +326,6 @@ the latest word on each question is here. Where this file and the code disagree,
 [G-143]: DECISIONS.md#settled-by-the-bytes-design-ballot-2026-11-04-four-models-the-owner-may-overrule-any
 [G-144]: DECISIONS.md#settled-by-the-bytes-design-ballot-2026-11-04-four-models-the-owner-may-overrule-any
 [G-145]: DECISIONS.md#settled-by-the-bytes-design-ballot-2026-11-04-four-models-the-owner-may-overrule-any
-[G-147]: DECISIONS.md#settled-by-the-bytes-design-ballot-2026-11-04-four-models-the-owner-may-overrule-any
-[G-151]: DECISIONS.md#earned-by-the-port-reading-2026-11-05
 [G-154]: DECISIONS.md#conformance-fixes-2026-11-05
 [G-155]: DECISIONS.md#conformance-fixes-2026-11-05
 [G-157]: DECISIONS.md#picking-panel-follow-through-2026-11-05
@@ -334,7 +336,6 @@ the latest word on each question is here. Where this file and the code disagree,
 [G-171]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-172]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-173]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
-[G-174]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-175]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-176]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-177]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
