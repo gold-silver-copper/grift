@@ -193,9 +193,9 @@ fn memory_refused_at_each_allocation_is_refused_cleanly() {
         let r = g.evaluate(&mut (), &src);
         let whole = shown(&g, r);
         for n in 0..64 {
-            g.heap.refuse_in = Some(n);
+            g.heap.probe.refuse_in = Some(n);
             let r = g.evaluate(&mut (), &src);
-            g.heap.refuse_in = None;
+            g.heap.probe.refuse_in = None;
             let r = shown(&g, r);
             match (&r, &whole) {
                 (Err(k), _) if k == "out-of-memory" => {}

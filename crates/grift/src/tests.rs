@@ -345,11 +345,11 @@ fn a_token_with_two_signs_is_a_symbol() {
 /// What evaluating `src` does: machine steps, collections, and references and symbols compared.
 /// Counts, so they say the same on a loaded machine.
 fn work(g: &mut Grift, src: &str) -> (Result<Value, Error>, u64, usize, u64) {
-    (g.machine.steps, g.heap.collections) = (0, 0);
+    (g.machine.steps, g.heap.probe.collections) = (0, 0);
     local::COMPARED.with(|n| n.set(0));
     let value = g.evaluate(&mut (), src);
     let compared = local::COMPARED.with(std::cell::Cell::get);
-    (value, g.machine.steps, g.heap.collections, compared)
+    (value, g.machine.steps, g.heap.probe.collections, compared)
 }
 
 #[test]
@@ -670,13 +670,13 @@ fn collection_pays_for_what_it_walks() {
     // for its start: a deep stack, gone when the cleanup is installed, and a collection just
     // before the cleanup starts.
     define(&mut g, "collect-always", |g, _, _| {
-        g.0.heap.stress = true;
+        g.0.heap.probe.stress = true;
         Ok(crate::Answer::Now(Value::Inert))
     });
     let cleanup = "(define! down (lambda! (n) (if! (same? n 0) 0 (add 1 (down (subtract n 1))))))
         (sequence! (down 30000) (evaluate-with-cleanup (quote! (collect-always)) (current-context) (lambda! () 0)))";
     g.evaluate(&mut (), cleanup).unwrap();
-    g.heap.stress = false;
+    g.heap.probe.stress = false;
     let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
     kept.into_iter().for_each(|k| g.release(k).unwrap());
     g.evaluate(&mut (), "(spin 100000)").unwrap();
@@ -1264,7 +1264,7 @@ fn twins() -> [Grift<Vec<String>>; 2] {
         let mut g: Grift<Vec<String>> = Grift::new().unwrap();
         // A memory limit far over what any case holds: a collector that stops keeping up runs
         // out here, in seconds, instead of growing until the machine does.
-        g.heap.slot_limit = 1 << 18;
+        g.heap.probe.slot_limit = Some(1 << 18);
         if !natives {
             g.run_definitions();
         }
@@ -1780,13 +1780,13 @@ fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
     assert_eq!(g.symbol("bound-name").unwrap(), bound);
     assert_eq!(g.lookup(&top, &bound).unwrap(), Some(Value::Integer(42)));
     // An error's kind made as the program runs is held by the error alone while a cleanup runs.
-    g.heap.stress = true;
+    g.heap.probe.stress = true;
     let e = g
         .evaluate(
             &mut (),
             "(finally! (raise (error (string-to-symbol (join \"pending-\" \"kind\")))) (list 1 2 3))",
         )
         .unwrap_err();
-    g.heap.stress = false;
+    g.heap.probe.stress = false;
     assert_eq!(g.symbol_name(&e.kind).unwrap(), "pending-kind");
 }

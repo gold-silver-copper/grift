@@ -28,7 +28,7 @@ fn wait(_: &mut HostCall<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error
 /// Uses up every slot the limit leaves, then waits: allocation never collects, so the park finds
 /// the heap full.
 fn full_wait(g: &mut HostCall<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
-    g.0.heap.slot_limit = g.heap.len();
+    g.0.heap.probe.slot_limit = Some(g.heap.len());
     while g.pair(Value::Inert, Value::Inert).is_ok() {}
     Ok(Answer::Later(Value::Inert))
 }
@@ -653,10 +653,10 @@ mod generated {
         g.heap.request_collection();
         g.evaluate(&mut w, "#inert").unwrap();
         let baseline = g.heap.live();
-        g.heap.stress = stress;
+        g.heap.probe.stress = stress;
         if mode == Mode::Limited {
             // What is live, as much again before the next collection, and room for the runs.
-            g.heap.slot_limit = 3 * baseline;
+            g.heap.probe.slot_limit = Some(3 * baseline);
         }
 
         let may_stop = r.one_in(2);
@@ -708,17 +708,17 @@ mod generated {
             if refusal_ends_in > 0 {
                 refusal_ends_in -= 1;
                 if refusal_ends_in == 0 {
-                    g.heap.refuse_in = None;
+                    g.heap.probe.refuse_in = None;
                 }
             }
-            let refused_before = g.heap.refused;
-            let for_good = g.heap.refuse_in.is_some() && !g.heap.refuse_once;
+            let refused_before = g.heap.probe.refused;
+            let for_good = g.heap.probe.refuse_in.is_some() && !g.heap.probe.refuse_once;
             // Refusals that came while `run` was in progress are its.
             macro_rules! charge {
                 ($run:expr, $log_before:expr) => {
-                    if g.heap.refused != refused_before {
+                    if g.heap.probe.refused != refused_before {
                         let t: &mut Touched = &mut touched[$run];
-                        t.refused += g.heap.refused - refused_before;
+                        t.refused += g.heap.probe.refused - refused_before;
                         t.refused_for_good |= for_good;
                         t.clean_until =
                             Some(t.clean_until.map_or($log_before, |c| c.min($log_before)));
@@ -772,7 +772,7 @@ mod generated {
                 // Other work in the heap.
                 4 => {
                     w.current = usize::MAX;
-                    g.heap.stress = false;
+                    g.heap.probe.stress = false;
                     // Once, a peak, dropped beside the parked runs: the collections after it walk
                     // what it left, and give it back.
                     let churn = match mode {
@@ -781,7 +781,7 @@ mod generated {
                         _ => "(churn 300)",
                     };
                     let _ = g.evaluate(&mut w, churn);
-                    g.heap.stress = stress;
+                    g.heap.probe.stress = stress;
                 }
                 5 => {
                     w.current = usize::MAX;
@@ -795,10 +795,10 @@ mod generated {
                 // Arm a stop, a force or a refusal, for what comes next.
                 6 if may_stop => w.stop_at = Some((w.calls + r.below(6), false)),
                 8 if may_force => w.stop_at = Some((w.calls + r.below(8), true)),
-                7 if may_refuse && g.heap.refuse_in.is_none() => {
-                    g.heap.refuse_in = Some(r.below(48) as usize);
-                    g.heap.refuse_once = r.one_in(2);
-                    if !g.heap.refuse_once {
+                7 if may_refuse && g.heap.probe.refuse_in.is_none() => {
+                    g.heap.probe.refuse_in = Some(r.below(48) as usize);
+                    g.heap.probe.refuse_once = r.one_in(2);
+                    if !g.heap.probe.refuse_once {
                         refusal_ends_in = 1 + r.below(3);
                     }
                 }
@@ -821,8 +821,8 @@ mod generated {
             }
         }
 
-        g.heap.refuse_in = None;
-        g.heap.stress = false;
+        g.heap.probe.refuse_in = None;
+        g.heap.probe.stress = false;
         assert_eq!(g.parked(), 0, "{context}");
         assert!(g.forgotten().is_none(), "{context}");
         w.current = usize::MAX;
