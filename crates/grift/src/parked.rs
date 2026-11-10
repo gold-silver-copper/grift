@@ -118,8 +118,7 @@ pub struct ResumeError {
     /// What went wrong.
     pub error: Error,
     /// The handle, if nothing was done and the run still waits: it was another interpreter's
-    /// (`foreign-value`), or this was inside a host call (`cannot-nest`). `None` if the run went
-    /// on and ended with this error.
+    /// (`foreign-value`). `None` if the run went on and ended with this error.
     pub parked: Option<Parked>,
 }
 
@@ -131,8 +130,7 @@ impl From<ResumeError> for Error {
 }
 
 impl<T> Grift<T> {
-    /// [`Grift::call`], in a run that may park. Inside a host call it is `cannot-nest`, as `call`
-    /// is.
+    /// [`Grift::call`], in a run that may park.
     pub fn start(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Ran, Error> {
         let done = self.run_call(state, f, arguments, true);
         self.ran(done)
@@ -235,7 +233,7 @@ impl<T> Grift<T> {
         answer: &Result<local::Value, local::Error>,
     ) -> Result<Machine, local::Error> {
         self.owns(&parked.owner)?;
-        self.prepare(ending_values(answer))?;
+        self.prepare(ending_values(answer));
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));

@@ -10,25 +10,25 @@
 )]
 
 use crate::tests::{kind, show};
-use crate::{Answer, Error, Grift, Parked, Ran, Value};
+use crate::{Answer, Error, Grift, HostCall, Parked, Ran, Value};
 
 type Log = Vec<String>;
 
-fn note(g: &mut Grift<Log>, log: &mut Log, args: &[Value]) -> Result<Answer, Error> {
+fn note(g: &mut HostCall<Log>, log: &mut Log, args: &[Value]) -> Result<Answer, Error> {
     for v in args {
         log.push(show(g, v));
     }
     Ok(Answer::Now(Value::Inert))
 }
 
-fn wait(_: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
+fn wait(_: &mut HostCall<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Later(Value::Inert))
 }
 
 /// Uses up every slot the limit leaves, then waits: allocation never collects, so the park finds
 /// the heap full.
-fn full_wait(g: &mut Grift<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
-    g.heap.slot_limit = g.heap.len();
+fn full_wait(g: &mut HostCall<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, Error> {
+    g.0.heap.slot_limit = g.heap.len();
     while g.pair(Value::Inert, Value::Inert).is_ok() {}
     Ok(Answer::Later(Value::Inert))
 }
@@ -296,7 +296,7 @@ mod generated {
         }
     }
 
-    fn g_note(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    fn g_note(g: &mut HostCall<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         for v in args {
             w.log(show(g, v));
         }
@@ -304,7 +304,7 @@ mod generated {
         Ok(Answer::Now(Value::Inert))
     }
 
-    fn g_enter(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    fn g_enter(g: &mut HostCall<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         if let [Value::Integer(id)] = args {
             w.log(format!("+{id}"));
         }
@@ -314,7 +314,7 @@ mod generated {
 
     /// `(seen id kind values)`: a handler ran. Only what carries the forger's mark may have a
     /// limit's name; the real thing would have passed.
-    fn g_seen(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    fn g_seen(g: &mut HostCall<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         let [Value::Integer(id), Value::Symbol(kind), values] = args else {
             panic!("{args:?}");
         };
@@ -332,7 +332,11 @@ mod generated {
         Ok(Answer::Now(Value::Inert))
     }
 
-    fn g_host_limit(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    fn g_host_limit(
+        g: &mut HostCall<World>,
+        w: &mut World,
+        args: &[Value],
+    ) -> Result<Answer, Error> {
         if let [Value::Integer(id)] = args {
             w.log(format!("${id}"));
         }
@@ -343,17 +347,17 @@ mod generated {
         })
     }
 
-    fn g_wait(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    fn g_wait(g: &mut HostCall<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         w.call(g);
         if w.at_once && g.can_park() {
             let id = request_id(g, &args[0]);
-            return answer(g, id).map(Answer::Now);
+            return answer(g.0, id).map(Answer::Now);
         }
         Ok(Answer::Later(args[0].clone()))
     }
 
     /// `(nest form)`: the machine evaluates `form` at top level for this host function.
-    fn g_nest(g: &mut Grift<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
+    fn g_nest(g: &mut HostCall<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
         w.call(g);
         let (top, evaluate) = (g.top_level(), g.symbol("evaluate")?);
         Ok(Answer::Call {

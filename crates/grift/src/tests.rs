@@ -7,7 +7,7 @@
 
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
-use crate::{Answer, Error, Grift, Interrupter, Operative, OperativeKind, Value, local};
+use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
@@ -670,7 +670,7 @@ fn collection_pays_for_what_it_walks() {
     // for its start: a deep stack, gone when the cleanup is installed, and a collection just
     // before the cleanup starts.
     define(&mut g, "collect-always", |g, _, _| {
-        g.heap.stress = true;
+        g.0.heap.stress = true;
         Ok(crate::Answer::Now(Value::Inert))
     });
     let cleanup = "(define! down (lambda! (n) (if! (same? n 0) 0 (add 1 (down (subtract n 1))))))
@@ -1226,7 +1226,7 @@ impl Comparison<'_> {
 
 /// `(note x)`: logs x as it prints, and gives it back: the order and number of evaluations.
 fn note(
-    g: &mut Grift<Vec<String>>,
+    g: &mut HostCall<Vec<String>>,
     log: &mut Vec<String>,
     args: &[Value],
 ) -> Result<Answer, Error> {
@@ -1241,7 +1241,7 @@ fn note(
 
 /// What a host might hand back wrongly: an object's reference in another kind's variant.
 fn malformed(
-    g: &mut Grift<Vec<String>>,
+    g: &mut HostCall<Vec<String>>,
     _: &mut Vec<String>,
     args: &[Value],
 ) -> Result<Answer, Error> {
@@ -1559,13 +1559,13 @@ fn boundary_cases() -> Vec<String> {
 /// Asks for a stop of the run in progress, then searches `(search text pattern 0)` with no step of
 /// the machine around it: a long search must find the stop itself, in whichever phase it is.
 fn searches_with_a_stop_waiting(
-    g: &mut Grift<Interrupter>,
+    g: &mut HostCall<Interrupter>,
     stop: &mut Interrupter,
     args: &[Value],
 ) -> Result<Answer, Error> {
     assert!(stop.stop(), "a run to stop");
     let (text, pattern) = (g.import(&args[0]).unwrap(), g.import(&args[1]).unwrap());
-    match g.search_directly(text, pattern) {
+    match g.0.search_directly(text, pattern) {
         Err(e) => assert_eq!(kind(g, &g.export_error(e)), "interrupted"),
         Ok(v) => panic!("the search went on past a stop and answered {v:?}"),
     }
@@ -1598,7 +1598,7 @@ fn a_long_search_finds_a_stop_by_itself() {
 /// Asks for a stop of the run in progress, then writes the value it was given: the printer must
 /// find the stop by what it has written, however few items that took.
 fn writes_with_a_stop_waiting(
-    g: &mut Grift<Interrupter>,
+    g: &mut HostCall<Interrupter>,
     stop: &mut Interrupter,
     args: &[Value],
 ) -> Result<Answer, Error> {
@@ -1721,7 +1721,11 @@ impl std::fmt::Write for Discard {
 
 /// Forces its run, then describes into no room at all an error whose values and trace a report
 /// must check before it writes: the checking is work like any other, which the force ends.
-fn checks_with_a_force_waiting(g: &mut Grift, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+fn checks_with_a_force_waiting(
+    g: &mut HostCall<()>,
+    _: &mut (),
+    _: &[Value],
+) -> Result<Answer, Error> {
     let mut e = g.error("example", &vec![Value::Inert; 8_192]);
     e.trace = vec![Value::Inert; 8_192];
     assert!(g.interrupter().force());

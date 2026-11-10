@@ -5,9 +5,8 @@
 //! at the top of the loop and before a host's evaluation or call needs its first slot, with that
 //! state, the root contexts and the new call's checked inputs as its roots. Allocation never
 //! collects: Rust locals stay valid until the next run entry or machine safe point. The loop
-//! checks for a stop just after each step. A run is over when its frames are gone, and a run a
-//! host function starts inside a run is a machine of its own, the caller's waiting whole, a root
-//! of the collector, until it ends.
+//! checks for a stop just after each step. A run is over when its frames are gone. A host
+//! function begins none: its [`HostCall`] has no way to begin one.
 //!
 //! A run ends one way: an error unwinds it. An error the host or the machine began is a limit,
 //! whatever its kind is called, and two things follow: handlers pass it, and when a new error meets
@@ -22,7 +21,7 @@ use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
 use crate::interrupt::Control;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
-use crate::{Answer, Entry, Grift, collected, context_kind};
+use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
 use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
@@ -422,8 +421,8 @@ impl Default for Machine {
     }
 }
 
-/// Held while a host function runs: if it doesn't return to the interpreter it was called from,
-/// by a panic or by replacing it, that interpreter's run ends, and its next one clears its machine.
+/// Held while a host function runs: if it panics, the run ends, and the next one clears its
+/// machine.
 struct Hosting(Option<Arc<Control>>);
 
 impl Drop for Hosting {
@@ -820,18 +819,12 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    /// Every way into a run comes here first. One inside a host call is refused, `cannot-nest`: it
-    /// would stack the program's depth on the host function's Rust frame, where a host function
-    /// answers [`Answer::Call`] instead. Then, as the run may need slots before reaching the
+    /// Every way into a run comes here first: as the run may need slots before reaching the
     /// machine loop, collect first if due, or after a peak, with its checked inputs as roots.
-    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Result<(), Error> {
-        if self.control.running() {
-            return Err(Error::new(K::CannotNest, &[]));
-        }
+    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) {
         if self.heap.due_before_run() {
             self.collect(current);
         }
-        Ok(())
     }
 
     // Root iterators and marking temporaries belong only to collection.
@@ -867,18 +860,7 @@ impl<T> Grift<T> {
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let arguments = collected(given.iter().map(|&v| self.export(v)))?;
         let mut hosting = Hosting(Some(Arc::clone(&self.control)));
-        let v = f(self, state, &arguments);
-        // Replaced: the run is over, and what is on this machine is no part of it. The replaced
-        // interpreter's run ends as `hosting` drops. Nothing else ends a run in a host call, which
-        // begins none.
-        let same = hosting
-            .0
-            .as_ref()
-            .is_some_and(|c| Arc::ptr_eq(c, &self.control));
-        if !same {
-            self.control.end();
-            return Err(Error::new(K::ForeignValue, &[]));
-        }
+        let v = f(&mut HostCall::from(&mut *self), state, &arguments);
         hosting.0 = None;
         self.machine.arguments.truncate(base);
         self.answered(v)

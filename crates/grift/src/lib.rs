@@ -144,15 +144,70 @@ impl Hash for Owner {
     fn hash<H: Hasher>(&self, _: &mut H) {}
 }
 
-/// A host function. It receives the interpreter, the host's state (the one passed to
-/// [`Grift::evaluate`], [`Grift::call`] or the like) and the evaluated arguments, and gives its
-/// [`Answer`]. It begins no run of its own: inside a host call, `evaluate`, `call` and every other
-/// way in are the error `cannot-nest`, for a run there would stack the program's depth on this
-/// function's Rust frame. To have grift call something, it answers [`Answer::Call`]. One that
-/// panics ends the run it was called from: the panic goes on to the host and no cleanup runs. One
-/// that replaces the interpreter it was given ends the run too: the interpreter answers
-/// `foreign-value`. Either way the interpreter starts its next evaluation afresh.
-pub type HostFunction<T> = fn(&mut Grift<T>, &mut T, &[Value]) -> Result<Answer, Error>;
+/// A host function. It receives a [`HostCall`] on the interpreter, the host's state (the one
+/// passed to [`Grift::evaluate`], [`Grift::call`] or the like) and the evaluated arguments, and
+/// gives its [`Answer`]. It begins no run of its own: a `HostCall` has the values, not `evaluate`,
+/// `call` or any other way in, for a run there would stack the program's depth on this function's
+/// Rust frame. To have grift call something, it answers [`Answer::Call`]. One that panics ends the
+/// run it was called from: the panic goes on to the host, no cleanup runs, and the interpreter
+/// starts its next evaluation afresh.
+///
+/// ```compile_fail,E0599
+/// let mut g: grift::Grift = grift::Grift::new()?;
+/// g.host_function("f", |g, s, args| g.call(s, &args[0], &[]).map(grift::Answer::Now))?;
+/// # Ok::<(), grift::Error>(())
+/// ```
+pub type HostFunction<T> = fn(&mut HostCall<'_, T>, &mut T, &[Value]) -> Result<Answer, Error>;
+
+/// What a [`HostFunction`] is given: the interpreter it was called from, without a way to begin a
+/// run. It reads as a [`Grift`] does, and makes, binds and keeps values with the methods below,
+/// each the `Grift` method of its name.
+pub struct HostCall<'a, T>(&'a mut Grift<T>);
+
+/// One outside a run, for a helper the host shares with its host functions.
+impl<'a, T> From<&'a mut Grift<T>> for HostCall<'a, T> {
+    fn from(g: &'a mut Grift<T>) -> HostCall<'a, T> {
+        HostCall(g)
+    }
+}
+
+impl<T> std::ops::Deref for HostCall<'_, T> {
+    type Target = Grift<T>;
+    fn deref(&self) -> &Grift<T> {
+        self.0
+    }
+}
+
+/// The `Grift` methods a [`HostCall`] has that change the interpreter.
+macro_rules! host_call {
+    ($(fn $name:ident(&mut self $(, $a:ident: $t:ty)*) -> $r:ty;)*) => {
+        impl<T> HostCall<'_, T> {
+            $(
+                #[doc = concat!("[`Grift::", stringify!($name), "`].")]
+                pub fn $name(&mut self $(, $a: $t)*) -> $r {
+                    self.0.$name($($a),*)
+                }
+            )*
+        }
+    };
+}
+
+host_call! {
+    fn context(&mut self, parent: Option<&Value>) -> Result<Value, Error>;
+    fn private_context(&mut self) -> Result<Value, Error>;
+    fn define(&mut self, name: &str, v: Value) -> Result<(), Error>;
+    fn bind(&mut self, context: &Value, parameters: &Value, value: Value) -> Result<(), Error>;
+    fn symbol(&mut self, name: &str) -> Result<Symbol, Error>;
+    fn error(&mut self, kind: &str, values: &[Value]) -> Error;
+    fn string(&mut self, s: &str) -> Result<Value, Error>;
+    fn bytes(&mut self, b: &[u8]) -> Result<Value, Error>;
+    fn pair(&mut self, a: Value, b: Value) -> Result<Value, Error>;
+    fn list(&mut self, values: &[Value]) -> Result<Value, Error>;
+    fn read(&mut self, src: &str) -> Result<Value, Error>;
+    fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error>;
+    fn keep(&mut self, v: Value) -> Result<Kept, Error>;
+    fn release(&mut self, k: Kept) -> Result<(), (Error, Kept)>;
+}
 
 /// What a [`HostFunction`] answers.
 #[derive(Debug, PartialEq)]
@@ -180,8 +235,7 @@ pub enum Answer {
     /// use grift::{Answer, Grift, Value};
     /// let mut g: Grift = Grift::new()?;
     /// // `(twice f x)` is `(f (f x))`: the first call's value goes to `again`, saved with `f`.
-    /// let twice = g.host_function("twice", |g, s, args| {
-    ///     assert!(g.call(s, &args[0], &args[1..2]).is_err()); // `cannot-nest`: no run in here
+    /// let twice = g.host_function("twice", |_, _, args| {
     ///     Ok(Answer::Call {
     ///         function: args[0].clone(),
     ///         arguments: vec![args[1].clone()],
@@ -414,9 +468,8 @@ impl<T> Grift<T> {
     /// Returns the last form's value (`#inert` for no forms). Nothing is evaluated if `src`
     /// doesn't read. Host functions get `state`. [`Grift::evaluate_in`] names the source.
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
-        let forms = self
-            .prepare(std::iter::empty())
-            .and_then(|()| self.read_to_run(src, None, false));
+        self.prepare(std::iter::empty());
+        let forms = self.read_to_run(src, None, false);
         let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
         self.exported(done)
     }
@@ -486,7 +539,7 @@ impl<T> Grift<T> {
         parks: bool,
     ) -> Result<local::Value, local::Error> {
         let c = self.context_of(context)?;
-        self.prepare(std::iter::once(local::Value::Context(c)))?;
+        self.prepare(std::iter::once(local::Value::Context(c)));
         let source = self.intern(source)?;
         let forms = self.read_to_run(src, Some(source), library)?;
         self.evaluate_forms(Some(state), forms, c, parks)
@@ -510,8 +563,7 @@ impl<T> Grift<T> {
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
     /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
-    /// Host functions get `state`. Inside a host call this, and every other way to begin a run, is
-    /// `cannot-nest`: a host function answers [`Answer::Call`] instead.
+    /// Host functions get `state`; one that wants a call answers [`Answer::Call`] instead.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
         let done = self.run_call(state, f, arguments, false);
         self.exported(done)
@@ -1015,9 +1067,9 @@ impl<T> Grift<T> {
         before / WALK_CHECK != *walked / WALK_CHECK && self.control.asked()
     }
 
-    /// Starts a run, which `Control::end` then ends. Every way in has passed [`Grift::prepare`],
-    /// which refuses one inside a host call, so none is in progress; what a host function left
-    /// behind when it panicked or replaced the interpreter is over, and its machine is cleared.
+    /// Starts a run, which `Control::end` then ends. A host function, given a [`HostCall`], begins
+    /// none, so none is in progress; what one left behind when it panicked is over, and its
+    /// machine is cleared.
     pub(crate) fn begin_run(&mut self) {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
@@ -1136,7 +1188,7 @@ impl<T> Grift<T> {
             Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
             _ => None,
         });
-        self.prepare(std::iter::once(f).chain(roots))?;
+        self.prepare(std::iter::once(f).chain(roots));
         Ok(f)
     }
 

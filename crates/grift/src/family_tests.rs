@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use crate::evaluate::Primitive;
-use crate::{Answer, Error, Grift, Interrupter, Value, local};
+use crate::{Answer, Error, Grift, HostCall, Interrupter, Value, local};
 
 /// How much work a primitive does in one step.
 #[derive(Clone, Copy, PartialEq)]
@@ -123,10 +123,10 @@ struct Probe {
 }
 
 /// Asks for a stop, then runs the primitive on its operands with no machine step between them.
-fn probe(g: &mut Grift<Probe>, s: &mut Probe, args: &[Value]) -> Result<Answer, Error> {
+fn probe(g: &mut HostCall<Probe>, s: &mut Probe, args: &[Value]) -> Result<Answer, Error> {
     assert!(s.stop.stop(), "a run to stop");
     let args: Vec<local::Value> = args.iter().map(|a| g.import(a).unwrap()).collect();
-    s.said = match g.call_primitive(s.p, &args, g.built_in) {
+    s.said = match g.0.call_primitive(s.p, &args, g.built_in) {
         Err(e) => kind(g, &g.export_error(e)),
         Ok(_) => "done".into(),
     };

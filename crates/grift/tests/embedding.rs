@@ -15,7 +15,7 @@
     clippy::indexing_slicing
 )]
 
-use grift::{Answer, Error, Grift, Interrupter, Value};
+use grift::{Answer, Error, Grift, HostCall, Interrupter, Value};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -50,7 +50,7 @@ fn grift() -> G {
 }
 
 /// `(give)`: what the host put in its state.
-fn give(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
+fn give(g: &mut HostCall<Host>, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     h.give
         .take()
         .unwrap_or_else(|| Err(g.error("nothing-to-give", &[])))
@@ -58,19 +58,19 @@ fn give(g: &mut G, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
 }
 
 /// `(stop)`: stops the run it is part of, and returns.
-fn stop(g: &mut G, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
+fn stop(g: &mut HostCall<Host>, _: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     assert!(g.interrupter().stop(), "a run to stop");
     Ok(Answer::Now(Value::Inert))
 }
 
 /// `(started)`: tells the host's other thread that the run is under way.
-fn started(_: &mut G, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
+fn started(_: &mut HostCall<Host>, h: &mut Host, _: &[Value]) -> Result<Answer, Error> {
     h.started.take().unwrap().send(()).unwrap();
     Ok(Answer::Now(Value::Inert))
 }
 
 /// `(stop-and-fail)`: stops the run it is part of, and fails.
-fn stop_and_fail(g: &mut G, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
+fn stop_and_fail(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     g.interrupter().stop();
     let kind = match args.first() {
         Some(Value::Symbol(s)) => g.symbol_name(s)?.to_string(),
@@ -96,23 +96,14 @@ fn outcome(g: &G, r: Result<Value, Error>) -> String {
     }
 }
 
-/// A host whose functions leave the run they were called from: by a panic, or by replacing the
-/// interpreter.
-#[derive(Default)]
-struct Leaving {
-    saved: Option<Grift<Leaving>>,
-}
+/// A host whose function leaves the run it was called from, by a panic.
+struct Leaving;
 
-fn panics(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
+fn panics(_: &mut HostCall<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
     panic!("a host function's bug")
 }
 
-fn swap_out(g: &mut Grift<Leaving>, s: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
-    s.saved = Some(std::mem::replace(g, leaving()));
-    Ok(Answer::Now(Value::Integer(0)))
-}
-
-fn note(_: &mut Grift<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
+fn note(_: &mut HostCall<Leaving>, _: &mut Leaving, _: &[Value]) -> Result<Answer, Error> {
     Ok(Answer::Now(Value::Inert))
 }
 
@@ -120,7 +111,6 @@ fn leaving() -> Grift<Leaving> {
     let mut g = Grift::new().unwrap();
     for (name, f) in [
         ("panics", panics as grift::HostFunction<Leaving>),
-        ("swap-out", swap_out),
         ("note", note),
         ("listed", |g, _, xs| g.list(xs).map(Answer::Now)),
     ] {
@@ -162,7 +152,7 @@ fn a_run_its_host_function_left_is_over() {
         g.write(&e.trace[0], &mut place).unwrap();
         assert_eq!(place, "(#[applicative #[primitive first]] 1)", "{when}");
     };
-    let mut s = Leaving::default();
+    let mut s = Leaving;
     // A panic the host catches ends the run.
     let mut g = leaving();
     let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -195,12 +185,6 @@ fn a_run_its_host_function_left_is_over() {
         assert!(caught.is_err());
         quiet(&mut g, &mut s);
         program_s(&mut g, &mut s, by_list, "after the next run");
-        // Nor does library code that swapped the interpreter out, on the one swapped out.
-        let mut g = leaving();
-        let r = g.evaluate(&mut s, "(map swap-out (list 1))");
-        assert_eq!(kind(&g, &r), "foreign-value");
-        let mut parked = s.saved.take().unwrap();
-        program_s(&mut parked, &mut s, by_list, "swapped out by library code");
     }
     // The arguments call lists are the program's too: here they are evaluated as a combination.
     let mut g = leaving();
@@ -218,15 +202,6 @@ fn a_run_its_host_function_left_is_over() {
     let mut place = String::new();
     g.write(&e.trace[0], &mut place).unwrap();
     assert_eq!(place, "(#[applicative #[primitive first]] 1)", "called");
-    // Replaced: the run ends with foreign-value, and the rest of the program doesn't run.
-    let mut g = leaving();
-    let r = g.evaluate(&mut s, "(swap-out) (quote! rest)");
-    assert_eq!(kind(&g, &r), "foreign-value");
-    assert!(r.unwrap_err().trace.is_empty());
-    quiet(&mut g, &mut s);
-    // The one swapped out, put back: its run is over, and it runs the next.
-    let mut parked = s.saved.take().unwrap();
-    quiet(&mut parked, &mut s);
 }
 
 /// Makes `shared`, a few objects that are a tree of 2^50 leaves, then runs `step` on a thread of

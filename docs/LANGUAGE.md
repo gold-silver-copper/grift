@@ -303,7 +303,6 @@ its cleanups do.
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
 | `cannot-park` | a call that would wait came where nothing can be set aside: see Calls that wait | none |
-| `cannot-nest` | a host function began a run of its own, which would put the program's depth on its Rust stack; it hands grift the call to make instead | none |
 | `output-error` | a host's output refused what `write` or `describe` wrote: a host may pass it on | none |
 | any symbol | a program raised an error it made | the values given |
 
@@ -314,7 +313,6 @@ at the `(` or `"` left open (the innermost, for lists), not at the end of the te
 as a number and isn't one; `unknown-constant` at a `#` name that isn't one; `bad-byte` at a value
 inside `#bytes(` that isn't an integer 0 to 255. `(read-form "(a\n (b" 0)`
 is `parse-error unclosed-list 2 2`.
-A host function that replaces its interpreter ends the run with `foreign-value` too.
 
 The runner adds its own operations and its own kinds; [the README](../README.md#the-runner)
 describes each.
