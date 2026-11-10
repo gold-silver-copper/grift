@@ -148,6 +148,7 @@ def main():
     # SIGTERM (a cancelled CI job) unwinds like Ctrl-C, so the scratch copy is removed either way.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit("stopped"))
     scratch = tempfile.mkdtemp(prefix="grift-historic-")
+    env["TMPDIR"] = scratch  # what a killed test or rustdoc leaves goes with the scratch copy
     bad = []
     try:
         tree = os.path.join(scratch, "tree")
@@ -159,7 +160,8 @@ def main():
             sys.exit(f"the unpatched tree doesn't build its tests: {why}")
         start = time.monotonic()
         found = run_tests(tree, specs, start + limit * max(1, len(gated)), env)
-        wrong = [f"{show(s)} {r}" for s, r in found.items() if r != "passed"]
+        wrong = [f"{show(s)} {'does not exist (the index is stale)' if r == 'missing' else r}"
+                 for s, r in found.items() if r != "passed"]
         print(f"unpatched: {len(specs)} tests in {time.monotonic() - start:.0f} s"
               + (f"; not passing: {'; '.join(wrong)}" if wrong else ", all pass"))
         if wrong:
