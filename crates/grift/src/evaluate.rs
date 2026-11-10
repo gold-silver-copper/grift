@@ -1226,26 +1226,10 @@ impl<T> Grift<T> {
             P::Add | P::Subtract | P::Multiply | P::Divide | P::Remainder | P::LessThan => {
                 self.arithmetic(p, x, y)?
             }
+            P::Power => self.arithmetic(p, x, y)?,
             P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr | P::ShiftLeft | P::ShiftRight => {
                 bitwise(p, x, y)?
             }
-            P::Power => match (x, y) {
-                (Value::Integer(_), Value::Integer(b)) if b < 0 => {
-                    return Err(Error::new(K::RangeError, &[x, y]));
-                }
-                (Value::Integer(a), Value::Integer(b)) => {
-                    // Past u32's exponents only 0 and ±1 have powers that fit, and those the
-                    // exponent's parity decides, as it does for the largest u32 of that parity.
-                    let b = u32::try_from(b).unwrap_or(if b & 1 == 0 {
-                        u32::MAX - 1
-                    } else {
-                        u32::MAX
-                    });
-                    let n = a.checked_pow(b);
-                    Value::Integer(n.ok_or_else(|| Error::new(K::Overflow, &[x, y]))?)
-                }
-                _ => Value::Float(float_of(x)?.powf(float_of(y)?)),
-            },
             P::SquareRoot => Value::Float(float_of(x)?.sqrt()),
             P::Sine => Value::Float(float_of(x)?.sin()),
             P::Cosine => Value::Float(float_of(x)?.cos()),
@@ -1554,8 +1538,9 @@ impl<T> Grift<T> {
 
     /// Arithmetic and comparison, as Rust has them, on two integers or two floats, and `less-than?`
     /// on two strings or two bytes values, in byte order. Integer arithmetic is checked: `divide` and
-    /// `remainder` are Rust's `/` and `%`, truncating, and fail where Rust's would panic. Float
-    /// arithmetic is IEEE.
+    /// `remainder` are Rust's `/` and `%`, truncating, and fail where Rust's would panic, and
+    /// `power` takes no negative exponent, a `range-error`. Float arithmetic is IEEE, and `power`
+    /// is Rust's `powf`.
     #[inline]
     fn arithmetic(&self, p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
         use Primitive as P;
@@ -1569,6 +1554,12 @@ impl<T> Grift<T> {
                 }
                 P::Divide => a.checked_div(b),
                 P::Remainder => a.checked_rem(b),
+                P::Power if b < 0 => return Err(Error::new(K::RangeError, &[x, y])),
+                // Past u32's exponents only 0 and ±1 have powers that fit, and those the
+                // exponent's parity decides, as it does for the largest u32 of that parity.
+                P::Power => {
+                    a.checked_pow(u32::try_from(b).unwrap_or(u32::MAX - u32::from(b % 2 == 0)))
+                }
                 _ => return Ok(Value::Boolean(a < b)),
             },
             (Value::Float(a), Value::Float(b)) => {
@@ -1578,6 +1569,7 @@ impl<T> Grift<T> {
                     P::Multiply => a * b,
                     P::Divide => a / b,
                     P::Remainder => a % b,
+                    P::Power => a.powf(b),
                     _ => return Ok(Value::Boolean(a < b)),
                 }));
             }
