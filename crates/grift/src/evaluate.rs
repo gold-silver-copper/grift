@@ -447,8 +447,7 @@ impl<T> Grift<T> {
         parks: bool,
     ) -> Result<Value, Error> {
         let f = self.combiner_of(f)?;
-        self.settled();
-        let operands = self.list_local(arguments)?;
+        let operands = self.list_local(arguments, false)?;
         let context = self.heap.context(None)?;
         // The run's own machine, whose argument stack starts empty.
         let call = What::Combine {
@@ -791,8 +790,9 @@ impl<T> Grift<T> {
     /// `values` and `trace`. The trace is the error's shared list with the places added since on
     /// its front, so this costs those places only.
     fn handle(&mut self, e: Error, handler: Value, context: Reference) -> Result<Mode, Error> {
-        let values = self.list_local(&e.values)?;
-        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l))?;
+        let library = self.machine.library;
+        let values = self.list_local(&e.values, library)?;
+        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3).map_err(|_| Error::oom())?;
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
@@ -802,7 +802,7 @@ impl<T> Grift<T> {
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Trace.into(), trace);
         let v = Value::Context(self.heap.alloc(Object::Context(None, fields))?);
-        let operands = self.list_local(&[v])?;
+        let operands = self.list_local(&[v], library)?;
         self.machine.handed = Some((trace, seen));
         self.combine(handler, operands, context)
     }
@@ -860,7 +860,6 @@ impl<T> Grift<T> {
             .is_some_and(|c| Arc::ptr_eq(c, &self.control));
         if !same {
             self.control.end();
-            self.settled();
             return Err(Error::new(K::ForeignValue, &[]));
         }
         hosting.0 = None;
@@ -907,7 +906,7 @@ impl<T> Grift<T> {
         then: Option<(Value, Vec<Value>)>,
     ) -> Result<Mode, Error> {
         let function = self.combiner_of(function)?;
-        let operands = self.list_local(arguments)?;
+        let operands = self.list_local(arguments, false)?;
         let at = self.machine.here;
         if let Some((then, saved)) = then {
             let combiner = self.combiner_of(then)?;
@@ -1014,7 +1013,7 @@ impl<T> Grift<T> {
         let mut list = Value::EmptyList;
         while self.machine.arguments.len() > base {
             let x = self.machine.arguments.pop().unwrap_or(Value::EmptyList);
-            list = self.pair_local(x, list)?;
+            list = self.pair_local(x, list, self.machine.library)?;
         }
         Ok(list)
     }
@@ -1151,7 +1150,7 @@ impl<T> Grift<T> {
             if self.walk_stopped(&mut walked) {
                 return Err(Error::interrupted());
             }
-            self.pair_local(x, list)
+            self.pair_local(x, list, self.machine.library)
         })
     }
 
@@ -1209,7 +1208,7 @@ impl<T> Grift<T> {
                 }
             }
             P::Names => self.names_list(context_kind(x)?)?,
-            P::Pair => self.pair_local(x, y)?,
+            P::Pair => self.pair_local(x, y, self.machine.library)?,
             P::First | P::Rest => match x {
                 Value::Pair(r) => {
                     #[expect(clippy::disallowed_methods, reason = "one pair: first or rest")]
@@ -1311,15 +1310,16 @@ impl<T> Grift<T> {
                 let text = std::mem::take(text);
                 let read = offset
                     .filter(|&i| text.is_char_boundary(i))
-                    .map(|i| self.read_form(&text, i, 1, None, &mut 0));
+                    .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
                 if let Object::String(s) = self.heap.get_mut(r)? {
                     *s = text;
                 }
                 let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
                 match read? {
-                    Some((form, place, _)) => {
-                        self.list_local(&[form, integer(place.start), integer(place.end)])?
-                    }
+                    Some((form, place, _)) => self.list_local(
+                        &[form, integer(place.start), integer(place.end)],
+                        self.machine.library,
+                    )?,
                     None => Value::EmptyList,
                 }
             }
@@ -1598,17 +1598,19 @@ impl<T> Grift<T> {
     }
 
     /// A new list of `xs`.
-    pub(crate) fn list_local(&mut self, xs: &[Value]) -> Result<Value, Error> {
+    pub(crate) fn list_local(&mut self, xs: &[Value], library: bool) -> Result<Value, Error> {
         xs.iter()
             .rev()
-            .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l))
+            .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l, library))
     }
 
-    /// A new pair, the library's if the combination being combined is.
-    pub(crate) fn pair_local(&mut self, a: Value, b: Value) -> Result<Value, Error> {
+    /// A new pair, the library's if `library`: what the machine makes is the library's if the
+    /// combination being combined is, what the host makes is the program's, and the reader says
+    /// whose text it reads.
+    pub(crate) fn pair_local(&mut self, a: Value, b: Value, library: bool) -> Result<Value, Error> {
         let origin = Origin {
             place: None,
-            library: self.machine.library,
+            library,
             outer: false,
         };
         Ok(Value::Pair(self.heap.alloc(Object::Pair(a, b, origin))?))

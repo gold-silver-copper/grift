@@ -110,17 +110,10 @@ impl<T> Grift<T> {
         source: Option<Symbol>,
         library: bool,
     ) -> Result<Value, Error> {
-        let around = std::mem::replace(&mut self.machine.library, library);
-        let forms = self.read_all(src, source);
-        self.machine.library = around;
-        forms
-    }
-
-    fn read_all(&mut self, src: &str, source: Option<Symbol>) -> Result<Value, Error> {
         let mut forms = List::new(0, 1);
         let (mut at, mut line, mut walked) = (0, 1, 0);
         while let Some((form, place, after)) = self
-            .read_form(src, at, line, source, &mut walked)
+            .read_form(src, at, line, source, &mut walked, library)
             .map_err(|mut e| {
                 // With no memory to spare the values stay as they are, as for any location.
                 if let Some(source) = source
@@ -131,7 +124,7 @@ impl<T> Grift<T> {
                 e
             })?
         {
-            self.add(&mut forms, form)?;
+            self.add(&mut forms, form, library)?;
             (at, line) = (place.end, after);
         }
         Ok(forms.head)
@@ -140,7 +133,8 @@ impl<T> Grift<T> {
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
     /// form, where it is and the line it ends on, or `None` if only space and comments are left.
     /// Each byte read is a step of the walk `walked`, which a stop ends between one item and the
-    /// next: a space, a comment, a parenthesis, a string or a token.
+    /// next: a space, a comment, a parenthesis, a string or a token. The form is the library's code
+    /// if `library`, else the program's.
     pub(crate) fn read_form(
         &mut self,
         src: &str,
@@ -148,6 +142,7 @@ impl<T> Grift<T> {
         line: u32,
         source: Option<Symbol>,
         walked: &mut usize,
+        library: bool,
     ) -> Result<Option<(Value, Range<usize>, u32)>, Error> {
         let mut cur = Cursor {
             src,
@@ -239,13 +234,13 @@ impl<T> Grift<T> {
                     };
                     push(bytes, byte.ok_or_else(|| fail(K::BadByte))?)?;
                 }
-                None => self.add(list, datum)?,
+                None => self.add(list, datum, library)?,
             }
         }
     }
 
     /// Adds `datum` to the end of a list being read: an element, or its tail after a `.`.
-    fn add(&mut self, list: &mut List, datum: Value) -> Result<(), Error> {
+    fn add(&mut self, list: &mut List, datum: Value, library: bool) -> Result<(), Error> {
         if list.dot == Dot::Tail {
             if let Value::Pair(r) = list.last {
                 self.set_rest(r, datum)?;
@@ -253,7 +248,7 @@ impl<T> Grift<T> {
             list.dot = Dot::Done;
             return Ok(());
         }
-        let pair = self.pair_local(datum, Value::EmptyList)?;
+        let pair = self.pair_local(datum, Value::EmptyList, library)?;
         match list.last {
             Value::Pair(r) => self.set_rest(r, pair)?,
             _ => list.head = pair,

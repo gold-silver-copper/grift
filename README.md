@@ -219,8 +219,9 @@ fn main() -> Result<(), Error> {
   or call uses memory, and its `Symbol` is then `stale-value`;
   `lookup(&context, &symbol)`, `None` where nothing binds it; `names(&context)`, sorted;
   `define(name, value)` at top level. `evaluate_library_in`, as `evaluate_in`, for a host's own
-  grift code such as a prelude: its code, and the code it builds as it runs, count as library code,
-  as grift's own: traces skip it. Code a program reads or builds is the program's.
+  grift code such as a prelude: its code, and the code it builds or reads with `read-form` as it
+  runs, count as library code, as grift's own: traces skip it. Code a program reads or builds is the
+  program's, and so is code a host function builds, whatever called it.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out, bytes)`,

@@ -731,13 +731,11 @@ impl<T> Grift<T> {
         self.exported(made)
     }
 
-    /// `heads` in front of `tail`, built by the host: what a run a host function left behind
-    /// marked is over first, so the pairs are the program's.
+    /// `heads` in front of `tail`, built by the host, so the pairs are the program's.
     fn pairs(&mut self, heads: &[Value], tail: local::Value) -> Result<local::Value, local::Error> {
-        self.settled();
         heads.iter().rev().try_fold(tail, |rest, v| {
             let v = self.import(v)?;
-            self.pair_local(v, rest)
+            self.pair_local(v, rest, false)
         })
     }
 
@@ -1004,19 +1002,8 @@ impl<T> Grift<T> {
     pub(crate) fn begin_run(&mut self) {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
-        self.settled();
+        self.machine.clear();
         self.control.begin();
-    }
-
-    /// Whether no run is in progress; if none is, what a host function left on the machines when
-    /// it panicked or replaced the interpreter is over, so nothing the host makes now takes its
-    /// mark. A machine is empty between runs.
-    pub(crate) fn settled(&mut self) -> bool {
-        let none = !self.control.running();
-        if none {
-            self.machine.clear();
-        }
-        none
     }
 
     /// The context `v` is, or a `type-error`.
