@@ -1,5 +1,8 @@
 # Contributing
 
+What holds today is in [`RULES.md`](RULES.md), each rule linked to its decision; a change that
+alters a rule updates it there in the same PR.
+
 ## Tests grow no faster than the code
 
 CI runs `scripts/test-ratio.py`: test characters per production character in `crates/` may not rise

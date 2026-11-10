@@ -9,6 +9,7 @@ language with a Unix runner.
 - [`docs/VISION.md`](docs/VISION.md), the guide: what grift is and the decisions behind it.
 - [`docs/LANGUAGE.md`](docs/LANGUAGE.md), the reference: every value, primitive, library form and
   error kind, and where grift differs from Kernel.
+- [`RULES.md`](RULES.md): the rules and designs that hold today, each linked to its decision.
 - [`DECISIONS.md`](DECISIONS.md): each decision, append-only.
 
 The core crate has no dependencies and no `unsafe` code; it does no I/O, starts no threads and

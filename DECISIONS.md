@@ -1,5 +1,7 @@
 # Decisions
 
+What holds today, without the history, is in [`RULES.md`](RULES.md).
+
 Append-only. A decision is reopened only with new evidence from use, in a new entry that names
 the one it replaces.
 
