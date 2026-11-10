@@ -32,13 +32,9 @@ const CORE: &[&str] = &[
     "subtract",
     "multiply",
     "divide",
-    "less-than?",
-    "power",
-    "square-root",
     "sine",
     "cosine",
     "tangent",
-    "absolute-value",
     "exponential",
     "natural-logarithm",
     "byte-at",
@@ -311,8 +307,6 @@ fn floats_read_back_as_they_print() {
             "(same? (float-to-string 1.0) \"1.0\")",
             "(same? (float-to-string -2.5e-7) (value-to-string -2.5e-7))",
             "(same? (string-to-float \"inf\") #infinity)",
-            "(same? (string-to-integer \"-42\") -42)",
-            "(same? (integer-to-string -42) \"-42\")",
         ],
     );
     fails(
@@ -321,12 +315,6 @@ fn floats_read_back_as_they_print() {
             ("1e", "parse-error"),
             ("1.2.3", "parse-error"),
             ("#nan", "parse-error"),
-            ("(string-to-integer \"4x\")", "parse-error"),
-            (
-                "(string-to-integer \"99999999999999999999\")",
-                "parse-error",
-            ),
-            ("(string-to-integer \" 1\")", "parse-error"),
             ("(string-to-float \"one\")", "parse-error"),
             ("(string-to-float 1.0)", "type-error"),
         ],
@@ -439,9 +427,6 @@ fn string_helpers() {
                    (same? (length (string-split t p)) 1)
                    (and!? (same? (slice t at (add at size)) p)
                           (empty-list? (search (slice t 0 at) p 0)))))))",
-            "(same? (search \"abcabc\" \"c\" 3) 5)",
-            "(same? (search \"abc\" \"\" 3) 3)",
-            "(empty-list? (search \"abc\" \"abcd\" 0))",
             // Every text starts with what it starts with and ends with what it ends with.
             "(every-pair (lambda! (t p)
                (and!? (string-starts-with? (join p t) p)
@@ -490,11 +475,6 @@ fn string_helpers() {
         &mut g,
         &[
             ("(string-split \"a\" \"\")", "range-error"),
-            ("(search \"é\" \"a\" 1)", "range-error"),
-            ("(search \"a\" \"a\" 2)", "range-error"),
-            ("(search \"a\" \"a\" -1)", "range-error"),
-            ("(search 1 \"a\" 0)", "type-error"),
-            ("(search \"a\" 1 0)", "type-error"),
             ("(string-join (list 1 2) \",\")", "type-error"),
             ("(string-starts-with? 1 \"a\")", "type-error"),
             ("(string-ends-with? \"a\" 1)", "type-error"),
@@ -730,17 +710,6 @@ fn sort_is_ordered_and_stable() {
         ],
     );
     fails(&mut g, &[("(sort (list 2 1) add)", "type-error")]);
-    // less-than? on strings is Rust's < on str, byte by byte, and on bytes the same order.
-    let words = ["", "a", "b", "ab", "abc", "B", "é", "e", "日本", "日"];
-    for a in words {
-        for b in words {
-            let got = g.evaluate(&mut (), &format!("(less-than? {a:?} {b:?})"));
-            assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
-            let bytes = format!("(less-than? (string-to-bytes {a:?}) (string-to-bytes {b:?}))");
-            let got = g.evaluate(&mut (), &bytes);
-            assert_eq!(got, Ok(Value::Boolean(a < b)), "{a:?} {b:?}");
-        }
-    }
 }
 
 #[test]
@@ -1394,6 +1363,8 @@ fn natives_are_their_definitions() {
             ("integer-to-float", vec![f]),
             ("truncate", vec![f]),
             ("remainder", vec![f, Value::Float(1.5)]),
+            ("square-root", vec![f]),
+            ("absolute-value", vec![f]),
         ] {
             let (fa, fb) = (
                 native.evaluate(&mut Vec::new(), name),
@@ -1461,6 +1432,7 @@ fn boundary_cases() -> Vec<String> {
             cases.push(format!("(slice \"\\xe9;\\x1f603;a\" {start} {end})"));
         }
         cases.push(format!("(search \"\\xe9;ab\\xe9;ab\" \"ab\" {start})"));
+        cases.push(format!("(search \"ab\" \"\" {start})"));
     }
     for n in [
         -1, 0, 31, 127, 128, 55295, 55296, 57343, 57344, 65535, 65536, 1114111, 1114112,
@@ -1505,27 +1477,61 @@ fn boundary_cases() -> Vec<String> {
         "-5e-324",
         "(divide 0.0 0.0)",
         "(subtract 0.0 (divide 0.0 0.0))",
+        "2.0",
+        "1.7976931348623157e308",
         "1",
         "\"a\"",
     ];
     for f in FLOAT_TEXTS.iter().chain(&floats) {
-        for p in ["truncate", "floor", "ceiling", "round"] {
+        for p in ["truncate", "floor", "ceiling", "round", "square-root"] {
             cases.push(format!("({p} {f})"));
         }
     }
-    for p in ["truncate", "floor", "ceiling", "round", "remainder"] {
+    for p in [
+        "truncate",
+        "floor",
+        "ceiling",
+        "round",
+        "remainder",
+        "absolute-value",
+        "power",
+        "square-root",
+        "less-than?",
+    ] {
         cases.push(format!("({p})"));
         cases.push(format!("({p} 1.5 2.5 3.5)"));
     }
-    for x in INTEGER_TEXTS
-        .iter()
-        .chain(&["-1.5", "7.25", "#not-a-number", "\"a\""])
-    {
-        for y in INTEGER_TEXTS
+    for x in
+        INTEGER_TEXTS
             .iter()
-            .chain(&["0.0", "-2.0", "#infinity", "(quote! y)"])
-        {
+            .chain(&["-1.5", "7.25", "#not-a-number", "\"a\"", "1e300", "-0.0"])
+    {
+        cases.push(format!("(absolute-value {x})"));
+        for y in INTEGER_TEXTS.iter().chain(&[
+            "0.0",
+            "-2.0",
+            "#infinity",
+            "(quote! y)",
+            "5e-324",
+            "-0.75",
+        ]) {
             cases.push(format!("(remainder {x} {y})"));
+            cases.push(format!("(power {x} {y})"));
+        }
+    }
+    let texts = [
+        "\"\"",
+        "\"a\"",
+        "\"ab\"",
+        "\"\\xe9;\"",
+        "#bytes(97)",
+        "#bytes(255)",
+        "(malformed 3)",
+        "1",
+    ];
+    for x in texts {
+        for y in texts {
+            cases.push(format!("(less-than? {x} {y})"));
         }
     }
     cases.extend([

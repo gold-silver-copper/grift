@@ -253,20 +253,114 @@
         ((or!? (less-than? 0.5 d) (same? d 0.5)) (add t 1.0))
         ((or!? (less-than? d -0.5) (same? d -0.5)) (subtract t 1.0))
         (#true t)))))
-; An integer remainder is what dividing leaves, with divide's errors; a float's is Rust's fmod.
+; Floats by sign: a zero's is its bit, read by same?.
+(define! negative? (lambda! (f) (or!? (less-than? f 0.0) (same? f -0.0))))
+(define! unsigned (lambda! (f) (if! (negative? f) (subtract 0.0 f) f)))
+(define! number? (lambda! (f) (or!? (less-than? f 1.0) (less-than? 0.0 f))))
+; absolute-value: an integer's, but the most negative's overflows; a float's without its sign, but
+; a not-a-number's sign bit no grift operation reads, so that one is the native's.
+(define! rust-absolute-value absolute-value)
+(define! absolute
+  (lambda! ((x))
+    (conditional!
+      ((same? x -9223372036854775808) (raise (error (quote! overflow) x)))
+      ((integer? x) (if! (less-than? x 0) (subtract 0 x) x))
+      ((and!? (float? x) (number? x)) (unsigned x))
+      ((float? x) (rust-absolute-value x))
+      (#true (type-failed x)))))
+; power: an integer's by squaring, as Rust's checked_pow, failing where the true power doesn't fit;
+; a float's is libm's powf, so the native's.
+(define! rust-power power)
+(define! powered
+  (lambda! ((a b))
+    (conditional!
+      ((not? (and!? (integer? a) (integer? b))) (apply rust-power (list a b)))
+      ((less-than? b 0) (raise (error (quote! range-error) a b)))
+      (#true (catch-kind! (raised a b 1) overflow #ignore (raise (error (quote! overflow) a b)))))))
+(define! raised
+  (lambda! (base n done)
+    (let! ((done (if! (same? (low-bit n) 1) (multiply done base) done)))
+      (if! (less-than? n 2) done (raised (multiply base base) (halved n) done)))))
+; square-root, correctly rounded as IEEE's: the float is m times 2^e, m an integer and e even,
+; and the root of m times 2^54 is found a bit at a time, whose remainder fits an integer, then
+; rounded at its last bit (a root is never halfway). A not-a-number is quietened, as any operation
+; does, and below zero is what any invalid operation gives.
+(define! rooted
+  (lambda! (f)
+    (conditional!
+      ((not? (number? f)) (add f 0.0))
+      ((less-than? f 0.0) (divide 0.0 0.0))
+      ((or!? (same? f 0.0) (same? f -0.0) (same? f #infinity)) f)
+      (#true (root-of f 0)))))
+(define! root-of
+  (lambda! (m e)
+    (conditional!
+      ((less-than? m 4503599627370496.0) (root-of (multiply m 2.0) (subtract e 1)))
+      ((not? (less-than? m 9007199254740992.0)) (root-of (divide m 2.0) (add e 1)))
+      (#true (root-from (float-to-integer m) e)))))
+(define! root-from
+  (lambda! (n e)
+    (if! (same? (low-bit e) 1)
+      (root-from (multiply n 2) (subtract e 1))
+      (exponent (integer-to-float (root-bits n 4503599627370496 54 0 0)) (subtract (divide e 2) 26)))))
+; One bit of the root q a step, with remainder r, from m's base-4 digits from p down, then zeros.
+(define! root-bits
+  (lambda! (m p n q r)
+    (if! (same? n 0)
+      (add (halved q) (low-bit q))
+      (let! ((d (if! (same? p 0) 0 (divide m p)))
+             (r (add (multiply r 4) d))
+             (t (add (multiply q 4) 1))
+             (m (subtract m (multiply d p))))
+        (if! (less-than? r t)
+          (root-bits m (divide p 4) (subtract n 1) (multiply q 2) r)
+          (root-bits m (divide p 4) (subtract n 1) (add (multiply q 2) 1) (subtract r t)))))))
+(define! exponent
+  (lambda! (f k)
+    (conditional!
+      ((same? k 0) f)
+      ((less-than? k 0) (exponent (divide f 2.0) (add k 1)))
+      (#true (exponent (multiply f 2.0) (subtract k 1))))))
+; An integer remainder is what dividing leaves, with divide's errors. A float's is fmod, exact:
+; what is left of |a| after taking |b| times each power of two from the largest that fits, which
+; each subtraction leaves exact, with a's sign. Where fmod gives a not-a-number, the native's.
 (define! rust-remainder remainder)
 (define! remaindered
   (lambda! ((a b))
-    (if! (and!? (integer? a) (integer? b))
-      (subtract a (multiply (divide a b) b))
-      (apply rust-remainder (list a b)))))
+    (conditional!
+      ((and!? (integer? a) (integer? b)) (subtract a (multiply (divide a b) b)))
+      ((and!? (float? a) (float? b) (less-than? (unsigned a) #infinity) (less-than? 0.0 (unsigned b)))
+       (let! ((x (left-of (unsigned a) (largest (unsigned b) (unsigned a)) (unsigned b))))
+         (if! (negative? a) (subtract -0.0 x) x)))
+      (#true (apply rust-remainder (list a b))))))
+(define! largest (lambda! (m x) (if! (less-than? x (multiply m 2.0)) m (largest (multiply m 2.0) x))))
+(define! left-of
+  (lambda! (x m y)
+    (if! (less-than? x y) x (left-of (if! (less-than? x m) x (subtract x m)) (divide m 2.0) y))))
+; less-than? on two strings or two bytes values: byte order, a text before every longer one it
+; begins; the rest is the native's, and the twins here compare by it.
+(define! rust-less-than? less-than?)
+(define! less-than? rust-less-than?)
+(define! ordered
+  (lambda! ((a b))
+    (if! (and!? (or!? (string? a) (bytes? a)) (same? (type-of a) (type-of b)))
+      (sequence! (byte-length a) (byte-length b) (before a b 0))
+      (apply rust-less-than? (list a b)))))
+(define! before
+  (lambda! (a b at)
+    (conditional!
+      ((not? (byte-at? b at)) #false)
+      ((not? (byte-at? a at)) #true)
+      ((same? (byte-at a at) (byte-at b at)) (before a b (add at 1)))
+      (#true (less-than? (byte-at a at) (byte-at b at))))))
 
 (define! meanings
   (record
     (quote! (select first rest lookup integer-to-string integer-to-float float-to-integer
              string-to-integer byte-length code-point-to-string slice search bitwise-and
              bitwise-or bitwise-exclusive-or shift-left shift-right string-to-bytes bytes-to-string
-             list-to-bytes bytes-to-list truncate floor ceiling round remainder))
+             list-to-bytes bytes-to-list truncate floor ceiling round remainder absolute-value power
+             square-root less-than?))
     (list (several 3 picked)
           (one (quote! pair) head)
           (one (quote! pair) tail)
@@ -294,4 +388,8 @@
           (one (quote! float) floored)
           (one (quote! float) ceiled)
           (one (quote! float) rounded)
-          (several 2 remaindered))))
+          (several 2 remaindered)
+          (several 1 absolute)
+          (several 2 powered)
+          (one (quote! float) rooted)
+          (several 2 ordered))))
