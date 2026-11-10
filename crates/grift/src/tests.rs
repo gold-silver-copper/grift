@@ -1668,6 +1668,26 @@ fn a_report_fits_its_budget_and_begins_with_kind_and_place() {
         .unwrap_err();
     let (_, text) = report(&g, &e, 4096);
     assert_eq!(text.lines().count(), 1, "{text:?}");
+    // A name is as wide as its escaped text: whole when that fits its quarter, else cut so the
+    // place still begins within it. Below 30 bytes the kind comes first, cut only by the budget.
+    for n in [25, 30] {
+        let kind = "\\x1;".repeat(n);
+        let raise =
+            format!("\n(raise (error (string-to-symbol \"{kind}\") (string-repeat \"v\" 999)))");
+        let e = g
+            .evaluate_in(&mut (), &top, "keys.grift", &raise)
+            .unwrap_err();
+        for bytes in [20, 400] {
+            let (_, text) = report(&g, &e, bytes);
+            let at = text.find(" at keys.grift:2").unwrap_or(bytes);
+            let fits = match bytes {
+                ..30 => kind.starts_with(&text),
+                _ if kind.len() <= bytes / 4 => text.starts_with(&kind) && at == kind.len(),
+                _ => at <= bytes / 4 && text[..at].ends_with("..."),
+            };
+            assert!(fits && text.len() <= bytes, "{n} in {bytes}: {text:?}");
+        }
+    }
 }
 
 /// A sink that takes everything and keeps nothing.

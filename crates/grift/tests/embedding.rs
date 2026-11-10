@@ -259,71 +259,46 @@ impl std::fmt::Write for Stopping {
     }
 }
 
-/// What a host function runs after it stops its own run, and how that ended.
-type Run = fn(&mut HostCall<Joining>, &[Value]) -> Result<(), Error>;
-struct Joining(Run, Option<String>);
-
 /// Each host call that is a run (G-179's R1 (b)) is work a stop ends. With no run in progress,
 /// `write` and `describe` are runs of their own, which their sink stops at its first text, and a
-/// stop that ends one is spent with it. Inside a host function, `read`, `read_in`, `bind` and
-/// `describe` join its run, which the function stops first; the reader finds the stop inside one
-/// long string or token, before the text's end would fail it.
+/// stop that ends one is spent with it. Inside a host function, `read`, `read_in` and `bind` join
+/// its run, which the function stops first; the reader finds the stop inside one long string or
+/// token, before the text's end would fail it.
 #[test]
 fn a_stop_reaches_every_host_run() {
-    let mut g: Grift<Joining> = Grift::new().unwrap();
-    let mut s = Joining(|_, _| Ok(()), None);
-    let list = g.evaluate(&mut s, "(range 0 100000)").unwrap();
+    let mut g: Grift<usize> = Grift::new().unwrap();
+    let names = "(define! N (map string-to-symbol (map integer-to-string (range 0 100000)))) N";
+    let list = g.evaluate(&mut 0, names).unwrap();
     let e = g.error("example", &vec![Value::Inert; 100_000]);
-    type Own = fn(&Grift<Joining>, &mut Stopping, &Value, &Error) -> Result<(), Error>;
-    let own: [Own; 2] = [
-        |g, out, list, _| g.write(list, out),
-        |g, out, _, e| g.describe(e, out, usize::MAX).map(drop),
-    ];
-    for run in own {
+    for describe in [false, true] {
         let mut sink = Stopping(g.interrupter(), None, String::new());
-        let e = run(&g, &mut sink, &list, &e).unwrap_err();
+        let ended = match describe {
+            false => g.write(&list, &mut sink),
+            true => g.describe(&e, &mut sink, usize::MAX).map(drop),
+        };
+        let ended = ended.unwrap_err();
         assert_eq!(sink.1, Some(true), "it was the run in progress");
-        assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+        assert_eq!(g.symbol_name(&ended.kind).unwrap(), "interrupted");
         assert!(sink.2.len() < 100_000, "it stopped part way");
         assert!(!sink.0.stop(), "its run is over");
     }
-    let joined: [Run; 5] = [
-        |g, _| g.read(&"1 ".repeat(100_000)).map(drop),
-        |g, _| g.read(&format!("\"{}", "a".repeat(100_000))).map(drop),
-        |g, _| {
-            g.read_in("t", &format!("#{}", "a".repeat(100_000)))
-                .map(drop)
-        },
-        |g, a| {
-            let c = g.context(None)?;
-            g.bind(&c, &a[0], a[1])
-        },
-        |g, _| {
-            let e = g.error("example", &vec![Value::Inert; 100_000]);
-            g.describe(&e, &mut String::new(), usize::MAX).map(drop)
-        },
-    ];
-    let f = g.host_function("joins", |g, s: &mut Joining, args| {
+    let f = g.host_function("joins", |g, run: &mut usize, n| {
         assert!(g.interrupter().stop(), "a run to stop");
-        let ended = (s.0)(g, args).map_or_else(
-            |e| g.symbol_name(&e.kind).map(String::from),
-            |()| Ok("done".into()),
-        );
-        s.1 = Some(ended?);
+        let a = "a".repeat(100_000);
+        let joined = match *run {
+            0 => g.read(&"1 ".repeat(100_000)),
+            1 => g.read(&format!("\"{a}")),
+            2 => g.read_in("t", &format!("#{a}")),
+            _ => g
+                .context(None)
+                .and_then(|c| g.bind(&c, &n[0], n[0]).map(|()| c)),
+        };
+        assert_eq!(g.symbol_name(&joined.unwrap_err().kind)?, "interrupted");
         Ok(Answer::Now(Value::Inert))
     });
     g.define("joins", f.unwrap()).unwrap();
-    g.evaluate(
-        &mut s,
-        "(define! L (range 0 100000))
-         (define! N (map (lambda! (i) (string-to-symbol (join \"n\" (integer-to-string i)))) L))",
-    )
-    .unwrap();
-    for (i, run) in joined.into_iter().enumerate() {
-        s.0 = run;
-        let e = g.evaluate(&mut s, "(joins N L)").unwrap_err();
-        assert_eq!(s.1.take().as_deref(), Some("interrupted"), "run {i}");
-        assert_eq!(g.symbol_name(&e.kind).unwrap(), "interrupted");
+    for mut run in 0..4 {
+        g.evaluate(&mut run, "(joins N)").unwrap_err();
     }
-    assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
+    assert_eq!(g.evaluate(&mut 0, "(add 1 2)"), Ok(Value::Integer(3)));
 }

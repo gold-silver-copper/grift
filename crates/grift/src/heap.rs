@@ -356,6 +356,11 @@ impl Heap {
             };
             let allocated = self.probe.work.0 - since;
             let paced = early || self.until_gc.get() == 0;
+            // Every collection is asked for, forced, or paced: one that came sooner is unpaid.
+            assert!(
+                asked || self.probe.stress || paced,
+                "a collection came before it was due"
+            );
             if !self.probe.stress && !asked && paced {
                 assert!(
                     walks + before_too <= 8 * allocated,
