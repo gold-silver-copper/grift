@@ -106,6 +106,10 @@ fn a_run_that_cannot_park_says_so() {
     let e = g.call(&mut w, &f, &[]).unwrap_err();
     assert_eq!(kind(&g, &e), "cannot-park");
     assert!(!g.can_park());
+    // Nor with no run in progress, after a panic ended one that could.
+    let boom = std::panic::AssertUnwindSafe(|| run(&mut g, &mut w, "(boom)"));
+    assert!(std::panic::catch_unwind(boom).is_err());
+    assert!(!g.can_park());
 }
 
 #[test]

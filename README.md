@@ -450,7 +450,7 @@ fn main() -> Result<(), Error> {
   refused the little it does need, the run waits still and the handle comes back.
 - **What can't wait.** A run under `evaluate` or `call` has Rust frames that can't be set aside. A
   waiting call there is the error `cannot-park`, its trace saying which call, and `can_park()` lets
-  a host function do something else instead. `resume` inside a host call is refused
+  a host function do something else instead; it is `false` too with no run in progress. `resume` inside a host call is refused
   (`cannot-nest`), the handle coming back in `ResumeError::parked` with the run untouched: queue it
   for your loop. Another
   interpreter's handle comes back the same way, with `foreign-value`, an error of the interpreter you

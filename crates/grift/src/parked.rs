@@ -248,9 +248,9 @@ impl<T> Grift<T> {
     }
 
     /// Whether a host function called now may answer [`Answer::Later`](crate::Answer::Later): not
-    /// under [`Grift::evaluate`] or [`Grift::call`].
+    /// under [`Grift::evaluate`] or [`Grift::call`], nor with no run in progress.
     pub fn can_park(&self) -> bool {
-        self.machine.may_park
+        self.control.running() && self.machine.may_park
     }
 
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
