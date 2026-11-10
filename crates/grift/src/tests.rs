@@ -656,6 +656,21 @@ fn collection_pays_for_what_it_walks() {
 }
 
 #[test]
+fn sort_is_ordered_and_stable() {
+    // 600 pairs (i mod 10 . i) sorted by key: stable, so each key's i stay rising. A merge sort
+    // takes 980,000 steps here, sorting and checking, and a quadratic insertion sort 9.9 million.
+    let (same, steps, _, _) = work(
+        &mut grift(),
+        "(equal? (sort (map (lambda! (i) (pair (remainder i 10) i)) (range 0 600))
+                       (lambda! (a b) (less-than? (first a) (first b))))
+                 (map (lambda! (j) (pair (divide j 60) (add (multiply (remainder j 60) 10) (divide j 60))))
+                      (range 0 600)))",
+    );
+    assert_eq!(same, Ok(Value::Boolean(true)));
+    assert!(steps < 2_000_000, "{steps} steps");
+}
+
+#[test]
 fn list_access_by_index() {
     let mut g = grift();
     g.evaluate(&mut (), "(define! xs (range 10 20))").unwrap();

@@ -324,7 +324,7 @@
     (conditional!
       ((and!? (integer? a) (integer? b)) (subtract a (multiply (divide a b) b)))
       ((and!? (float? a) (float? b)) (fmod a b (unsigned a) (unsigned b)))
-      (#true (apply rust-remainder (list a b))))))
+      (#true (rust-remainder a b)))))
 (define! fmod
   (lambda! (a b x y)
     (if! (and!? (less-than? x #infinity) (less-than? 0.0 y))
