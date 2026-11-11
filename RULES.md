@@ -117,7 +117,7 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   `evaluate-with-cleanup` ([G-48], [G-99], [G-170]).
 - A trace lists the program's combinations around the error, each once, from the innermost out to
   the top-level form; a finished tail call isn't listed ([G-29]). Library code is skipped, by a mark
-  set when a pair is made ([G-173], [G-180]). Every `raise` adds its own combination, a re-raise
+  set when a pair is made; a handler's values and trace are marked as the combination that set it ([G-173], [G-180], [G-183]). Every `raise` adds its own combination, a re-raise
   included ([G-170]).
 - The host's `Error::trace` is innermost first. A program reads a trace newest first, so the place
   the error began is its last, and a catch and raise adds only the places since ([G-179]).
@@ -143,8 +143,9 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   `describe` and `bind` are runs a stop reaches, or join the run in progress inside a host function
   ([G-179], [G-181]). Inside a step, list walks, `search`, the reader and the printer look for stops
   as they go ([G-178], [G-179]).
-- A host function that panics ends its run: the panic goes on to the host, no cleanup runs, and the
-  next evaluation starts afresh ([G-168]).
+- A run is owned by one guard value that ends it as it drops, so a host function that panics ends
+  its run: the panic goes on to the host, no cleanup runs, and the next evaluation starts afresh
+  ([G-168], [G-182]).
 
 ## Parked runs
 
@@ -170,7 +171,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   private ([G-60]). A host resource is a context of operations on it, closed explicitly, and use
   after closing is `closed` ([G-41]).
 - The host's methods follow the primitives' rules; they are listed in the rustdoc and in
-  [the README](README.md#embedding).
+  [the README](README.md#embedding). A host function's wrong count is a primitive's `arity-error`,
+  the arguments as one list: `HostCall::exactly` and `HostCall::arity_error` make it ([G-185]).
 - `Value`, `Symbol`, `Reference` and `Operative` are `Copy`. One that belongs to an interpreter
   (anything but immediate data and primitives) carries its number, and another interpreter's is
   `foreign-value` ([G-181]). Every value handed in is checked for its interpreter, generation and
@@ -233,9 +235,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - A review finding or bug report goes into the program generator, a native's twin or a guard, in
   that order; a new scenario test says in its PR why none of those can ([G-179],
   [CONTRIBUTING.md](CONTRIBUTING.md)).
-- `scripts/test-ratio.py` fails CI when test characters per production character rise above
-  `scripts/test-ratio.baseline`, and also when the ratio falls more than 0.01 below it, naming the
-  new baseline to write ([G-179]).
 - A test is deleted only when the held-back bug set shows the suite still catches all it caught
   ([G-179]). `scripts/historic-bugs.py` re-applies the gated bugs in `tests/historic/` and checks
   that each is still caught, nightly and on PRs that change tests ([CONTRIBUTING.md](CONTRIBUTING.md)).
@@ -343,3 +342,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-179]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-180]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-181]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
+[G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-183]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-185]: DECISIONS.md#the-architecture-audit-2026-11-10

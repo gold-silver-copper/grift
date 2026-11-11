@@ -7,7 +7,7 @@
 //! once by the type, and it carries its interpreter's identity as every value does.
 
 use crate::evaluate::{Machine, ending_values};
-use crate::interrupt::Control;
+use crate::interrupt::{Control, Run};
 use crate::local::{self, K};
 use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::{Arc, Weak};
@@ -147,7 +147,9 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Ran, Error> {
-        let done = self.run_text(state, context, source, src, false, true);
+        let done = self
+            .context_of(context)
+            .and_then(|c| self.run_text(Some(state), c, Some(source), src, false, true));
         self.ran(done)
     }
 
@@ -213,8 +215,8 @@ impl<T> Grift<T> {
             Ok(v) => self.import(v),
             Err(e) => Err(self.incoming_error(e)),
         };
-        let machine = match self.claim(&parked, &answer) {
-            Ok(machine) => machine,
+        let (machine, run) = match self.claim(&parked, &answer) {
+            Ok(claimed) => claimed,
             Err(e) => {
                 return Err(ResumeError {
                     error: self.export_error(e),
@@ -223,7 +225,7 @@ impl<T> Grift<T> {
             }
         };
         parked.control = Weak::new(); // Spent: nothing to find again.
-        let done = self.wake(Some(state), machine, answer);
+        let done = self.wake(run, Some(state), machine, answer);
         self.ran(done).map_err(|error| ResumeError {
             error,
             parked: None,
@@ -235,9 +237,9 @@ impl<T> Grift<T> {
         &mut self,
         parked: &Parked,
         answer: &Result<local::Value, local::Error>,
-    ) -> Result<Machine, local::Error> {
+    ) -> Result<(Machine, Run), local::Error> {
         self.owns(&parked.owner)?;
-        self.prepare(ending_values(answer));
+        let ready = self.prepare(ending_values(answer));
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));
@@ -245,8 +247,7 @@ impl<T> Grift<T> {
         let machine = room
             .pop()
             .ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
-        self.begin_run();
-        Ok(machine)
+        Ok((machine, self.begin_run(ready, true)))
     }
 
     /// Whether a host function called now may answer [`Answer::Later`](crate::Answer::Later): not

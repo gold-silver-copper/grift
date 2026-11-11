@@ -1,32 +1,11 @@
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
-#[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "a test may abort when memory is refused"
-)]
-mod ending_tests;
 mod evaluate;
-#[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "a test may abort when memory is refused"
-)]
-mod family_tests;
 mod heap;
 mod interrupt;
 mod local;
 mod parked;
-#[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "a test may abort when memory is refused"
-)]
-mod parked_tests;
 mod print;
 mod read;
 #[cfg(test)]
@@ -38,7 +17,7 @@ mod read;
 mod tests;
 
 use heap::{Heap, Object};
-use interrupt::Control;
+use interrupt::{Control, Run};
 use local::{K, boxed, push};
 use std::collections::HashMap;
 use std::fmt;
@@ -54,6 +33,7 @@ const LIBRARY: &str = include_str!("library.grift");
 
 /// How many items a walk inside one step takes between looks for a stop: a power of two.
 const WALK_CHECK: usize = 4096;
+const _: () = assert!(WALK_CHECK.is_power_of_two());
 
 /// A grift value. Immediate values are plain data; the rest belong to the [`Grift`] that made
 /// them, and every operation checks that: another interpreter's value is the error
@@ -199,6 +179,25 @@ host_call! {
     fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error>;
     fn keep(&mut self, v: Value) -> Result<Kept, Error>;
     fn release(&mut self, k: Kept) -> Result<(), (Error, Kept)>;
+}
+
+impl<T> HostCall<'_, T> {
+    /// The arguments of a host function that takes exactly `N`, or else [`HostCall::arity_error`].
+    pub fn exactly<'v, const N: usize>(
+        &mut self,
+        args: &'v [Value],
+    ) -> Result<&'v [Value; N], Error> {
+        args.try_into().map_err(|_| self.arity_error(args))
+    }
+
+    /// The `arity-error` a primitive gives: one value, the arguments as a list. With no memory for
+    /// the list, `out-of-memory`.
+    pub fn arity_error(&mut self, args: &[Value]) -> Error {
+        match self.0.list(args) {
+            Ok(list) => self.0.error("arity-error", &[list]),
+            Err(e) => e,
+        }
+    }
 }
 
 /// What a [`HostFunction`] answers.
@@ -453,8 +452,7 @@ impl<T> Grift<T> {
             let v = local::Value::Applicative(self.heap.alloc(wrapped)?);
             self.bind_symbol(self.built_in, s, v)?;
         }
-        let forms = self.read_local(LIBRARY, None, true)?;
-        self.evaluate_forms(None, forms, self.built_in, false)?;
+        self.run_text(None, self.built_in, None, LIBRARY, true, false)?;
         self.install_natives()
     }
 
@@ -462,9 +460,7 @@ impl<T> Grift<T> {
     /// Returns the last form's value (`#inert` for no forms). Nothing is evaluated if `src`
     /// doesn't read. Host functions get `state`. [`Grift::evaluate_in`] names the source.
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
-        self.prepare(std::iter::empty());
-        let forms = self.read_to_run(src, None, false);
-        let done = forms.and_then(|forms| self.evaluate_forms(Some(state), forms, self.top, false));
+        let done = self.run_text(Some(state), self.top, None, src, false, false);
         self.exported(done)
     }
 
@@ -491,7 +487,9 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Value, Error> {
-        let done = self.run_text(state, context, source, src, false, false);
+        let done = self
+            .context_of(context)
+            .and_then(|c| self.run_text(Some(state), c, Some(source), src, false, false));
         self.exported(done)
     }
 
@@ -517,42 +515,30 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Value, Error> {
-        let done = self.run_text(state, context, source, src, true, false);
+        let done = self
+            .context_of(context)
+            .and_then(|c| self.run_text(Some(state), c, Some(source), src, true, false));
         self.exported(done)
     }
 
-    /// Reads `src` and evaluates its forms in `context`; `library` marks it as a host's own grift
-    /// code, and `parks` says whether the run may park.
+    /// Reads `src`, the text of `source` if it has a name, and evaluates its forms in `context`;
+    /// `library` marks it as a host's own grift code, and `parks` says whether the run may park.
+    /// Reading is the run's first part, so a stop reaches it too.
     fn run_text(
         &mut self,
-        state: &mut T,
-        context: &Value,
-        source: &str,
+        state: Option<&mut T>,
+        context: heap::Reference,
+        source: Option<&str>,
         src: &str,
         library: bool,
         parks: bool,
     ) -> Result<local::Value, local::Error> {
-        let c = self.context_of(context)?;
-        self.prepare(std::iter::once(local::Value::Context(c)));
-        let source = self.intern(source)?;
-        let forms = self.read_to_run(src, Some(source), library)?;
-        self.evaluate_forms(Some(state), forms, c, parks)
-    }
-
-    /// Reads `src` as the first part of the run that then evaluates it, so a stop reaches the
-    /// reading too; text that doesn't read ends the run.
-    fn read_to_run(
-        &mut self,
-        src: &str,
-        source: Option<local::Symbol>,
-        library: bool,
-    ) -> Result<local::Value, local::Error> {
-        self.begin_run();
-        let forms = self.read_local(src, source, library);
-        if forms.is_err() {
-            self.control.end();
-        }
-        forms
+        let ready = self.prepare(std::iter::once(local::Value::Context(context)));
+        let source = source.map(|s| self.intern(s)).transpose()?;
+        let run = self.begin_run(ready, parks);
+        let forms = self.read_local(src, source, library)?;
+        let mode = self.forms(forms, context);
+        self.enter(run, state, mode)
     }
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
@@ -571,9 +557,11 @@ impl<T> Grift<T> {
         arguments: &[Value],
         parks: bool,
     ) -> Result<local::Value, local::Error> {
-        let f = self.prepare_call(f, arguments)?;
+        let (f, ready) = self.prepare_call(f, arguments)?;
         let arguments = self.imported(arguments)?;
-        self.call_local(Some(state), f, &arguments, parks)
+        let run = self.begin_run(ready, parks);
+        let mode = self.call_on_machine(f, &arguments, None);
+        self.enter(run, Some(state), mode)
     }
 
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
@@ -808,9 +796,7 @@ impl<T> Grift<T> {
     /// Reading never collects: after `out-of-memory`, further reads may fail until an evaluation
     /// or call gives collection its next safe point.
     pub fn read(&mut self, src: &str) -> Result<Value, Error> {
-        let forms =
-            Control::host_run(&self.control).and_then(|_run| self.read_local(src, None, false));
-        self.exported(forms)
+        self.read_text(None, src)
     }
 
     /// Reads every form in `text` into a list, evaluating nothing, as [`Grift::read`] does.
@@ -829,9 +815,14 @@ impl<T> Grift<T> {
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub fn read_in(&mut self, source: &str, text: &str) -> Result<Value, Error> {
+        self.read_text(Some(source), text)
+    }
+
+    /// [`Grift::read_in`], or [`Grift::read`] with no `source`.
+    fn read_text(&mut self, source: Option<&str>, text: &str) -> Result<Value, Error> {
         let forms = Control::host_run(&self.control).and_then(|_run| {
-            let source = self.intern(source)?;
-            self.read_local(text, Some(source), false)
+            let source = source.map(|s| self.intern(s)).transpose()?;
+            self.read_local(text, source, false)
         });
         self.exported(forms)
     }
@@ -1059,14 +1050,15 @@ impl<T> Grift<T> {
         self.control.charged(walked, cost)
     }
 
-    /// Starts a run, which `Control::end` then ends. A host function, given a [`HostCall`], begins
-    /// none, so none is in progress; what one left behind when it panicked is over, and its
-    /// machine is cleared.
-    pub(crate) fn begin_run(&mut self) {
+    /// Begins a run, once nothing before it can refuse, which ends as the guard drops; `parks`
+    /// says whether it may park. A host function, given a [`HostCall`], begins none; what a run
+    /// left behind when a host function panicked is over, and its machine is cleared.
+    pub(crate) fn begin_run(&mut self, _: evaluate::Prepared, parks: bool) -> Run {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
         self.machine.clear();
-        self.control.begin();
+        self.machine.may_park = parks;
+        Control::begin(&self.control)
     }
 
     /// The context `v` is, or a `type-error`.
@@ -1150,30 +1142,41 @@ impl<T> Grift<T> {
         imported
     }
 
-    /// Validate and root a host call before its first allocation.
+    /// Validate and root a host call before its first allocation. A call of what isn't an
+    /// applicative is refused here, before its run begins.
     fn prepare_call(
         &mut self,
         f: &Value,
         arguments: &[Value],
-    ) -> Result<local::Value, local::Error> {
+    ) -> Result<(local::Value, evaluate::Prepared), local::Error> {
         let f = self.import(f)?;
         arguments
             .iter()
             .try_for_each(|v| self.import(v).map(drop))?;
+        self.combiner_of(f)?;
         // Validation allocates nothing. Root every checked reference before the argument
         // buffer needs memory; marking follows the reference, independent of its value kind.
-        let roots = arguments.iter().filter_map(|v| match v {
-            Value::Pair(r)
-            | Value::String(r)
-            | Value::Bytes(r)
-            | Value::Context(r)
-            | Value::Operative(Operative(OperativeKind::Compound(r)))
-            | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
-            Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
-            _ => None,
-        });
-        self.prepare(std::iter::once(f).chain(roots));
-        Ok(f)
+        let roots =
+            arguments.iter().filter_map(|v| match v {
+                Value::Pair(r)
+                | Value::String(r)
+                | Value::Bytes(r)
+                | Value::Context(r)
+                | Value::Operative(Operative(OperativeKind::Compound(r)))
+                | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
+                Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
+                // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
+                Value::EmptyList
+                | Value::Boolean(_)
+                | Value::Inert
+                | Value::Ignore
+                | Value::Integer(_)
+                | Value::Float(_)
+                | Value::Operative(Operative(
+                    OperativeKind::Primitive(_) | OperativeKind::Host(..),
+                )) => None,
+            });
+        Ok((f, self.prepare(std::iter::once(f).chain(roots))))
     }
 
     fn imported(&self, values: &[Value]) -> Result<Vec<local::Value>, local::Error> {

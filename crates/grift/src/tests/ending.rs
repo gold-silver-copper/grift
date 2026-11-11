@@ -1,7 +1,6 @@
 //! How a run ends: who began the unwinding decides what may catch it, never what its kind is called.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use crate::tests::kind;
+use crate::tests::{define, kind};
 use crate::{Answer, Grift, Interrupter, Value};
 
 /// A host whose program can stop its own run and force it, with a run that waits.
@@ -40,8 +39,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         ("wait", |_, _, _| Ok(Answer::Later(Value::Inert))),
     ];
     for (name, f) in functions {
-        let f = g.host_function(name, f).unwrap();
-        g.define(name, f).unwrap();
+        define(&mut g, name, f);
     }
     let s = g.interrupter();
     (g, s)
@@ -103,11 +101,11 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
             Ok(Answer::Now(Value::Inert))
         }),
         ("stop-each", |_, s, _| {
-            let said = s.iter_mut().map(|h| h.stop()).filter(|&b| b).count();
+            let said = s.iter().map(|h| h.stop()).filter(|&b| b).count();
             Ok(Answer::Now(Value::Integer(said as i64)))
         }),
         ("force-each", |_, s, _| {
-            let said = s.iter_mut().map(|h| h.force()).filter(|&b| b).count();
+            let said = s.iter().map(|h| h.force()).filter(|&b| b).count();
             Ok(Answer::Now(Value::Integer(said as i64)))
         }),
         ("force-clones", |_, s, _| {
@@ -116,11 +114,10 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
         }),
     ];
     for (name, f) in functions {
-        let f = g.host_function(name, f).unwrap();
-        g.define(name, f).unwrap();
+        define(&mut g, name, f);
     }
     let mut s = vec![g.interrupter()];
-    assert!(s.iter_mut().all(|h| !h.force()), "its run has not begun");
+    assert!(s.iter().all(|h| !h.force()), "its run has not begun");
     assert_eq!(g.evaluate(&mut s, "(add 1 2)"), Ok(Value::Integer(3)));
     assert_eq!(g.evaluate(&mut s, "(take)"), Ok(Value::Inert));
     // One was taken for the first run, one inside the second: both are over, and their clones.
@@ -139,7 +136,7 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
             Value::Integer(3)
         ]
     );
-    assert!(s.iter_mut().all(|h| !h.stop() && !h.force()));
+    assert!(s.iter().all(|h| !h.stop() && !h.force()));
     // One taken between runs reaches the next, and a force alone ends it, cleanups and all.
     g.evaluate(&mut s, "(define! cleaned 0)").unwrap();
     s.push(g.interrupter());
@@ -152,7 +149,7 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
     assert_eq!((kind(&g, &e).as_str(), e.limit), ("interrupted", true));
     // A force that acted is over with its run: the next is untouched, and the handle says so.
     assert_eq!(g.evaluate(&mut s, "cleaned"), Ok(Value::Integer(0)));
-    assert!(s.iter_mut().all(|h| !h.force()));
+    assert!(s.iter().all(|h| !h.force()));
     // A clone of one taken inside a run ends that run.
     let e = g
         .evaluate(&mut s, "(take) (force-clones) (add 1 2)")

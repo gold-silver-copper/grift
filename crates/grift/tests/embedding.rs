@@ -228,7 +228,7 @@ fn stopped_in_time(step: &'static str) -> bool {
         let r = g.evaluate(&mut h, &program);
         let _ = finish.send(outcome(&g, r));
     });
-    let mut stopper: Interrupter = stopper.recv().unwrap();
+    let stopper: Interrupter = stopper.recv().unwrap();
     told.recv().unwrap();
     std::thread::sleep(Duration::from_millis(100));
     for _ in 0..300 {

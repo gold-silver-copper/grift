@@ -85,7 +85,7 @@ impl Inbox {
     pub fn typed(&self, b: u8) {
         let mut s = self.state();
         let stop = s.stoppable || s.keys.contains(&QUIT);
-        if b == QUIT && stop && s.stopper.as_mut().is_some_and(Interrupter::stop) {
+        if b == QUIT && stop && s.stopper.as_ref().is_some_and(Interrupter::stop) {
             s.keys.retain(|k| *k != QUIT);
             return;
         }
@@ -100,7 +100,7 @@ impl Inbox {
 
     /// Stops the run in progress, if it is the last one armed.
     pub fn stop(&self) {
-        if let Some(stopper) = self.state().stopper.as_mut() {
+        if let Some(stopper) = &self.state().stopper {
             stopper.stop();
         }
     }

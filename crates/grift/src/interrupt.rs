@@ -33,13 +33,10 @@ pub(crate) struct Control {
 }
 
 impl Control {
-    pub fn begin(&self) {
-        self.word.fetch_or(RUNNING, Relaxed);
-    }
-
-    /// Ends the run in progress, if one is: a run already over keeps the number the next will have.
-    pub fn end(&self) {
-        self.update(|word| (word & RUNNING != 0).then(|| after(word)));
+    /// Begins a run, which ends as the [`Run`] drops.
+    pub fn begin(control: &Arc<Control>) -> Run {
+        control.word.fetch_or(RUNNING, Relaxed);
+        Run(Arc::clone(control))
     }
 
     /// Whether a run is in progress.
@@ -95,12 +92,11 @@ impl Control {
     }
 
     /// Begins a run for host-side work, reading, printing or binding, unless one is in progress, so a stop
-    /// reaches it; inside a run it is part of that run. A stop already asked of the run it began
-    /// is `interrupted` before it does anything. The run ends as the guard drops, even as a panic
-    /// in the host's sink unwinds through it.
-    pub fn host_run(control: &Arc<Control>) -> Result<HostRun, crate::local::Error> {
+    /// reaches it; inside a run it is part of that run, and there is no guard. A stop already asked
+    /// of the run it began is `interrupted` before it does anything.
+    pub fn host_run(control: &Arc<Control>) -> Result<Option<Run>, crate::local::Error> {
         let began = control.update(|word| (word & RUNNING == 0).then_some(word | RUNNING));
-        let run = HostRun(began.then(|| Arc::clone(control)));
+        let run = began.then(|| Run(Arc::clone(control)));
         match began && control.asked() {
             true => Err(crate::local::Error::interrupted()),
             false => Ok(run),
@@ -113,14 +109,15 @@ impl Control {
     }
 }
 
-/// The run [`Control::host_run`] began, if it began one: it ends as this drops.
-pub(crate) struct HostRun(Option<Arc<Control>>);
+/// The run in progress, owned: the only way to begin one is to get this, and the run ends as it
+/// drops, however its owner leaves, a panic's unwinding included. Ending a run already over, as a
+/// parked one is, keeps the number the next will have.
+pub(crate) struct Run(Arc<Control>);
 
-impl Drop for HostRun {
+impl Drop for Run {
     fn drop(&mut self) {
-        if let Some(control) = &self.0 {
-            control.end();
-        }
+        self.0
+            .update(|word| (word & RUNNING != 0).then(|| after(word)));
     }
 }
 
@@ -143,7 +140,7 @@ impl Drop for HostRun {
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
 /// // Taken between runs: it is for the next one.
-/// let mut stopper = g.interrupter();
+/// let stopper = g.interrupter();
 /// let timer = std::thread::spawn(move || {
 ///     std::thread::sleep(std::time::Duration::from_millis(20));
 ///     // A stop before its run has begun does nothing: ask until it has. Once that run is over,
@@ -177,7 +174,7 @@ impl Interrupter {
 
     /// Stops this handle's run, if it is in progress; whether it was. `true` doesn't say the stop
     /// acted: a run about to end can still return its value.
-    pub fn stop(&mut self) -> bool {
+    pub fn stop(&self) -> bool {
         self.control.ask(STOP, self.run)
     }
 
@@ -188,7 +185,7 @@ impl Interrupter {
     /// acted, as for a stop. [`Error::limit`] says the ending is real.
     ///
     /// [`Error::limit`]: crate::Error::limit
-    pub fn force(&mut self) -> bool {
+    pub fn force(&self) -> bool {
         self.control.ask(FORCE, self.run)
     }
 }
