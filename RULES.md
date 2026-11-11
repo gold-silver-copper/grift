@@ -235,9 +235,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - A review finding or bug report goes into the program generator, a native's twin or a guard, in
   that order; a new scenario test says in its PR why none of those can ([G-179],
   [CONTRIBUTING.md](CONTRIBUTING.md)).
-- `scripts/test-ratio.py` fails CI when test characters per production character rise above
-  `scripts/test-ratio.baseline`, and also when the ratio falls more than 0.01 below it, naming the
-  new baseline to write ([G-179]).
 - A test is deleted only when the held-back bug set shows the suite still catches all it caught
   ([G-179]). `scripts/historic-bugs.py` re-applies the gated bugs in `tests/historic/` and checks
   that each is still caught, nightly and on PRs that change tests ([CONTRIBUTING.md](CONTRIBUTING.md)).

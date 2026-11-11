@@ -3,12 +3,7 @@
 What holds today is in [`RULES.md`](RULES.md), each rule linked to its decision; a change that
 alters a rule updates it there in the same PR.
 
-## Tests grow no faster than the code
-
-CI runs `scripts/test-ratio.py`: test characters per production character in `crates/` may not rise
-above the number in `scripts/test-ratio.baseline`. When a change lowers it, CI asks you to write
-the new, lower number there, so the bound only tightens. The script's header says what counts as a
-test.
+## Where a finding goes
 
 A review finding or a bug report goes, in this order of preference, into:
 
@@ -23,9 +18,8 @@ A new scenario test needs a sentence in the PR on why none of those can say it. 
 the runner's input or output, the reader's exact spelling of a value, an invalid value from a
 host. "It is quicker to write" is not one.
 
-The ratio can be gamed, and review is what stops it: don't pack tests onto fewer lines, move test
-helpers into the library, or delete assertions to make room. A test is deleted only when the
-held-back bug set shows the suite still catches everything it caught.
+A test is deleted only when the held-back bug set shows the suite still catches everything it
+caught.
 
 ## Caught bugs stay caught
 
