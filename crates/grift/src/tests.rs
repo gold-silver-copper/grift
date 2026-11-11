@@ -1493,6 +1493,10 @@ fn boundary_cases() -> Vec<String> {
         }
     }
     cases.extend([
+        // A handler's values are made where the handler is called, wherever the error was: the
+        // native raises in the program, its twin in the library, and the values, evaluated as
+        // code, are traced alike.
+        "((wrap list) (catch-kind! (first 1) type-error e (evaluate-in! values e)))".into(),
         "(sequence! (bind record (quote! answer) (note 17)) (bind record (quote! last) (note 18)) #inert)".into(),
         "(if! #true (bind record (quote! answer) (note 19)) (bind record (quote! answer) (note 99)))".into(),
         // Definitions inside the twins bind where the library's would: in the caller's context.

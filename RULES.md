@@ -117,7 +117,7 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   `evaluate-with-cleanup` ([G-48], [G-99], [G-170]).
 - A trace lists the program's combinations around the error, each once, from the innermost out to
   the top-level form; a finished tail call isn't listed ([G-29]). Library code is skipped, by a mark
-  set when a pair is made ([G-173], [G-180]). Every `raise` adds its own combination, a re-raise
+  set when a pair is made; a handler's values and trace are marked as the combination that set it ([G-173], [G-180], [G-183]). Every `raise` adds its own combination, a re-raise
   included ([G-170]).
 - The host's `Error::trace` is innermost first. A program reads a trace newest first, so the place
   the error began is its last, and a catch and raise adds only the places since ([G-179]).
@@ -345,3 +345,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-180]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-181]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-183]: DECISIONS.md#the-architecture-audit-2026-11-10

@@ -208,9 +208,8 @@ const _: () = {
                 rest,
                 base,
             } => whole(combiner) && whole(rest) && whole(base),
-            What::Cleanup { cleanup: v, base } | What::Handler { handler: v, base } => {
-                whole(v) && whole(base)
-            }
+            What::Cleanup { cleanup: v, base } => whole(v) && whole(base),
+            What::Handler { handler: v, base } => whole(v) && whole(base),
             What::Branch {
                 consequent,
                 alternative,
@@ -232,7 +231,7 @@ const _: () = {
     }));
     assert!(words(&What::Handler {
         handler: v,
-        base: 0
+        base: Base(0)
     }));
     assert!(words(&What::Branch {
         consequent: v,
@@ -260,8 +259,9 @@ enum What {
     /// no arguments; `base` is the argument stack's height to go back to.
     Cleanup { cleanup: Value, base: usize },
     /// When an error leaves the evaluation above, call `handler` with it as a value instead;
-    /// `base` is the argument stack's height to go back to. A value passes through.
-    Handler { handler: Value, base: usize },
+    /// `base` is the argument stack's height to go back to, and whether the library made the
+    /// combination that set the handler, as the handler's call is then. A value passes through.
+    Handler { handler: Value, base: Base },
     /// The cleanup above has ended: the ending it waited on, the last one saved, goes on.
     Finish,
     /// `if!`: the value is the test; evaluate one of these as a tail call.
@@ -688,8 +688,9 @@ impl<T> Grift<T> {
                     return self.start_cleanup(Err(e), cleanup, context, at);
                 }
                 What::Handler { handler, base } if !e.limit() => {
-                    self.machine.arguments.truncate(base);
+                    self.machine.arguments.truncate(base.height());
                     self.machine.here = at;
+                    self.machine.library = base.library();
                     match self.handle(e, handler, context) {
                         Ok(mode) => return Ok(mode),
                         Err(mut failed) => {
@@ -1230,6 +1231,7 @@ impl<T> Grift<T> {
                 let c = context_kind(y)?;
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
+                    let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
                     let m = &mut self.machine;
