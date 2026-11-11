@@ -676,11 +676,6 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    /// An error stops the evaluation at `here`. Frames are dropped down to the innermost cleanup
-    /// or handler, adding where each was to the error's trace. A cleanup then
-    /// runs, the error waiting until it is done; a handler, unless the error is a limit, is called
-    /// with it instead. What can't be called fails there like any call, with that error, and the
-    /// next frame goes on from it. With neither left, the error goes to the caller.
     /// An error that began as refused memory: the next safe point collects, and the spare room is
     /// given up for what reports it. Once: whoever acts on it clears the mark.
     fn acting_on_refusal(&mut self, e: &mut Error) {
@@ -690,6 +685,11 @@ impl<T> Grift<T> {
         }
     }
 
+    /// An error stops the evaluation at `here`. Frames are dropped down to the innermost cleanup
+    /// or handler, adding where each was to the error's trace. A cleanup then
+    /// runs, the error waiting until it is done; a handler, unless the error is a limit, is called
+    /// with it instead. What can't be called fails there like any call, with that error, and the
+    /// next frame goes on from it. With neither left, the error goes to the caller.
     pub(crate) fn unwind(&mut self, mut e: Error) -> Result<Mode, Error> {
         // The garbage is what the cleanups will run on, and the host's next run: the next safe
         // point collects, with the frames dropped here let go of. Once: what is left to free comes
