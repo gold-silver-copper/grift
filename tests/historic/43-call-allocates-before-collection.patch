@@ -1,8 +1,8 @@
 diff --git i/crates/grift/src/lib.rs w/crates/grift/src/lib.rs
-index a23d8f3..f043c8c 100644
+index ad9ddaa..a150a0c 100644
 --- i/crates/grift/src/lib.rs
 +++ w/crates/grift/src/lib.rs
-@@ -558,8 +558,9 @@ impl<T> Grift<T> {
+@@ -557,8 +557,9 @@ impl<T> Grift<T> {
          arguments: &[Value],
          parks: bool,
      ) -> Result<local::Value, local::Error> {
@@ -13,7 +13,7 @@ index a23d8f3..f043c8c 100644
          let run = self.begin_run(ready, parks);
          let mode = self.call_on_machine(f, &arguments, None);
          self.enter(run, Some(state), mode)
-@@ -1149,7 +1150,7 @@ impl<T> Grift<T> {
+@@ -1148,7 +1149,7 @@ impl<T> Grift<T> {
          &mut self,
          f: &Value,
          arguments: &[Value],
@@ -22,10 +22,10 @@ index a23d8f3..f043c8c 100644
          let f = self.import(f)?;
          arguments
              .iter()
-@@ -1167,7 +1168,8 @@ impl<T> Grift<T> {
-             Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
-             _ => None,
-         });
+@@ -1176,7 +1177,8 @@ impl<T> Grift<T> {
+                     OperativeKind::Primitive(_) | OperativeKind::Host(..),
+                 )) => None,
+             });
 -        Ok((f, self.prepare(std::iter::once(f).chain(roots))))
 +        let _ = roots;
 +        Ok(f)
