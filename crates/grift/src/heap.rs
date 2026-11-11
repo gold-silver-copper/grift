@@ -514,7 +514,15 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
         | Value::Context(r)
         | Value::Operative(r)
         | Value::Applicative(r) => r,
-        _ => return,
+        // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
+        Value::EmptyList
+        | Value::Boolean(_)
+        | Value::Inert
+        | Value::Ignore
+        | Value::Integer(_)
+        | Value::Float(_)
+        | Value::Primitive(_)
+        | Value::Host(_) => return,
     };
     if let Some(s) = slots.get(r.idx as usize)
         && s.generation == r.generation

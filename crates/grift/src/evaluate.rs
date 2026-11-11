@@ -302,12 +302,26 @@ impl Frame {
     fn values(self) -> [Value; 4] {
         let empty = Value::EmptyList;
         let (a, b) = match self.what {
+            // A base is a height and a mark, never a value.
             What::Forms { rest: v }
-            | What::Combine { operands: v, .. }
-            | What::Cleanup { cleanup: v, .. }
-            | What::Handler { handler: v, .. }
+            | What::Combine {
+                operands: v,
+                base: _,
+            }
+            | What::Cleanup {
+                cleanup: v,
+                base: _,
+            }
+            | What::Handler {
+                handler: v,
+                base: _,
+            }
             | What::Body { rest: v } => (v, empty),
-            What::Arguments { combiner, rest, .. } => (combiner, rest),
+            What::Arguments {
+                combiner,
+                rest,
+                base: _,
+            } => (combiner, rest),
             What::Branch {
                 consequent,
                 alternative,

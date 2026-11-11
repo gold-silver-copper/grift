@@ -1136,16 +1136,26 @@ impl<T> Grift<T> {
         self.combiner_of(f)?;
         // Validation allocates nothing. Root every checked reference before the argument
         // buffer needs memory; marking follows the reference, independent of its value kind.
-        let roots = arguments.iter().filter_map(|v| match v {
-            Value::Pair(r)
-            | Value::String(r)
-            | Value::Bytes(r)
-            | Value::Context(r)
-            | Value::Operative(Operative(OperativeKind::Compound(r)))
-            | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
-            Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
-            _ => None,
-        });
+        let roots =
+            arguments.iter().filter_map(|v| match v {
+                Value::Pair(r)
+                | Value::String(r)
+                | Value::Bytes(r)
+                | Value::Context(r)
+                | Value::Operative(Operative(OperativeKind::Compound(r)))
+                | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
+                Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
+                // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
+                Value::EmptyList
+                | Value::Boolean(_)
+                | Value::Inert
+                | Value::Ignore
+                | Value::Integer(_)
+                | Value::Float(_)
+                | Value::Operative(Operative(
+                    OperativeKind::Primitive(_) | OperativeKind::Host(..),
+                )) => None,
+            });
         Ok((f, self.prepare(std::iter::once(f).chain(roots))))
     }
 
