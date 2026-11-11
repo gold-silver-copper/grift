@@ -782,8 +782,8 @@ mod generated {
                     let _ = g.evaluate(&mut w, "#inert");
                     // No run is in progress, and a handle for another finds nothing.
                     assert!(!g.interrupter().stop(), "{context}");
-                    assert!(!w.old.as_mut().unwrap().stop(), "{context}");
-                    assert!(!w.old.as_mut().unwrap().force(), "{context}");
+                    assert!(!w.old.as_ref().unwrap().stop(), "{context}");
+                    assert!(!w.old.as_ref().unwrap().force(), "{context}");
                 }
                 // Arm a stop, a force or a refusal, for what comes next.
                 6 if may_stop => w.stop_at = Some((w.calls + r.below(6), false)),

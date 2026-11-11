@@ -22,7 +22,7 @@ struct Host {
 /// the program's cleanups are in place. Its handle is for this run and no other, so it can't stop
 /// the next even late. Nothing joins it: it ends by itself.
 fn watch(g: &mut HostCall<Host>, host: &mut Host, _: &[Value]) -> Result<Answer, grift::Error> {
-    let mut handle: Interrupter = g.interrupter();
+    let handle: Interrupter = g.interrupter();
     let force = host.force;
     thread::spawn(move || {
         handle.stop();

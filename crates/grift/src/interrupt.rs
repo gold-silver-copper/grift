@@ -140,7 +140,7 @@ impl Drop for Run {
 /// ```
 /// let mut g: grift::Grift = grift::Grift::new()?;
 /// // Taken between runs: it is for the next one.
-/// let mut stopper = g.interrupter();
+/// let stopper = g.interrupter();
 /// let timer = std::thread::spawn(move || {
 ///     std::thread::sleep(std::time::Duration::from_millis(20));
 ///     // A stop before its run has begun does nothing: ask until it has. Once that run is over,
@@ -174,7 +174,7 @@ impl Interrupter {
 
     /// Stops this handle's run, if it is in progress; whether it was. `true` doesn't say the stop
     /// acted: a run about to end can still return its value.
-    pub fn stop(&mut self) -> bool {
+    pub fn stop(&self) -> bool {
         self.control.ask(STOP, self.run)
     }
 
@@ -185,7 +185,7 @@ impl Interrupter {
     /// acted, as for a stop. [`Error::limit`] says the ending is real.
     ///
     /// [`Error::limit`]: crate::Error::limit
-    pub fn force(&mut self) -> bool {
+    pub fn force(&self) -> bool {
         self.control.ask(FORCE, self.run)
     }
 }

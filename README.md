@@ -317,7 +317,7 @@ fn main() -> Result<(), Error> {
     // Each job's handle, taken as the job is about to begin, its deadline, and whether it is over.
     let (deadlines, due) = mpsc::channel::<(Interrupter, Duration, Arc<AtomicBool>)>();
     let watchdog = thread::spawn(move || {
-        for (mut handle, after, over) in due {
+        for (handle, after, over) in due {
             thread::sleep(after);
             while !over.load(Ordering::Relaxed) && !handle.stop() {
                 thread::yield_now(); // not begun yet: ask again
