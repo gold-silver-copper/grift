@@ -166,10 +166,10 @@ struct Board {
 
 fn twice(g: &mut HostCall<Board>, board: &mut Board, args: &[Value]) -> Result<Answer, Error> {
     board.calls += 1;
-    match args {
-        [Value::Integer(n)] => n.checked_mul(2).map(|n| Answer::Now(Value::Integer(n))).ok_or_else(|| g.error("overflow", args)),
-        _ => Err(g.error("type-error", args)),
-    }
+    let [Value::Integer(n)] = g.exactly(args)? else {
+        return Err(g.error("type-error", args));
+    };
+    n.checked_mul(2).map(|n| Answer::Now(Value::Integer(n))).ok_or_else(|| g.error("overflow", args))
 }
 
 fn main() -> Result<(), Error> {
@@ -245,6 +245,9 @@ fn main() -> Result<(), Error> {
   stack: its `HostCall<T>` reads like a `Grift<T>` and has the methods that make, bind and keep
   values, but no `evaluate`, `call`, `start`, `resume` or other way in, so one doesn't compile.
   `HostCall::from(&mut grift)` gives one outside a run, for helpers shared with host functions.
+  `g.exactly(args)?` gives the arguments of one that takes a fixed number as an array, `let [a, b] =
+  g.exactly(args)?;`, and any other count is the `arity-error` a primitive gives, its one value
+  the arguments as a list; `g.arity_error(args)` makes that error for any other count rule.
 - **The host boundary.** A host resource (a file, a buffer, a socket) appears in grift as a
   context of operations on it, never as a number a program could forge. Keep the host functions
   that take a resource's number private: don't `define` them; hand them to grift code, evaluated
@@ -360,16 +363,12 @@ use grift::{Answer, Error, Grift, HostCall, Parked, Ran, Value};
 /// A script's `(sleep ms)`. The value in `Later` says what's wanted: the run holds it, and
 /// `Parked::request` gives it to the loop. Do the work there, since a run may not get to park.
 fn sleep(g: &mut HostCall<Vec<String>>, _: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
-    match args {
-        [ms] => Ok(Answer::Later(*ms)),
-        _ => Err(g.error("arity-error", args)),
-    }
+    let [ms] = g.exactly(args)?;
+    Ok(Answer::Later(*ms))
 }
 
 fn say(g: &mut HostCall<Vec<String>>, said: &mut Vec<String>, args: &[Value]) -> Result<Answer, Error> {
-    let [name] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [name] = g.exactly(args)?;
     said.extend(g.as_str(name)?.map(str::to_owned));
     Ok(Answer::Now(Value::Inert))
 }

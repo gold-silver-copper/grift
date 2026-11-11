@@ -291,7 +291,7 @@ its cleanups do.
 |---|---|---|
 | `unbound-symbol` | a symbol with no binding | the symbol |
 | `type-error` | a primitive got the wrong kind of value, integers and floats mixed, a test that isn't a boolean; an improper operand list given a primitive or an applicative; an element or a tail given `list-to-bytes` that isn't an integer or `()` | the value; for `list-to-bytes`, the value and its position in the list |
-| `arity-error` | a primitive got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the operands, as one list: `(add 1)` gives `arity-error (1)`, `(if! #true 1)` `arity-error (#true 1)`; for a parameter tree, the whole of what it was matched against, which for a library form's helper can hold the caller's context |
+| `arity-error` | a primitive or a host function got the wrong number of operands; a parameter tree didn't match, as when a library form gets operands that aren't its shape | the operands, as one list: `(add 1)` gives `arity-error (1)`, `(if! #true 1)` `arity-error (#true 1)`; for a parameter tree, the whole of what it was matched against, which for a library form's helper can hold the caller's context |
 | `not-a-combiner` | a combination's head isn't a combiner | the value |
 | `parameter-error` | a malformed parameter tree, a symbol twice, or a bad context parameter | the tree or the context parameter |
 | `overflow` | integer arithmetic beyond 64 bits, `absolute-value` and `power` included; a shift by an amount outside 0 to 63 | the operands of the arithmetic that overflowed |

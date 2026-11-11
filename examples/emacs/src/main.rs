@@ -63,16 +63,15 @@ type G = Grift<Host>;
 /// `(key)`: the next byte from the terminal, as an integer. The run parks, and the newest run
 /// waiting here gets the next key.
 fn key(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    let [] = g.exactly(args)?;
     Ok(Answer::Later(Value::Inert))
 }
 
 /// `(job-wait job)`: the job's exit status, once it ends. The run parks, under the job's number.
 /// It must not have ended: nothing would answer.
 fn job_wait(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [Value::Integer(id)] = args else {
+    let [v] = g.exactly(args)?;
+    let Value::Integer(id) = v else {
         return Err(g.error("type-error", args));
     };
     Ok(Answer::Later(Value::Integer(*id)))
@@ -80,9 +79,7 @@ fn job_wait(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answ
 
 /// `(job-start command)`: runs the shell command beside the editor and gives the job's number.
 fn job_start(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [command] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [command] = g.exactly(args)?;
     let Some(command) = g.as_str(command)?.map(str::to_owned) else {
         return Err(g.error("type-error", args));
     };
@@ -102,7 +99,8 @@ fn job_value(id: u64) -> Value {
 /// `(job-cancel job)`: kills the job's command. Its `ended` comes as usual; an ended job's
 /// number does nothing.
 fn job_cancel(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [Value::Integer(id)] = args else {
+    let [v] = g.exactly(args)?;
+    let Value::Integer(id) = v else {
         return Err(g.error("type-error", args));
     };
     h.inbox.cancel(u64::try_from(*id).unwrap_or(0));
@@ -112,7 +110,8 @@ fn job_cancel(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<An
 /// `(job-abandon job)`: ends the runs waiting for the job, through their cleanups, when the run
 /// calling this has come back to the host: nothing can be taken up inside a host call.
 fn job_abandon(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [Value::Integer(id)] = args else {
+    let [v] = g.exactly(args)?;
+    let Value::Integer(id) = v else {
         return Err(g.error("type-error", args));
     };
     h.abandoned.push(*id);
@@ -122,27 +121,21 @@ fn job_abandon(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<A
 /// `(spawn f)`: calls `f` as a run of its own, beside this one, when this one has come back to
 /// the host. Its error, if it ends with one, goes to the echo area.
 fn spawn(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [f] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [f] = g.exactly(args)?;
     h.spawned.push(g.keep(*f)?);
     Ok(Answer::Now(Value::Inert))
 }
 
 /// `(quit-editor)`: the host's loop ends when this run comes back to it, abandoning what waits.
 fn quit_editor(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    let [] = g.exactly(args)?;
     h.quitting = true;
     Ok(Answer::Now(Value::Inert))
 }
 
 /// `(temporary-file)`: a new path in the system's temporary directory; no file is made.
 fn temporary_file(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    let [] = g.exactly(args)?;
     h.temporaries += 1;
     let name = format!("grift-emacs-{}-{}", std::process::id(), h.temporaries);
     g.string(&std::env::temp_dir().join(name).to_string_lossy())
@@ -151,9 +144,7 @@ fn temporary_file(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Resul
 
 /// `(delete-file path)`: removes the file; one that isn't there is no error.
 fn delete_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [path] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [path] = g.exactly(args)?;
     let Some(name) = g.as_str(path)? else {
         return Err(g.error("type-error", args));
     };
@@ -176,9 +167,7 @@ fn terminal_write(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Resul
 
 /// `(terminal-size)`: the terminal's rows and columns, as a list.
 fn terminal_size(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    if !args.is_empty() {
-        return Err(g.error("arity-error", args));
-    }
+    let [] = g.exactly(args)?;
     let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
     let cols = g.pair(Value::Integer(i64::from(cols)), Value::EmptyList)?;
     g.pair(Value::Integer(i64::from(rows)), cols)
@@ -194,9 +183,7 @@ fn file_error(g: &mut HostCall<Host>, path: &Value, e: &io::Error) -> Error {
 
 /// `(read-file path)`: the file's text; `()` when it doesn't exist.
 fn read_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [path] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [path] = g.exactly(args)?;
     let Some(name) = g.as_str(path)?.map(str::to_owned) else {
         return Err(g.error("type-error", args));
     };
@@ -209,9 +196,7 @@ fn read_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Ans
 
 /// `(write-file path string)`: replaces the file's contents with the string's bytes.
 fn write_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
-    let [path, contents] = args else {
-        return Err(g.error("arity-error", args));
-    };
+    let [path, contents] = g.exactly(args)?;
     let (Some(name), Some(s)) = (g.as_str(path)?, g.as_str(contents)?) else {
         return Err(g.error("type-error", args));
     };

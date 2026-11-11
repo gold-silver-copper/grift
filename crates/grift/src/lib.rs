@@ -181,6 +181,25 @@ host_call! {
     fn release(&mut self, k: Kept) -> Result<(), (Error, Kept)>;
 }
 
+impl<T> HostCall<'_, T> {
+    /// The arguments of a host function that takes exactly `N`, or else [`HostCall::arity_error`].
+    pub fn exactly<'v, const N: usize>(
+        &mut self,
+        args: &'v [Value],
+    ) -> Result<&'v [Value; N], Error> {
+        args.try_into().map_err(|_| self.arity_error(args))
+    }
+
+    /// The `arity-error` a primitive gives: one value, the arguments as a list. With no memory for
+    /// the list, `out-of-memory`.
+    pub fn arity_error(&mut self, args: &[Value]) -> Error {
+        match self.0.list(args) {
+            Ok(list) => self.0.error("arity-error", &[list]),
+            Err(e) => e,
+        }
+    }
+}
+
 /// What a [`HostFunction`] answers.
 #[derive(Debug, PartialEq)]
 pub enum Answer {

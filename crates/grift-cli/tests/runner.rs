@@ -91,6 +91,15 @@ fn exit_ends_the_run_with_its_status() {
         (status, out.as_str(), err.as_str()),
         (Some(3), "cleanup", "")
     );
+    // A wrong count is the arity-error a primitive gives: the operands as one list.
+    let values = |call| format!("(catch! {call} e (evaluate-in! values e))");
+    let counts = format!(
+        "(display {} {} {})",
+        values("(first 1 2)"),
+        values("(exit 1 2)"),
+        values("(run-process)")
+    );
+    assert_eq!(script(&dir, &counts, &[], "").1, "((1 2))((1 2))(())");
     let (status, _, err) = script(&dir, "(exit 256)", &[], "");
     assert_eq!(status, Some(1));
     assert!(err.contains("range-error"));

@@ -171,7 +171,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   private ([G-60]). A host resource is a context of operations on it, closed explicitly, and use
   after closing is `closed` ([G-41]).
 - The host's methods follow the primitives' rules; they are listed in the rustdoc and in
-  [the README](README.md#embedding).
+  [the README](README.md#embedding). A host function's wrong count is a primitive's `arity-error`,
+  the arguments as one list: `HostCall::exactly` and `HostCall::arity_error` make it ([G-185]).
 - `Value`, `Symbol`, `Reference` and `Operative` are `Copy`. One that belongs to an interpreter
   (anything but immediate data and primitives) carries its number, and another interpreter's is
   `foreign-value` ([G-181]). Every value handed in is checked for its interpreter, generation and
@@ -346,3 +347,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-181]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-183]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-185]: DECISIONS.md#the-architecture-audit-2026-11-10
