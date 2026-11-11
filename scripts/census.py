@@ -8,9 +8,6 @@ usage: scripts/census.py RUNNER  (from the repository root; prints a Markdown ta
 """
 import glob, re, subprocess, sys
 
-RUNNER = "display display-error read-file read-forms position environment-variable exit command-line-arguments \
-script-path standard-input standard-output standard-error open-file create-file run-process load \
-wall-clock-nanoseconds elapsed-nanoseconds".split()
 FIELDS = "read-line read-all read-bytes write close path status output error-output \
 kind values trace".split()
 TOKEN = re.compile(r'\s+|(?:;|#!)[^\n]*|"(?:\\.|[^"\\])*"?|[()]|[^\s();"]+', re.S)
@@ -96,9 +93,14 @@ def count(paths):
     return uses
 
 
+def names(of):
+    """The names in the list `of` evaluates to in the runner: a run that fails is an error, never no names."""
+    listing = f"(for-each (lambda! (n) (display n \"\\n\")) {of})"
+    return subprocess.run(sys.argv[1], input=listing, capture_output=True, text=True, check=True).stdout.split()
+
+
 def main():
-    listing = "(for-each (lambda! (n) (display n \"\\n\")) built-in-names)"
-    built_in = subprocess.run(sys.argv[1], input=listing, capture_output=True, text=True).stdout.split()
+    built_in, runner = names("built-in-names"), names("(names (current-context))")
     programs = {p.split("/")[1]: count(glob.glob(p + "/**/*.grift", recursive=True))
                 for p in sorted(glob.glob("programs/*"))}
     others = {"editor": count(["examples/emacs/src/editor.grift"]),
@@ -106,7 +108,7 @@ def main():
               "runner": count(["crates/grift-cli/src/runner.grift"])}
     print("| name | programs using it | uses in programs | editor | library | runner |")
     print("|---|---|---|---|---|---|")
-    for name in built_in + RUNNER + FIELDS:
+    for name in built_in + runner + FIELDS:
         using = [p for p in programs if programs[p].get(name)]
         total = sum(programs[p].get(name, 0) for p in programs)
         row = [str(others[o].get(name, 0)) for o in others]

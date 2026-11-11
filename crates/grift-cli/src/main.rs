@@ -10,11 +10,8 @@
 //! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 141, the status a
 //! shell gives a program that SIGPIPE ended.
 //!
-//! For scripting, the program gets a small fixed set of operations: `display`, `display-error`,
-//! `read-file`, `read-forms`, `position`, `standard-input`, `standard-output`, `standard-error`,
-//! `open-file`, `create-file`, `run-process` and `load` (made by `runner.grift`),
-//! `command-line-arguments`, `script-path`, `environment-variable`, `wall-clock-nanoseconds`,
-//! `elapsed-nanoseconds` and `exit`.
+//! For scripting, the program gets a small fixed set of operations, which `runner.grift` binds and
+//! the README lists.
 
 use grift::{Answer, Error, Grift, HostCall, HostFunction, Ran, ReportStatus, Value};
 use std::fmt;
@@ -476,7 +473,7 @@ fn report(g: &G, source: &str, e: &Error) -> ExitCode {
     let mut err = Sink {
         w: Gathered {
             out: io::stderr().lock(),
-            text: [0; 4096],
+            text: [0; REPORT_BYTES],
             len: 0,
         },
         error: None,
@@ -496,7 +493,7 @@ const REPORT_BYTES: usize = 4096;
 /// Writes gathered on the stack and passed on when it is full or flushed: no memory to be refused.
 struct Gathered<W: Write> {
     out: W,
-    text: [u8; 4096],
+    text: [u8; REPORT_BYTES],
     len: usize,
 }
 
