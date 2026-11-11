@@ -1,6 +1,6 @@
 //! How a run ends: who began the unwinding decides what may catch it, never what its kind is called.
 
-use crate::tests::kind;
+use crate::tests::{define, kind};
 use crate::{Answer, Grift, Interrupter, Value};
 
 /// A host whose program can stop its own run and force it, with a run that waits.
@@ -39,8 +39,7 @@ fn host() -> (Grift<Interrupter>, Interrupter) {
         ("wait", |_, _, _| Ok(Answer::Later(Value::Inert))),
     ];
     for (name, f) in functions {
-        let f = g.host_function(name, f).unwrap();
-        g.define(name, f).unwrap();
+        define(&mut g, name, f);
     }
     let s = g.interrupter();
     (g, s)
@@ -115,8 +114,7 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
         }),
     ];
     for (name, f) in functions {
-        let f = g.host_function(name, f).unwrap();
-        g.define(name, f).unwrap();
+        define(&mut g, name, f);
     }
     let mut s = vec![g.interrupter()];
     assert!(s.iter().all(|h| !h.force()), "its run has not begun");

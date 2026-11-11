@@ -2,7 +2,7 @@
 //! collector's stress, with the natives off, and generated programs with random points of pause,
 //! resume, giving up, stop, force and out-of-memory. The rest is in the crate's `tests/parking.rs`.
 
-use crate::tests::{kind, show};
+use crate::tests::{define, kind, show};
 use crate::{Answer, Error, Grift, HostCall, Parked, Ran, Value};
 
 type Log = Vec<String>;
@@ -28,12 +28,9 @@ fn full_wait(g: &mut HostCall<Log>, _: &mut Log, _: &[Value]) -> Result<Answer, 
 
 fn grift() -> Grift<Log> {
     let mut g: Grift<Log> = Grift::new().unwrap();
-    let f = g.host_function("wait", wait).unwrap();
-    g.define("wait", f).unwrap();
-    let f = g.host_function("full-wait", full_wait).unwrap();
-    g.define("full-wait", f).unwrap();
-    let f = g.host_function("note", note).unwrap();
-    g.define("note", f).unwrap();
+    define(&mut g, "wait", wait);
+    define(&mut g, "full-wait", full_wait);
+    define(&mut g, "note", note);
     g
 }
 
@@ -376,18 +373,12 @@ mod generated {
 
     fn interpreter(mode: Mode) -> Grift<World> {
         let mut g: Grift<World> = Grift::new().unwrap();
-        let f = g.host_function("wait", g_wait).unwrap();
-        g.define("wait", f).unwrap();
-        let f = g.host_function("note", g_note).unwrap();
-        g.define("note", f).unwrap();
-        let f = g.host_function("enter", g_enter).unwrap();
-        g.define("enter", f).unwrap();
-        let f = g.host_function("nest", g_nest).unwrap();
-        g.define("nest", f).unwrap();
-        let f = g.host_function("seen", g_seen).unwrap();
-        g.define("seen", f).unwrap();
-        let f = g.host_function("host-limit", g_host_limit).unwrap();
-        g.define("host-limit", f).unwrap();
+        define(&mut g, "wait", g_wait);
+        define(&mut g, "note", g_note);
+        define(&mut g, "enter", g_enter);
+        define(&mut g, "nest", g_nest);
+        define(&mut g, "seen", g_seen);
+        define(&mut g, "host-limit", g_host_limit);
         if matches!(mode, Mode::Plain | Mode::Stress) {
             return g;
         }

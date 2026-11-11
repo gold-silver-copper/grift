@@ -3,6 +3,7 @@
 //! each allocation is refused cleanly. A new primitive doesn't compile here until it is classed,
 //! and once classed it is in every sweep.
 
+use super::{define, kind};
 use crate::evaluate::Primitive;
 use crate::{Answer, Error, Grift, HostCall, Interrupter, Value, local};
 
@@ -109,10 +110,6 @@ fn operands(n: usize, deep: bool, depth: usize) -> String {
     )
 }
 
-fn kind<T>(g: &Grift<T>, e: &Error) -> String {
-    super::kind(g, e)
-}
-
 struct Probe {
     stop: Interrupter,
     p: Primitive,
@@ -149,8 +146,7 @@ fn a_stop_ends_every_walking_primitive_by_itself() {
             .unwrap();
         // A handle taken between runs reaches the next one.
         s.stop = g.interrupter();
-        let f = g.host_function("probe", probe).unwrap();
-        g.define("probe", f).unwrap();
+        define(&mut g, "probe", probe);
         // The run itself ends `interrupted` either way, at its next step: what counts is how
         // the primitive ended.
         let _ = g.evaluate(&mut s, &format!("(probe {args})"));

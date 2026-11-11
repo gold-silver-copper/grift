@@ -1184,8 +1184,7 @@ fn twins() -> [Grift<Vec<String>>; 2] {
             ("note", note as crate::HostFunction<Vec<String>>),
             ("malformed", malformed),
         ] {
-            let f = g.host_function(name, f).unwrap();
-            g.define(name, f).unwrap();
+            define(&mut g, name, f);
         }
         g.evaluate(
             &mut Vec::new(),
