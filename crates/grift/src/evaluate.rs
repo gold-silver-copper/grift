@@ -67,7 +67,8 @@ primitives! {
     Pair "pair" 2 2;
     Same "same?" 2 2;
     TypeOf "type-of" 1 1;
-    // Checked integers and IEEE floats, and Rust's float functions (G-42).
+    // Checked integers and IEEE floats, and Rust's float functions (G-42); natives.grift defines
+    // all but the first four and sine to natural-logarithm.
     Add "add" 2 2;
     Subtract "subtract" 2 2;
     Multiply "multiply" 2 2;
@@ -94,7 +95,7 @@ primitives! {
     StringToFloat "string-to-float" 1 1;
     ReadForm "read-form" 2 2;
     ValueToString "value-to-string" 1 1;
-    // What natives.grift defines.
+    // natives.grift defines all of these.
     First "first" 1 1;
     Rest "rest" 1 1;
     Select "select" 3 3;

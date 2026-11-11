@@ -12,38 +12,38 @@ use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKin
 /// The grift definitions of the native primitives.
 const MEANINGS: &str = include_str!("natives.grift");
 
-/// The primitives grift can't express, so with no definition in `natives.grift`.
-const CORE: &[&str] = &[
-    "vau!",
-    "wrap",
-    "unwrap",
-    "evaluate",
-    "evaluate-with-cleanup",
-    "evaluate-with-handler",
-    "raise",
-    "context",
-    "bind",
-    "unbind",
-    "names",
-    "pair",
-    "same?",
-    "type-of",
-    "add",
-    "subtract",
-    "multiply",
-    "divide",
-    "sine",
-    "cosine",
-    "tangent",
-    "exponential",
-    "natural-logarithm",
-    "byte-at",
-    "join",
-    "string-to-symbol",
-    "string-to-float",
-    "read-form",
-    "value-to-string",
-];
+/// Whether primitive `p` is native, its meaning its definition in `natives.grift`, and what a
+/// generated call of it passes: one signature for each kind of operands it takes, each argument a
+/// letter of `argument`'s. Every other primitive is core, what grift can't express, and the
+/// generator leaves it alone; `natives_are_their_definitions` checks the class against the
+/// definitions, so a native left out here fails it.
+fn class(p: Primitive) -> (bool, &'static [&'static str]) {
+    use Primitive as P;
+    match p {
+        P::First | P::Rest => (true, &["p"]),
+        P::Select => (true, &["bxx"]),
+        P::Lookup => (true, &["cyx"]),
+        P::BitwiseAnd | P::BitwiseOr | P::BitwiseExclusiveOr => (true, &["ii"]),
+        P::ShiftLeft | P::ShiftRight => (true, &["in"]),
+        P::IntegerToString | P::IntegerToFloat | P::CodePointToString => (true, &["i"]),
+        P::StringToInteger | P::StringToBytes => (true, &["s"]),
+        P::FloatToInteger | P::Truncate | P::Floor | P::Ceiling | P::Round | P::SquareRoot => {
+            (true, &["f"])
+        }
+        P::AbsoluteValue => (true, &["i", "f"]),
+        P::Remainder | P::Power => (true, &["ii", "ff"]),
+        P::LessThan => (true, &["ii", "ff", "ss", "BB"]),
+        P::ByteLength => (true, &["s", "B"]),
+        P::Slice => (true, &["soo", "Boo"]),
+        P::Search => (true, &["sto"]),
+        P::BytesToString | P::BytesToList => (true, &["B"]),
+        P::ListToBytes => (true, &["l"]),
+        // Core, called on bytes values, as the definitions call them.
+        P::ByteAt => (false, &["Bo"]),
+        P::Join => (false, &["BB"]),
+        _ => (false, &[]),
+    }
+}
 
 impl<T> Grift<T> {
     /// From now on the natives are their grift definitions: each bound in the built-in context,
@@ -821,38 +821,18 @@ const OTHER_TEXTS: &[&str] = &[
     "#bytes(0 255)",
 ];
 
-/// Each native with what each of its arguments usually is: `i` an integer, `f` a float, `s` a
-/// string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a symbol, `p` a
-/// pair, `b` a test, `B` a bytes value, `l` a list of bytes, `x` anything.
-const NATIVES: &[(&str, &str)] = &[
-    ("first", "p"),
-    ("rest", "p"),
-    ("select", "bxx"),
-    ("lookup", "cyx"),
-    ("bitwise-and", "ii"),
-    ("bitwise-or", "ii"),
-    ("bitwise-exclusive-or", "ii"),
-    ("shift-left", "in"),
-    ("shift-right", "in"),
-    ("integer-to-string", "i"),
-    ("string-to-integer", "s"),
-    ("integer-to-float", "i"),
-    ("float-to-integer", "f"),
-    ("byte-length", "s"),
-    ("slice", "soo"),
-    ("code-point-to-string", "i"),
-    ("if!", "bxx"),
-    ("sequence!", "xxx"),
-    ("search", "sto"),
-    ("byte-length", "B"),
-    ("byte-at", "Bo"),
-    ("slice", "Boo"),
-    ("join", "BB"),
-    ("string-to-bytes", "s"),
-    ("bytes-to-string", "B"),
-    ("list-to-bytes", "l"),
-    ("bytes-to-list", "B"),
-];
+/// What the generator calls, with what each of its arguments usually is: `i` an integer, `f` a
+/// float, `s` a string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a
+/// symbol, `p` a pair, `b` a test, `B` a bytes value, `l` a list of bytes, `x` anything. The
+/// primitives' come from [`class`]; the twins are the library's two operatives.
+static CALLED: std::sync::LazyLock<Vec<(&str, &str)>> = std::sync::LazyLock::new(|| {
+    let primitives = Primitive::ALL
+        .iter()
+        .flat_map(|&p| class(p).1.iter().map(move |k| (p.name(), *k)));
+    primitives
+        .chain([("if!", "bxx"), ("sequence!", "xxx")])
+        .collect()
+});
 
 /// Where a generated call stands: at top level, as an operand, in a body's tail, in a branch
 /// taken or not, before or as the last of a sequence, in a handler and a cleanup, applied,
@@ -880,7 +860,7 @@ const PLACES: &[&str] = &[
 
 /// One generated expression.
 fn generated(r: &mut Random, depth: usize) -> String {
-    let (name, kinds) = NATIVES[r.below(NATIVES.len())];
+    let (name, kinds) = CALLED[r.below(CALLED.len())];
     let mut arguments: Vec<String> = kinds.chars().map(|k| argument(r, k, depth)).collect();
     // Missing and excess operands now and then.
     match r.below(12) {
@@ -995,7 +975,7 @@ struct Comparison<'a> {
 /// How each native primitive of the two interpreters prints.
 fn native_texts(left: &mut Grift<Vec<String>>, right: &mut Grift<Vec<String>>) -> Vec<String> {
     let mut texts = Vec::new();
-    for p in Primitive::ALL.iter().filter(|p| !CORE.contains(&p.name())) {
+    for p in Primitive::ALL.iter().filter(|&&p| class(p).0) {
         for g in [&mut *left, &mut *right] {
             let bound = g.evaluate(&mut Vec::new(), p.name()).unwrap();
             texts.push(show(g, &g.underlying(&bound)));
@@ -1225,7 +1205,7 @@ fn natives_are_their_definitions() {
             defined.evaluate(&mut Vec::new(), p.name()).unwrap(),
         );
         let same_as_native = show(&native, &a) == show(&defined, &b);
-        assert_eq!(same_as_native, CORE.contains(&p.name()), "{}", p.name());
+        assert_eq!(same_as_native, !class(p).0, "{}", p.name());
     }
     // A separately read outer form can enter through a native branch or sequence body too.
     // Compare the complete errors and positions, not just the form's returned value.
