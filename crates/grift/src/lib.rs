@@ -1,32 +1,11 @@
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
-#[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "a test may abort when memory is refused"
-)]
-mod ending_tests;
 mod evaluate;
-#[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "a test may abort when memory is refused"
-)]
-mod family_tests;
 mod heap;
 mod interrupt;
 mod local;
 mod parked;
-#[cfg(test)]
-#[allow(
-    clippy::disallowed_methods,
-    clippy::disallowed_macros,
-    reason = "a test may abort when memory is refused"
-)]
-mod parked_tests;
 mod print;
 mod read;
 #[cfg(test)]

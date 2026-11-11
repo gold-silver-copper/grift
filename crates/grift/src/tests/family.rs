@@ -3,8 +3,6 @@
 //! each allocation is refused cleanly. A new primitive doesn't compile here until it is classed,
 //! and once classed it is in every sweep.
 
-#![allow(clippy::unwrap_used, clippy::panic)]
-
 use crate::evaluate::Primitive;
 use crate::{Answer, Error, Grift, HostCall, Interrupter, Value, local};
 
@@ -112,7 +110,7 @@ fn operands(n: usize, deep: bool, depth: usize) -> String {
 }
 
 fn kind<T>(g: &Grift<T>, e: &Error) -> String {
-    super::tests::kind(g, e)
+    super::kind(g, e)
 }
 
 struct Probe {
@@ -192,7 +190,7 @@ fn memory_refused_at_each_allocation_is_refused_cleanly() {
         let (_, args) = family(p);
         let src = format!("({} {args})", p.name());
         let shown = |g: &Grift, r: Result<Value, Error>| match r {
-            Ok(v) => Ok(super::tests::show(g, &v)),
+            Ok(v) => Ok(super::show(g, &v)),
             Err(e) => Err(kind(g, &e)),
         };
         let r = g.evaluate(&mut (), &src);

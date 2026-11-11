@@ -1733,7 +1733,7 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
-    /// Runs primitive `p` on `args` in `context`, for the sweeps in `family_tests`.
+    /// Runs primitive `p` on `args` in `context`, for the sweeps in `tests::family`.
     #[cfg(test)]
     pub(crate) fn call_primitive(
         &mut self,

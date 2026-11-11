@@ -11,7 +11,7 @@ on:
     branches: [master]
     paths:
       - "crates/*/tests/**"
-      - "**/*tests.rs"
+      - "crates/*/src/tests/**"
       - "**/natives.grift"
       - "programs/**"
       - "crates/grift/src/lib.rs"  # the doctest that catches 28; the script checks doctests are here

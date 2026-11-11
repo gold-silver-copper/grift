@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Test size per production size in crates/, held to a ratchet.
 
-What counts as test: every file under crates/*/tests/ (fixtures and .grift programs included),
-crates/*/src/*tests.rs, any item in crates/*/src/ under an attribute that names `test` without
-`not(test)`: #[cfg(test)], #[cfg(any(test, feature = ...))], #[cfg_attr(test, ...)] counts only its
-own line, and a .grift file in crates/*/src/ that no production code includes (`include_str!`).
+What counts as test: every file under a tests/ directory in crates/ (crates/*/tests/, fixtures and
+.grift programs included, and the unit tests in crates/*/src/tests/), any item in crates/*/src/
+under an attribute that names `test` without `not(test)`: #[cfg(test)],
+#[cfg(any(test, feature = ...))], with the attributes after it, to where its brackets close;
+#[cfg_attr(test, ...)] counts only its own line; and a .grift file in crates/*/src/ that no
+production code includes (`include_str!`).
 Production: the rest of crates/*/src/ (.rs and .grift). programs/ and examples/ are
 neither: they are programs the corpus test runs, not the interpreter.
 
@@ -40,11 +42,13 @@ def split(path):
             (test if is_test else prod).append(line)
             i += 1
             continue
-        # The item after the attribute: up to the end of its braces, or its `;`/`,`.
+        # The item after the attribute, with any attributes of its own: up to where its brackets
+        # close and it ends, with a `;`, `,` or `}`. Brackets in strings and comments don't count.
         depth, j = 0, i + 1
         while j < len(lines):
-            depth += lines[j].count("{") - lines[j].count("}")
-            if depth <= 0 and re.search(r"[;,}]\s*$", lines[j]):
+            code = COMMENT[".rs"].sub("", lines[j])
+            depth += sum(code.count(o) - code.count(c) for o, c in ("{}", "()", "[]"))
+            if depth <= 0 and re.search(r"[;,}]\s*$", code):
                 break
             j += 1
         test.extend(lines[i : j + 1])
@@ -60,7 +64,7 @@ def measure(by_lines=False):
         if not os.path.isfile(path) or ext not in COMMENT:
             continue
         lines = open(path, encoding="utf-8").read().split("\n")
-        if "/tests/" in path or path.endswith("tests.rs"):
+        if "/tests/" in path:
             parts[path] = ext, [], lines
         elif "/src/" in path:
             parts[path] = (ext, *split(path)) if ext == ".rs" else (ext, lines, [])

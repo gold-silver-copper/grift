@@ -1,3 +1,4 @@
+//! The unit tests, which take the machine's and the heap's insides.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -5,12 +6,16 @@
     clippy::indexing_slicing
 )]
 
+mod ending;
+mod family;
+mod parked;
+
 use crate::evaluate::Primitive;
 use crate::heap::{Bindings, Object};
 use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
-const MEANINGS: &str = include_str!("natives.grift");
+const MEANINGS: &str = include_str!("../natives.grift");
 
 /// Whether primitive `p` is native, its meaning its definition in `natives.grift`, and what a
 /// generated call of it passes: one signature for each kind of operands it takes, each argument a

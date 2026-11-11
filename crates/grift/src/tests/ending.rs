@@ -1,5 +1,4 @@
 //! How a run ends: who began the unwinding decides what may catch it, never what its kind is called.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::tests::kind;
 use crate::{Answer, Grift, Interrupter, Value};

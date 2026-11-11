@@ -13,7 +13,7 @@ test.
 A review finding or a bug report goes, in this order of preference, into:
 
 1. **the generator**: a shape the program generator writes, so every generated program checks it
-   (`parked_tests.rs`, `mod generated`);
+   (`crates/grift/src/tests/parked.rs`, `mod generated`);
 2. **a native's twin**: the grift definition in `natives.grift` that the tests run in place of the
    Rust, so no program can tell the two apart;
 3. **a guard**: a type, a lint or an assertion in the code that makes the mistake impossible or
