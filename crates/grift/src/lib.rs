@@ -33,6 +33,7 @@ const LIBRARY: &str = include_str!("library.grift");
 
 /// How many items a walk inside one step takes between looks for a stop: a power of two.
 const WALK_CHECK: usize = 4096;
+const _: () = assert!(WALK_CHECK.is_power_of_two());
 
 /// A grift value. Immediate values are plain data; the rest belong to the [`Grift`] that made
 /// them, and every operation checks that: another interpreter's value is the error
