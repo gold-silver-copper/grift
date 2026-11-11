@@ -1,11 +1,17 @@
---- a/crates/grift/src/evaluate.rs
-+++ b/crates/grift/src/evaluate.rs
-@@ -383,7 +383,7 @@
- impl Drop for Hosting {
-     fn drop(&mut self) {
-         if let Some(c) = &self.0 {
--            c.end();
-+            let _ = c;
-         }
+diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
+index 343bca3..0121b32 100644
+--- i/crates/grift/src/evaluate.rs
++++ w/crates/grift/src/evaluate.rs
+@@ -450,10 +450,11 @@ impl<T> Grift<T> {
+         state: Option<&mut T>,
+         mode: Result<Mode, Error>,
+     ) -> Result<Value, Error> {
++        let run = std::mem::ManuallyDrop::new(run);
+         let result = mode.and_then(|mode| self.run(state, mode));
+         // A machine that parked or was given up has nothing to go back to.
+         self.machine.clear();
+-        drop(run);
++        drop(std::mem::ManuallyDrop::into_inner(run));
+         result
      }
- }
+ 

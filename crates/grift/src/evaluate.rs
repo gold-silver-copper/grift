@@ -18,11 +18,10 @@
 //! runs the operative's body, so what a program sees never differs.
 
 use crate::heap::{Bindings, Object, Operative, Origin, Reference, Seen};
-use crate::interrupt::Control;
+use crate::interrupt::Run;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
-use std::sync::Arc;
 
 /// Declares the primitives: each one's variant, its name in the built-in context, and the
 /// fewest and most operands it takes. Those `natives.grift` defines exist for speed only, and that
@@ -421,80 +420,40 @@ impl Default for Machine {
     }
 }
 
-/// Held while a host function runs: if it panics, the run ends, and the next one clears its
-/// machine.
-struct Hosting(Option<Arc<Control>>);
-
-impl Drop for Hosting {
-    fn drop(&mut self) {
-        if let Some(c) = &self.0 {
-            c.end();
-        }
-    }
-}
+/// That [`Grift::prepare`] came first: only it makes one.
+pub(crate) struct Prepared(());
 
 pub(crate) fn type_error(v: Value) -> Error {
     Error::new(K::TypeError, &[v])
 }
 
 impl<T> Grift<T> {
-    /// Evaluates the list `forms` in `context`, in order.
-    pub(crate) fn evaluate_forms(
-        &mut self,
-        state: Option<&mut T>,
-        forms: Value,
-        context: Reference,
-        parks: bool,
-    ) -> Result<Value, Error> {
-        let top = What::Forms { rest: forms };
-        self.enter(state, top, context, Mode::Return(Value::Inert), parks)
-    }
-
-    /// [`Grift::call`], on this interpreter's values.
-    pub(crate) fn call_local(
-        &mut self,
-        state: Option<&mut T>,
-        f: Value,
-        arguments: &[Value],
-        parks: bool,
-    ) -> Result<Value, Error> {
-        let f = self.combiner_of(f)?;
-        let operands = self.list_local(arguments, false)?;
-        let context = self.heap.context(None)?;
-        // The run's own machine, whose argument stack starts empty.
-        let call = What::Combine {
-            operands,
-            base: Base::new(0, false),
-        };
-        self.enter(state, call, context, Mode::Return(f), parks)
+    /// The first frame of a run that evaluates the list `forms` in `context`, in order.
+    pub(crate) fn forms(&mut self, forms: Value, context: Reference) -> Result<Mode, Error> {
+        self.frame(What::Forms { rest: forms }, context, Reference::NONE)?;
+        Ok(Mode::Return(Value::Inert))
     }
 
     /// An applicative's underlying combiner; anything else is apply's `type-error`.
-    fn combiner_of(&self, f: Value) -> Result<Value, Error> {
+    pub(crate) fn combiner_of(&self, f: Value) -> Result<Value, Error> {
         match f {
             Value::Applicative(r) => self.unwrapped(r),
             _ => Err(type_error(f)),
         }
     }
 
-    /// Runs the interpreter's machine from `mode` with one frame until its frames are gone, as a
-    /// run of its own, for stops.
-    fn enter(
+    /// Runs the machine from `mode` until its frames are gone, as `run`, which ends as this returns
+    /// or unwinds: a host function that panics ends it too, and the next run clears the machine.
+    pub(crate) fn enter(
         &mut self,
+        run: Run,
         state: Option<&mut T>,
-        what: What,
-        context: Reference,
-        mode: Mode,
-        parks: bool,
+        mode: Result<Mode, Error>,
     ) -> Result<Value, Error> {
-        self.begin_run();
-        self.machine.may_park = parks;
-        let result = self
-            .frame(what, context, Reference::NONE)
-            .and_then(|()| self.run(state, mode));
+        let result = mode.and_then(|mode| self.run(state, mode));
         // A machine that parked or was given up has nothing to go back to.
         self.machine.clear();
-        self.control.end();
+        drop(run);
         result
     }
 
@@ -502,6 +461,7 @@ impl<T> Grift<T> {
     /// around it: the machine is its own, as it was when it began.
     pub(crate) fn wake(
         &mut self,
+        run: Run,
         state: Option<&mut T>,
         machine: Machine,
         answer: Result<Value, Error>,
@@ -509,10 +469,7 @@ impl<T> Grift<T> {
         self.machine = machine;
         self.machine.request = Value::Inert;
         let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e));
-        let result = mode.and_then(|mode| self.run(state, mode));
-        self.machine = Machine::default();
-        self.control.end();
-        result
+        self.enter(run, state, mode)
     }
 
     /// Sets the run in progress aside: its whole machine moves into a kept entry, and this
@@ -819,12 +776,14 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    /// Every way into a run comes here first: as the run may need slots before reaching the
-    /// machine loop, collect first if due, or after a peak, with its checked inputs as roots.
-    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) {
+    /// Every way into a run comes here first, as [`Grift::begin_run`] takes what this gives: as
+    /// the run may need slots before reaching the machine loop, collect first if due, or after a
+    /// peak, with its checked inputs as roots.
+    pub(crate) fn prepare(&mut self, current: impl Iterator<Item = Value>) -> Prepared {
         if self.heap.due_before_run() {
             self.collect(current);
         }
+        Prepared(())
     }
 
     // Root iterators and marking temporaries belong only to collection.
@@ -859,9 +818,7 @@ impl<T> Grift<T> {
         // The arguments stay on the argument stack, rooted, while the host runs.
         let given = self.machine.arguments.get(base..).unwrap_or_default();
         let arguments = collected(given.iter().map(|&v| self.export(v)))?;
-        let mut hosting = Hosting(Some(Arc::clone(&self.control)));
         let v = f(&mut HostCall::from(&mut *self), state, &arguments);
-        hosting.0 = None;
         self.machine.arguments.truncate(base);
         self.answered(v)
     }
@@ -894,11 +851,11 @@ impl<T> Grift<T> {
         }
     }
 
-    /// [`Answer::Call`]: the frames of a call of `function`, as [`Grift::call_local`] builds them,
-    /// and of `then`, each in a new empty context of its own.
+    /// The frames of a call of `function`, as [`Grift::call`] and [`Answer::Call`] make them, and
+    /// of `then`, each in a new empty context of its own.
     /// The frame of an argument still to come is all a `then` needs: the saved values are the
     /// arguments so far and the call's value is the last, so the machine has no new kind of frame.
-    fn call_on_machine(
+    pub(crate) fn call_on_machine(
         &mut self,
         function: Value,
         arguments: &[Value],

@@ -52,8 +52,8 @@ impl<T> Grift<T> {
     pub(crate) fn run_definitions(&mut self) {
         let here = Object::Context(Some(self.built_in), Bindings::default());
         let here = self.heap.alloc(here).unwrap();
-        let forms = self.read_local(MEANINGS, None, true).unwrap();
-        self.evaluate_forms(None, forms, here, false).unwrap();
+        self.run_text(None, here, None, MEANINGS, true, false)
+            .unwrap();
         let name = self.intern("meanings").unwrap();
         let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {
             panic!("natives.grift defines meanings");

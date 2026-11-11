@@ -143,8 +143,9 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   `describe` and `bind` are runs a stop reaches, or join the run in progress inside a host function
   ([G-179], [G-181]). Inside a step, list walks, `search`, the reader and the printer look for stops
   as they go ([G-178], [G-179]).
-- A host function that panics ends its run: the panic goes on to the host, no cleanup runs, and the
-  next evaluation starts afresh ([G-168]).
+- A run is owned by one guard value that ends it as it drops, so a host function that panics ends
+  its run: the panic goes on to the host, no cleanup runs, and the next evaluation starts afresh
+  ([G-168], [G-182]).
 
 ## Parked runs
 
@@ -343,3 +344,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-179]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-180]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
 [G-181]: DECISIONS.md#one-model-of-how-a-run-ends-2026-11-06
+[G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
