@@ -518,9 +518,6 @@ impl<T> Grift<T> {
         push(&mut self.machine.frames, Frame { what, context, at })
     }
 
-    /// The machine loop. Its own function, as when it had two callers: inlined into its one
-    /// caller, the loop compiles to a slower shape.
-    #[inline(never)]
     fn run(&mut self, mut state: Option<&mut T>, mut mode: Mode) -> Result<Value, Error> {
         loop {
             #[cfg(test)]
