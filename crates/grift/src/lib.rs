@@ -574,8 +574,11 @@ impl<T> Grift<T> {
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
         let made = self.heap.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
+            // The registration's room comes first and its entry last, when nothing can fail.
+            self.hosts.try_reserve(1)?;
             let host = self.heap.make(local::Value::Host(local::Host(id)))?;
-            push(&mut self.hosts, (s, f))?;
+            #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
+            self.hosts.push((s, f));
             Ok(local::Value::Applicative(host))
         });
         self.exported(made)
