@@ -19,9 +19,7 @@
 
 use crate::heap::kind::{Context, Pair};
 use crate::heap::{Bindings, Operative, Origin, Ref, Seen, kind};
-use crate::interrupt::Control;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
-use crate::parked::MayPark;
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
 
@@ -445,9 +443,10 @@ impl Default for Machine {
     }
 }
 
-/// That [`Grift::prepare`] came first: only it makes one, and [`Control::begin`](crate::interrupt::Control::begin)
-/// takes it, so every run on the machine begins on a prepared heap.
+/// That [`Grift::prepare`] came first: only it makes one, and the run on the machine takes it,
+/// so every run begins on a prepared heap.
 pub(crate) struct Prepared(());
+pub(crate) use whole::OnMachine;
 
 pub(crate) fn type_error(v: Value) -> Error {
     Error::new(K::TypeError, &[v])
@@ -473,6 +472,58 @@ pub(crate) enum First<'a> {
     },
 }
 
+/// A whole run on the machine, alone with the proof [`Control::begin`] takes, so no other code can
+/// begin one.
+mod whole {
+    use super::{First, Mode, Prepared, What};
+    use crate::heap::Ref;
+    use crate::interrupt::Control;
+    use crate::local::{Error, Value};
+    use crate::{Grift, parked::MayPark};
+
+    /// That a run begins in [`Grift::run_on_machine`], on a prepared heap.
+    pub(crate) struct OnMachine(Prepared);
+
+    impl<T> Grift<T> {
+        /// A whole run: begun with the machine clear, its first frames made, run, cleared, and
+        /// ended as `run` drops (a host function's panic too). `parks` is the right to park.
+        pub(crate) fn run_on_machine(
+            &mut self,
+            ready: Prepared,
+            parks: Option<MayPark>,
+            state: Option<&mut T>,
+            first: First,
+        ) -> Result<Value, Error> {
+            // Refused, this run goes without: an `out-of-memory` trace can miss places.
+            let _ = self.spare.try_reserve_exact(crate::SPARE);
+            self.machine.clear();
+            let run = Control::begin(&self.control, OnMachine(ready), parks);
+            let mode = match first {
+                First::Text {
+                    context,
+                    source,
+                    src,
+                    library,
+                } => self.read_local(src, source, library).and_then(|forms| {
+                    self.frame(What::Forms { rest: forms }, context, Ref::NONE)?;
+                    Ok(Mode::Return(Value::Inert))
+                }),
+                First::Call { f, arguments } => self.call_on_machine(f, arguments, None),
+                First::Resume { machine, answer } => {
+                    self.machine = machine;
+                    self.machine.request = Value::Inert;
+                    answer.map(Mode::Return).or_else(|e| self.unwind(e))
+                }
+            };
+            let result = mode.and_then(|mode| self.run(state, mode));
+            // A machine that parked or was given up has nothing to go back to.
+            self.machine.clear();
+            drop(run);
+            result
+        }
+    }
+}
+
 impl<T> Grift<T> {
     /// An applicative's underlying combiner; anything else is apply's `type-error`.
     pub(crate) fn combiner_of(&self, f: Value) -> Result<Value, Error> {
@@ -480,43 +531,6 @@ impl<T> Grift<T> {
             Value::Applicative(r) => self.heap.read(r).copied(),
             _ => Err(type_error(f)),
         }
-    }
-
-    /// A whole run: begun with the machine clear, its first frames made, run, cleared, and ended as
-    /// `run` drops (a host function's panic too). `parks` is the right to park: [`Grift::started`].
-    pub(crate) fn run_on_machine(
-        &mut self,
-        ready: Prepared,
-        parks: Option<MayPark>,
-        state: Option<&mut T>,
-        first: First,
-    ) -> Result<Value, Error> {
-        // Refused, this run goes without: an `out-of-memory` trace can miss places.
-        let _ = self.spare.try_reserve_exact(crate::SPARE);
-        self.machine.clear();
-        let run = Control::begin(&self.control, ready, parks);
-        let mode = match first {
-            First::Text {
-                context,
-                source,
-                src,
-                library,
-            } => self.read_local(src, source, library).and_then(|forms| {
-                self.frame(What::Forms { rest: forms }, context, Ref::NONE)?;
-                Ok(Mode::Return(Value::Inert))
-            }),
-            First::Call { f, arguments } => self.call_on_machine(f, arguments, None),
-            First::Resume { machine, answer } => {
-                self.machine = machine;
-                self.machine.request = Value::Inert;
-                answer.map(Mode::Return).or_else(|e| self.unwind(e))
-            }
-        };
-        let result = mode.and_then(|mode| self.run(state, mode));
-        // A machine that parked or was given up has nothing to go back to.
-        self.machine.clear();
-        drop(run);
-        result
     }
 
     /// Sets the run in progress aside: its whole machine moves into a kept entry, and this

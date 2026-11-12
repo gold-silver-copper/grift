@@ -9,7 +9,7 @@
 //! published through the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]:
 //! never repeated, at a run a nanosecond they wrap after thirty-six years.
 
-use crate::{WALK_CHECK, evaluate::Prepared, parked::MayPark};
+use crate::{WALK_CHECK, evaluate::OnMachine, parked::MayPark};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -37,9 +37,9 @@ pub(crate) struct Control {
 
 impl Control {
     /// Begins a run on the machine, which ends as the [`Run`] drops. It takes the proof that the
-    /// heap was prepared for it ([`Prepared`]), so no run begins uncollected, and the right to
-    /// park, if it has it, which ending the run takes back.
-    pub fn begin(control: &Arc<Control>, _: Prepared, parks: Option<MayPark>) -> Run {
+    /// run is the whole one and its heap prepared ([`OnMachine`]), and the right to park, if it
+    /// has it, which ending the run takes back.
+    pub fn begin(control: &Arc<Control>, _: OnMachine, parks: Option<MayPark>) -> Run {
         control
             .word
             .fetch_or(RUNNING | parks.map_or(0, |_| PARKS), Relaxed);
