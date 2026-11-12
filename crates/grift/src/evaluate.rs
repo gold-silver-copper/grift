@@ -802,7 +802,7 @@ impl<T> Grift<T> {
     /// its front, so this costs those places only.
     fn handle(&mut self, e: Error, handler: Value, context: Ref<Context>) -> Result<Mode, Error> {
         let library = self.machine.library;
-        let values = self.list_local(&e.values, library)?;
+        let values = self.list_of(e.values.iter().copied(), library)?;
         let handed = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3)?;
@@ -813,7 +813,7 @@ impl<T> Grift<T> {
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Trace.into(), handed.parts().0);
         let v = Value::Context(self.heap.make((None, fields))?);
-        let operands = self.list_local(&[v], library)?;
+        let operands = self.pair_local(v, Value::EmptyList, library)?;
         self.machine.handed = Some(handed);
         self.combine(handler, operands, context)
     }
@@ -903,7 +903,7 @@ impl<T> Grift<T> {
         then: Option<(Value, Vec<Value>)>,
     ) -> Result<Mode, Error> {
         let function = self.combiner_of(function)?;
-        let operands = self.list_local(arguments, false)?;
+        let operands = self.list_of(arguments.iter().copied(), false)?;
         let at = self.machine.here;
         if let Some((then, saved)) = then {
             let combiner = self.combiner_of(then)?;
@@ -1135,17 +1135,22 @@ impl<T> Grift<T> {
     #[inline(never)]
     fn names_list(&mut self, context: Ref<Context>) -> Result<Value, Error> {
         let names = self.names_of(context)?;
-        self.list_of(names.iter().map(|&s| Value::Symbol(s)))
+        self.list_of(names.into_iter().map(Value::Symbol), self.machine.library)
     }
 
-    /// A new list of `items`, built from the last: charged like [`Items`], so a stop ends it.
-    fn list_of(&mut self, items: impl DoubleEndedIterator<Item = Value>) -> Result<Value, Error> {
+    /// A new list of `items`, built from the last, its pairs the library's if `library`: charged
+    /// like [`Items`], so a stop ends it. Every list Rust builds from values it holds is built here.
+    fn list_of(
+        &mut self,
+        items: impl DoubleEndedIterator<Item = Value>,
+        library: bool,
+    ) -> Result<Value, Error> {
         let mut walked = 0;
         items.rev().try_fold(Value::EmptyList, |list, x| {
             if self.walk_stopped(&mut walked) {
                 return Err(Error::interrupted());
             }
-            self.pair_local(x, list, self.machine.library)
+            self.pair_local(x, list, library)
         })
     }
 
@@ -1408,10 +1413,10 @@ impl<T> Grift<T> {
         })?;
         let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
         Ok(match read? {
-            Some((form, place, _)) => self.list_local(
-                &[form, integer(place.start), integer(place.end)],
-                self.machine.library,
-            )?,
+            Some((form, place, _)) => {
+                let found = [form, integer(place.start), integer(place.end)];
+                self.list_of(found.into_iter(), self.machine.library)?
+            }
             None => Value::EmptyList,
         })
     }
@@ -1561,7 +1566,8 @@ impl<T> Grift<T> {
             _ => {
                 let [x] = self.arguments(base)?;
                 let b = collected(self.bytes_of(x)?.iter().copied())?;
-                self.list_of(b.iter().map(|&byte| Value::Integer(i64::from(byte))))?
+                let items = b.into_iter().map(|byte| Value::Integer(i64::from(byte)));
+                self.list_of(items, self.machine.library)?
             }
         })
     }
@@ -1678,13 +1684,6 @@ impl<T> Grift<T> {
             Value::Bytes(r) => self.heap.read(r).map(Vec::as_slice),
             _ => Err(type_error(v)),
         }
-    }
-
-    /// A new list of `xs`.
-    pub(crate) fn list_local(&mut self, xs: &[Value], library: bool) -> Result<Value, Error> {
-        xs.iter()
-            .rev()
-            .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l, library))
     }
 
     /// A new pair, the library's if `library`: what the machine makes is the library's if the
