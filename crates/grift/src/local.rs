@@ -165,8 +165,9 @@ impl Trace {
     }
 }
 
-/// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core
-/// can name them as constants; the kinds of error come first, and are the public [`Kind`] too.
+/// Declares the symbols every heap makes first, in this order ([`Heap::new`](crate::heap::Heap::new)),
+/// so the core can name them as constants; the kinds of error come first, and are the public
+/// [`Kind`] too.
 macro_rules! known_symbols {
     ($($e:ident $kind:literal)* ; $($k:ident $name:literal)*) => {
         /// A kind of error grift raises, which a host makes or recognises without spelling it. For

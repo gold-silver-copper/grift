@@ -19,7 +19,7 @@
 
 use crate::heap::kind::{Context, Pair};
 use crate::heap::{Bindings, Operative, Origin, Ref, Seen, kind};
-use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
+use crate::local::{Error, Host, K, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
 
@@ -850,12 +850,10 @@ impl<T> Grift<T> {
         current: impl Iterator<Item = Value>,
         held: impl IntoIterator<Item = Ref>,
     ) {
-        // Names are heap objects: the known ones and host functions' are roots too.
-        let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
+        // Names are heap objects: host functions' are roots too.
         let roots = (self.machine.roots().chain(current))
             .chain(self.kept.iter().flat_map(Entry::roots))
             .chain([Value::Context(self.built_in), Value::Context(self.top)])
-            .chain(known)
             .chain(self.hosts.iter().map(|&(name, _)| Value::Symbol(name)));
         self.heap.collect(roots, held.into_iter());
         self.tidy_kept();

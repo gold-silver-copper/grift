@@ -422,12 +422,24 @@ impl<T> Grift<T> {
     /// shared control block, which its interrupters point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
+        let owner = Owner(OWNERS.fetch_add(1, Ordering::Relaxed));
+        // With no heap there is no interpreter to name the error: its kind says it all.
+        let heap = Heap::new().map_err(|_| Error {
+            kind: Symbol {
+                owner,
+                index: K::OutOfMemory as u32,
+                generation: 0,
+            },
+            values: Vec::new(),
+            trace: Vec::new(),
+            limit: true,
+        })?;
         #[expect(
             clippy::disallowed_methods,
             reason = "Arc::try_new is unstable: the one abort `new` documents"
         )]
         let mut g = Grift {
-            heap: Heap::default(),
+            heap,
             hosts: Vec::new(),
             built_in: Ref::NONE,
             top: Ref::NONE,
@@ -437,17 +449,13 @@ impl<T> Grift<T> {
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
             control: Arc::new(Control::default()),
-            owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
+            owner,
         };
         let loaded = g.load();
         g.out(loaded).map(|()| g)
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
-        // The known names come first, so their slots are their ids, and they are always roots.
-        for name in local::K_NAMES {
-            self.intern(name)?;
-        }
         self.built_in = self.heap.make((None, Bindings::default()))?;
         self.top = self.heap.make((Some(self.built_in), Bindings::default()))?;
         for &p in evaluate::Primitive::ALL {

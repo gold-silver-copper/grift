@@ -3,7 +3,7 @@
 //! collection needs no memory of its own.
 
 use crate::evaluate::Native;
-use crate::local::{Error, K, Symbol, Value, boxed, push};
+use crate::local::{Error, K, K_NAMES, Symbol, Value, boxed, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -225,9 +225,11 @@ pub(crate) struct Heap {
     pub probe: probe::Probe,
 }
 
-impl Default for Heap {
-    fn default() -> Heap {
-        Heap {
+impl Heap {
+    /// A heap holding grift's known names, made first so each one's slot is its number, as
+    /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself.
+    pub fn new() -> Result<Heap, Error> {
+        let mut heap = Heap {
             slots: Vec::new(),
             free: NONE,
             names: HashMap::new(),
@@ -238,7 +240,11 @@ impl Default for Heap {
             asked: Cell::new(false),
             #[cfg(test)]
             probe: probe::Probe::default(),
+        };
+        for name in K_NAMES {
+            heap.intern(name)?;
         }
+        Ok(heap)
     }
 }
 
@@ -481,11 +487,11 @@ impl Heap {
         self.until_gc.set(0);
     }
 
-    /// Marks everything reachable from `roots` and the host's `held`, and frees the rest, with no
-    /// memory of its own: a slot goes on the mark stack only as it is first marked, so once at
-    /// most, and every slot reserved its entry as it was made. Each root and held reference is a
-    /// step of the walk outside the heap, counted as it is marked, so what pacing pays for is what
-    /// was walked. The free list is made again from the bottom up, so the lowest slots are reused
+    /// Marks everything reachable from `roots`, the known names and the host's `held`, and frees
+    /// the rest, with no memory of its own: a slot goes on the mark stack only as it is first
+    /// marked, so once at most, and every slot reserved its entry as it was made. Each root, known
+    /// name and held reference is a step of the walk outside the heap, counted as it is marked, so
+    /// what pacing pays for is what was walked. The free list is made again from the bottom up, so the lowest slots are reused
     /// first and the top empties, to be given back.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>, held: impl Iterator<Item = Ref>) {
         let asked = self.asked.take();
@@ -494,7 +500,8 @@ impl Heap {
         let marks = &mut self.marks;
         #[cfg(test)]
         let room = marks.capacity();
-        let walked = roots.map(|v| mark(slots, marks, v)).count()
+        let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
+        let walked = (roots.chain(known)).map(|v| mark(slots, marks, v)).count()
             + held.map(|r| hold(slots, marks, r)).count();
         while let Some(idx) = marks.pop() {
             if let Some(s) = slots.get(idx as usize) {
