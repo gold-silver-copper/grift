@@ -25,10 +25,7 @@ type G = Grift<World>;
 /// of a cleanup on the way out. What the run ended with; refused, why, the handle back.
 fn give_up(g: &mut G, w: &mut World, mut p: Parked) -> Result<Error, ResumeError> {
     loop {
-        let ending = Error {
-            limit: true,
-            ..g.error("given-up", &[])
-        };
+        let ending = g.limit("given-up", &[]);
         match g.resume(w, p, Err(ending)) {
             Ok(Ran::Parked(again)) => p = again,
             Ok(Ran::Finished(v)) => panic!("a limit ended with the value {v:?}"),

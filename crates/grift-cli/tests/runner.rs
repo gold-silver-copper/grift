@@ -100,6 +100,14 @@ fn exit_ends_the_run_with_its_status() {
         values("(run-process)")
     );
     assert_eq!(script(&dir, &counts, &[], "").1, "((1 2))((1 2))(())");
+    // A wrong type is the type-error a primitive gives: the one value of the wrong type.
+    let types = format!(
+        "(display {} {} {})",
+        values("(first 1)"),
+        values("(read-forms 1 \"x\")"),
+        values("(read-forms \"s\" 2)")
+    );
+    assert_eq!(script(&dir, &types, &[], "").1, "(1)(1)(2)");
     let (status, _, err) = script(&dir, "(exit 256)", &[], "");
     assert_eq!(status, Some(1));
     assert!(err.contains("range-error"));
