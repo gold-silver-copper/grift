@@ -115,9 +115,29 @@ struct HandlesGoInByValue;
 #[cfg(doctest)]
 struct ResumeTakesNoReference;
 
-/// The right to park, given to a run as it begins. Its field is private here, and only
-/// [`Grift::started`] makes one, then reads how the run came back.
-pub(crate) struct MayPark(());
+/// The right to park, alone with the one function that gives it, so no other code can make one.
+mod right {
+    use crate::{Error, Grift, Ran, local};
+
+    /// The right to park, given to a run as it begins.
+    pub(crate) struct MayPark(());
+
+    impl<T> Grift<T> {
+        /// Runs `run` with the right to park, then reads how it came back: parked, if it left its
+        /// kept name, else what it returned.
+        pub(super) fn started(
+            &mut self,
+            run: impl FnOnce(&mut Self, MayPark) -> Result<local::Value, local::Error>,
+        ) -> Result<Ran, Error> {
+            let done = run(self, MayPark(()));
+            match self.parked_as.take() {
+                Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
+                None => self.exported(done).map(Ran::Finished),
+            }
+        }
+    }
+}
+pub(crate) use right::MayPark;
 
 /// Why [`Grift::resume`] didn't take the run up, or what ended it.
 #[derive(Debug)]
@@ -154,18 +174,6 @@ impl<T> Grift<T> {
             let c = g.context_of(context)?;
             g.run_text(Some(state), c, Some(source), src, false, Some(parks))
         })
-    }
-
-    /// Runs `run` with the right to park: parked, if it left its kept name, else what it returned.
-    fn started(
-        &mut self,
-        run: impl FnOnce(&mut Self, MayPark) -> Result<local::Value, local::Error>,
-    ) -> Result<Ran, Error> {
-        let done = run(self, MayPark(()));
-        match self.parked_as.take() {
-            Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
-            None => self.exported(done).map(Ran::Finished),
-        }
     }
 
     /// A handle to the run parked under kept name `name`.
