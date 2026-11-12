@@ -1998,3 +1998,17 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   and replaces the entry in place, both through the ordinary fallible pushes. Nothing is promised across files,
   and `tidy` no longer mentions cleanups. Timing at the change's head against master: `finally` −2.2%, `catch`
   −1.6%, every workload in band.
+- **G-203. A cleanup's install is all or nothing, and its start can't fail before the ending is saved** (amends
+  G-202, from the judges' review). The install reserves room for two frames and one `waiting` entry, then puts the
+  `Finish` frame, its entry and the `Cleanup` frame on with nothing between that can fail, so a `Finish` never
+  exists without its entry and its `Cleanup` above it. `start_cleanup` writes the ending into that entry in place
+  (it popped and pushed again). The run's `Run` guard is `#[must_use]`. `a_text_that_does_not_read_ends_its_run_clear`
+  now checks what a host sees, `cannot-park` from a plain evaluation after the failed text, since the may-park
+  bit is clear after any run ends; it fails when ending a run leaves the bit set. Cost: 10 production lines.
+- **G-204. The right to park and the beginning of a run are each made in one function only** (amends G-200 and
+  G-201's "still writable"). `MayPark` and `started` are a module of their own inside `parked.rs`, so no other code
+  there can make the right and skip reading how the run came back. `Control::begin` takes `OnMachine`, which wraps
+  the `Prepared` proof and is made only in a module of `evaluate.rs` that holds `run_on_machine` alone, so no other
+  code in the crate, `evaluate.rs` included, can begin a run on the machine. Host-side runs keep
+  `Control::host_run`, which runs no machine. Cost: 18 production lines, about 8 and 10. Evidence: the
+  won't-compile examples in the PR.
