@@ -804,16 +804,14 @@ impl<T> Grift<T> {
         let library = self.machine.library;
         let values = self.list_of(e.values.iter().copied(), library)?;
         let handed = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
-        let mut fields = Bindings::default();
-        fields.try_reserve(3)?;
-        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Kind.into(), Value::Symbol(e.kind));
-        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Values.into(), values);
-        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Trace.into(), handed.parts().0);
-        let v = Value::Context(self.heap.make((None, fields))?);
-        let operands = self.pair_local(v, Value::EmptyList, library)?;
+        let record = self.heap.make((None, Bindings::default()))?;
+        let fields = [
+            (K::Kind.into(), Value::Symbol(e.kind)),
+            (K::Values.into(), values),
+            (K::Trace.into(), handed.parts().0),
+        ];
+        self.heap.bind(record, fields)?;
+        let operands = self.pair_local(Value::Context(record), Value::EmptyList, library)?;
         self.machine.handed = Some(handed);
         self.combine(handler, operands, context)
     }
