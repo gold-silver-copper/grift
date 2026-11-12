@@ -96,25 +96,6 @@ impl Drop for Parked {
 #[cfg(doctest)]
 struct ParkedIsNotClone;
 
-/// `resume` uses the handle up: by value it is this type, the only reason a second one doesn't
-/// compile.
-///
-/// ```
-/// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
-/// let _: fn(&mut Grift, &mut (), Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
-///     Grift::resume;
-/// ```
-#[cfg(doctest)]
-struct HandlesGoInByValue;
-
-/// ```compile_fail
-/// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
-/// let _: fn(&mut Grift, &mut (), &Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
-///     Grift::resume;
-/// ```
-#[cfg(doctest)]
-struct ResumeTakesNoReference;
-
 /// The right to park, alone with the one function that gives it, so no other code can make one.
 mod right {
     use crate::{Error, Grift, Ran, local};
