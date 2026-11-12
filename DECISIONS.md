@@ -1917,3 +1917,9 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   no machine, and a collection that is due waits for the next run on the machine. A text that doesn't read
   now ends its run through `enter`, as every run does, so its machine is cleared (it kept `may_park` until
   the next run). Evidence: `a_text_that_does_not_read_ends_its_run_clear`.
+- **G-190. A string's text is lent to a closure, in one heap operation** (amends G-187's `take_text`/`put_text`).
+  `take_text` twice on one string, or a `Lent` dropped before `put_text`, lost the string's text with no
+  error. `Grift::lend_text(r, f)` takes the text out, hands it to `f` with the interpreter and puts it
+  back as `f` returns; it lives in `heap.rs` beside the raw slots, so no other code can take text out or
+  put any back, and a nested lend of the same string takes the empty text and puts it back before the
+  outer one returns its own. `Lent`, `take_text` and `put_text` are gone.

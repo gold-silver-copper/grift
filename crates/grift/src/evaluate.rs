@@ -1321,11 +1321,11 @@ impl<T> Grift<T> {
         let offset = usize::try_from(integer_of(y)?).ok();
         // The text is lent to the reader, not copied: a program reads a long text one
         // form at a time.
-        let text = self.heap.take_text(r)?;
-        let read = offset
-            .filter(|&i| text.is_char_boundary(i))
-            .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
-        self.heap.put_text(text)?;
+        let read = self.lend_text(r, |g, text| {
+            offset
+                .filter(|&i| text.is_char_boundary(i))
+                .map(|i| g.read_form(text, i, 1, None, &mut 0, g.machine.library))
+        })?;
         let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
         Ok(match read? {
             Some((form, place, _)) => self.list_local(

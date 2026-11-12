@@ -93,18 +93,6 @@ kinds! {
     Applicative(Value) Whole;
 }
 
-/// A string's text, lent out by [`Heap::take_text`]: only it, and only to its own string, can
-/// [`Heap::put_text`] put back.
-pub(crate) struct Lent(Ref<kind::String>, Box<str>);
-
-impl std::ops::Deref for Lent {
-    type Target = str;
-
-    fn deref(&self) -> &str {
-        &self.1
-    }
-}
-
 /// A compound operative: its parameter tree, its context parameter, its body's forms, the context it
 /// was made in, how many bindings a call makes, and the native twin that runs it, for the few
 /// library forms that have one.
@@ -443,18 +431,6 @@ impl Heap {
         Ok(())
     }
 
-    /// Takes a string's text out, leaving it empty until [`Heap::put_text`] puts it back: lent so,
-    /// it needs no copy.
-    pub fn take_text(&mut self, r: Ref<kind::String>) -> Result<Lent, Error> {
-        self.get_mut(r).map(|s| Lent(r, std::mem::take(s)))
-    }
-
-    /// Puts lent text back where it came from: the only text a string can be given.
-    pub fn put_text(&mut self, Lent(r, text): Lent) -> Result<(), Error> {
-        *self.get_mut(r)? = text;
-        Ok(())
-    }
-
     /// The name in symbol slot `id` and its generation, if the slot holds a name.
     #[inline]
     pub fn symbol(&self, id: u32) -> Option<(&str, u32)> {
@@ -742,6 +718,22 @@ fn children(obj: &Object, mut f: impl FnMut(Value)) {
             f(Value::Context(op.context));
         }
         Object::Applicative(c) => f(*c),
+    }
+}
+
+impl<T> crate::Grift<T> {
+    /// Lends string `r`'s text to `f`, with the interpreter, so it needs no copy: the string is
+    /// empty while `f` runs and has its text back as `f` returns. Here, beside the heap's raw
+    /// slots, so no other code can take a string's text out or put any back.
+    pub(crate) fn lend_text<R>(
+        &mut self,
+        r: Ref<kind::String>,
+        f: impl FnOnce(&mut Self, &str) -> R,
+    ) -> Result<R, Error> {
+        let text = std::mem::take(self.heap.get_mut(r)?);
+        let done = f(self, &text);
+        *self.heap.get_mut(r)? = text;
+        Ok(done)
     }
 }
 
