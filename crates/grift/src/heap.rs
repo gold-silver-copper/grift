@@ -172,7 +172,9 @@ const NONE: u32 = u32::MAX;
 /// A collection pays for itself: the next one starts once as much was allocated as the largest part
 /// of what this one walked, at least this much. It walks what survived, each root outside the heap
 /// (the running machine's values, the kept table's entries and its parked runs', the host
-/// functions' and known names) and every slot, so the next waits for the largest of those three, the slots counted as half the free ones, so it walks at most four
+/// functions' and known names, and the references a host's call holds) and every slot, so the next
+/// waits for the largest of those three, the slots counted as half the free ones, so it walks at
+/// most four
 /// times what was allocated. The heap stays within about twice the larger of the live data and
 /// those roots. Free slots at the top, past the room the next collection waits for, are given back
 /// when they are a third of all. New objects take the lowest free slots, so the newest live ones,

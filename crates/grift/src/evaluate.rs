@@ -384,7 +384,8 @@ impl Machine {
             library: _,
             may_park: _,
             // Not roots. `handed` names a trace only to know it again: a trace collected since
-            // can't match, as its slot's generation moved on. `work` is empty at every safe point.
+            // can't match, as its slot's generation moved on. `work` is cleared before each use, so
+            // what an error leaves in it is never read.
             handed: _,
             work: _,
         } = self;

@@ -1950,7 +1950,8 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   `Entry::weight`, `Trace::weight`), and it missed the host-function table and the known names, which every
   collection walks: a run beside 100,000 host functions collected 73 times for 300,000 allocated, each walking all
   100,000, past G-180's bound, and the test-only bound trusted the same hand count, so it couldn't see it.
-  `Heap::collect` now counts each root and held reference as it marks it, and paces with that count; the three
+  `Heap::collect` now counts each root and each reference a host's call holds (not counted before) as it marks
+  it, and paces with that count; the three
   `weight` functions and `collect`'s `walked` argument are gone. The owner's ruling: today's units need not be
   kept, so a frame counts its four values, not one, and an error ending its kind, values and trace. A free kept
   entry yields `#inert`, so passing it is still a step paid for, without a second count. The constants stay
@@ -1960,8 +1961,9 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
 - **G-195. The machine's fields are classed where they are named.** `Machine::roots`, `clear` and `tidy`
   destructure the struct with no `..`, so a field added to `Machine` doesn't compile until each says what it is.
   `Grift`'s fields in `collect` are not destructured: the pattern took 13 more lines, past the PR's band of no
-  more production lines, and the root list there was never what missed a root (the count was). `handed` is not a root: it names a trace only to know it again, and a trace
-  collected since can't match, its slot's generation having moved on; `work` is empty at every safe point. The
+  more production lines, and the root list there was never what missed a root (the count was). `handed` is not
+  a root: it names a trace only to know it again, and a trace collected since can't match, its slot's
+  generation having moved on; `work` is cleared before each use, so what an error leaves in it is never read. The
   machine's test-only step count moved to the heap's probe, so the patterns need no `cfg`. The README's and
   LANGUAGE.md's error reports put the place last, where the printer writes it after the kind; they say it in
   words now, as no test runs those examples.

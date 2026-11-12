@@ -80,7 +80,8 @@ whatever its spelling: `grift --help`, `grift --version` and `grift -` look for 
 and one that isn't there is a `file-error` followed by the usage, status 1. With no script it reads
 the program from stdin. Data goes to stdout, errors to stderr: the source, the error's kind, the file
 and line it happened at, its values and the combination it happened in, then one line for each
-combination around it that awaited it, with its own file and line. It exits with 0, 1 on a grift error, a failed write (`file-error`) or a script it can't
+combination around it that awaited it, with its own file and line if it has one. It exits with 0, 1
+on a grift error, a failed write (`file-error`) or a script it can't
 read, 141 on a write to a pipe no one reads, or the status the program gave `exit`. A script path or
 argument that isn't UTF-8 is refused before anything runs, as `grift: encoding-error` with its bytes:
 text can't hold it, and a lossy copy would name another file. A standard stream the shell closed
