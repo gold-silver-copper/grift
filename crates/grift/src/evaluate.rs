@@ -116,7 +116,7 @@ primitives! {
     BytesToList "bytes-to-list";
 }
 
-/// A walk along a list's items inside one step, charged to [`Grift::walk_stopped`], so a stop
+/// A walk along a list's items inside one step, charged to [`Control::walk`], so a stop
 /// ends it however long the list is. Every list walk goes through one: the lint on
 /// [`Heap::pair_at`](crate::heap::Heap::pair_at) (`clippy.toml`) refuses another.
 pub(crate) struct Items {
@@ -137,9 +137,7 @@ impl Items {
         let Value::Pair(r) = self.rest else {
             return Ok(None);
         };
-        if g.walk_stopped(&mut self.walked) {
-            return Err(Error::interrupted());
-        }
+        g.control.walk(&mut self.walked)?;
         #[expect(clippy::disallowed_methods, reason = "the one list walk")]
         let (x, rest, _) = g.heap.pair_at(r)?;
         self.rest = rest;
@@ -1145,9 +1143,7 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let mut walked = 0;
         items.rev().try_fold(Value::EmptyList, |list, x| {
-            if self.walk_stopped(&mut walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(&mut walked)?;
             self.pair_local(x, list, library)
         })
     }
@@ -1736,8 +1732,7 @@ impl<T> Grift<T> {
         let mut result = push(&mut work, (tree, value));
         let mut walked = 0;
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
-            result = match (t, v) {
-                _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
+            result = self.control.walk(&mut walked).and_then(|()| match (t, v) {
                 #[expect(clippy::disallowed_methods, reason = "reserved 1 in the arm")]
                 (Value::Symbol(s), _) => match bindings.try_reserve(1) {
                     Ok(()) if bindings.insert(s, v).is_none() => Ok(()),
@@ -1753,7 +1748,7 @@ impl<T> Grift<T> {
                 }),
                 (Value::Pair(_) | Value::EmptyList, _) => Err(Error::new(K::ArityError, &[value])),
                 _ => Err(Error::new(K::ParameterError, &[tree])),
-            };
+            });
         }
         self.machine.work = work;
         result
@@ -1838,7 +1833,7 @@ fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
 
 /// The Two-Way search (Crochemore and Perrin, 1991), as in Rust's `str::find`, CPython and glibc:
 /// linear time in the text and the pattern, no memory. Every byte it reads is an item of a walk, so
-/// a stop reaches it in every phase through [`Grift::walk_stopped`]. Strings search through it too.
+/// a stop reaches it in every phase through [`Control::walk`]. Strings search through it too.
 impl<T> Grift<T> {
     /// Where `p` first is in `text`; an empty pattern is at 0.
     pub(crate) fn search(&self, text: &[u8], p: &[u8]) -> Result<Option<usize>, Error> {
@@ -1865,17 +1860,13 @@ impl<T> Grift<T> {
         // can't overlap a match.
         let mut held = 0u64;
         for &b in p {
-            if self.walk_stopped(&mut walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(&mut walked)?;
             held |= 1 << (b & 63);
         }
         let (mut at, mut memory) = (0, 0);
         while let Some(window) = text.get(at..at + n) {
             if window.last().is_some_and(|b| held >> (b & 63) & 1 == 0) {
-                if self.walk_stopped(&mut walked) {
-                    return Err(Error::interrupted());
-                }
+                self.control.walk(&mut walked)?;
                 (at, memory) = (at + n, 0);
             } else if let Some(i) = self.difference(split.max(memory)..n, p, window, &mut walked)? {
                 (at, memory) = (at + i + 1 - split, 0);
@@ -1900,9 +1891,7 @@ impl<T> Grift<T> {
         walked: &mut usize,
     ) -> Result<Option<usize>, Error> {
         for i in places {
-            if self.walk_stopped(walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(walked)?;
             if a.get(i) != b.get(i) {
                 return Ok(Some(i));
             }
@@ -1919,9 +1908,7 @@ impl<T> Grift<T> {
     ) -> Result<(usize, usize), Error> {
         let (mut left, mut right, mut offset, mut period) = (0, 1, 0, 1);
         while let (Some(&a), Some(&b)) = (p.get(right + offset), p.get(left + offset)) {
-            if self.walk_stopped(walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(walked)?;
             if a == b {
                 offset += 1;
                 if offset == period {

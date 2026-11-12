@@ -4,6 +4,7 @@
 //! too deep for its stack as `...`.
 
 use crate::Grift;
+use crate::interrupt::Control;
 use crate::local::{Error, K, Value, push};
 use std::fmt::{self, Write};
 
@@ -50,7 +51,7 @@ impl<T> Grift<T> {
     /// item and each byte written is a step of the walk, so a stop reaches a print that writes a
     /// great deal from a few items: many references to one long string, or one long bytes value.
     pub(crate) fn print(&self, v: Value, out: &mut dyn Write) -> Result<(), Error> {
-        let mut out = Paced::new(self, out, usize::MAX);
+        let mut out = Paced::new(&self.control, out, usize::MAX);
         let printed = self.print_into(v, None, &mut out);
         out.ending(printed)
     }
@@ -62,7 +63,7 @@ impl<T> Grift<T> {
         &self,
         v: Value,
         report: Option<Option<Value>>,
-        out: &mut Paced<'_, T>,
+        out: &mut Paced<'_>,
     ) -> Result<(), Error> {
         let mut todo = Vec::new();
         // The first item is held outside the stack, so writing an atom allocates nothing and an
@@ -192,14 +193,14 @@ impl<T> Grift<T> {
         // has its names cut, to keep the place in, and only from `REPORT_FLOOR` bytes up, where
         // both fit; below, the kind comes first, as much of it as fits.
         let mut discard = Discard;
-        let mut probe = Paced::new(self, &mut discard, bytes);
+        let mut probe = Paced::new(&self.control, &mut discard, bytes);
         let probed = self.write_report(e, usize::MAX, &mut probe);
         probe.ending(probed)?;
         let share = match probe.full && bytes >= REPORT_FLOOR {
             true => bytes / 4,
             false => usize::MAX,
         };
-        let mut out = Paced::new(self, out, bytes);
+        let mut out = Paced::new(&self.control, out, bytes);
         out.walked = probe.walked;
         let written = self.write_report(e, share, &mut out);
         out.ending(written)?;
@@ -216,7 +217,7 @@ impl<T> Grift<T> {
         &self,
         e: &crate::Error,
         share: usize,
-        out: &mut Paced<'_, T>,
+        out: &mut Paced<'_>,
     ) -> Result<(), Error> {
         let kind = self.import_symbol(&e.kind)?;
         for v in e.values.iter().chain(&e.trace) {
@@ -313,7 +314,7 @@ impl Write for TextBuffer {
 
 /// Writes `name` as a report does: its control characters escaped as in a string literal, so no
 /// name can begin a line of a report, and cut with `...` if it is longer than `share` bytes.
-fn write_name<T>(name: &str, share: usize, out: &mut Paced<'_, T>) -> fmt::Result {
+fn write_name(name: &str, share: usize, out: &mut Paced<'_>) -> fmt::Result {
     let width = |c: char| match c.is_control() {
         // `\x` and `;` around the hex digits.
         true => {
@@ -358,8 +359,8 @@ fn write_name<T>(name: &str, share: usize, out: &mut Paced<'_, T>) -> fmt::Resul
 
 /// The printer's output. It charges every item and byte to one walk, which a stop ends, and it
 /// passes on `left` more bytes, the last piece cut at a character boundary, then refuses.
-struct Paced<'a, T> {
-    grift: &'a Grift<T>,
+struct Paced<'a> {
+    control: &'a Control,
     out: &'a mut dyn Write,
     walked: usize,
     left: usize,
@@ -371,10 +372,10 @@ struct Paced<'a, T> {
     left_out: bool,
 }
 
-impl<'a, T> Paced<'a, T> {
-    fn new(grift: &'a Grift<T>, out: &'a mut dyn Write, left: usize) -> Paced<'a, T> {
+impl<'a> Paced<'a> {
+    fn new(control: &'a Control, out: &'a mut dyn Write, left: usize) -> Paced<'a> {
         Paced {
-            grift,
+            control,
             out,
             walked: 0,
             left,
@@ -386,7 +387,7 @@ impl<'a, T> Paced<'a, T> {
 
     /// Charges `cost` items of work; whether a stop was found.
     fn charge(&mut self, cost: usize) -> bool {
-        self.stopped |= self.grift.walk_charged(&mut self.walked, cost);
+        self.stopped |= self.control.charged(&mut self.walked, cost);
         self.stopped
     }
 
@@ -401,7 +402,7 @@ impl<'a, T> Paced<'a, T> {
     }
 }
 
-impl<T> Write for Paced<'_, T> {
+impl Write for Paced<'_> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
         if self.charge(text.len()) {
             return Err(fmt::Error);

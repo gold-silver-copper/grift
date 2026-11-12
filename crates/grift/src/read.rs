@@ -282,9 +282,7 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let mut v = list.tail;
         for (i, &x) in items.iter().enumerate().skip(list.from).rev() {
-            if self.walk_stopped(walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(walked)?;
             let first = i == list.from;
             let origin = Origin {
                 place: place.filter(|_| first),

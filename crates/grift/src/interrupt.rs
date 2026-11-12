@@ -62,8 +62,21 @@ impl Control {
         self.word.load(Relaxed) & ASKED != 0
     }
 
-    /// Whether a walk, now `walked` items long, must give up for a stop after `cost` more items:
-    /// it asks once every [`WALK_CHECK`] items.
+    /// One more item of a walk inside one step, now `walked` items long: `interrupted` if a stop
+    /// was asked, which it looks for once every [`WALK_CHECK`] items, so a shorter walk is never
+    /// cut. Pairs can share, so a few objects can be a tree no walk finishes; the failed step then
+    /// acts on the stop. A `Result`, so a walk can't ask and then go on.
+    #[inline(always)]
+    pub fn walk(&self, walked: &mut usize) -> Result<(), crate::local::Error> {
+        *walked = walked.wrapping_add(1);
+        match *walked & (WALK_CHECK - 1) == 0 && self.asked() {
+            true => Err(crate::local::Error::interrupted()),
+            false => Ok(()),
+        }
+    }
+
+    /// Whether a walk, now `walked` items long, must give up for a stop after `cost` more items,
+    /// such as the bytes of a piece of text: it asks once every [`WALK_CHECK`] items.
     pub fn charged(&self, walked: &mut usize, cost: usize) -> bool {
         let before = *walked;
         *walked = before.wrapping_add(cost);

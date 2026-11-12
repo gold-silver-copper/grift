@@ -1017,20 +1017,6 @@ impl<T> Grift<T> {
         self.heap.symbol(s.0).map_or("", |(name, _)| name)
     }
 
-    /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
-    /// can share, so a few objects can be a tree no walk finishes; the failed step then acts on the
-    /// stop. A walk shorter than [`WALK_CHECK`] items never asks, so it can't be cut.
-    #[inline(always)]
-    pub(crate) fn walk_stopped(&self, walked: &mut usize) -> bool {
-        *walked = walked.wrapping_add(1);
-        *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
-    }
-
-    /// [`Grift::walk_stopped`] for `cost` items at once, such as the bytes of a piece of text.
-    pub(crate) fn walk_charged(&self, walked: &mut usize, cost: usize) -> bool {
-        self.control.charged(walked, cost)
-    }
-
     /// The context `v` is, or a `type-error`.
     fn context_of(&self, v: &Value) -> Result<Ref<kind::Context>, local::Error> {
         context_kind(self.import(v)?)
