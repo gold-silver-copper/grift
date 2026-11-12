@@ -1211,8 +1211,7 @@ impl<T> Grift<T> {
         let (shared, added) = e.trace.parts();
         let trace = self.items(shared, shared).and_then(|mut v| {
             v.reverse();
-            v.try_reserve_exact(added.len())
-                .map_err(|_| local::Error::oom())?;
+            v.try_reserve_exact(added.len())?;
             #[expect(clippy::disallowed_methods, reason = "reserved added.len() above")]
             v.extend_from_slice(added);
             exported(&v)
@@ -1248,8 +1247,7 @@ fn context_kind(v: local::Value) -> Result<Ref<kind::Context>, local::Error> {
 /// The items in a new vector, reporting `out-of-memory` instead of aborting.
 fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local::Error> {
     let mut v = Vec::new();
-    v.try_reserve_exact(items.len())
-        .map_err(|_| local::Error::oom())?;
+    v.try_reserve_exact(items.len())?;
     #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     v.extend(items);
     Ok(v)

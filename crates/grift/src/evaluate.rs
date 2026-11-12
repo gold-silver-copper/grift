@@ -540,7 +540,7 @@ impl<T> Grift<T> {
             return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
-        room.try_reserve_exact(1).map_err(|_| Error::oom())?;
+        room.try_reserve_exact(1)?;
         let name = self.free_name()?;
         self.room_to_forget()?;
         if !self.control.parks() {
@@ -803,7 +803,7 @@ impl<T> Grift<T> {
         let values = self.list_local(&e.values, library)?;
         let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let mut fields = Bindings::default();
-        fields.try_reserve(3).map_err(|_| Error::oom())?;
+        fields.try_reserve(3)?;
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Kind.into(), Value::Symbol(e.kind));
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
@@ -1036,9 +1036,7 @@ impl<T> Grift<T> {
         }
         // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
-        bindings
-            .try_reserve(op.size as usize)
-            .map_err(|_| Error::oom())?;
+        bindings.try_reserve(op.size as usize)?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Some(s) = op.context_parameter {
             #[expect(
@@ -1280,8 +1278,8 @@ impl<T> Grift<T> {
                     // Under it go its `Finish` and that frame's entry, never one without the
                     // other: all the room comes first, and nothing after it can fail.
                     let m = &mut self.machine;
-                    m.frames.try_reserve(2).map_err(|_| Error::oom())?;
-                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    m.frames.try_reserve(2)?;
+                    m.waiting.try_reserve(1)?;
                     let cleanup = What::Cleanup { cleanup: z, base };
                     let frames = [(What::Finish, Ref::NONE, Ref::NONE), (cleanup, c, at)];
                     #[expect(clippy::disallowed_methods, reason = "reserved all three above")]
@@ -1426,7 +1424,7 @@ impl<T> Grift<T> {
                 // Exactly the length, so boxing a string never reallocates.
                 if bytes {
                     let mut joined = Vec::new();
-                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    joined.try_reserve_exact(len)?;
                     for &v in given {
                         #[expect(
                             clippy::disallowed_methods,
@@ -1437,7 +1435,7 @@ impl<T> Grift<T> {
                     self.bytes_local(joined)?
                 } else {
                     let mut joined = String::new();
-                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    joined.try_reserve_exact(len)?;
                     for &v in given {
                         #[expect(
                             clippy::disallowed_methods,

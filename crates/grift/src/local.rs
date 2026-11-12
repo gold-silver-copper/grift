@@ -118,7 +118,7 @@ impl Trace {
     /// The places a program or host gave, innermost first, kept as they are, repeats and all.
     pub fn given(places: Vec<Value>) -> Result<Trace, Error> {
         let mut seen = Seen::default();
-        seen.try_reserve(places.len()).map_err(|_| Error::oom())?;
+        seen.try_reserve(places.len())?;
         #[expect(clippy::disallowed_methods, reason = "reserved places.len() above")]
         seen.extend(places.iter().filter_map(|v| match v {
             Value::Pair(r) => Some(r.slot()),
@@ -265,6 +265,13 @@ impl Error {
     }
 }
 
+/// Memory refused.
+impl From<std::collections::TryReserveError> for Error {
+    fn from(_: std::collections::TryReserveError) -> Error {
+        Error::oom()
+    }
+}
+
 /// The output refused the text.
 impl From<fmt::Error> for Error {
     fn from(_: fmt::Error) -> Error {
@@ -275,7 +282,7 @@ impl From<fmt::Error> for Error {
 /// A copy of `s`, reporting `out-of-memory` instead of aborting.
 pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     let mut b = String::new();
-    b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+    b.try_reserve_exact(s.len())?;
     #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     b.push_str(s);
     Ok(b.into_boxed_str())
@@ -283,7 +290,7 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
 
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
 pub(crate) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), Error> {
-    v.try_reserve(1).map_err(|_| Error::oom())?;
+    v.try_reserve(1)?;
     #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
     v.push(x);
     Ok(())

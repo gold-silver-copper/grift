@@ -350,7 +350,7 @@ impl Heap {
             return Ok(Symbol(id));
         }
         let (name, key) = (boxed(spelling)?, boxed(spelling)?);
-        self.names.try_reserve(1).map_err(|_| Error::oom())?;
+        self.names.try_reserve(1)?;
         let id = self.alloc::<()>(Object::Symbol(name))?.idx;
         #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.names.insert(key, id);
@@ -369,7 +369,7 @@ impl Heap {
             _ => return Err(stale()),
         };
         let before = bindings_weight(bindings);
-        bindings.try_reserve(more).map_err(|_| Error::oom())?;
+        bindings.try_reserve(more)?;
         let grown = bindings_weight(bindings).saturating_sub(before);
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(grown);
