@@ -58,7 +58,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 ## Reading and printing
 
 - Floats, strings and bytes print as text that reads back to the same value, but a not-a-number
-  ([G-61], [G-78], [G-142]). A symbol prints its bare name, which may not read back ([G-173]), and
+  ([G-61], [G-78], [G-142]). Every not-a-number is one value: no operation reads its sign or
+  payload, which are the machine's ([G-188]). A symbol prints its bare name, which may not read back ([G-173]), and
   combiners and contexts print as `#[...]`.
 - The string escapes are `\\ \" \n \r \t` and `\xHEX;` ([G-122]). In `#bytes(104 105 255)` an
   element is read like any datum and must then be an integer 0 to 255, else `parse-error bad-byte`
@@ -345,3 +346,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-183]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-185]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-188]: DECISIONS.md#owed-work-2026-11-11

@@ -66,8 +66,10 @@ A number starts with a digit, after an optional sign: it is an integer if it is 
 if it has a `.` or an exponent, as Rust reads them (`1.`, `2e5`); anything else that starts so,
 such as `99999999999999999999` or `1.2.3`, is a `parse-error` (`bad-number`). A float prints in Rust's shortest
 form that reads back (`{:?}`: `1.0`, `0.1`, `1e300`), so it reads back as the same float, bit
-for bit. Every not-a-number prints as `#not-a-number`, which reads back as Rust's `f64::NAN`: a
-not-a-number's sign and payload don't survive printing.
+for bit. Every not-a-number is one value: it prints as `#not-a-number`, which reads back as Rust's
+`f64::NAN`, and `same?` takes any two as the same. The sign and payload bits a not-a-number has
+are the machine's (x86_64's `(divide 0.0 0.0)` has its sign set, aarch64's hasn't), so no grift
+operation reads them; a host that takes one out gets whatever Rust's arithmetic left there.
 The escapes mean what Rust's do: `\\ \" \n \r \t` are Rust's characters, and a string prints with
 them. Rust's `\0`, `\'` and backslash-newline aren't grift's (`\x0;` says `\0`, and a `'` needs no
 escape), and grift's `\xHEX;` takes any scalar value in place of Rust's `\xNN` and `\u{...}`.
@@ -105,7 +107,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(lookup c symbol otherwise)` | The value `symbol` has in context `c` or the nearest parent binding it, as evaluating it there gives; `otherwise` if none does, where evaluating would be `unbound-symbol`. Both are evaluated, so `(lookup counts word 0)` reads a table with a default. |
 | `(names c)` | The symbols bound in context `c` itself (not its parents), sorted by name. |
 | `(pair a b)`, `(first p)`, `(rest p)` | A new pair; its two halves (4.6.3, 5.4.1). |
-| `(same? a b)` | Identity for pairs, contexts and combiners; equality of value for integers, symbols, strings and bytes; the same stored bits for floats. Values of different types are never the same (4.2.1, `eq?`). |
+| `(same? a b)` | Identity for pairs, contexts and combiners; equality of value for integers, symbols, strings and bytes; the same stored bits for floats, and any two not-a-numbers, which are one value. Values of different types are never the same (4.2.1, `eq?`). |
 | `(select b x y)` | `x` if `b` is `#true`, `y` if `#false`; a `type-error` otherwise. Both are evaluated; `if!` uses it to pick an expression. |
 | `(type-of v)` | The symbol naming `v`'s type, as in the table above. |
 | `(add a b)`, `(subtract a b)`, `(multiply a b)`, `(divide a b)`, `(remainder a b)` | Of two integers or two floats; mixing them is a `type-error`. On integers, Rust's checked arithmetic: `divide` and `remainder` are Rust's `/` and `%`, truncating toward zero, so `(remainder -7 2)` is `-1`; dividing by 0 is `division-by-zero`, and a result beyond 64 bits, `(divide -9223372036854775808 -1)` included, is `overflow`. On floats, IEEE: `(divide 1.0 0.0)` is `#infinity`. |

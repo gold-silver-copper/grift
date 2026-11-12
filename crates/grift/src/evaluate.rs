@@ -1516,12 +1516,15 @@ impl<T> Grift<T> {
     }
 
     /// Whether `x` and `y` are the same value: equal integers, symbols, strings and bytes, floats
-    /// with the same bits, and otherwise the same object.
+    /// with the same bits or both not-a-number (a not-a-number's bits are the machine's, not the
+    /// program's), and otherwise the same object.
     fn same(&self, x: Value, y: Value) -> Result<bool, Error> {
         Ok(match (x, y) {
             (Value::String(_), Value::String(_)) => self.text(x)? == self.text(y)?,
             (Value::Bytes(_), Value::Bytes(_)) => self.bytes_of(x)? == self.bytes_of(y)?,
-            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+            (Value::Float(a), Value::Float(b)) => {
+                a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+            }
             _ => x == y,
         })
     }
