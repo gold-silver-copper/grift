@@ -19,7 +19,6 @@ mod tests;
 use heap::{Bindings, Heap, Ref, kind};
 use interrupt::{Control, Run};
 use local::{K, boxed, push};
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -390,9 +389,6 @@ const SPARE: usize = 64 * 1024;
 /// they pass on to host functions.
 pub struct Grift<T = ()> {
     heap: Heap,
-    /// Names to the slots that hold them, for interning: only live ones, pruned as names are
-    /// collected.
-    symbols: HashMap<Box<str>, u32>,
     hosts: Vec<(local::Symbol, HostFunction<T>)>,
     built_in: Ref<kind::Context>,
     top: Ref<kind::Context>,
@@ -423,7 +419,6 @@ impl<T> Grift<T> {
         )]
         let mut g = Grift {
             heap: Heap::default(),
-            symbols: HashMap::new(),
             hosts: Vec::new(),
             built_in: Ref::NONE,
             top: Ref::NONE,
@@ -1004,39 +999,12 @@ impl<T> Grift<T> {
 
     /// Interns `name`.
     pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
-        if let Some(symbol) = self.symbols.get(name).copied().map(local::Symbol) {
-            return Ok(symbol);
-        }
-        let (spelling, key) = (boxed(name)?, boxed(name)?);
-        self.symbols
-            .try_reserve(1)
-            .map_err(|_| local::Error::oom())?;
-        // The index has room, so it changes only once the name has its slot.
-        let id = self.heap.name(spelling)?.0;
-        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
-        self.symbols.insert(key, id);
-        Ok(local::Symbol(id))
+        self.heap.intern(name)
     }
 
     /// The name of symbol `s`.
     pub(crate) fn name(&self, s: local::Symbol) -> &str {
         self.heap.symbol(s.0).map_or("", |(name, _)| name)
-    }
-
-    /// Drops the names the last collection freed from the index, and gives back its storage once
-    /// it is under a quarter used, if memory allows.
-    pub(crate) fn tidy_symbols(&mut self) {
-        let heap = &self.heap;
-        self.symbols.retain(|_, id| heap.symbol(*id).is_some());
-        if self.symbols.capacity() / 4 > self.symbols.len() {
-            let mut smaller = HashMap::new();
-            if smaller.try_reserve(self.symbols.len()).is_ok() {
-                // It has room for all, so this allocates nothing.
-                #[expect(clippy::disallowed_methods, reason = "reserved symbols.len() above")]
-                smaller.extend(self.symbols.drain());
-                self.symbols = smaller;
-            }
-        }
     }
 
     /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs

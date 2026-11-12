@@ -3,7 +3,7 @@
 //! collection needs no memory of its own.
 
 use crate::evaluate::Native;
-use crate::local::{Error, K, Symbol, Value, push};
+use crate::local::{Error, K, Symbol, Value, boxed, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -112,7 +112,8 @@ pub(crate) enum Object {
     Pair((Value, Value, Origin)),
     String(Box<str>),
     /// A symbol's name. Symbols are compared by slot, so a name lives here once while anything
-    /// refers to it, and is collected like any value when nothing does.
+    /// refers to it, and is collected like any value when nothing does. [`Heap::intern`] makes
+    /// one and the sweep frees one, each with its entry in the heap's index of names.
     Symbol(Box<str>),
     /// An optional parent and the bindings.
     Context((Option<Ref<kind::Context>>, Bindings)),
@@ -201,6 +202,9 @@ fn weight(obj: &Object) -> usize {
 pub(crate) struct Heap {
     slots: Vec<Slot>,
     free: u32,
+    /// Every live name's spelling to its slot: an entry goes in as [`Heap::intern`] makes the
+    /// name's slot and out as the sweep frees it, so no other code can make the two disagree.
+    names: HashMap<Box<str>, u32>,
     /// How much may be allocated before the next collection: collection sets it, allocation
     /// spends it, and a refusal empties it.
     until_gc: Cell<usize>,
@@ -224,6 +228,7 @@ impl Default for Heap {
         Heap {
             slots: Vec::new(),
             free: NONE,
+            names: HashMap::new(),
             until_gc: Cell::new(GC_MIN),
             marks: Vec::new(),
             fresh: 0,
@@ -336,10 +341,18 @@ impl Heap {
         self.alloc(T::object(holds))
     }
 
-    /// A new symbol spelled `spelling`.
-    pub fn name(&mut self, spelling: Box<str>) -> Result<Symbol, Error> {
-        self.alloc::<()>(Object::Symbol(spelling))
-            .map(|r| Symbol(r.idx))
+    /// The live symbol spelled `spelling`, or a new one. The index has room before the slot is
+    /// made, so it changes only once the name has its slot, and a refusal leaves both as they were.
+    pub fn intern(&mut self, spelling: &str) -> Result<Symbol, Error> {
+        if let Some(&id) = self.names.get(spelling) {
+            return Ok(Symbol(id));
+        }
+        let (name, key) = (boxed(spelling)?, boxed(spelling)?);
+        self.names.try_reserve(1).map_err(|_| Error::oom())?;
+        let id = self.alloc::<()>(Object::Symbol(name))?.idx;
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
+        self.names.insert(key, id);
+        Ok(Symbol(id))
     }
 
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
@@ -531,6 +544,7 @@ impl Heap {
         let (mut live, mut free, mut top) = (0usize, 0usize, None);
         // Each free slot is linked to from the one below it, so the list runs from the bottom up.
         let mut tail = &mut self.free;
+        let names = &mut self.names;
         for (idx, s) in (0..NONE).zip(self.slots.iter_mut()) {
             if s.marked.take() {
                 live = live.saturating_add(weight(&s.obj));
@@ -541,7 +555,9 @@ impl Heap {
                 // A slot whose generations run out is retired, never reused: its last one, which
                 // no reference has, means free for good.
                 s.generation = s.generation.saturating_add(1);
-                s.obj = Object::Free(NONE);
+                if let Object::Symbol(name) = std::mem::replace(&mut s.obj, Object::Free(NONE)) {
+                    names.remove(&name);
+                }
             }
             if s.generation == u32::MAX {
                 // Swept every time and never reused, it counts as live.
@@ -554,6 +570,15 @@ impl Heap {
             }
         }
         *tail = NONE;
+        // The index gives back its storage once under a quarter used, if memory allows.
+        if names.capacity() / 4 > names.len() {
+            let mut smaller = HashMap::new();
+            if smaller.try_reserve(names.len()).is_ok() {
+                #[expect(clippy::disallowed_methods, reason = "reserved names.len() above")]
+                smaller.extend(names.drain());
+                *names = smaller;
+            }
+        }
         let used = top.map_or(0, |i| i as usize + 1);
         let paced = live.max(walked).max(GC_MIN);
         // What is allocated before the next collection fills the free slots below `used` first.
@@ -776,6 +801,11 @@ mod probe {
 
         pub fn len(&self) -> usize {
             self.slots.len()
+        }
+
+        /// The index of live names.
+        pub fn names(&self) -> &HashMap<Box<str>, u32> {
+            &self.names
         }
     }
 }
