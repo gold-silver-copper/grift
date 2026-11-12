@@ -253,6 +253,14 @@ impl Error {
         }
     }
 
+    /// What isn't there any more, or never was of the kind asked for: a reclaimed slot, a kept
+    /// name with nothing under it. One answer, the host's `stale-value`, with no values: a value
+    /// would name what isn't there. Cold: the machine never meets one, so its reads keep one way out.
+    #[cold]
+    pub fn stale() -> Error {
+        Error::new(K::StaleValue, &[])
+    }
+
     /// The run was stopped.
     pub fn interrupted() -> Error {
         Error {

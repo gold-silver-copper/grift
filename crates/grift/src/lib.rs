@@ -997,7 +997,7 @@ impl<T> Grift<T> {
             .owns(&k.owner)
             .and_then(|()| match self.kept.get(k.name as usize) {
                 Some(Entry::Value(v)) => Ok(*v),
-                _ => Err(local::Error::new(K::StaleValue, &[])),
+                _ => Err(local::Error::stale()),
             });
         self.exported(found)
     }
@@ -1085,7 +1085,7 @@ impl<T> Grift<T> {
         self.owns(&s.owner)?;
         match self.heap.symbol(s.index) {
             Some((_, generation)) if generation == s.generation => Ok(local::Symbol(s.index)),
-            _ => Err(local::Error::new(K::StaleValue, &[])),
+            _ => Err(local::Error::stale()),
         }
     }
 

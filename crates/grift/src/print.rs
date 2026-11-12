@@ -110,7 +110,7 @@ impl<T> Grift<T> {
                 Value::Primitive(p) => write!(out, "#[primitive {}]", p.name())?,
                 Value::Host(h) => {
                     let Some(&(name, _)) = self.hosts.get(h.0 as usize) else {
-                        return Err(Error::new(K::StaleValue, &[Value::Host(h)]));
+                        return Err(Error::stale());
                     };
                     let name = self.name(name);
                     out.write_str("#[host ")?;

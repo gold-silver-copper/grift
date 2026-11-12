@@ -8,7 +8,7 @@
 
 use crate::evaluate::{First, Machine, Prepared, ending_values};
 use crate::interrupt::Control;
-use crate::local::{self, K};
+use crate::local;
 use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::{Arc, Weak};
 
@@ -182,7 +182,7 @@ impl<T> Grift<T> {
             Some(Entry::Run(room)) => room.first().map(|m| m.request),
             _ => None,
         };
-        let request = request.ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
+        let request = request.ok_or_else(local::Error::stale)?;
         Ok(Parked {
             owner: self.owner,
             control: Arc::downgrade(&self.control),
@@ -259,12 +259,9 @@ impl<T> Grift<T> {
         let ready = self.prepare(ending_values(answer), []);
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
-            return Err(local::Error::new(K::StaleValue, &[]));
+            return Err(local::Error::stale());
         };
-        let machine = room
-            .pop()
-            .ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
-        Ok((machine, ready))
+        Ok((room.pop().ok_or_else(local::Error::stale)?, ready))
     }
 
     /// Whether a host function called now may answer [`Answer::Later`](crate::Answer::Later): not
