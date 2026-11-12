@@ -142,16 +142,12 @@ impl Trace {
     /// The same trace as one shared list, newest first, the added places put on the shared list's
     /// front with `pair`: the list a handler gets is its [`Trace::parts`].
     pub fn onto(
-        self,
+        mut self,
         mut pair: impl FnMut(Value, Value) -> Result<Value, Error>,
     ) -> Result<Trace, Error> {
-        let shared = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
-        let (added, seen) = (Vec::new(), self.seen);
-        Ok(Trace {
-            shared,
-            added,
-            seen,
-        })
+        self.shared = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
+        self.added.clear();
+        Ok(self)
     }
 
     /// The shared list, newest first, and the places added since, innermost first.

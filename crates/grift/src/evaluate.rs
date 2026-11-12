@@ -1713,7 +1713,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut matched = Bindings::default();
         self.match_tree(&mut matched, tree, value)?;
-        self.heap.bind_all(c, matched)
+        self.heap.bind(c, matched)
     }
 
     fn value_of(&self, context: Ref<Context>, s: Symbol) -> Result<Value, Error> {

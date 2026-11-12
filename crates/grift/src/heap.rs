@@ -362,15 +362,13 @@ impl Heap {
         Ok(Symbol(id))
     }
 
-    /// Binds `s` to `v` in context `r` itself, replacing a binding there.
-    pub fn bind(&mut self, r: Ref<kind::Context>, s: Symbol, v: Value) -> Result<(), Error> {
-        #[expect(clippy::disallowed_methods, reason = "room_in reserved 1")]
-        self.room_in(r, 1)?.insert(s, v);
-        Ok(())
-    }
-
-    /// Binds each of `new` in context `r` itself: all of them, or with no room, none.
-    pub fn bind_all(&mut self, r: Ref<kind::Context>, new: Bindings) -> Result<(), Error> {
+    /// Binds each of `new` in context `r` itself, replacing bindings there: all of them, or with
+    /// no room, none.
+    pub fn bind<I>(&mut self, r: Ref<kind::Context>, new: I) -> Result<(), Error>
+    where
+        I: IntoIterator<Item = (Symbol, Value), IntoIter: ExactSizeIterator>,
+    {
+        let new = new.into_iter();
         let bindings = self.room_in(r, new.len())?;
         #[expect(clippy::disallowed_methods, reason = "room_in reserved new.len()")]
         bindings.extend(new);
@@ -510,8 +508,8 @@ impl Heap {
     /// the rest, with no memory of its own: a slot goes on the mark stack only as it is first
     /// marked, so once at most, and every slot reserved its entry as it was made. Each root, known
     /// name and held reference is a step of the walk outside the heap, counted as it is marked, so
-    /// what pacing pays for is what was walked. The free list is made again from the bottom up, so the lowest slots are reused
-    /// first and the top empties, to be given back.
+    /// what pacing pays for is what was walked. The free list is made again from the bottom up, so
+    /// the lowest slots are reused first and the top empties, to be given back.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>, held: impl Iterator<Item = Ref>) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
