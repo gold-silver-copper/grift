@@ -1,8 +1,10 @@
---- a/crates/grift/src/print.rs
-+++ b/crates/grift/src/print.rs
-@@ -65,6 +65,7 @@
+diff --git i/crates/grift/src/print.rs w/crates/grift/src/print.rs
+index 78a630bb..abe8ad33 100644
+--- i/crates/grift/src/print.rs
++++ w/crates/grift/src/print.rs
+@@ -65,6 +65,7 @@ impl<T> Grift<T> {
          report: Option<Option<Value>>,
-         out: &mut Paced<'_, T>,
+         out: &mut Paced<'_>,
      ) -> Result<(), Error> {
 +        out.walked = 0;
          let mut todo = Vec::new();
