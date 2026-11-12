@@ -177,7 +177,7 @@ fn a_text_that_does_not_read_ends_its_run_clear() {
     let top = g.top_level();
     let read = g.start_in(&mut g.interrupter(), &top, "bad.grift", "(");
     assert!(read.is_err());
-    assert!(!g.machine.may_park);
+    assert!(!g.control.may_park());
 }
 
 /// A host function's wrong count with no memory for the list of its arguments is `out-of-memory`,

@@ -83,7 +83,7 @@ impl<T> Grift<T> {
     /// twin. As the library's own code, what this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
         let here = (self.heap.make((Some(self.built_in), Bindings::default()))).unwrap();
-        self.run_text(None, here, None, MEANINGS, true, false)
+        self.run_text(None, here, None, MEANINGS, true, None)
             .unwrap();
         let name = self.intern("meanings").unwrap();
         let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {

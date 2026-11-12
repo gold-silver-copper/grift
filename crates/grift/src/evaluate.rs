@@ -19,8 +19,9 @@
 
 use crate::heap::kind::{Context, Pair};
 use crate::heap::{Bindings, Operative, Origin, Ref, Seen, kind};
-use crate::interrupt::Run;
+use crate::interrupt::Control;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
+use crate::parked::MayPark;
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
 
@@ -338,8 +339,8 @@ impl Frame {
 pub(crate) struct Machine {
     frames: Vec<Frame>,
     arguments: Vec<Value>,
-    /// One per `Cleanup` frame, its room to save the ending it meets, and one per `Finish` frame,
-    /// that ending. Holding the room from the start, saving an ending can't fail.
+    /// One per `Finish` frame: `#inert` while its cleanup waits under a `Cleanup` frame, then the
+    /// ending that started it. Holding the room from the start, saving an ending can't fail.
     waiting: Vec<Result<Value, Error>>,
     /// The innermost combination of the program being evaluated, or [`Ref::NONE`]. A
     /// `Ref`, not a `Value`: this is written and read at every step.
@@ -351,8 +352,6 @@ pub(crate) struct Machine {
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
     pub request: Value,
-    /// Whether this run may park: only one the host began to, with [`Grift::start`] or the like.
-    pub(crate) may_park: bool,
     /// The trace the last handler got, and its combinations: raising that trace again takes them
     /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
     handed: Option<(Value, Seen)>,
@@ -382,7 +381,6 @@ impl Machine {
             here,
             request,
             library: _,
-            may_park: _,
             // Not roots. `handed` names a trace only to know it again: a trace collected since
             // can't match, as its slot's generation moved on. `work` is cleared before each use, so
             // what an error leaves in it is never read.
@@ -404,15 +402,13 @@ impl Machine {
             here,
             library,
             request,
-            may_park,
             handed,
             work: _,
         } = self;
         frames.clear();
         arguments.clear();
         waiting.clear();
-        (*here, *library, *request) = (Ref::NONE, false, Value::Inert);
-        (*may_park, *handed) = (false, None);
+        (*here, *library, *request, *handed) = (Ref::NONE, false, Value::Inert, None);
     }
 
     /// Gives back the room of stacks that were once much deeper than they are.
@@ -425,7 +421,6 @@ impl Machine {
             here: _,
             library: _,
             request: _,
-            may_park: _,
             handed: _,
         } = self;
         crate::heap::tidy(frames);
@@ -445,7 +440,6 @@ impl Default for Machine {
             library: false,
             work: Vec::new(),
             request: Value::Inert,
-            may_park: false,
             handed: None,
         }
     }
@@ -459,13 +453,32 @@ pub(crate) fn type_error(v: Value) -> Error {
     Error::new(K::TypeError, &[v])
 }
 
-impl<T> Grift<T> {
-    /// The first frame of a run that evaluates the list `forms` in `context`, in order.
-    pub(crate) fn forms(&mut self, forms: Value, context: Ref<Context>) -> Result<Mode, Error> {
-        self.frame(What::Forms { rest: forms }, context, Ref::NONE)?;
-        Ok(Mode::Return(Value::Inert))
-    }
+/// What a run begins with, which makes its first frames once it has begun.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one is made per run and matched at once"
+)]
+pub(crate) enum First<'a> {
+    /// Reads `src`, the text of `source` if it has a name, and evaluates its forms in `context` in
+    /// order; `library` marks it as a host's own grift code. Reading is the run's first part, so a
+    /// stop reaches it too, and a text that doesn't read ends as every run does.
+    Text {
+        context: Ref<Context>,
+        source: Option<Symbol>,
+        src: &'a str,
+        library: bool,
+    },
+    /// Calls applicative `f` with `arguments` as `apply` does.
+    Call { f: Value, arguments: &'a [Value] },
+    /// Takes up parked `machine`, its waiting call answering `answer`. Nothing is around it: the
+    /// machine is its own, as it was when it began.
+    Resume {
+        machine: Machine,
+        answer: Result<Value, Error>,
+    },
+}
 
+impl<T> Grift<T> {
     /// An applicative's underlying combiner; anything else is apply's `type-error`.
     pub(crate) fn combiner_of(&self, f: Value) -> Result<Value, Error> {
         match f {
@@ -474,14 +487,39 @@ impl<T> Grift<T> {
         }
     }
 
-    /// Runs the machine from `mode` until its frames are gone, as `run`, which ends as this returns
-    /// or unwinds: a host function that panics ends it too, and the next run clears the machine.
-    pub(crate) fn enter(
+    /// A run on the machine, whole: it begins on the prepared heap with the machine clear, makes
+    /// its first frames, runs until they are gone, then clears the machine and ends, as `run`
+    /// drops, which a host function's panic does too (the next run clears what that left).
+    /// `parks` is the right to park, which only [`Grift::started`] makes and ending takes back.
+    /// A host function, given a [`HostCall`], begins none.
+    pub(crate) fn run_on_machine(
         &mut self,
-        run: Run,
+        ready: Prepared,
+        parks: Option<MayPark>,
         state: Option<&mut T>,
-        mode: Result<Mode, Error>,
+        first: First,
     ) -> Result<Value, Error> {
+        // Refused, this run goes without: an `out-of-memory` trace can miss places.
+        let _ = self.spare.try_reserve_exact(crate::SPARE);
+        self.machine.clear();
+        let run = Control::begin(&self.control, ready, parks);
+        let mode = match first {
+            First::Text {
+                context,
+                source,
+                src,
+                library,
+            } => self.read_local(src, source, library).and_then(|forms| {
+                self.frame(What::Forms { rest: forms }, context, Ref::NONE)?;
+                Ok(Mode::Return(Value::Inert))
+            }),
+            First::Call { f, arguments } => self.call_on_machine(f, arguments, None),
+            First::Resume { machine, answer } => {
+                self.machine = machine;
+                self.machine.request = Value::Inert;
+                answer.map(Mode::Return).or_else(|e| self.unwind(e))
+            }
+        };
         let result = mode.and_then(|mode| self.run(state, mode));
         // A machine that parked or was given up has nothing to go back to.
         self.machine.clear();
@@ -489,28 +527,13 @@ impl<T> Grift<T> {
         result
     }
 
-    /// Takes up parked `machine` with the host's answer, until it ends or parks again. Nothing is
-    /// around it: the machine is its own, as it was when it began.
-    pub(crate) fn wake(
-        &mut self,
-        run: Run,
-        state: Option<&mut T>,
-        machine: Machine,
-        answer: Result<Value, Error>,
-    ) -> Result<Value, Error> {
-        self.machine = machine;
-        self.machine.request = Value::Inert;
-        let mode = answer.map(Mode::Return).or_else(|e| self.unwind(e));
-        self.enter(run, state, mode)
-    }
-
     /// Sets the run in progress aside: its whole machine moves into a kept entry, and this
     /// interpreter's machine is empty again. Everything that can fail comes first, so a run that
     /// can't park goes on where it was, with the error, and that it was asked to stop is the last
     /// of those; filling the entry comes after them all, so there is nothing to undo. Its kept
-    /// name is left for [`Grift::ran`].
+    /// name is left for [`Grift::started`].
     fn park(&mut self, request: Value) -> Result<(), Error> {
-        if !self.machine.may_park {
+        if !self.control.may_park() {
             return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
@@ -748,10 +771,10 @@ impl<T> Grift<T> {
         Err(e)
     }
 
-    /// A popped `Cleanup` frame becomes a `Finish` frame and a call of the cleanup, and its room in
-    /// `waiting` this ending. Its install made all that room, so a cleanup's start doesn't fail: the
-    /// next check comes first, and a refusal after it is the cleanup's first step failing. The
-    /// call's frame goes on the machine's usual way, a plain `push` here costing every step 25%.
+    /// A popped `Cleanup` frame becomes a call of the cleanup, above the `Finish` frame its install
+    /// put under it, and that install's entry in `waiting` holds this ending. Both go into the room
+    /// just freed, so a cleanup's start needs no memory: the next check comes first, and a refusal
+    /// after it is the cleanup's first step failing.
     fn start_cleanup(
         &mut self,
         ending: Result<Value, Error>,
@@ -759,27 +782,8 @@ impl<T> Grift<T> {
         context: Ref<Context>,
         at: Ref<Pair>,
     ) -> Result<Mode, Error> {
-        let m = &mut self.machine;
-        m.waiting.pop();
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the frame's install reserved this room"
-        )]
-        m.waiting.push(ending);
-        #[cfg(test)]
-        assert!(
-            m.frames.len() + 2 <= m.frames.capacity(),
-            "its install made the room"
-        );
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the frame's install reserved this room"
-        )]
-        m.frames.push(Frame {
-            what: What::Finish,
-            context: Ref::NONE,
-            at: Ref::NONE,
-        });
+        self.machine.waiting.pop();
+        push(&mut self.machine.waiting, ending)?;
         let call = What::Combine {
             operands: Value::EmptyList,
             base: Base::new(self.machine.arguments.len(), false),
@@ -889,7 +893,7 @@ impl<T> Grift<T> {
     /// of `then`, each in a new empty context of its own.
     /// The frame of an argument still to come is all a `then` needs: the saved values are the
     /// arguments so far and the call's value is the last, so the machine has no new kind of frame.
-    pub(crate) fn call_on_machine(
+    fn call_on_machine(
         &mut self,
         function: Value,
         arguments: &[Value],
@@ -1270,12 +1274,16 @@ impl<T> Grift<T> {
                     let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
-                    let m = &mut self.machine;
-                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
-                    m.frames.try_reserve(2).map_err(|_| Error::oom())?;
-                    self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
+                    // Its `Finish` goes under it now, with that frame's entry in `waiting`, so
+                    // its start only fills the room the `Cleanup` frame leaves.
+                    self.machine
+                        .waiting
+                        .try_reserve(1)
+                        .map_err(|_| Error::oom())?;
+                    self.frame(What::Finish, Ref::NONE, Ref::NONE)?;
                     #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
                     self.machine.waiting.push(Ok(Value::Inert));
+                    self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
                 }
                 return Ok(Mode::Evaluate(x, c));
             }

@@ -6,8 +6,8 @@
 //! machine is then empty, for whatever runs next. Taking a run up moves the machine back. The [`Parked`] handle says which: it is linear, so a run goes on at most
 //! once by the type, and it carries its interpreter's identity as every value does.
 
-use crate::evaluate::{Machine, ending_values};
-use crate::interrupt::{Control, Run};
+use crate::evaluate::{First, Machine, Prepared, ending_values};
+use crate::interrupt::Control;
 use crate::local::{self, K};
 use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::{Arc, Weak};
@@ -115,6 +115,11 @@ struct HandlesGoInByValue;
 #[cfg(doctest)]
 struct ResumeTakesNoReference;
 
+/// The right to park, given to a run as it begins. Its field is private to this file, and
+/// [`Grift::started`] is the one place that makes one, then reads how the run came back: no other
+/// run can park, and no run that parked can end as if it hadn't.
+pub(crate) struct MayPark(());
+
 /// Why [`Grift::resume`] didn't take the run up, or what ended it.
 #[derive(Debug)]
 pub struct ResumeError {
@@ -135,8 +140,7 @@ impl From<ResumeError> for Error {
 impl<T> Grift<T> {
     /// [`Grift::call`], in a run that may park.
     pub fn start(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Ran, Error> {
-        let done = self.run_call(state, f, arguments, true);
-        self.ran(done)
+        self.started(|g, parks| g.run_call(state, f, arguments, Some(parks)))
     }
 
     /// [`Grift::evaluate_in`], in a run that may park, as [`Grift::start`] is.
@@ -147,14 +151,19 @@ impl<T> Grift<T> {
         source: &str,
         src: &str,
     ) -> Result<Ran, Error> {
-        let done = self
-            .context_of(context)
-            .and_then(|c| self.run_text(Some(state), c, Some(source), src, false, true));
-        self.ran(done)
+        self.started(|g, parks| {
+            let c = g.context_of(context)?;
+            g.run_text(Some(state), c, Some(source), src, false, Some(parks))
+        })
     }
 
-    /// What a run came to: parked, if it left its kept name, or else what it returned.
-    fn ran(&mut self, done: Result<local::Value, local::Error>) -> Result<Ran, Error> {
+    /// Runs `run` with the right to park, and what it came to: parked, if it left its kept name,
+    /// or else what it returned.
+    pub(crate) fn started(
+        &mut self,
+        run: impl FnOnce(&mut Self, MayPark) -> Result<local::Value, local::Error>,
+    ) -> Result<Ran, Error> {
+        let done = run(self, MayPark(()));
         match self.parked_as.take() {
             Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
             None => self.exported(done).map(Ran::Finished),
@@ -215,7 +224,7 @@ impl<T> Grift<T> {
             Ok(v) => self.import(v),
             Err(e) => Err(self.incoming_error(e)),
         };
-        let (machine, run) = match self.claim(&parked, &answer) {
+        let (machine, ready) = match self.claim(&parked, &answer) {
             Ok(claimed) => claimed,
             Err(e) => {
                 return Err(ResumeError {
@@ -225,19 +234,21 @@ impl<T> Grift<T> {
             }
         };
         parked.control = Weak::new(); // Spent: nothing to find again.
-        let done = self.wake(run, Some(state), machine, answer);
-        self.ran(done).map_err(|error| ResumeError {
+        let first = First::Resume { machine, answer };
+        let ran = self.started(|g, parks| g.run_on_machine(ready, Some(parks), Some(state), first));
+        ran.map_err(|error| ResumeError {
             error,
             parked: None,
         })
     }
 
-    /// The parked run's machine, its entry freed, and a new run begun, once nothing can refuse.
+    /// The parked run's machine, its entry freed, and the heap prepared for its run: nothing
+    /// after this can refuse.
     fn claim(
         &mut self,
         parked: &Parked,
         answer: &Result<local::Value, local::Error>,
-    ) -> Result<(Machine, Run), local::Error> {
+    ) -> Result<(Machine, Prepared), local::Error> {
         self.owns(&parked.owner)?;
         let ready = self.prepare(ending_values(answer), []);
         // A handle is linear and of this interpreter, so its name is still that run.
@@ -247,13 +258,13 @@ impl<T> Grift<T> {
         let machine = room
             .pop()
             .ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
-        Ok((machine, self.begin_run(ready, true)))
+        Ok((machine, ready))
     }
 
     /// Whether a host function called now may answer [`Answer::Later`](crate::Answer::Later): not
     /// under [`Grift::evaluate`] or [`Grift::call`], nor with no run in progress.
     pub fn can_park(&self) -> bool {
-        self.control.running() && self.machine.may_park
+        self.control.may_park()
     }
 
     /// Room in the queue [`Grift::forgotten`] reads for every run that could wait in it, the one
