@@ -121,7 +121,7 @@ impl<T> Grift<T> {
                     out.write_char(']')?;
                 }
                 Value::Context(r) if report.is_some() => {
-                    write!(out, "#[context {} names]", self.context_at(r)?.1.len())?;
+                    write!(out, "#[context {} names]", self.heap.context_at(r)?.1.len())?;
                 }
                 Value::Context(r) => {
                     let names = self.names_of(r)?;

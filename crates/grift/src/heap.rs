@@ -407,7 +407,7 @@ impl Heap {
     }
 
     #[inline]
-    pub fn get<T>(&self, r: Ref<T>) -> Result<&Object, Error> {
+    fn get<T>(&self, r: Ref<T>) -> Result<&Object, Error> {
         match self.slots.get(r.idx as usize) {
             Some(s) if s.generation == r.generation => Ok(&s.obj),
             _ => Err(stale()),
@@ -454,6 +454,18 @@ impl Heap {
     pub fn bytes_at(&self, r: Ref<kind::Bytes>) -> Result<&[u8], Error> {
         match self.get(r)? {
             Object::Bytes(b) => Ok(b),
+            _ => Err(stale()),
+        }
+    }
+
+    /// A context's parent and its bindings.
+    #[inline]
+    pub fn context_at(
+        &self,
+        r: Ref<kind::Context>,
+    ) -> Result<(Option<Ref<kind::Context>>, &Bindings), Error> {
+        match self.get(r)? {
+            Object::Context(parent, bindings) => Ok((*parent, bindings)),
             _ => Err(stale()),
         }
     }

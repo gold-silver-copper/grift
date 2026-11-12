@@ -18,7 +18,7 @@
 //! runs the operative's body, so what a program sees never differs.
 
 use crate::heap::kind::{Context, Pair};
-use crate::heap::{Bindings, Object, Operative, Origin, Ref, Reference, Seen, kind};
+use crate::heap::{Bindings, Operative, Origin, Ref, Reference, Seen, kind};
 use crate::interrupt::Run;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
@@ -566,9 +566,8 @@ impl<T> Grift<T> {
         Ok(match mode {
             Mode::Evaluate(Value::Symbol(s), context) => Mode::Return(self.value_of(context, s)?),
             Mode::Evaluate(Value::Pair(r), context) => {
-                let Object::Pair(combiner, operands, origin) = *self.heap.get(r)? else {
-                    return Err(Error::new(K::StaleValue, &[Value::Pair(r)]));
-                };
+                #[expect(clippy::disallowed_methods, reason = "one combination per step")]
+                let (combiner, operands, origin) = self.heap.pair_at(r)?;
                 // A combination is the program's unless the library made it.
                 if !origin.library {
                     self.machine.here = r;
@@ -1697,16 +1696,6 @@ impl<T> Grift<T> {
         Ok(())
     }
 
-    pub(crate) fn context_at(
-        &self,
-        context: Ref<Context>,
-    ) -> Result<(Option<Ref<Context>>, &Bindings), Error> {
-        match self.heap.get(context)? {
-            Object::Context(parent, bindings) => Ok((*parent, bindings)),
-            _ => Err(Error::new(K::StaleValue, &[Value::Context(context)])),
-        }
-    }
-
     fn value_of(&self, context: Ref<Context>, s: Symbol) -> Result<Value, Error> {
         self.find(context, s)?
             .ok_or_else(|| Error::new(K::UnboundSymbol, &[Value::Symbol(s)]))
@@ -1719,7 +1708,7 @@ impl<T> Grift<T> {
         s: Symbol,
     ) -> Result<Option<Value>, Error> {
         loop {
-            let (parent, bindings) = self.context_at(context)?;
+            let (parent, bindings) = self.heap.context_at(context)?;
             if let Some(&v) = bindings.get(&s) {
                 return Ok(Some(v));
             }
@@ -1732,7 +1721,7 @@ impl<T> Grift<T> {
 
     /// The symbols bound in `context` itself, sorted by name.
     pub(crate) fn names_of(&self, context: Ref<Context>) -> Result<Vec<Symbol>, Error> {
-        let (_, bindings) = self.context_at(context)?;
+        let (_, bindings) = self.heap.context_at(context)?;
         let mut names = collected(bindings.keys().copied())?;
         names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));
         Ok(names)
