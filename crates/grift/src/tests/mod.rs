@@ -46,7 +46,34 @@ fn class(p: Primitive) -> (bool, &'static [&'static str]) {
         // Core, called on bytes values, as the definitions call them.
         P::ByteAt => (false, &["Bo"]),
         P::Join => (false, &["BB"]),
-        _ => (false, &[]),
+        // Core, listed so a new primitive is classed here or this doesn't compile.
+        P::Vau
+        | P::Wrap
+        | P::Unwrap
+        | P::Evaluate
+        | P::EvaluateWithCleanup
+        | P::EvaluateWithHandler
+        | P::Raise
+        | P::Context
+        | P::Bind
+        | P::Unbind
+        | P::Names
+        | P::Pair
+        | P::Same
+        | P::TypeOf
+        | P::Add
+        | P::Subtract
+        | P::Multiply
+        | P::Divide
+        | P::Sine
+        | P::Cosine
+        | P::Tangent
+        | P::Exponential
+        | P::NaturalLogarithm
+        | P::StringToSymbol
+        | P::StringToFloat
+        | P::ReadForm
+        | P::ValueToString => (false, &[]),
     }
 }
 
@@ -298,6 +325,18 @@ fn floats_read_back_as_they_print() {
     // A not-a-number of any sign reads back as a not-a-number.
     let negative = show(&g, &Value::Float(-f64::NAN));
     assert!(float(&mut g, &negative).is_nan());
+    // Every not-a-number is one value: which bits a machine's arithmetic leaves in one (x86_64's
+    // `(divide 0.0 0.0)` has its sign set, aarch64's hasn't) is not something a program sees.
+    let same = g.evaluate(&mut (), "same?").unwrap();
+    for bits in [
+        0x7ff0_0000_0000_0001,
+        0xfff8_0000_0000_0000,
+        0x7ff8_0000_0000_0011,
+    ] {
+        let other = Value::Float(f64::from_bits(bits));
+        let answer = g.call(&mut (), &same, &[other, Value::Float(f64::NAN)]);
+        assert!(matches!(answer, Ok(Value::Boolean(true))), "{bits:#x}");
+    }
     holds(
         &mut g,
         &[
@@ -1006,7 +1045,10 @@ impl Comparison<'_> {
         while let Some((a, b)) = todo.pop() {
             let differ = || Err(format!("{} against {}", show(l, &a), show(r, &b)));
             match (&a, &b) {
-                (Value::Float(x), Value::Float(y)) if x.to_bits() != y.to_bits() => {
+                // As `same?` sees them: every not-a-number is one.
+                (Value::Float(x), Value::Float(y))
+                    if x.to_bits() != y.to_bits() && !(x.is_nan() && y.is_nan()) =>
+                {
                     return differ();
                 }
                 (Value::Symbol(x), Value::Symbol(y))
@@ -1281,7 +1323,8 @@ fn natives_are_their_definitions() {
             "case {case}: {src}: what ran"
         );
     }
-    // Floats from Rust, with any bits, not-a-number's payloads included, through Rust calls.
+    // Floats from Rust, with any bits, not-a-number's payloads included, through Rust calls: a
+    // payload is the machine's (aarch64's `trunc` quietens a signalling one, x86_64's doesn't).
     for bits in [
         0,
         1,

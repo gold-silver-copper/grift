@@ -45,8 +45,9 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - No truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and `or!?` must be booleans;
   `and!?` and `or!?` check every operand they evaluate, the last too ([G-52], [G-65]).
 - `same?` is identity for pairs, contexts and combiners, equality of value for integers, symbols,
-  strings and bytes, and of the stored bits for floats; `equal?` compares pairs by structure and
-  floats as IEEE does. Values of different kinds are never equal ([G-51], [G-145]).
+  strings and bytes, and of the stored bits for floats, any two not-a-numbers being the same;
+  `equal?` compares pairs by structure and floats as IEEE does. Values of different kinds are never
+  equal ([G-51], [G-145], [G-188]).
 - Strings are immutable UTF-8 with byte offsets, and a code point is an integer ([G-27]); bytes are
   a kind of their own, never equal to a string ([G-142]). Both share `byte-length`, `byte-at`,
   `slice`, `join` and `search`: `slice` and `join` answer in their first argument's kind,
@@ -58,7 +59,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 ## Reading and printing
 
 - Floats, strings and bytes print as text that reads back to the same value, but a not-a-number
-  ([G-61], [G-78], [G-142]). A symbol prints its bare name, which may not read back ([G-173]), and
+  ([G-61], [G-78], [G-142]). Every not-a-number is one value: no operation reads its sign or
+  payload, which are the machine's ([G-188]). A symbol prints its bare name, which may not read back ([G-173]), and
   combiners and contexts print as `#[...]`.
 - The string escapes are `\\ \" \n \r \t` and `\xHEX;` ([G-122]). In `#bytes(104 105 255)` an
   element is read like any datum and must then be an integer 0 to 255, else `parse-error bad-byte`
@@ -345,3 +347,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-183]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-185]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-188]: DECISIONS.md#owed-work-2026-11-11

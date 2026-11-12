@@ -33,8 +33,9 @@ pub(crate) struct Control {
 }
 
 impl Control {
-    /// Begins a run, which ends as the [`Run`] drops.
-    pub fn begin(control: &Arc<Control>) -> Run {
+    /// Begins a run on the machine, which ends as the [`Run`] drops. It takes the proof that the
+    /// heap was prepared for it ([`crate::evaluate::Prepared`]), so no run begins uncollected.
+    pub fn begin(control: &Arc<Control>, _: crate::evaluate::Prepared) -> Run {
         control.word.fetch_or(RUNNING, Relaxed);
         Run(Arc::clone(control))
     }
@@ -93,7 +94,9 @@ impl Control {
 
     /// Begins a run for host-side work, reading, printing or binding, unless one is in progress, so a stop
     /// reaches it; inside a run it is part of that run, and there is no guard. A stop already asked
-    /// of the run it began is `interrupted` before it does anything.
+    /// of the run it began is `interrupted` before it does anything. It takes no proof of a
+    /// prepared heap: host-side work runs no machine, and a collection that is due waits for the
+    /// next run on the machine to begin.
     pub fn host_run(control: &Arc<Control>) -> Result<Option<Run>, crate::local::Error> {
         let began = control.update(|word| (word & RUNNING == 0).then_some(word | RUNNING));
         let run = began.then(|| Run(Arc::clone(control)));

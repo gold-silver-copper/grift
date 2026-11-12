@@ -260,15 +260,14 @@
         ((or!? (less-than? 0.5 d) (same? d 0.5)) (add t 1.0))
         ((or!? (less-than? d -0.5) (same? d -0.5)) (subtract t 1.0))
         (#true t)))))
-; absolute-value: an integer's, but the most negative's overflows; a float's without its sign, but
-; a not-a-number's sign bit no grift operation reads, so that one is the native's.
-(define! rust-absolute-value absolute-value)
+; absolute-value: an integer's, but the most negative's overflows; a float's without its sign (a
+; not-a-number has none a program sees: every one is one value).
 (define! absolute
   (lambda! ((x))
     (conditional!
       ((same? x -9223372036854775808) (raise (error (quote! overflow) x)))
       ((integer? x) (if! (less-than? x 0) (subtract 0 x) x))
-      ((float? x) (if! (number? x) (unsigned x) (rust-absolute-value x)))
+      ((float? x) (unsigned x))
       (#true (type-failed x)))))
 ; power: an integer's by squaring, as Rust's checked_pow, failing where the true power doesn't fit;
 ; a float's is libm's powf, so the native's.
@@ -286,13 +285,11 @@
 ; square-root, correctly rounded as IEEE's: the float is m times 4^k, m an integer from 2^52 to
 ; 2^54, so its root is m's times 2^k, a scale no multiplying rounds. The root of m times 2^54 (so
 ; the scale starts at 2^-26) is found a bit at a time, whose remainder fits an integer, then
-; rounded at its last bit (a root is never halfway). A not-a-number is quietened, as any
-; operation does, below zero is what any invalid operation gives, and zeros and infinity are
-; their own roots.
+; rounded at its last bit (a root is never halfway). A not-a-number, zeros and infinity are
+; their own roots, and below zero is what any invalid operation gives.
 (define! rooted
   (lambda! (f)
     (conditional!
-      ((not? (number? f)) (add f 0.0))
       ((less-than? f 0.0) (divide 0.0 0.0))
       ((or!? (not? (less-than? 0.0 f)) (same? f #infinity)) f)
       (#true (root-of f 1.4901161193847656e-8)))))

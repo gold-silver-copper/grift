@@ -170,7 +170,9 @@ def run_tests(tree, specs, deadline, env):
 
 def still_reads(tree, patch, env):
     """None, or why the patched grift can't read the grift source the patch changes."""
-    changed = re.findall(r"^\+\+\+ b/(.+\.grift)$", open(patch, encoding="utf-8").read(), re.M)
+    # The path after its first component, as git apply strips it: `git diff` writes b/, or w/ with
+    # diff.mnemonicPrefix, and other prefixes elsewhere.
+    changed = re.findall(r"^\+\+\+ [^/\n]+/(.+\.grift)$", open(patch, encoding="utf-8").read(), re.M)
     if not changed:
         return None
     status, out = run(["cargo", "build", "--locked", "-p", "grift-cli", "--bin", "grift"], tree, BUILD_LIMIT, env)

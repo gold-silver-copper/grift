@@ -436,7 +436,8 @@ impl Default for Machine {
     }
 }
 
-/// That [`Grift::prepare`] came first: only it makes one.
+/// That [`Grift::prepare`] came first: only it makes one, and [`Control::begin`](crate::interrupt::Control::begin)
+/// takes it, so every run on the machine begins on a prepared heap.
 pub(crate) struct Prepared(());
 
 pub(crate) fn type_error(v: Value) -> Error {
@@ -793,7 +794,7 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    /// Every way into a run comes here first, as [`Grift::begin_run`] takes what this gives: as
+    /// Every way into a run comes here first, as beginning one takes what this gives: as
     /// the run may need slots before reaching the machine loop, collect first if due, or after a
     /// peak, with its checked inputs as roots.
     pub(crate) fn prepare(
@@ -1320,11 +1321,11 @@ impl<T> Grift<T> {
         let offset = usize::try_from(integer_of(y)?).ok();
         // The text is lent to the reader, not copied: a program reads a long text one
         // form at a time.
-        let text = self.heap.take_text(r)?;
-        let read = offset
-            .filter(|&i| text.is_char_boundary(i))
-            .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
-        self.heap.put_text(text)?;
+        let read = self.lend_text(r, |g, text| {
+            offset
+                .filter(|&i| text.is_char_boundary(i))
+                .map(|i| g.read_form(text, i, 1, None, &mut 0, g.machine.library))
+        })?;
         let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
         Ok(match read? {
             Some((form, place, _)) => self.list_local(
@@ -1516,12 +1517,15 @@ impl<T> Grift<T> {
     }
 
     /// Whether `x` and `y` are the same value: equal integers, symbols, strings and bytes, floats
-    /// with the same bits, and otherwise the same object.
+    /// with the same bits or both not-a-number (a not-a-number's bits are the machine's, not the
+    /// program's), and otherwise the same object.
     fn same(&self, x: Value, y: Value) -> Result<bool, Error> {
         Ok(match (x, y) {
             (Value::String(_), Value::String(_)) => self.text(x)? == self.text(y)?,
             (Value::Bytes(_), Value::Bytes(_)) => self.bytes_of(x)? == self.bytes_of(y)?,
-            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+            (Value::Float(a), Value::Float(b)) => {
+                a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+            }
             _ => x == y,
         })
     }

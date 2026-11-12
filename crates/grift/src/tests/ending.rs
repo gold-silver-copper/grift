@@ -168,3 +168,35 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
     let e = g.evaluate(&mut s, "(stop-each)").unwrap_err();
     assert_eq!(kind(&g, &e), "interrupted");
 }
+
+/// A text that doesn't read ends its run as every run ends: the machine clear, nothing of the
+/// run left to say what the next may do.
+#[test]
+fn a_text_that_does_not_read_ends_its_run_clear() {
+    let (mut g, _) = host();
+    let top = g.top_level();
+    let read = g.start_in(&mut g.interrupter(), &top, "bad.grift", "(");
+    assert!(read.is_err());
+    assert!(!g.machine.may_park);
+}
+
+/// A host function's wrong count with no memory for the list of its arguments is `out-of-memory`,
+/// as a primitive's is, not an `arity-error` missing its value.
+#[test]
+fn a_wrong_count_with_no_memory_for_its_list_is_out_of_memory() {
+    let (mut g, _) = host();
+    define(&mut g, "one", |g, _, args| {
+        // Every free slot used up, and no new one: allocation never collects.
+        g.0.heap.probe.slot_limit = Some(g.heap.len());
+        while g.pair(Value::Inert, Value::Inert).is_ok() {}
+        let counted = g.exactly::<1>(args).map(drop);
+        g.0.heap.probe.slot_limit = None;
+        counted.map(|()| Answer::Now(Value::Inert))
+    });
+    let e = g.evaluate(&mut g.interrupter(), "(one 1 2)").unwrap_err();
+    assert_eq!(kind(&g, &e), "out-of-memory");
+    // No arguments make no list, so that count is the arity-error itself.
+    let e = g.evaluate(&mut g.interrupter(), "(one)").unwrap_err();
+    assert_eq!(kind(&g, &e), "arity-error");
+    assert!(g.evaluate(&mut g.interrupter(), "(one 1)").is_ok());
+}
