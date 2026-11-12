@@ -1265,7 +1265,7 @@ impl<T> Grift<T> {
                     let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
-                    // Its `Finish` and that one's entry go under it now: its start needs no room.
+                    // Under it go its `Finish` and that frame's entry, never one without the other.
                     let room = &mut self.machine.waiting;
                     room.try_reserve(1).map_err(|_| Error::oom())?;
                     self.frame(What::Finish, Ref::NONE, Ref::NONE)?;
