@@ -206,7 +206,10 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   any value, so a host's `Symbol` can go stale too ([G-179]), except grift's own known names, which
   the heap makes first, at slots that are their numbers, and always marks ([G-206]).
 - A fact that can't be missing has no quiet default: the code's shape leaves none to write, or the
-  answer is `stale-value` ([G-210]).
+  answer is `stale-value`. Three are kept, each with its reason: the machine's step pops a
+  cleanup's saved ending with a fallback (it is on the loop), and a symbol the interpreter holds
+  has `""` for a missing name and `0` for a missing generation (an error there would make handing
+  any value to the host fallible) ([G-210]).
 - A value returned to the host lives until the next run; to keep one, bind it or `keep` it. A `Kept`
   is neither `Copy` nor `Clone` ([G-21], [G-108], [G-172]).
 - Only memory really refused asks for a collection ([G-170]). A run refused memory gives up a spare
