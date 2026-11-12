@@ -72,7 +72,7 @@ fn key(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, E
 fn job_wait(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [v] = g.exactly(args)?;
     let Value::Integer(id) = v else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*v));
     };
     Ok(Answer::Later(Value::Integer(*id)))
 }
@@ -81,7 +81,7 @@ fn job_wait(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answ
 fn job_start(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [command] = g.exactly(args)?;
     let Some(command) = g.as_str(command)?.map(str::to_owned) else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*command));
     };
     let id = h.inbox.register();
     let inbox = Arc::clone(&h.inbox);
@@ -101,7 +101,7 @@ fn job_value(id: u64) -> Value {
 fn job_cancel(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [v] = g.exactly(args)?;
     let Value::Integer(id) = v else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*v));
     };
     h.inbox.cancel(u64::try_from(*id).unwrap_or(0));
     Ok(Answer::Now(Value::Inert))
@@ -112,7 +112,7 @@ fn job_cancel(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<An
 fn job_abandon(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [v] = g.exactly(args)?;
     let Value::Integer(id) = v else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*v));
     };
     h.abandoned.push(*id);
     Ok(Answer::Now(Value::Inert))
@@ -146,7 +146,7 @@ fn temporary_file(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Resul
 fn delete_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [path] = g.exactly(args)?;
     let Some(name) = g.as_str(path)? else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*path));
     };
     match std::fs::remove_file(name) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(file_error(g, path, &e)),
@@ -159,7 +159,7 @@ fn terminal_write(g: &mut HostCall<Host>, h: &mut Host, args: &[Value]) -> Resul
     for v in args {
         match g.as_str(v)? {
             Some(s) => h.out.extend_from_slice(s.as_bytes()),
-            None => return Err(g.error("type-error", std::slice::from_ref(v))),
+            None => return Err(g.type_error(*v)),
         }
     }
     Ok(Answer::Now(Value::Inert))
@@ -185,7 +185,7 @@ fn file_error(g: &mut HostCall<Host>, path: &Value, e: &io::Error) -> Error {
 fn read_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [path] = g.exactly(args)?;
     let Some(name) = g.as_str(path)?.map(str::to_owned) else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*path));
     };
     match std::fs::read_to_string(&name) {
         Ok(s) => g.string(&s).map(Answer::Now),
@@ -198,7 +198,12 @@ fn read_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Ans
 fn write_file(g: &mut HostCall<Host>, _: &mut Host, args: &[Value]) -> Result<Answer, Error> {
     let [path, contents] = g.exactly(args)?;
     let (Some(name), Some(s)) = (g.as_str(path)?, g.as_str(contents)?) else {
-        return Err(g.error("type-error", args));
+        let wrong = if g.as_str(path)?.is_none() {
+            path
+        } else {
+            contents
+        };
+        return Err(g.type_error(*wrong));
     };
     match std::fs::write(name, s) {
         Ok(()) => Ok(Answer::Now(Value::Inert)),
@@ -323,10 +328,7 @@ fn given_up(g: &G, e: &Error) -> bool {
 /// run. That it was abandoned is no news; anything else that cut a cleanup is. A cleanup that waits
 /// comes back, waiting.
 fn abandon(g: &mut G, h: &mut Host, parked: Parked) -> Option<Parked> {
-    let ending = grift::Error {
-        limit: true,
-        ..g.error("abandoned", &[])
-    };
+    let ending = g.limit("abandoned", &[]);
     h.inbox.arm(g.interrupter());
     let ResumeError { error, parked } = match g.resume(h, parked, Err(ending)) {
         Ok(Ran::Parked(again)) => return Some(again),

@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use interrupt::Interrupter;
+pub use local::Kind;
 pub use parked::{Parked, Ran, ResumeError};
 pub use print::{ReportStatus, TextBuffer, write_string};
 
@@ -169,7 +170,8 @@ host_call! {
     fn define(&mut self, name: &str, v: Value) -> Result<(), Error>;
     fn bind(&mut self, context: &Value, parameters: &Value, value: Value) -> Result<(), Error>;
     fn symbol(&mut self, name: &str) -> Result<Symbol, Error>;
-    fn error(&mut self, kind: &str, values: &[Value]) -> Error;
+    fn error(&mut self, kind: impl AsRef<str>, values: &[Value]) -> Error;
+    fn limit(&mut self, kind: impl AsRef<str>, values: &[Value]) -> Error;
     fn string(&mut self, s: &str) -> Result<Value, Error>;
     fn bytes(&mut self, b: &[u8]) -> Result<Value, Error>;
     fn pair(&mut self, a: Value, b: Value) -> Result<Value, Error>;
@@ -193,9 +195,14 @@ impl<T> HostCall<'_, T> {
     /// the list, `out-of-memory`.
     pub fn arity_error(&mut self, args: &[Value]) -> Error {
         match self.0.list(args) {
-            Ok(list) => self.0.error("arity-error", &[list]),
+            Ok(list) => self.0.error(Kind::ArityError, &[list]),
             Err(e) => e,
         }
+    }
+
+    /// The `type-error` a primitive gives: one value, the one of the wrong type.
+    pub fn type_error(&mut self, value: Value) -> Error {
+        self.0.error(Kind::TypeError, &[value])
     }
 }
 
@@ -256,7 +263,7 @@ pub enum Answer {
 #[derive(Debug, PartialEq)]
 pub struct Error {
     /// The kind, such as `type-error` or a kind a program gave `error`; [`Grift::symbol_name`]
-    /// reads it.
+    /// reads it, and [`Error::grift_kind`] says which of grift's own it is.
     pub kind: Symbol,
     /// The values involved, valid as long as a returned [`Value`].
     pub values: Vec<Value>,
@@ -286,15 +293,23 @@ pub struct Error {
     /// to read when the run has ended.
     ///
     /// ```
-    /// use grift::{Error, Grift, Value};
+    /// use grift::{Grift, Value};
     /// let mut g: Grift = Grift::new()?;
-    /// let quit = g.host_function("quit", |g, _, args| Err(Error { limit: true, ..g.error("quit", args) }))?;
+    /// let quit = g.host_function("quit", |g, _, args| Err(g.limit("quit", args)))?;
     /// g.define("quit", quit)?;
     /// let e = g.evaluate(&mut (), "(catch! (quit 3) e 0) (add 1 2)").unwrap_err();
     /// assert!(g.symbol_name(&e.kind)? == "quit" && e.values == [Value::Integer(3)]);
     /// # Ok::<(), grift::Error>(())
     /// ```
     pub limit: bool,
+}
+
+impl Error {
+    /// Which of grift's own kinds this error is, if it is one of them, whoever raised it.
+    pub fn grift_kind(&self) -> Option<Kind> {
+        let index = usize::try_from(self.kind.index).ok()?;
+        local::KINDS.get(index).copied()
+    }
 }
 
 /// An error has no `clone`, which would abort when memory is refused: a host keeps the one it was
@@ -667,9 +682,9 @@ impl<T> Grift<T> {
         self.out(self.import_symbol(symbol).map(|s| self.name(s)))
     }
 
-    /// An error of kind `kind` with a copy of `values`, for a host function to return.
-    pub fn error(&mut self, kind: &str, values: &[Value]) -> Error {
-        let made = self.intern(kind).and_then(|kind| {
+    /// An error of kind `kind`, a [`Kind`] or a host's own, with a copy of `values`.
+    pub fn error(&mut self, kind: impl AsRef<str>, values: &[Value]) -> Error {
+        let made = self.intern(kind.as_ref()).and_then(|kind| {
             Ok(Error {
                 kind: self.export_symbol(kind),
                 values: collected(values.iter().cloned())?,
@@ -678,6 +693,13 @@ impl<T> Grift<T> {
             })
         });
         made.unwrap_or_else(|e| self.export_error(e))
+    }
+
+    /// [`Grift::error`] as a limit, which no handler catches ([`Error::limit`]).
+    pub fn limit(&mut self, kind: impl AsRef<str>, values: &[Value]) -> Error {
+        let mut e = self.error(kind, values);
+        e.limit = true;
+        e
     }
 
     /// A new string holding a copy of `s`.

@@ -43,10 +43,7 @@ pub(crate) fn start<T>(g: &mut Grift<T>, state: &mut T, src: &str) -> Result<Ran
 /// of a cleanup on the way out. What the run ended with.
 pub(crate) fn give_up<T>(g: &mut Grift<T>, state: &mut T, mut p: Parked) -> Error {
     loop {
-        let ending = Error {
-            limit: true,
-            ..g.error("given-up", &[])
-        };
+        let ending = g.limit("given-up", &[]);
         match g.resume(state, p, Err(ending)) {
             Ok(Ran::Parked(again)) => p = again,
             Ok(Ran::Finished(v)) => panic!("a limit ended with the value {v:?}"),
@@ -331,10 +328,7 @@ mod generated {
             w.log(format!("${id}"));
         }
         w.call(g);
-        Err(Error {
-            limit: true,
-            ..g.error("host-limit", args)
-        })
+        Err(g.limit("host-limit", args))
     }
 
     fn g_wait(g: &mut HostCall<World>, w: &mut World, args: &[Value]) -> Result<Answer, Error> {
@@ -729,10 +723,7 @@ mod generated {
                     touched[run].given_up = true;
                     let at = w.logs[run].len();
                     touched[run].clean_until.get_or_insert(at);
-                    let ending = Error {
-                        limit: true,
-                        ..g.error("given-up", &[])
-                    };
+                    let ending = g.limit("given-up", &[]);
                     let done = g.resume(&mut w, parked, Err(ending)).map_err(|e| {
                         assert!(e.parked.is_none(), "{:?}\n{context}", e.error);
                         e.error
