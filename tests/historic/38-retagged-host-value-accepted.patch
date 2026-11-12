@@ -1,11 +1,16 @@
---- a/crates/grift/src/lib.rs
-+++ b/crates/grift/src/lib.rs
-@@ -984,7 +984,7 @@
-         let live = |r: &Reference, kind: fn(&Object) -> bool| {
-             self.owns(&r.owner)?;
-             match self.heap.get(r.local)? {
--                o if kind(o) => Ok(r.local),
-+                o => Ok(r.local),
-                 _ => Err(local::Error::new(K::StaleValue, &[])),
-             }
-         };
+diff --git i/crates/grift/src/heap.rs w/crates/grift/src/heap.rs
+index b9aab08..0029657 100644
+--- i/crates/grift/src/heap.rs
++++ w/crates/grift/src/heap.rs
+@@ -390,7 +390,10 @@ impl Heap {
+ 
+     /// A host's reference as one to an object of kind `T`, if it still names one.
+     pub fn kind<T: Kind>(&self, r: Ref) -> Result<Ref<T>, Error> {
+-        self.get(r.cast::<T>()).map(|_| r.cast())
++        match self.slots.get(r.idx as usize) {
++            Some(s) if s.generation == r.generation => Ok(r.cast()),
++            _ => Err(stale()),
++        }
+     }
+ 
+     /// What an object of any kind but a pair holds.

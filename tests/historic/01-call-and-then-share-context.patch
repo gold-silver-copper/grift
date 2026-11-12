@@ -1,24 +1,24 @@
-diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
-index c2526cf..2779804 100644
---- a/crates/grift/src/evaluate.rs
-+++ b/crates/grift/src/evaluate.rs
-@@ -924,10 +924,10 @@ impl<T> Grift<T> {
+diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
+index aeb0438..51616de 100644
+--- i/crates/grift/src/evaluate.rs
++++ w/crates/grift/src/evaluate.rs
+@@ -889,10 +889,10 @@ impl<T> Grift<T> {
      ) -> Result<Mode, Error> {
          let function = self.combiner_of(function)?;
          let operands = self.list_local(arguments, false)?;
-+        let context = self.heap.context(None)?;
++        let context = self.heap.make((None, Bindings::default()))?;
          let at = self.machine.here;
          if let Some((then, saved)) = then {
              let combiner = self.combiner_of(then)?;
--            let context = self.heap.context(None)?;
+-            let context = self.heap.make((None, Bindings::default()))?;
              let base = Base::new(self.machine.arguments.len(), false);
              for v in saved {
                  push(&mut self.machine.arguments, v)?;
-@@ -943,7 +943,6 @@ impl<T> Grift<T> {
+@@ -908,7 +908,6 @@ impl<T> Grift<T> {
                  at,
              )?;
          }
--        let context = self.heap.context(None)?;
+-        let context = self.heap.make((None, Bindings::default()))?;
          let base = Base::new(self.machine.arguments.len(), false);
          self.frame(What::Combine { operands, base }, context, at)?;
          Ok(Mode::Return(function))
