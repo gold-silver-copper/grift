@@ -1324,7 +1324,7 @@ impl<T> Grift<T> {
         let read = offset
             .filter(|&i| text.is_char_boundary(i))
             .map(|i| self.read_form(&text, i, 1, None, &mut 0, self.machine.library));
-        self.heap.put_text(r, text)?;
+        self.heap.put_text(text)?;
         let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
         Ok(match read? {
             Some((form, place, _)) => self.list_local(

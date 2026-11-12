@@ -29,8 +29,14 @@ impl<T> PartialEq for Ref<T> {
     }
 }
 
+/// Sealed: only this file says which types are kinds, and which kinds are read whole.
+mod sealed {
+    pub trait Kind {}
+    pub trait Whole {}
+}
+
 /// A kind of object: what its variant of [`Object`] holds.
-pub(crate) trait Kind: Copy {
+pub(crate) trait Kind: Copy + sealed::Kind {
     type Holds;
     fn object(holds: Self::Holds) -> Object;
     fn of(obj: &Object) -> Option<&Self::Holds>;
@@ -38,7 +44,7 @@ pub(crate) trait Kind: Copy {
 }
 
 /// A kind read whole: every kind but a pair, which only [`Heap::pair_at`] reads.
-pub(crate) trait Whole: Kind {}
+pub(crate) trait Whole: Kind + sealed::Whole {}
 
 macro_rules! kinds {
     ($($kind:ident($holds:ty) $($whole:ident)?;)*) => {
@@ -67,7 +73,11 @@ macro_rules! kinds {
                         }
                     }
                 }
-                $(impl $whole for $kind {})?
+                impl sealed::Kind for $kind {}
+                $(
+                    impl sealed::$whole for $kind {}
+                    impl $whole for $kind {}
+                )?
             )*
         }
     };
@@ -81,6 +91,18 @@ kinds! {
     // Inside `kind`, where `Operative` is the kind.
     Operative(super::Operative) Whole;
     Applicative(Value) Whole;
+}
+
+/// A string's text, lent out by [`Heap::take_text`]: only it, and only to its own string, can
+/// [`Heap::put_text`] put back.
+pub(crate) struct Lent(Ref<kind::String>, Box<str>);
+
+impl std::ops::Deref for Lent {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.1
+    }
 }
 
 /// A compound operative: its parameter tree, its context parameter, its body's forms, the context it
@@ -425,11 +447,12 @@ impl Heap {
 
     /// Takes a string's text out, leaving it empty until [`Heap::put_text`] puts it back: lent so,
     /// it needs no copy.
-    pub fn take_text(&mut self, r: Ref<kind::String>) -> Result<Box<str>, Error> {
-        self.get_mut(r).map(std::mem::take)
+    pub fn take_text(&mut self, r: Ref<kind::String>) -> Result<Lent, Error> {
+        self.get_mut(r).map(|s| Lent(r, std::mem::take(s)))
     }
 
-    pub fn put_text(&mut self, r: Ref<kind::String>, text: Box<str>) -> Result<(), Error> {
+    /// Puts lent text back where it came from: the only text a string can be given.
+    pub fn put_text(&mut self, Lent(r, text): Lent) -> Result<(), Error> {
         *self.get_mut(r)? = text;
         Ok(())
     }
