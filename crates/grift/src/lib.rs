@@ -574,8 +574,8 @@ impl<T> Grift<T> {
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
         let made = self.heap.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
-            push(&mut self.hosts, (s, f))?;
             let host = self.heap.make(local::Value::Host(local::Host(id)))?;
+            push(&mut self.hosts, (s, f))?;
             Ok(local::Value::Applicative(host))
         });
         self.exported(made)
