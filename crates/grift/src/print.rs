@@ -121,7 +121,7 @@ impl<T> Grift<T> {
                     out.write_char(']')?;
                 }
                 Value::Context(r) if report.is_some() => {
-                    write!(out, "#[context {} names]", self.heap.context_at(r)?.1.len())?;
+                    write!(out, "#[context {} names]", self.heap.read(r)?.1.len())?;
                 }
                 Value::Context(r) => {
                     let names = self.names_of(r)?;
@@ -148,11 +148,11 @@ impl<T> Grift<T> {
                     push(&mut todo, Item::Tail(b, ")"))?;
                     push(&mut todo, Item::Value(a))?;
                 }
-                Value::String(r) => write_string(self.heap.string_at(r)?, out)?,
+                Value::String(r) => write_string(self.heap.read(r)?, out)?,
                 // The literal: each byte as the integer `byte-at` gives for it.
                 Value::Bytes(r) => {
                     out.write_str("#bytes(")?;
-                    for (i, byte) in self.heap.bytes_at(r)?.iter().enumerate() {
+                    for (i, byte) in self.heap.read(r)?.iter().enumerate() {
                         if i > 0 {
                             out.write_char(' ')?;
                         }
@@ -161,7 +161,7 @@ impl<T> Grift<T> {
                     out.write_char(')')?;
                 }
                 Value::Operative(r) => {
-                    let op = self.heap.operative_at(r)?;
+                    let op = *self.heap.read(r)?;
                     out.write_str("#[operative ")?;
                     push(&mut todo, Item::Tail(op.body, "]"))?;
                     let c = op.context_parameter.map_or(Value::Ignore, Value::Symbol);
@@ -172,7 +172,7 @@ impl<T> Grift<T> {
                 Value::Applicative(r) => {
                     out.write_str("#[applicative ")?;
                     push(&mut todo, Item::Tail(Value::EmptyList, "]"))?;
-                    push(&mut todo, Item::Value(self.heap.applicative_at(r)?))?;
+                    push(&mut todo, Item::Value(*self.heap.read(r)?))?;
                 }
             }
         }

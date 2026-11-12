@@ -18,7 +18,7 @@
 //! runs the operative's body, so what a program sees never differs.
 
 use crate::heap::kind::{Context, Pair};
-use crate::heap::{Bindings, Operative, Origin, Ref, Reference, Seen, kind};
+use crate::heap::{Bindings, Operative, Origin, Ref, Seen, kind};
 use crate::interrupt::Run;
 use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
@@ -453,7 +453,7 @@ impl<T> Grift<T> {
     /// An applicative's underlying combiner; anything else is apply's `type-error`.
     pub(crate) fn combiner_of(&self, f: Value) -> Result<Value, Error> {
         match f {
-            Value::Applicative(r) => self.heap.applicative_at(r),
+            Value::Applicative(r) => self.heap.read(r).copied(),
             _ => Err(type_error(f)),
         }
     }
@@ -787,7 +787,7 @@ impl<T> Grift<T> {
         fields.insert(K::Values.into(), values);
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Trace.into(), trace);
-        let v = Value::Context(self.heap.context(None, fields)?);
+        let v = Value::Context(self.heap.make((None, fields))?);
         let operands = self.list_local(&[v], library)?;
         self.machine.handed = Some((trace, seen));
         self.combine(handler, operands, context)
@@ -799,7 +799,7 @@ impl<T> Grift<T> {
     pub(crate) fn prepare(
         &mut self,
         current: impl Iterator<Item = Value>,
-        held: impl IntoIterator<Item = Reference>,
+        held: impl IntoIterator<Item = Ref>,
     ) -> Prepared {
         if self.heap.due_before_run() {
             self.collect(current, held);
@@ -812,7 +812,7 @@ impl<T> Grift<T> {
     fn collect(
         &mut self,
         current: impl Iterator<Item = Value>,
-        held: impl IntoIterator<Item = Reference>,
+        held: impl IntoIterator<Item = Ref>,
     ) {
         // What the collection walks outside the heap: this machine, and the whole kept table.
         let parked: usize = self.kept.iter().map(Entry::weight).sum();
@@ -892,7 +892,7 @@ impl<T> Grift<T> {
         let at = self.machine.here;
         if let Some((then, saved)) = then {
             let combiner = self.combiner_of(then)?;
-            let context = self.heap.context(None, Bindings::default())?;
+            let context = self.heap.make((None, Bindings::default()))?;
             let base = Base::new(self.machine.arguments.len(), false);
             for v in saved {
                 push(&mut self.machine.arguments, v)?;
@@ -908,7 +908,7 @@ impl<T> Grift<T> {
                 at,
             )?;
         }
-        let context = self.heap.context(None, Bindings::default())?;
+        let context = self.heap.make((None, Bindings::default()))?;
         let base = Base::new(self.machine.arguments.len(), false);
         self.frame(What::Combine { operands, base }, context, at)?;
         Ok(Mode::Return(function))
@@ -918,11 +918,11 @@ impl<T> Grift<T> {
     fn combine(&mut self, f: Value, operands: Value, context: Ref<Context>) -> Result<Mode, Error> {
         match f {
             Value::Applicative(r) => {
-                let mut inner = self.heap.applicative_at(r)?;
+                let mut inner = *self.heap.read(r)?;
                 // With no operands, every layer of wrapping evaluates nothing: peel them here
                 // rather than recursing once per layer.
                 while let (Value::Applicative(r), Value::EmptyList) = (inner, operands) {
-                    inner = self.heap.applicative_at(r)?;
+                    inner = *self.heap.read(r)?;
                 }
                 let base = Base::new(self.machine.arguments.len(), self.machine.library);
                 self.next_argument(inner, context, operands, base)
@@ -1013,7 +1013,7 @@ impl<T> Grift<T> {
         operands: Value,
         context: Ref<Context>,
     ) -> Result<Mode, Error> {
-        let op = self.heap.operative_at(r)?;
+        let op = *self.heap.read(r)?;
         if let Some(native) = op.native
             && let Some(mode) = self.native(native, operands, context)?
         {
@@ -1032,7 +1032,7 @@ impl<T> Grift<T> {
             )]
             bindings.insert(s, Value::Context(context));
         }
-        let local = self.heap.context(Some(op.context), bindings)?;
+        let local = self.heap.make((Some(op.context), bindings))?;
         self.next_form(op.body, local, self.machine.here)
     }
 
@@ -1161,12 +1161,12 @@ impl<T> Grift<T> {
                     size: u32::try_from(size).map_err(|_| Error::oom())?,
                     native: None,
                 };
-                Value::Operative(self.heap.operative(op)?)
+                Value::Operative(self.heap.make(op)?)
             }
             P::Wrap if !is_combiner(x) => return Err(type_error(x)),
-            P::Wrap => Value::Applicative(self.heap.applicative(x)?),
+            P::Wrap => Value::Applicative(self.heap.make(x)?),
             P::Unwrap => match x {
-                Value::Applicative(r) => self.heap.applicative_at(r)?,
+                Value::Applicative(r) => *self.heap.read(r)?,
                 _ => return Err(type_error(x)),
             },
             P::Evaluate => return Ok(Mode::Evaluate(x, context_kind(y)?)),
@@ -1176,7 +1176,7 @@ impl<T> Grift<T> {
                     Value::EmptyList => None,
                     _ => return Err(type_error(x)),
                 };
-                Value::Context(self.heap.context(parent, Bindings::default())?)
+                Value::Context(self.heap.make((parent, Bindings::default()))?)
             }
             P::Bind => {
                 self.bind_tree(context_kind(x)?, y, z)?;
@@ -1379,7 +1379,7 @@ impl<T> Grift<T> {
                 match x {
                     Value::String(_) => {
                         let part = boxed(self.text(x)?.get(a..b).ok_or_else(bad)?)?;
-                        Value::String(self.heap.string(part)?)
+                        Value::String(self.heap.make(part)?)
                     }
                     _ => {
                         let part = self.bytes_of(x)?.get(a..b).ok_or_else(bad)?;
@@ -1422,7 +1422,7 @@ impl<T> Grift<T> {
                         )]
                         joined.push_str(self.text(v)?);
                     }
-                    Value::String(self.heap.string(joined.into_boxed_str())?)
+                    Value::String(self.heap.make(joined.into_boxed_str())?)
                 }
             }
             P::Search => {
@@ -1451,7 +1451,7 @@ impl<T> Grift<T> {
                     Error::new(K::EncodingError, &[x, at])
                 })?;
                 let text = boxed(text)?;
-                Value::String(self.heap.string(text)?)
+                Value::String(self.heap.make(text)?)
             }
             P::ListToBytes => {
                 let mut bytes = Vec::new();
@@ -1570,7 +1570,7 @@ impl<T> Grift<T> {
     /// The contents of string `v`, or a type error.
     pub(crate) fn text(&self, v: Value) -> Result<&str, Error> {
         match v {
-            Value::String(r) => self.heap.string_at(r),
+            Value::String(r) => self.heap.read(r).map(|s| &**s),
             _ => Err(type_error(v)),
         }
     }
@@ -1586,7 +1586,7 @@ impl<T> Grift<T> {
     /// The contents of bytes value `v`, or a type error.
     pub(crate) fn bytes_of(&self, v: Value) -> Result<&[u8], Error> {
         match v {
-            Value::Bytes(r) => self.heap.bytes_at(r),
+            Value::Bytes(r) => self.heap.read(r).map(Vec::as_slice),
             _ => Err(type_error(v)),
         }
     }
@@ -1602,16 +1602,16 @@ impl<T> Grift<T> {
     /// combination being combined is, what the host makes is the program's, and the reader says
     /// whose text it reads.
     pub(crate) fn pair_local(&mut self, a: Value, b: Value, library: bool) -> Result<Value, Error> {
-        Ok(Value::Pair(self.heap.pair(a, b, Origin::new(library))?))
+        Ok(Value::Pair(self.heap.make((a, b, Origin::new(library)))?))
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
         let s = boxed(s)?;
-        Ok(Value::String(self.heap.string(s)?))
+        Ok(Value::String(self.heap.make(s)?))
     }
 
     pub(crate) fn bytes_local(&mut self, b: Vec<u8>) -> Result<Value, Error> {
-        Ok(Value::Bytes(self.heap.bytes(b)?))
+        Ok(Value::Bytes(self.heap.make(b)?))
     }
 
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
@@ -1708,20 +1708,20 @@ impl<T> Grift<T> {
         s: Symbol,
     ) -> Result<Option<Value>, Error> {
         loop {
-            let (parent, bindings) = self.heap.context_at(context)?;
+            let (parent, bindings) = self.heap.read(context)?;
             if let Some(&v) = bindings.get(&s) {
                 return Ok(Some(v));
             }
             let Some(parent) = parent else {
                 return Ok(None);
             };
-            context = parent;
+            context = *parent;
         }
     }
 
     /// The symbols bound in `context` itself, sorted by name.
     pub(crate) fn names_of(&self, context: Ref<Context>) -> Result<Vec<Symbol>, Error> {
-        let (_, bindings) = self.heap.context_at(context)?;
+        let (_, bindings) = self.heap.read(context)?;
         let mut names = collected(bindings.keys().copied())?;
         names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));
         Ok(names)

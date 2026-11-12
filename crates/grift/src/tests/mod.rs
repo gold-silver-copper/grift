@@ -55,7 +55,7 @@ impl<T> Grift<T> {
     /// where the library looks it up, wrapped if the native is, and no library form runs a native
     /// twin. As the library's own code, what this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
-        let here = (self.heap.context(Some(self.built_in), Bindings::default())).unwrap();
+        let here = (self.heap.make((Some(self.built_in), Bindings::default()))).unwrap();
         self.run_text(None, here, None, MEANINGS, true, false)
             .unwrap();
         let name = self.intern("meanings").unwrap();
@@ -67,7 +67,7 @@ impl<T> Grift<T> {
             let native = self.find(self.built_in, name).unwrap();
             let bound = match native {
                 Some(local::Value::Applicative(_)) => {
-                    local::Value::Applicative(self.heap.applicative(meaning).unwrap())
+                    local::Value::Applicative(self.heap.make(meaning).unwrap())
                 }
                 _ => meaning,
             };
@@ -86,7 +86,7 @@ impl<T> Grift<T> {
     /// The combiner under `v` if it is an applicative, else `v`.
     fn underlying(&self, v: &Value) -> Value {
         match self.import(v).unwrap() {
-            local::Value::Applicative(r) => self.export(self.heap.applicative_at(r).unwrap()),
+            local::Value::Applicative(r) => self.export(*self.heap.read(r).unwrap()),
             _ => *v,
         }
     }
@@ -103,7 +103,7 @@ impl<T> Grift<T> {
             return false;
         };
         let definition = match found {
-            local::Value::Applicative(r) => self.heap.applicative_at(r).unwrap(),
+            local::Value::Applicative(r) => *self.heap.read(r).unwrap(),
             other => other,
         };
         definition == self.import(v).unwrap()

@@ -105,7 +105,7 @@ pub struct Symbol {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reference {
     owner: Owner,
-    local: heap::Reference,
+    local: Ref,
 }
 
 /// The interpreter a value belongs to: a number no other interpreter in the process has, counted
@@ -444,13 +444,11 @@ impl<T> Grift<T> {
         for name in local::K_NAMES {
             self.intern(name)?;
         }
-        self.built_in = self.heap.context(None, Bindings::default())?;
-        self.top = self
-            .heap
-            .context(Some(self.built_in), Bindings::default())?;
+        self.built_in = self.heap.make((None, Bindings::default()))?;
+        self.top = self.heap.make((Some(self.built_in), Bindings::default()))?;
         for &p in evaluate::Primitive::ALL {
             let s = self.intern(p.name())?;
-            let wrapped = self.heap.applicative(local::Value::Primitive(p))?;
+            let wrapped = self.heap.make(local::Value::Primitive(p))?;
             let v = local::Value::Applicative(wrapped);
             self.bind_symbol(self.built_in, s, v)?;
         }
@@ -572,7 +570,7 @@ impl<T> Grift<T> {
         let made = self.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
-            let host = self.heap.applicative(local::Value::Host(local::Host(id)))?;
+            let host = self.heap.make(local::Value::Host(local::Host(id)))?;
             Ok(local::Value::Applicative(host))
         });
         self.exported(made)
@@ -584,7 +582,7 @@ impl<T> Grift<T> {
         let made = parent
             .map(|p| self.context_of(p))
             .transpose()
-            .and_then(|parent| self.heap.context(parent, Bindings::default()));
+            .and_then(|parent| self.heap.make((parent, Bindings::default())));
         self.exported(made.map(local::Value::Context))
     }
 
@@ -602,7 +600,7 @@ impl<T> Grift<T> {
     pub fn private_context(&mut self) -> Result<Value, Error> {
         let made = self
             .heap
-            .context(Some(self.built_in), Bindings::default())
+            .make((Some(self.built_in), Bindings::default()))
             .map(local::Value::Context);
         self.exported(made)
     }
@@ -693,7 +691,7 @@ impl<T> Grift<T> {
 
     /// A new string holding a copy of `s`.
     pub fn string(&mut self, s: &str) -> Result<Value, Error> {
-        let made = boxed(s).and_then(|s| self.heap.string(s));
+        let made = boxed(s).and_then(|s| self.heap.make(s));
         self.exported(made.map(local::Value::String))
     }
 
