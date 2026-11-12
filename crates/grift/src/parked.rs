@@ -131,7 +131,10 @@ mod right {
         ) -> Result<Ran, Error> {
             let done = run(self, MayPark(()));
             match self.parked_as.take() {
-                Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
+                Some(name) => {
+                    let parked = self.parked_handle(name).map(Ran::Parked);
+                    self.out(parked.ok_or_else(|| local::Error::new(local::K::StaleValue, &[])))
+                }
                 None => self.exported(done).map(Ran::Finished),
             }
         }
@@ -176,18 +179,17 @@ impl<T> Grift<T> {
         })
     }
 
-    /// A handle to the run parked under kept name `name`.
-    fn parked_handle(&self, name: u32) -> Parked {
-        let request = match self.kept.get(name as usize) {
-            Some(Entry::Run(room)) => room.first().map(|m| m.request),
-            _ => None,
+    /// A handle to the run parked under kept name `name`, if one is.
+    fn parked_handle(&self, name: u32) -> Option<Parked> {
+        let Some(Entry::Run(room)) = self.kept.get(name as usize) else {
+            return None;
         };
-        Parked {
+        Some(Parked {
             owner: self.owner,
             control: Arc::downgrade(&self.control),
             name,
-            request: self.export(request.unwrap_or(local::Value::Inert)),
-        }
+            request: self.export(room.first()?.request),
+        })
     }
 
     /// Takes up a parked run: the waiting call answers `answer` as a host function's return does,
@@ -291,6 +293,6 @@ impl<T> Grift<T> {
     /// cleanups.
     pub fn forgotten(&mut self) -> Option<Parked> {
         let name = self.control.forgotten().pop()?;
-        Some(self.parked_handle(name))
+        self.parked_handle(name)
     }
 }

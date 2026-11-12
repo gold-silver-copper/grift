@@ -1025,8 +1025,9 @@ impl<T> Grift<T> {
     /// The arguments on the argument stack from `base` as a new list, popping them.
     fn arguments_list(&mut self, base: usize) -> Result<Value, Error> {
         let mut list = Value::EmptyList;
-        while self.machine.arguments.len() > base {
-            let x = self.machine.arguments.pop().unwrap_or(Value::EmptyList);
+        while self.machine.arguments.len() > base
+            && let Some(x) = self.machine.arguments.pop()
+        {
             list = self.pair_local(x, list, self.machine.library)?;
         }
         Ok(list)
@@ -1113,9 +1114,9 @@ impl<T> Grift<T> {
         for native in Native::ALL {
             let found = self
                 .intern(native.name())
-                .and_then(|s| self.find(self.built_in, s))?;
-            let Some(Value::Operative(r)) = found else {
-                return Err(Error::new(K::TypeError, &[found.unwrap_or(Value::Inert)]));
+                .and_then(|s| self.value_of(self.built_in, s))?;
+            let Value::Operative(r) = found else {
+                return Err(type_error(found));
             };
             self.heap.install(r, Some(native))?;
         }
