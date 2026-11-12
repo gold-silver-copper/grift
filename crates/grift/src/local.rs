@@ -206,17 +206,10 @@ impl From<K> for Symbol {
 impl Error {
     /// An error with a copy of `values`; if even that copy can't be allocated, `out-of-memory`.
     pub fn new(kind: impl Into<Symbol>, values: &[Value]) -> Error {
-        let mut e = Error::oom();
-        if e.values.try_reserve_exact(values.len()).is_ok() {
-            e.began = Began::Program;
-            e.kind = kind.into();
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "reserved exactly in the condition"
-            )]
-            e.values.extend_from_slice(values);
+        match crate::collected(values.iter().copied()) {
+            Ok(values) => Error::from_parts(kind.into(), values, Trace::new()),
+            Err(refused) => refused,
         }
-        e
     }
 
     /// An error a program or host describes, from its parts.
