@@ -83,18 +83,6 @@ kinds! {
     Applicative(Value) Whole;
 }
 
-/// A pair the reader is still making: until it lets go, its rest and its origin may change. Only
-/// [`Heap::open`] makes one, and nothing turns a pair's [`Ref`] into one, so no pair changes once
-/// anything else has seen it.
-#[derive(Clone, Copy)]
-pub(crate) struct Open(Ref<kind::Pair>);
-
-impl Open {
-    pub(crate) fn pair(self) -> Ref<kind::Pair> {
-        self.0
-    }
-}
-
 /// A compound operative: its parameter tree, its context parameter, its body's forms, the context it
 /// was made in, how many bindings a call makes, and the native twin that runs it, for the few
 /// library forms that have one.
@@ -166,17 +154,6 @@ pub(crate) struct Origin {
     pub place: Option<(Symbol, u32)>,
     pub library: bool,
     pub outer: bool,
-}
-
-impl Origin {
-    /// A pair made where no source says, the library's if `library`.
-    pub(crate) fn new(library: bool) -> Origin {
-        Origin {
-            place: None,
-            library,
-            outer: false,
-        }
-    }
 }
 
 const NONE: u32 = u32::MAX;
@@ -347,11 +324,6 @@ impl Heap {
         self.alloc(T::object(holds))
     }
 
-    /// A new pair for the reader to finish.
-    pub fn open(&mut self, a: Value, origin: Origin) -> Result<Open, Error> {
-        self.make((a, Value::EmptyList, origin)).map(Open)
-    }
-
     /// A new symbol spelled `spelling`.
     pub fn name(&mut self, spelling: Box<str>) -> Result<Symbol, Error> {
         self.alloc::<()>(Object::Symbol(spelling))
@@ -432,20 +404,6 @@ impl Heap {
     #[inline]
     pub fn pair_at(&self, r: Ref<kind::Pair>) -> Result<(Value, Value, Origin), Error> {
         self.get(r).copied()
-    }
-
-    /// Sets the rest of a pair the reader is making.
-    pub fn set_rest(&mut self, p: Open, v: Value) -> Result<(), Error> {
-        self.get_mut(p.0)?.1 = v;
-        Ok(())
-    }
-
-    /// Says where the reader read a list whose first pair it is making, and whether it is an outer
-    /// form.
-    pub fn place(&mut self, p: Open, place: (Symbol, u32), outer: bool) -> Result<(), Error> {
-        let (_, _, origin) = self.get_mut(p.0)?;
-        (origin.place, origin.outer) = (Some(place), outer);
-        Ok(())
     }
 
     /// Flags a library operative as having a native twin, or as having none.

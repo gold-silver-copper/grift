@@ -1602,7 +1602,12 @@ impl<T> Grift<T> {
     /// combination being combined is, what the host makes is the program's, and the reader says
     /// whose text it reads.
     pub(crate) fn pair_local(&mut self, a: Value, b: Value, library: bool) -> Result<Value, Error> {
-        Ok(Value::Pair(self.heap.make((a, b, Origin::new(library)))?))
+        let origin = Origin {
+            place: None,
+            library,
+            outer: false,
+        };
+        Ok(Value::Pair(self.heap.make((a, b, origin))?))
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
