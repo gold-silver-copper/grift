@@ -167,6 +167,11 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
     s.push(g.interrupter());
     let e = g.evaluate(&mut s, "(stop-each)").unwrap_err();
     assert_eq!(kind(&g, &e), "interrupted");
+    // One taken between runs reaches the next when it may park, as any other.
+    s.push(g.interrupter());
+    let top = g.top_level();
+    let e = g.start_in(&mut s, &top, "s", "(stop-each)").unwrap_err();
+    assert_eq!(kind(&g, &e), "interrupted");
 }
 
 /// A text that doesn't read ends its run as every run ends: the machine clear, nothing of the
