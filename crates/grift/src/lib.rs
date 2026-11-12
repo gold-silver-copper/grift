@@ -462,7 +462,7 @@ impl<T> Grift<T> {
             let s = self.intern(p.name())?;
             let wrapped = self.heap.make(local::Value::Primitive(p))?;
             let v = local::Value::Applicative(wrapped);
-            self.bind_symbol(self.built_in, s, v)?;
+            self.heap.bind(self.built_in, s, v)?;
         }
         self.run_text(None, self.built_in, None, LIBRARY, true, None)?;
         self.install_natives()
@@ -630,7 +630,7 @@ impl<T> Grift<T> {
     pub fn define(&mut self, name: &str, v: Value) -> Result<(), Error> {
         let done = self.import(&v).and_then(|v| {
             let s = self.intern(name)?;
-            self.bind_symbol(self.top, s, v)
+            self.heap.bind(self.top, s, v)
         });
         self.out(done)
     }

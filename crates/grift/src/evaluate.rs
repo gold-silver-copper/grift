@@ -1213,7 +1213,7 @@ impl<T> Grift<T> {
                     return Err(type_error(bad));
                 };
                 match p {
-                    P::Unbind => Value::Boolean(self.heap.room_in(c, 0)?.remove(&s).is_some()),
+                    P::Unbind => Value::Boolean(self.heap.unbind(c, s)?),
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
@@ -1719,22 +1719,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut matched = Bindings::default();
         self.match_tree(&mut matched, tree, value)?;
-        let bindings = self.heap.room_in(c, matched.len())?;
-        #[expect(clippy::disallowed_methods, reason = "room_in reserved matched.len()")]
-        bindings.extend(matched);
-        Ok(())
-    }
-
-    /// Binds `s` in `context` itself, replacing an existing binding there.
-    pub(crate) fn bind_symbol(
-        &mut self,
-        context: Ref<Context>,
-        s: Symbol,
-        v: Value,
-    ) -> Result<(), Error> {
-        #[expect(clippy::disallowed_methods, reason = "room_in reserved 1")]
-        self.heap.room_in(context, 1)?.insert(s, v);
-        Ok(())
+        self.heap.bind_all(c, matched)
     }
 
     fn value_of(&self, context: Ref<Context>, s: Symbol) -> Result<Value, Error> {

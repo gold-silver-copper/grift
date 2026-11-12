@@ -98,7 +98,7 @@ impl<T> Grift<T> {
                 }
                 _ => meaning,
             };
-            self.bind_symbol(self.built_in, name, bound).unwrap();
+            self.heap.bind(self.built_in, name, bound).unwrap();
         }
         for native in Native::ALL {
             let name = self.intern(native.name()).unwrap();

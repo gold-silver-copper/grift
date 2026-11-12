@@ -363,9 +363,29 @@ impl Heap {
         Ok(Symbol(id))
     }
 
+    /// Binds `s` to `v` in context `r` itself, replacing a binding there.
+    pub fn bind(&mut self, r: Ref<kind::Context>, s: Symbol, v: Value) -> Result<(), Error> {
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved 1")]
+        self.room_in(r, 1)?.insert(s, v);
+        Ok(())
+    }
+
+    /// Binds each of `new` in context `r` itself: all of them, or with no room, none.
+    pub fn bind_all(&mut self, r: Ref<kind::Context>, new: Bindings) -> Result<(), Error> {
+        let bindings = self.room_in(r, new.len())?;
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved new.len()")]
+        bindings.extend(new);
+        Ok(())
+    }
+
+    /// Takes `s`'s binding out of context `r` itself: whether it had one.
+    pub fn unbind(&mut self, r: Ref<kind::Context>, s: Symbol) -> Result<bool, Error> {
+        Ok(self.room_in(r, 0)?.remove(&s).is_some())
+    }
+
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
-    pub fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
+    fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
         let bindings = match self.slots.get_mut(r.idx as usize) {
             Some(Slot {
                 generation,
