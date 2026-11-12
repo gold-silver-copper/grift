@@ -436,7 +436,8 @@ impl Default for Machine {
     }
 }
 
-/// That [`Grift::prepare`] came first: only it makes one.
+/// That [`Grift::prepare`] came first: only it makes one, and [`Control::begin`](crate::interrupt::Control::begin)
+/// takes it, so every run on the machine begins on a prepared heap.
 pub(crate) struct Prepared(());
 
 pub(crate) fn type_error(v: Value) -> Error {
@@ -793,7 +794,7 @@ impl<T> Grift<T> {
         self.combine(handler, operands, context)
     }
 
-    /// Every way into a run comes here first, as [`Grift::begin_run`] takes what this gives: as
+    /// Every way into a run comes here first, as beginning one takes what this gives: as
     /// the run may need slots before reaching the machine loop, collect first if due, or after a
     /// peak, with its checked inputs as roots.
     pub(crate) fn prepare(

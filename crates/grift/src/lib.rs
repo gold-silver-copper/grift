@@ -1056,12 +1056,12 @@ impl<T> Grift<T> {
     /// Begins a run, once nothing before it can refuse, which ends as the guard drops; `parks`
     /// says whether it may park. A host function, given a [`HostCall`], begins none; what a run
     /// left behind when a host function panicked is over, and its machine is cleared.
-    pub(crate) fn begin_run(&mut self, _: evaluate::Prepared, parks: bool) -> Run {
+    pub(crate) fn begin_run(&mut self, ready: evaluate::Prepared, parks: bool) -> Run {
         // Refused, this run goes without: an `out-of-memory` trace can miss places.
         let _ = self.spare.try_reserve_exact(SPARE);
         self.machine.clear();
         self.machine.may_park = parks;
-        Control::begin(&self.control)
+        Control::begin(&self.control, ready)
     }
 
     /// The context `v` is, or a `type-error`.

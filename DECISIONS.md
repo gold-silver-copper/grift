@@ -1910,3 +1910,10 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   `square-root` no longer reach for the native or quieten by hand to match bits no program sees. A host
   that takes a not-a-number out of a run gets whatever bits Rust left; `equal?` is unchanged (IEEE: a
   not-a-number equals nothing). Evidence: `floats_read_back_as_they_print`.
+- **G-189. Beginning a run on the machine takes the proof its heap was prepared** (amends G-182's "not done").
+  `Control::begin`, the one way to begin a run on the machine, takes the `Prepared` token that only
+  `prepare` makes, so "collect first if due" holds for any caller, not only `begin_run`. Host-side work
+  (`Control::host_run`: reading, printing, binding, which may join a run in progress) takes none: it runs
+  no machine, and a collection that is due waits for the next run on the machine. A text that doesn't read
+  now ends its run through `enter`, as every run does, so its machine is cleared (it kept `may_park` until
+  the next run). Evidence: `a_text_that_does_not_read_ends_its_run_clear`.
