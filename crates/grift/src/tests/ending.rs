@@ -174,15 +174,16 @@ fn a_handle_reaches_only_the_run_it_was_taken_for() {
     assert_eq!(kind(&g, &e), "interrupted");
 }
 
-/// A text that doesn't read ends its run as every run ends: the machine clear, nothing of the
-/// run left to say what the next may do.
+/// A text that doesn't read ends its run as every run ends: nothing of the run left to say what
+/// the next may do, so a plain evaluation after it still can't park.
 #[test]
 fn a_text_that_does_not_read_ends_its_run_clear() {
     let (mut g, _) = host();
     let top = g.top_level();
     let read = g.start_in(&mut g.interrupter(), &top, "bad.grift", "(");
     assert!(read.is_err());
-    assert!(!g.control.may_park());
+    let e = g.evaluate(&mut g.interrupter(), "(wait)").unwrap_err();
+    assert_eq!(kind(&g, &e), "cannot-park");
 }
 
 /// A host function's wrong count with no memory for the list of its arguments is `out-of-memory`,
