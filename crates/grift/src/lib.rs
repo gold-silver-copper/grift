@@ -16,7 +16,7 @@ mod read;
 )]
 mod tests;
 
-use heap::{Heap, Object};
+use heap::{Bindings, Heap, Ref, kind};
 use interrupt::{Control, Run};
 use local::{K, boxed, push};
 use std::collections::HashMap;
@@ -105,7 +105,7 @@ pub struct Symbol {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reference {
     owner: Owner,
-    local: heap::Reference,
+    local: Ref,
 }
 
 /// The interpreter a value belongs to: a number no other interpreter in the process has, counted
@@ -394,8 +394,8 @@ pub struct Grift<T = ()> {
     /// collected.
     symbols: HashMap<Box<str>, u32>,
     hosts: Vec<(local::Symbol, HostFunction<T>)>,
-    built_in: heap::Reference,
-    top: heap::Reference,
+    built_in: Ref<kind::Context>,
+    top: Ref<kind::Context>,
     /// The kept values and parked runs, and the first free entry.
     kept: Vec<Entry>,
     kept_free: Option<u32>,
@@ -425,8 +425,8 @@ impl<T> Grift<T> {
             heap: Heap::default(),
             symbols: HashMap::new(),
             hosts: Vec::new(),
-            built_in: heap::Reference::NONE,
-            top: heap::Reference::NONE,
+            built_in: Ref::NONE,
+            top: Ref::NONE,
             kept: Vec::new(),
             kept_free: None,
             parked_as: None,
@@ -444,12 +444,12 @@ impl<T> Grift<T> {
         for name in local::K_NAMES {
             self.intern(name)?;
         }
-        self.built_in = self.heap.context(None)?;
-        self.top = self.heap.context(Some(self.built_in))?;
+        self.built_in = self.heap.make((None, Bindings::default()))?;
+        self.top = self.heap.make((Some(self.built_in), Bindings::default()))?;
         for &p in evaluate::Primitive::ALL {
             let s = self.intern(p.name())?;
-            let wrapped = Object::Applicative(local::Value::Primitive(p));
-            let v = local::Value::Applicative(self.heap.alloc(wrapped)?);
+            let wrapped = self.heap.make(local::Value::Primitive(p))?;
+            let v = local::Value::Applicative(wrapped);
             self.bind_symbol(self.built_in, s, v)?;
         }
         self.run_text(None, self.built_in, None, LIBRARY, true, false)?;
@@ -527,13 +527,13 @@ impl<T> Grift<T> {
     fn run_text(
         &mut self,
         state: Option<&mut T>,
-        context: heap::Reference,
+        context: Ref<kind::Context>,
         source: Option<&str>,
         src: &str,
         library: bool,
         parks: bool,
     ) -> Result<local::Value, local::Error> {
-        let ready = self.prepare(std::iter::once(local::Value::Context(context)));
+        let ready = self.prepare(std::iter::once(local::Value::Context(context)), []);
         let source = source.map(|s| self.intern(s)).transpose()?;
         let run = self.begin_run(ready, parks);
         let forms = self.read_local(src, source, library)?;
@@ -570,8 +570,8 @@ impl<T> Grift<T> {
         let made = self.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
-            let host = Object::Applicative(local::Value::Host(local::Host(id)));
-            Ok(local::Value::Applicative(self.heap.alloc(host)?))
+            let host = self.heap.make(local::Value::Host(local::Host(id)))?;
+            Ok(local::Value::Applicative(host))
         });
         self.exported(made)
     }
@@ -582,7 +582,7 @@ impl<T> Grift<T> {
         let made = parent
             .map(|p| self.context_of(p))
             .transpose()
-            .and_then(|parent| self.heap.context(parent));
+            .and_then(|parent| self.heap.make((parent, Bindings::default())));
         self.exported(made.map(local::Value::Context))
     }
 
@@ -600,7 +600,7 @@ impl<T> Grift<T> {
     pub fn private_context(&mut self) -> Result<Value, Error> {
         let made = self
             .heap
-            .context(Some(self.built_in))
+            .make((Some(self.built_in), Bindings::default()))
             .map(local::Value::Context);
         self.exported(made)
     }
@@ -691,7 +691,7 @@ impl<T> Grift<T> {
 
     /// A new string holding a copy of `s`.
     pub fn string(&mut self, s: &str) -> Result<Value, Error> {
-        let made = boxed(s).and_then(|s| self.heap.alloc(Object::String(s)));
+        let made = boxed(s).and_then(|s| self.heap.make(s));
         self.exported(made.map(local::Value::String))
     }
 
@@ -753,10 +753,10 @@ impl<T> Grift<T> {
     pub fn as_pair(&self, v: &Value) -> Result<Option<(Value, Value)>, Error> {
         let p = self.import(v).and_then(|v| match v {
             #[expect(clippy::disallowed_methods, reason = "one pair for the host")]
-            local::Value::Pair(r) => self.pair_at(r).map(Some),
+            local::Value::Pair(r) => self.heap.pair_at(r).map(Some),
             _ => Ok(None),
         });
-        self.out(p.map(|p| p.map(|(a, b)| (self.export(a), self.export(b)))))
+        self.out(p.map(|p| p.map(|(a, b, _)| (self.export(a), self.export(b)))))
     }
 
     /// A new list of `values`, as `pair` builds one from its end.
@@ -905,7 +905,8 @@ impl<T> Grift<T> {
         let local::Value::Pair(r) = combination else {
             return None;
         };
-        let (source, line) = self.origin_at(r).ok()?.place?;
+        #[expect(clippy::disallowed_methods, reason = "one pair's origin")]
+        let (source, line) = self.heap.pair_at(r).ok()?.2.place?;
         Some((self.name(source), line))
     }
 
@@ -1009,7 +1010,7 @@ impl<T> Grift<T> {
             .try_reserve(1)
             .map_err(|_| local::Error::oom())?;
         // The index has room, so it changes only once the name has its slot.
-        let id = self.heap.alloc(Object::Symbol(spelling))?.idx;
+        let id = self.heap.name(spelling)?.0;
         #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.symbols.insert(key, id);
         Ok(local::Symbol(id))
@@ -1062,7 +1063,7 @@ impl<T> Grift<T> {
     }
 
     /// The context `v` is, or a `type-error`.
-    fn context_of(&self, v: &Value) -> Result<heap::Reference, local::Error> {
+    fn context_of(&self, v: &Value) -> Result<Ref<kind::Context>, local::Error> {
         context_kind(self.import(v)?)
     }
 
@@ -1080,15 +1081,6 @@ impl<T> Grift<T> {
     /// is ever stored, and a live object holds only live objects.
     pub(crate) fn import(&self, v: &Value) -> Result<local::Value, local::Error> {
         use local::Value as L;
-        // The object must be live and of the kind the variant says: a reference put in another
-        // variant is no value of this interpreter's.
-        let live = |r: &Reference, kind: fn(&Object) -> bool| {
-            self.owns(&r.owner)?;
-            match self.heap.get(r.local)? {
-                o if kind(o) => Ok(r.local),
-                _ => Err(local::Error::new(K::StaleValue, &[])),
-            }
-        };
         Ok(match v {
             Value::EmptyList => L::EmptyList,
             Value::Boolean(b) => L::Boolean(*b),
@@ -1097,24 +1089,27 @@ impl<T> Grift<T> {
             Value::Integer(n) => L::Integer(*n),
             Value::Float(f) => L::Float(*f),
             Value::Symbol(s) => L::Symbol(self.import_symbol(s)?),
-            Value::Pair(r) => L::Pair(live(r, |o| matches!(o, Object::Pair(..)))?),
-            Value::String(r) => L::String(live(r, |o| matches!(o, Object::String(_)))?),
-            Value::Bytes(r) => L::Bytes(live(r, |o| matches!(o, Object::Bytes(_)))?),
-            Value::Context(r) => L::Context(live(r, |o| matches!(o, Object::Context(..)))?),
+            Value::Pair(r) => L::Pair(self.live(r)?),
+            Value::String(r) => L::String(self.live(r)?),
+            Value::Bytes(r) => L::Bytes(self.live(r)?),
+            Value::Context(r) => L::Context(self.live(r)?),
             Value::Operative(Operative(kind)) => match kind {
-                OperativeKind::Compound(r) => {
-                    L::Operative(live(r, |o| matches!(o, Object::Operative(_)))?)
-                }
+                OperativeKind::Compound(r) => L::Operative(self.live(r)?),
                 OperativeKind::Primitive(p) => L::Primitive(*p),
                 OperativeKind::Host(owner, index) => {
                     self.owns(owner)?;
                     L::Host(local::Host(*index))
                 }
             },
-            Value::Applicative(r) => {
-                L::Applicative(live(r, |o| matches!(o, Object::Applicative(_)))?)
-            }
+            Value::Applicative(r) => L::Applicative(self.live(r)?),
         })
+    }
+
+    /// `r` as this interpreter's, naming a live object of the kind the variant it came in says: a
+    /// reference put in another variant is no value of this interpreter's.
+    fn live<O: heap::Kind>(&self, r: &Reference) -> Result<Ref<O>, local::Error> {
+        self.owns(&r.owner)?;
+        self.heap.kind(r.local)
     }
 
     fn import_symbol(&self, s: &Symbol) -> Result<local::Symbol, local::Error> {
@@ -1155,16 +1150,15 @@ impl<T> Grift<T> {
             .try_for_each(|v| self.import(v).map(drop))?;
         self.combiner_of(f)?;
         // Validation allocates nothing. Root every checked reference before the argument
-        // buffer needs memory; marking follows the reference, independent of its value kind.
-        let roots =
+        // buffer needs memory; marking follows the reference, whatever its object's kind.
+        let held =
             arguments.iter().filter_map(|v| match v {
                 Value::Pair(r)
                 | Value::String(r)
                 | Value::Bytes(r)
                 | Value::Context(r)
                 | Value::Operative(Operative(OperativeKind::Compound(r)))
-                | Value::Applicative(r) => Some(local::Value::Pair(r.local)),
-                Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
+                | Value::Applicative(r) => Some(r.local),
                 // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
                 Value::EmptyList
                 | Value::Boolean(_)
@@ -1172,11 +1166,16 @@ impl<T> Grift<T> {
                 | Value::Ignore
                 | Value::Integer(_)
                 | Value::Float(_)
+                | Value::Symbol(_)
                 | Value::Operative(Operative(
                     OperativeKind::Primitive(_) | OperativeKind::Host(..),
                 )) => None,
             });
-        Ok((f, self.prepare(std::iter::once(f).chain(roots))))
+        let names = arguments.iter().filter_map(|v| match v {
+            Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
+            _ => None,
+        });
+        Ok((f, self.prepare(std::iter::once(f).chain(names), held)))
     }
 
     fn imported(&self, values: &[Value]) -> Result<Vec<local::Value>, local::Error> {
@@ -1203,12 +1202,12 @@ impl<T> Grift<T> {
             L::Float(f) => Value::Float(f),
             L::Primitive(p) => operative(OperativeKind::Primitive(p)),
             L::Symbol(s) => Value::Symbol(self.export_symbol(s)),
-            L::Pair(r) => Value::Pair(reference(r)),
-            L::String(r) => Value::String(reference(r)),
-            L::Bytes(r) => Value::Bytes(reference(r)),
-            L::Context(r) => Value::Context(reference(r)),
-            L::Operative(r) => operative(OperativeKind::Compound(reference(r))),
-            L::Applicative(r) => Value::Applicative(reference(r)),
+            L::Pair(r) => Value::Pair(reference(r.untyped())),
+            L::String(r) => Value::String(reference(r.untyped())),
+            L::Bytes(r) => Value::Bytes(reference(r.untyped())),
+            L::Context(r) => Value::Context(reference(r.untyped())),
+            L::Operative(r) => operative(OperativeKind::Compound(reference(r.untyped()))),
+            L::Applicative(r) => Value::Applicative(reference(r.untyped())),
             L::Host(h) => operative(OperativeKind::Host(self.owner, h.0)),
         }
     }
@@ -1262,7 +1261,7 @@ impl<T> Grift<T> {
 }
 
 /// The context `v` is, or a `type-error`.
-fn context_kind(v: local::Value) -> Result<heap::Reference, local::Error> {
+fn context_kind(v: local::Value) -> Result<Ref<kind::Context>, local::Error> {
     match v {
         local::Value::Context(c) => Ok(c),
         v => Err(evaluate::type_error(v)),

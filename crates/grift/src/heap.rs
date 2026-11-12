@@ -7,20 +7,101 @@ use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::marker::PhantomData;
 
-/// A reference to a heap slot. The generation tells a live object from a reclaimed one.
+/// A reference to a heap slot: the slot, the generation that tells a live object from a reclaimed
+/// one, and the kind of object it names, one of [`kind`]'s, or `()` for one a host holds, whose
+/// kind [`Heap::kind`] checks as it comes in. Only the heap makes one of a kind, from an object of
+/// it, so a value's tag and its object agree, and a reader's argument says which kind it reads.
 #[derive(Clone, Copy, Debug, Eq)]
 #[cfg_attr(not(test), derive(PartialEq))]
-pub(crate) struct Reference {
-    pub idx: u32,
-    pub generation: u32,
+pub(crate) struct Ref<T = ()> {
+    idx: u32,
+    generation: u32,
+    kind: PhantomData<T>,
 }
 
 #[cfg(test)]
-impl PartialEq for Reference {
-    fn eq(&self, other: &Reference) -> bool {
+impl<T> PartialEq for Ref<T> {
+    fn eq(&self, other: &Ref<T>) -> bool {
         crate::local::COMPARED.with(|n| n.set(n.get() + 1));
         self.idx == other.idx && self.generation == other.generation
+    }
+}
+
+/// Sealed: only this file says which types are kinds, and which kinds are read whole.
+mod sealed {
+    pub trait Kind {}
+    pub trait Whole {}
+}
+
+/// A kind of object: what its variant of [`Object`] holds.
+pub(crate) trait Kind: Copy + sealed::Kind {
+    type Holds;
+    fn object(holds: Self::Holds) -> Object;
+    fn of(obj: &Object) -> Option<&Self::Holds>;
+    fn of_mut(obj: &mut Object) -> Option<&mut Self::Holds>;
+}
+
+/// A kind read whole: every kind but a pair, which only [`Heap::pair_at`] reads.
+pub(crate) trait Whole: Kind + sealed::Whole {}
+
+macro_rules! kinds {
+    ($($kind:ident($holds:ty) $($whole:ident)?;)*) => {
+        /// One type per kind of object, named for its variant of [`Object`] and of `Value`.
+        pub(crate) mod kind {
+            use super::*;
+            $(
+                #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+                pub(crate) enum $kind {}
+
+                impl Kind for $kind {
+                    type Holds = $holds;
+                    fn object(holds: $holds) -> Object {
+                        Object::$kind(holds)
+                    }
+                    fn of(obj: &Object) -> Option<&$holds> {
+                        match obj {
+                            Object::$kind(holds) => Some(holds),
+                            _ => None,
+                        }
+                    }
+                    fn of_mut(obj: &mut Object) -> Option<&mut $holds> {
+                        match obj {
+                            Object::$kind(holds) => Some(holds),
+                            _ => None,
+                        }
+                    }
+                }
+                impl sealed::Kind for $kind {}
+                $(
+                    impl sealed::$whole for $kind {}
+                    impl $whole for $kind {}
+                )?
+            )*
+        }
+    };
+}
+
+kinds! {
+    Pair((Value, Value, Origin));
+    String(Box<str>) Whole;
+    Bytes(Vec<u8>) Whole;
+    Context((Option<Ref<Context>>, Bindings)) Whole;
+    // Inside `kind`, where `Operative` is the kind.
+    Operative(super::Operative) Whole;
+    Applicative(Value) Whole;
+}
+
+/// A string's text, lent out by [`Heap::take_text`]: only it, and only to its own string, can
+/// [`Heap::put_text`] put back.
+pub(crate) struct Lent(Ref<kind::String>, Box<str>);
+
+impl std::ops::Deref for Lent {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.1
     }
 }
 
@@ -32,7 +113,7 @@ pub(crate) struct Operative {
     pub parameters: Value,
     pub context_parameter: Option<Symbol>,
     pub body: Value,
-    pub context: Reference,
+    pub context: Ref<kind::Context>,
     pub size: u32,
     pub native: Option<Native>,
 }
@@ -40,13 +121,13 @@ pub(crate) struct Operative {
 pub(crate) enum Object {
     /// A free slot and the next free one.
     Free(u32),
-    Pair(Value, Value, Origin),
+    Pair((Value, Value, Origin)),
     String(Box<str>),
     /// A symbol's name. Symbols are compared by slot, so a name lives here once while anything
     /// refers to it, and is collected like any value when nothing does.
     Symbol(Box<str>),
     /// An optional parent and the bindings.
-    Context(Option<Reference>, Bindings),
+    Context((Option<Ref<kind::Context>>, Bindings)),
     Operative(Operative),
     Applicative(Value),
     Bytes(Vec<u8>),
@@ -124,7 +205,7 @@ fn weight(obj: &Object) -> usize {
     match obj {
         Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
         Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
-        Object::Context(_, b) => 1 + bindings_weight(b),
+        Object::Context((_, b)) => 1 + bindings_weight(b),
         _ => 1,
     }
 }
@@ -166,17 +247,46 @@ impl Default for Heap {
     }
 }
 
-impl Reference {
+impl<T> Ref<T> {
     /// No object: a reference no slot has.
-    pub(crate) const NONE: Reference = Reference {
+    pub(crate) const NONE: Ref<T> = Ref {
         idx: NONE,
         generation: 0,
+        kind: PhantomData,
     };
+
+    /// Its slot's number, which tells one live object from another.
+    pub(crate) fn slot(self) -> u32 {
+        self.idx
+    }
+
+    /// The same reference, as of kind `U`: only the heap says which kind a slot holds.
+    fn cast<U>(self) -> Ref<U> {
+        Ref {
+            idx: self.idx,
+            generation: self.generation,
+            kind: PhantomData,
+        }
+    }
+
+    /// The same reference, of no kind.
+    pub(crate) fn untyped(self) -> Ref {
+        self.cast()
+    }
+}
+
+/// A slot that holds no object of the kind asked for: reclaimed, or never one. One answer, the
+/// host's `stale-value`, with no values: the value would name what isn't there. Cold: the machine
+/// never meets one, so its reads keep one way out.
+#[cold]
+fn stale() -> Error {
+    Error::new(K::StaleValue, &[])
 }
 
 impl Heap {
+    /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
     #[inline]
-    pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
+    fn alloc<T>(&mut self, obj: Object) -> Result<Ref<T>, Error> {
         debug_assert!(weight(&obj) > 0, "an object weighs at least its own slot");
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
@@ -201,9 +311,10 @@ impl Heap {
         {
             self.free = next;
             slot.obj = obj;
-            return Ok(Reference {
+            return Ok(Ref {
                 idx,
                 generation: slot.generation,
+                kind: PhantomData,
             });
         }
         #[cfg(test)]
@@ -224,18 +335,35 @@ impl Heap {
             obj,
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
-        Ok(Reference { idx, generation })
+        Ok(Ref {
+            idx,
+            generation,
+            kind: PhantomData,
+        })
+    }
+
+    /// A new object of kind `T`.
+    #[inline]
+    pub fn make<T: Kind>(&mut self, holds: T::Holds) -> Result<Ref<T>, Error> {
+        self.alloc(T::object(holds))
+    }
+
+    /// A new symbol spelled `spelling`.
+    pub fn name(&mut self, spelling: Box<str>) -> Result<Symbol, Error> {
+        self.alloc::<()>(Object::Symbol(spelling))
+            .map(|r| Symbol(r.idx))
     }
 
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
-    pub fn room_in(&mut self, r: Reference, more: usize) -> Result<&mut Bindings, Error> {
+    pub fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
         let bindings = match self.slots.get_mut(r.idx as usize) {
-            Some(s) if s.generation == r.generation => match &mut s.obj {
-                Object::Context(_, bindings) => bindings,
-                _ => return Err(Error::new(K::StaleValue, &[Value::Context(r)])),
-            },
-            _ => return Err(Error::new(K::StaleValue, &[])),
+            Some(Slot {
+                generation,
+                obj: Object::Context((_, bindings)),
+                ..
+            }) if *generation == r.generation => bindings,
+            _ => return Err(stale()),
         };
         let before = bindings_weight(bindings);
         bindings.try_reserve(more).map_err(|_| Error::oom())?;
@@ -260,12 +388,6 @@ impl Heap {
         }
     }
 
-    /// A new empty context.
-    #[inline]
-    pub fn context(&mut self, parent: Option<Reference>) -> Result<Reference, Error> {
-        self.alloc(Object::Context(parent, Bindings::default()))
-    }
-
     /// No room for an object: collection comes next, at the machine's next safe point or as a
     /// host's next run begins.
     #[cold]
@@ -274,20 +396,63 @@ impl Heap {
         Error::oom()
     }
 
+    /// What the object `r` names holds, if its slot still holds one of its kind.
     #[inline]
-    pub fn get(&self, r: Reference) -> Result<&Object, Error> {
+    fn get<T: Kind>(&self, r: Ref<T>) -> Result<&T::Holds, Error> {
         match self.slots.get(r.idx as usize) {
-            Some(s) if s.generation == r.generation => Ok(&s.obj),
-            _ => Err(Error::new(K::StaleValue, &[])),
+            Some(s) if s.generation == r.generation => match T::of(&s.obj) {
+                Some(holds) => Ok(holds),
+                None => Err(stale()),
+            },
+            _ => Err(stale()),
         }
     }
 
-    #[inline]
-    pub fn get_mut(&mut self, r: Reference) -> Result<&mut Object, Error> {
+    fn get_mut<T: Kind>(&mut self, r: Ref<T>) -> Result<&mut T::Holds, Error> {
         match self.slots.get_mut(r.idx as usize) {
-            Some(s) if s.generation == r.generation => Ok(&mut s.obj),
-            _ => Err(Error::new(K::StaleValue, &[])),
+            Some(s) if s.generation == r.generation => T::of_mut(&mut s.obj).ok_or_else(stale),
+            _ => Err(stale()),
         }
+    }
+
+    /// A host's reference as one to an object of kind `T`, if it still names one.
+    pub fn kind<T: Kind>(&self, r: Ref) -> Result<Ref<T>, Error> {
+        self.get(r.cast::<T>()).map(|_| r.cast())
+    }
+
+    /// What an object of any kind but a pair holds.
+    #[inline]
+    pub fn read<T: Whole>(&self, r: Ref<T>) -> Result<&T::Holds, Error> {
+        self.get(r)
+    }
+
+    /// A pair's first, its rest and its origin. A walk along a list goes through `Items`, which a
+    /// stop ends (`clippy.toml`).
+    #[inline]
+    pub fn pair_at(&self, r: Ref<kind::Pair>) -> Result<(Value, Value, Origin), Error> {
+        self.get(r).copied()
+    }
+
+    /// Flags a library operative as having a native twin, or as having none.
+    pub fn install(
+        &mut self,
+        r: Ref<kind::Operative>,
+        native: Option<Native>,
+    ) -> Result<(), Error> {
+        self.get_mut(r)?.native = native;
+        Ok(())
+    }
+
+    /// Takes a string's text out, leaving it empty until [`Heap::put_text`] puts it back: lent so,
+    /// it needs no copy.
+    pub fn take_text(&mut self, r: Ref<kind::String>) -> Result<Lent, Error> {
+        self.get_mut(r).map(|s| Lent(r, std::mem::take(s)))
+    }
+
+    /// Puts lent text back where it came from: the only text a string can be given.
+    pub fn put_text(&mut self, Lent(r, text): Lent) -> Result<(), Error> {
+        *self.get_mut(r)? = text;
+        Ok(())
     }
 
     /// The name in symbol slot `id` and its generation, if the slot holds a name.
@@ -325,12 +490,17 @@ impl Heap {
         self.until_gc.set(0);
     }
 
-    /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
-    /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
-    /// reserved its entry as it was made. `walked` is how much outside the heap the collection
-    /// walks too. The free list is made again from the bottom up, so the lowest slots are reused
-    /// first and the top empties, to be given back.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, walked: usize) {
+    /// Marks everything reachable from `roots` and the host's `held`, and frees the rest, with no
+    /// memory of its own: a slot goes on the mark stack only as it is first marked, so once at
+    /// most, and every slot reserved its entry as it was made. `walked` is how much outside the
+    /// heap the collection walks too. The free list is made again from the bottom up, so the
+    /// lowest slots are reused first and the top empties, to be given back.
+    pub fn collect(
+        &mut self,
+        roots: impl Iterator<Item = Value>,
+        held: impl Iterator<Item = Ref>,
+        walked: usize,
+    ) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
         #[cfg(test)]
@@ -339,7 +509,7 @@ impl Heap {
             // Marking walks each context's bindings too.
             let bindings: usize = (self.slots.iter())
                 .map(|s| match &s.obj {
-                    Object::Context(_, b) => bindings_weight(b),
+                    Object::Context((_, b)) => bindings_weight(b),
                     _ => 0,
                 })
                 .sum();
@@ -374,6 +544,7 @@ impl Heap {
         #[cfg(test)]
         let room = marks.capacity();
         roots.for_each(|v| mark(slots, marks, v));
+        held.for_each(|r| hold(slots, marks, r));
         while let Some(idx) = marks.pop() {
             if let Some(s) = slots.get(idx as usize) {
                 children(&s.obj, |v| mark(slots, marks, v));
@@ -508,12 +679,12 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
             }
             return;
         }
-        Value::Pair(r)
-        | Value::String(r)
-        | Value::Bytes(r)
-        | Value::Context(r)
-        | Value::Operative(r)
-        | Value::Applicative(r) => r,
+        Value::Pair(r) => r.untyped(),
+        Value::String(r) => r.untyped(),
+        Value::Bytes(r) => r.untyped(),
+        Value::Context(r) => r.untyped(),
+        Value::Operative(r) => r.untyped(),
+        Value::Applicative(r) => r.untyped(),
         // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
         Value::EmptyList
         | Value::Boolean(_)
@@ -524,6 +695,12 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
         | Value::Primitive(_)
         | Value::Host(_) => return,
     };
+    hold(slots, marks, r);
+}
+
+/// Puts the object `r` names on the mark stack, unless a collection already reached it: a value's,
+/// or one a host holds, whose kind marking needn't know.
+fn hold(slots: &[Slot], marks: &mut Vec<u32>, r: Ref) {
     if let Some(s) = slots.get(r.idx as usize)
         && s.generation == r.generation
         && !s.marked.replace(true)
@@ -540,14 +717,14 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
 fn children(obj: &Object, mut f: impl FnMut(Value)) {
     match obj {
         Object::Free(_) | Object::String(_) | Object::Symbol(_) | Object::Bytes(_) => {}
-        Object::Pair(a, d, origin) => {
+        Object::Pair((a, d, origin)) => {
             if let Some((source, _)) = origin.place {
                 f(Value::Symbol(source));
             }
             f(*a);
             f(*d);
         }
-        Object::Context(parent, bindings) => {
+        Object::Context((parent, bindings)) => {
             if let Some(p) = parent {
                 f(Value::Context(*p));
             }

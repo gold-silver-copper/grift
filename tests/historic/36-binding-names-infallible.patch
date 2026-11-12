@@ -1,9 +1,11 @@
---- a/crates/grift/src/evaluate.rs
-+++ b/crates/grift/src/evaluate.rs
-@@ -1665,7 +1665,7 @@
+diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
+index aeb0438..205b6fd 100644
+--- i/crates/grift/src/evaluate.rs
++++ w/crates/grift/src/evaluate.rs
+@@ -1727,7 +1727,7 @@ impl<T> Grift<T> {
      /// The symbols bound in `context` itself, sorted by name.
-     pub(crate) fn names_of(&self, context: Reference) -> Result<Vec<Symbol>, Error> {
-         let (_, bindings) = self.context_at(context)?;
+     pub(crate) fn names_of(&self, context: Ref<Context>) -> Result<Vec<Symbol>, Error> {
+         let (_, bindings) = self.heap.read(context)?;
 -        let mut names = collected(bindings.keys().copied())?;
 +        let mut names: Vec<_> = bindings.keys().copied().collect();
          names.sort_unstable_by(|&a, &b| self.name(a).cmp(self.name(b)));

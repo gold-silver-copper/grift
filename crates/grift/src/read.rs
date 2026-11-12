@@ -1,18 +1,19 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
 use crate::evaluate::integer;
-use crate::heap::{Object, Reference};
+use crate::heap::Origin;
 use crate::interrupt::Control;
 use crate::local::{Error, K, Symbol, Value, push};
 use crate::{Grift, WALK_CHECK};
 use std::ops::Range;
 use std::sync::Arc;
 
-/// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
-/// and line of its `(`. A `#bytes(` literal is a list whose elements go in `bytes` instead.
+/// A list being read: where its items begin on the reader's stack of items, its tail after a `.`,
+/// where a dotted tail stands, and the offset and line of its `(`. A `#bytes(` literal is a list
+/// whose elements go in `bytes` instead. Its pairs are made as it closes, so none ever changes.
 struct List {
-    head: Value,
-    last: Value,
+    from: usize,
+    tail: Value,
     dot: Dot,
     start: usize,
     line: u32,
@@ -20,10 +21,10 @@ struct List {
 }
 
 impl List {
-    fn new(start: usize, line: u32) -> List {
+    fn new(from: usize, start: usize, line: u32) -> List {
         List {
-            head: Value::EmptyList,
-            last: Value::EmptyList,
+            from,
+            tail: Value::EmptyList,
             dot: Dot::No,
             start,
             line,
@@ -146,7 +147,7 @@ impl<T> Grift<T> {
         source: Option<Symbol>,
         library: bool,
     ) -> Result<Value, Error> {
-        let mut forms = List::new(0, 1);
+        let mut forms = Vec::new();
         let (mut at, mut line, mut walked) = (0, 1, 0);
         while let Some((form, place, after)) = self
             .read_form(src, at, line, source, &mut walked, library)
@@ -160,10 +161,17 @@ impl<T> Grift<T> {
                 e
             })?
         {
-            self.add(&mut forms, form, library)?;
+            push(&mut forms, form)?;
             (at, line) = (place.end, after);
         }
-        Ok(forms.head)
+        self.close(
+            &mut forms,
+            &List::new(0, 0, 1),
+            None,
+            false,
+            library,
+            &mut walked,
+        )
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
@@ -188,7 +196,7 @@ impl<T> Grift<T> {
         };
         cur.skip_space()?;
         let start = cur.at;
-        let mut open: Vec<List> = Vec::new();
+        let (mut open, mut items): (Vec<List>, _) = (Vec::new(), Vec::new());
         loop {
             cur.skip_space()?;
             let begin = cur.at;
@@ -201,7 +209,7 @@ impl<T> Grift<T> {
             };
             let datum = match c {
                 '(' => {
-                    push(&mut open, List::new(begin, cur.line))?;
+                    push(&mut open, List::new(items.len(), begin, cur.line))?;
                     continue;
                 }
                 ')' => match open.pop() {
@@ -209,13 +217,9 @@ impl<T> Grift<T> {
                         bytes: Some(bytes), ..
                     }) => self.bytes_local(bytes)?,
                     Some(list) if list.dot != Dot::Tail => {
-                        if let (Some(source), Value::Pair(r)) = (source, list.head)
-                            && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
-                        {
-                            origin.place = Some((source, list.line));
-                            origin.outer = open.is_empty();
-                        }
-                        list.head
+                        let place = source.map(|s| (s, list.line));
+                        let outer = open.is_empty();
+                        self.close(&mut items, &list, place, outer, library, cur.walked)?
                     }
                     Some(_) => return Err(fail(K::MisplacedDot)),
                     None => return Err(fail(K::UnmatchedParenthesis)),
@@ -228,7 +232,7 @@ impl<T> Grift<T> {
                     let token = src.get(begin..cur.at).unwrap_or_default();
                     if token == "." {
                         match open.last_mut() {
-                            Some(list) if list.dot == Dot::No && list.last != Value::EmptyList => {
+                            Some(list) if list.dot == Dot::No && items.len() > list.from => {
                                 list.dot = Dot::Tail;
                                 continue;
                             }
@@ -238,7 +242,7 @@ impl<T> Grift<T> {
                     if token == "#bytes" && cur.peek() == Some('(') {
                         let list = List {
                             bytes: Some(Vec::new()),
-                            ..List::new(cur.at, cur.line)
+                            ..List::new(items.len(), cur.at, cur.line)
                         };
                         push(&mut open, list)?;
                         cur.next()?;
@@ -261,35 +265,39 @@ impl<T> Grift<T> {
                     };
                     push(bytes, byte.ok_or_else(|| fail(K::BadByte))?)?;
                 }
-                None => self.add(list, datum, library)?,
+                None if list.dot == Dot::Tail => (list.tail, list.dot) = (datum, Dot::Done),
+                None => push(&mut items, datum)?,
             }
         }
     }
 
-    /// Adds `datum` to the end of a list being read: an element, or its tail after a `.`.
-    fn add(&mut self, list: &mut List, datum: Value, library: bool) -> Result<(), Error> {
-        if list.dot == Dot::Tail {
-            if let Value::Pair(r) = list.last {
-                self.set_rest(r, datum)?;
+    /// The pairs of `list`, its items the last of `items`, which it takes, ending in its tail. Under
+    /// a source name its first pair says where it was read, and whether it is an outer form. Each
+    /// pair is a step of the walk `walked`, as each byte read is, so a stop ends a long list's too.
+    fn close(
+        &mut self,
+        items: &mut Vec<Value>,
+        list: &List,
+        place: Option<(Symbol, u32)>,
+        outer: bool,
+        library: bool,
+        walked: &mut usize,
+    ) -> Result<Value, Error> {
+        let mut v = list.tail;
+        for (i, &x) in items.iter().enumerate().skip(list.from).rev() {
+            if self.walk_stopped(walked) {
+                return Err(Error::interrupted());
             }
-            list.dot = Dot::Done;
-            return Ok(());
+            let first = i == list.from;
+            let origin = Origin {
+                place: place.filter(|_| first),
+                library,
+                outer: outer && first && place.is_some(),
+            };
+            v = Value::Pair(self.heap.make((x, v, origin))?);
         }
-        let pair = self.pair_local(datum, Value::EmptyList, library)?;
-        match list.last {
-            Value::Pair(r) => self.set_rest(r, pair)?,
-            _ => list.head = pair,
-        }
-        list.last = pair;
-        Ok(())
-    }
-
-    /// Sets the rest of a pair the reader made and nobody else has seen yet.
-    fn set_rest(&mut self, r: Reference, v: Value) -> Result<(), Error> {
-        if let Object::Pair(_, d, _) = self.heap.get_mut(r)? {
-            *d = v;
-        }
-        Ok(())
+        items.truncate(list.from);
+        Ok(v)
     }
 
     /// An atom: a constant, a number or a symbol. `fail` makes the error for a token that is none

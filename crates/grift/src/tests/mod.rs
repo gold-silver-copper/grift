@@ -11,7 +11,7 @@ mod family;
 mod parked;
 
 use crate::evaluate::Primitive;
-use crate::heap::{Bindings, Object};
+use crate::heap::Bindings;
 use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKind, Value, local};
 
 /// The grift definitions of the native primitives.
@@ -55,8 +55,7 @@ impl<T> Grift<T> {
     /// where the library looks it up, wrapped if the native is, and no library form runs a native
     /// twin. As the library's own code, what this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
-        let here = Object::Context(Some(self.built_in), Bindings::default());
-        let here = self.heap.alloc(here).unwrap();
+        let here = (self.heap.make((Some(self.built_in), Bindings::default()))).unwrap();
         self.run_text(None, here, None, MEANINGS, true, false)
             .unwrap();
         let name = self.intern("meanings").unwrap();
@@ -67,9 +66,9 @@ impl<T> Grift<T> {
             let meaning = self.find(meanings, name).unwrap().unwrap();
             let native = self.find(self.built_in, name).unwrap();
             let bound = match native {
-                Some(local::Value::Applicative(_)) => local::Value::Applicative(
-                    self.heap.alloc(Object::Applicative(meaning)).unwrap(),
-                ),
+                Some(local::Value::Applicative(_)) => {
+                    local::Value::Applicative(self.heap.make(meaning).unwrap())
+                }
                 _ => meaning,
             };
             self.bind_symbol(self.built_in, name, bound).unwrap();
@@ -80,16 +79,14 @@ impl<T> Grift<T> {
             else {
                 panic!("the library defines if! and sequence! as operatives");
             };
-            if let Object::Operative(op) = self.heap.get_mut(form).unwrap() {
-                op.native = None;
-            }
+            self.heap.install(form, None).unwrap();
         }
     }
 
     /// The combiner under `v` if it is an applicative, else `v`.
     fn underlying(&self, v: &Value) -> Value {
         match self.import(v).unwrap() {
-            local::Value::Applicative(r) => self.export(self.unwrapped(r).unwrap()),
+            local::Value::Applicative(r) => self.export(*self.heap.read(r).unwrap()),
             _ => *v,
         }
     }
@@ -106,7 +103,7 @@ impl<T> Grift<T> {
             return false;
         };
         let definition = match found {
-            local::Value::Applicative(r) => self.unwrapped(r).unwrap(),
+            local::Value::Applicative(r) => *self.heap.read(r).unwrap(),
             other => other,
         };
         definition == self.import(v).unwrap()
@@ -1757,4 +1754,21 @@ fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
         .unwrap_err();
     g.heap.probe.stress = false;
     assert_eq!(g.symbol_name(&e.kind).unwrap(), "pending-kind");
+}
+
+/// The reader makes a list's pairs as the list closes, and they are steps of its walk as the bytes
+/// are: in a text too short for its bytes alone to reach a check, they reach one, and the stop ends
+/// the read.
+#[test]
+fn a_stop_ends_the_pairs_of_a_list_being_read() {
+    fn reads(g: &mut HostCall<()>, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+        const ITEMS: usize = crate::WALK_CHECK * 2 / 5;
+        assert!(g.interrupter().stop(), "a run to stop");
+        let read = g.read(&format!("({})", "a ".repeat(ITEMS)));
+        assert_eq!(g.symbol_name(&read.unwrap_err().kind)?, "interrupted");
+        Ok(Answer::Now(Value::Inert))
+    }
+    let mut g = Grift::new().unwrap();
+    define(&mut g, "reads", reads);
+    let _ = g.evaluate(&mut (), "(reads)");
 }
