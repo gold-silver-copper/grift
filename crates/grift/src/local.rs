@@ -163,11 +163,6 @@ impl Trace {
     pub fn roots(&self) -> impl Iterator<Item = Value> {
         std::iter::once(self.shared).chain(self.added.iter().copied())
     }
-
-    /// How many objects it counts as outside the heap, for when to collect.
-    pub fn weight(&self) -> usize {
-        1 + self.added.len()
-    }
 }
 
 /// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core

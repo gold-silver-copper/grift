@@ -170,9 +170,9 @@ pub(crate) struct Origin {
 const NONE: u32 = u32::MAX;
 
 /// A collection pays for itself: the next one starts once as much was allocated as the largest part
-/// of what this one walked, at least this much. It walks what survived, the roots outside the heap
-/// (the running machine, the kept table and its parked runs) and every slot, so the next waits for
-/// the largest of those three, the slots counted as half the free ones, so it walks at most four
+/// of what this one walked, at least this much. It walks what survived, each root outside the heap
+/// (the running machine's values, the kept table's entries and its parked runs', the host
+/// functions' and known names) and every slot, so the next waits for the largest of those three, the slots counted as half the free ones, so it walks at most four
 /// times what was allocated. The heap stays within about twice the larger of the live data and
 /// those roots. Free slots at the top, past the room the next collection waits for, are given back
 /// when they are a third of all. New objects take the lowest free slots, so the newest live ones,
@@ -481,19 +481,27 @@ impl Heap {
 
     /// Marks everything reachable from `roots` and the host's `held`, and frees the rest, with no
     /// memory of its own: a slot goes on the mark stack only as it is first marked, so once at
-    /// most, and every slot reserved its entry as it was made. `walked` is how much outside the
-    /// heap the collection walks too. The free list is made again from the bottom up, so the
-    /// lowest slots are reused first and the top empties, to be given back.
-    pub fn collect(
-        &mut self,
-        roots: impl Iterator<Item = Value>,
-        held: impl Iterator<Item = Ref>,
-        walked: usize,
-    ) {
+    /// most, and every slot reserved its entry as it was made. Each root and held reference is a
+    /// step of the walk outside the heap, counted as it is marked, so what pacing pays for is what
+    /// was walked. The free list is made again from the bottom up, so the lowest slots are reused
+    /// first and the top empties, to be given back.
+    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, held: impl Iterator<Item = Ref>) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
+        let slots = &self.slots;
+        let marks = &mut self.marks;
+        #[cfg(test)]
+        let room = marks.capacity();
+        let walked = roots.map(|v| mark(slots, marks, v)).count()
+            + held.map(|r| hold(slots, marks, r)).count();
+        while let Some(idx) = marks.pop() {
+            if let Some(s) = slots.get(idx as usize) {
+                children(&s.obj, |v| mark(slots, marks, v));
+            }
+        }
         #[cfg(test)]
         {
+            assert_eq!(marks.capacity(), room, "marking grew the mark stack");
             self.probe.collections += 1;
             // Marking walks each context's bindings too.
             let bindings: usize = (self.slots.iter())
@@ -528,19 +536,6 @@ impl Heap {
             }
             self.probe.paced = ([*last, self.probe.work.0], walks);
         }
-        let slots = &self.slots;
-        let marks = &mut self.marks;
-        #[cfg(test)]
-        let room = marks.capacity();
-        roots.for_each(|v| mark(slots, marks, v));
-        held.for_each(|r| hold(slots, marks, r));
-        while let Some(idx) = marks.pop() {
-            if let Some(s) = slots.get(idx as usize) {
-                children(&s.obj, |v| mark(slots, marks, v));
-            }
-        }
-        #[cfg(test)]
-        assert_eq!(marks.capacity(), room, "marking grew the mark stack");
         let (mut live, mut free, mut top) = (0usize, 0usize, None);
         // Each free slot is linked to from the one below it, so the list runs from the bottom up.
         let mut tail = &mut self.free;
@@ -782,6 +777,8 @@ mod probe {
         pub refused: usize,
         /// Collections so far.
         pub collections: usize,
+        /// Steps the machine took, for tests of what a form costs.
+        pub steps: u64,
         /// Weight allocated, and slots and roots outside the heap that collections walked, so far.
         pub work: (usize, usize),
         /// `work.0` at the last two collections, and what the last walked.

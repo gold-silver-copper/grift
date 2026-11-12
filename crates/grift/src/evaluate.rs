@@ -356,65 +356,81 @@ pub(crate) struct Machine {
     /// The trace the last handler got, and its combinations: raising that trace again takes them
     /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
     handed: Option<(Value, Seen)>,
-    /// Steps taken, for tests of what a form costs.
-    #[cfg(test)]
-    pub steps: u64,
 }
 
 /// What an ending holds for the collector: its value, or its error's values and trace.
 pub(crate) fn ending_values(ending: &Result<Value, Error>) -> impl Iterator<Item = Value> {
     let (value, values, trace) = match ending {
-        Ok(v) => (Some(*v), &[][..], None),
-        Err(e) => (
-            Some(Value::Symbol(e.kind)),
-            e.values.as_slice(),
-            Some(&e.trace),
-        ),
+        Ok(v) => (*v, &[][..], None),
+        Err(e) => (Value::Symbol(e.kind), e.values.as_slice(), Some(&e.trace)),
     };
     let trace = trace.into_iter().flat_map(Trace::roots);
-    value.into_iter().chain(values.iter().copied()).chain(trace)
+    std::iter::once(value)
+        .chain(values.iter().copied())
+        .chain(trace)
 }
 
 impl Machine {
     /// What this machine holds for the collector, running or parked.
+    /// Every field is named in `roots`, `clear` and `tidy`, so a new one doesn't compile until it
+    /// is classed in each.
     pub(crate) fn roots(&self) -> impl Iterator<Item = Value> {
-        let waiting = self.waiting.iter().flat_map(ending_values);
-        self.frames
-            .iter()
-            .flat_map(|f| f.values())
-            .chain(self.arguments.iter().copied())
-            .chain(waiting)
-            .chain([Value::Pair(self.here), self.request])
+        let Machine {
+            frames,
+            arguments,
+            waiting,
+            here,
+            request,
+            library: _,
+            may_park: _,
+            // Not roots. `handed` names a trace only to know it again: a trace collected since
+            // can't match, as its slot's generation moved on. `work` is empty at every safe point.
+            handed: _,
+            work: _,
+        } = self;
+        (frames.iter().flat_map(|f| f.values()))
+            .chain(arguments.iter().copied())
+            .chain(waiting.iter().flat_map(ending_values))
+            .chain([Value::Pair(*here), *request])
     }
 
     /// Empty again, keeping its room: a run ended without coming back here is over.
     pub(crate) fn clear(&mut self) {
-        self.frames.clear();
-        self.arguments.clear();
-        self.waiting.clear();
-        self.here = Ref::NONE;
-        self.library = false;
-        self.request = Value::Inert;
-        self.may_park = false;
-        self.handed = None;
+        let Machine {
+            frames,
+            arguments,
+            waiting,
+            here,
+            library,
+            request,
+            may_park,
+            handed,
+            work: _,
+        } = self;
+        frames.clear();
+        arguments.clear();
+        waiting.clear();
+        (*here, *library, *request) = (Ref::NONE, false, Value::Inert);
+        (*may_park, *handed) = (false, None);
     }
 
     /// Gives back the room of stacks that were once much deeper than they are.
     pub(crate) fn tidy(&mut self) {
-        crate::heap::tidy(&mut self.frames);
-        crate::heap::tidy(&mut self.arguments);
-        crate::heap::tidy(&mut self.waiting);
-        crate::heap::tidy(&mut self.work);
-    }
-
-    /// How many objects a machine counts as, for when to collect: every collection walks it,
-    /// running or parked.
-    pub(crate) fn weight(&self) -> usize {
-        let waiting = self.waiting.iter().map(|w| match w {
-            Ok(_) => 1,
-            Err(e) => e.values.len() + e.trace.weight(),
-        });
-        1 + self.frames.len() + self.arguments.len() + waiting.sum::<usize>()
+        let Machine {
+            frames,
+            arguments,
+            waiting,
+            work,
+            here: _,
+            library: _,
+            request: _,
+            may_park: _,
+            handed: _,
+        } = self;
+        crate::heap::tidy(frames);
+        crate::heap::tidy(arguments);
+        crate::heap::tidy(waiting);
+        crate::heap::tidy(work);
     }
 }
 
@@ -430,8 +446,6 @@ impl Default for Machine {
             request: Value::Inert,
             may_park: false,
             handed: None,
-            #[cfg(test)]
-            steps: 0,
         }
     }
 }
@@ -524,7 +538,7 @@ impl<T> Grift<T> {
         loop {
             #[cfg(test)]
             {
-                self.machine.steps += 1;
+                self.heap.probe.steps += 1;
             }
             if let Mode::Return(v) = mode
                 && self.machine.frames.is_empty()
@@ -815,21 +829,14 @@ impl<T> Grift<T> {
         current: impl Iterator<Item = Value>,
         held: impl IntoIterator<Item = Ref>,
     ) {
-        // What the collection walks outside the heap: this machine, and the whole kept table.
-        let parked: usize = self.kept.iter().map(Entry::weight).sum();
-        let walked = parked + self.kept.len() + self.machine.weight();
-        let kept = self.kept.iter().flat_map(Entry::roots);
-        let roots = self
-            .machine
-            .roots()
-            .chain(current)
-            .chain(kept)
-            .chain([Value::Context(self.built_in), Value::Context(self.top)]);
         // Names are heap objects: the known ones and host functions' are roots too.
         let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
-        let hosts = self.hosts.iter().map(|&(name, _)| Value::Symbol(name));
-        let roots = roots.chain(known).chain(hosts);
-        self.heap.collect(roots, held.into_iter(), walked);
+        let roots = (self.machine.roots().chain(current))
+            .chain(self.kept.iter().flat_map(Entry::roots))
+            .chain([Value::Context(self.built_in), Value::Context(self.top)])
+            .chain(known)
+            .chain(self.hosts.iter().map(|&(name, _)| Value::Symbol(name)));
+        self.heap.collect(roots, held.into_iter());
         self.tidy_kept();
         self.machine.tidy();
     }
