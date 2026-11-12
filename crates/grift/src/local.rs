@@ -64,7 +64,7 @@ pub(crate) struct Host(pub u32);
 /// An error as the machine carries it.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Error {
-    pub began: Began,
+    began: Began,
     pub kind: Symbol,
     pub values: Vec<Value>,
     pub trace: Trace,
@@ -73,7 +73,7 @@ pub(crate) struct Error {
 /// Who began an error, which alone says whether a handler may catch it, whatever its kind is
 /// called.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Began {
+enum Began {
     /// A program: a handler may catch it.
     Program,
     /// The host or the machine: a limit, which no handler catches and no program can make.
@@ -254,12 +254,18 @@ impl Error {
         Error::new(K::StaleValue, &[])
     }
 
+    /// The same error as a limit: the host or the machine began it. The one way to change who
+    /// began an error from outside this file, and only towards a limit.
+    pub fn into_limit(mut self) -> Error {
+        if self.began == Began::Program {
+            self.began = Began::Limit;
+        }
+        self
+    }
+
     /// The run was stopped.
     pub fn interrupted() -> Error {
-        Error {
-            began: Began::Limit,
-            ..Error::new(K::Interrupted, &[])
-        }
+        Error::new(K::Interrupted, &[]).into_limit()
     }
 }
 

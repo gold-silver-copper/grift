@@ -1099,11 +1099,12 @@ impl<T> Grift<T> {
     /// An error the host hands in, as the reason a run unwinds. One that can't come in, its values
     /// reclaimed or another interpreter's, is that error instead. Either is a limit if it was one.
     pub(crate) fn incoming_error(&self, e: &Error) -> local::Error {
-        let (Ok(mut imported) | Err(mut imported)) = self.import_error(e);
-        if e.limit && !imported.limit() {
-            imported.began = local::Began::Limit;
+        let (Ok(imported) | Err(imported)) = self.import_error(e);
+        if e.limit {
+            imported.into_limit()
+        } else {
+            imported
         }
-        imported
     }
 
     /// Validate and root a host call before its first allocation. A call of what isn't an
