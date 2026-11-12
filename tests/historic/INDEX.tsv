@@ -9,7 +9,7 @@ name	gated	tests	description
 13-a-forged-runner-limit-sets-the-status	yes	grift-cli/runner::exit_ends_the_run_with_its_status	A program's own (raise (error (quote! broken-pipe))) or forged exit sets the runner's quiet status (the limit flag is not checked)
 14-stderr-encoding-hides-stdout-refusal	yes	grift-cli/runner::memory_refused_to_a_process_s_output_is_a_limit	run-process: stderr's catchable encoding-error is raised before stdout's refused memory is seen
 15-process-output-aborts-when-refused	yes	grift-cli/runner::memory_refused_to_a_process_s_output_is_a_limit	run-process grows its output buffers infallibly, so refused memory aborts the runner
-17-closed-stderr-panics	yes	grift-cli/runner::a_closed_stderr_does_not_panic_the_runner	The runner's stderr messages use eprint!, which panics when stderr is closed
+17-closed-stderr-panics	yes	grift-cli/runner::a_closed_stderr_does_not_panic_the_runner; grift-cli/clippy::disallowed_macros	The runner's stderr messages use eprint!, which panics when stderr is closed
 18-session-lines-restart	yes	grift-cli/runner::a_session_numbers_its_lines_from_its_start	A terminal session numbers each input's lines from 1, so stdin:N in a trace can't be found
 19-printer-bytes-not-charged	yes	grift/lib::tests::printing_finds_a_stop_by_the_bytes_it_writes	The printer doesn't count bytes written toward a stop, so a few items that are a lot of text can't be stopped
 20-report-printer-depth-unbounded	yes	grift-cli/out_of_memory::an_out_of_memory_report_of_deep_quoted_data_needs_no_more_than_its_budget	A report's printer stack grows with the data's nesting (no ... past 32 deep), so a small report needs a lot of memory
