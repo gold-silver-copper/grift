@@ -47,6 +47,8 @@ enum Dot {
 /// a stop ends: inside one long string, token or comment too.
 struct Cursor<'a> {
     src: &'a str,
+    /// The text's name, if it has one, for a `parse-error` to carry.
+    source: Option<Symbol>,
     /// The byte offset of the next character, and its line.
     at: usize,
     line: u32,
@@ -114,15 +116,17 @@ impl Cursor<'_> {
 }
 
 /// A `parse-error` for `reason` at byte offset `at` of `src`: the reason, then its line and column,
-/// counted from the start of the text only now, so reading form by form never recounts.
-fn parse_error(src: &str, at: usize, reason: K) -> Error {
+/// counted from the start of the text only now, so reading form by form never recounts, then the
+/// text's `source` if it has a name. Every one is made here, so none can miss its source.
+fn parse_error(src: &str, at: usize, reason: K, source: Option<Symbol>) -> Error {
     let before = src.get(..at).unwrap_or_default();
-    let line = before.matches('\n').count() + 1;
-    let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
-    Error::new(
-        K::ParseError,
-        &[Value::Symbol(reason.into()), integer(line), integer(column)],
-    )
+    let line = integer(before.matches('\n').count() + 1);
+    let column = integer(before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1);
+    let reason = Value::Symbol(reason.into());
+    match source {
+        Some(s) => Error::new(K::ParseError, &[reason, line, column, Value::Symbol(s)]),
+        None => Error::new(K::ParseError, &[reason, line, column]),
+    }
 }
 
 fn delimiter(c: char) -> bool {
@@ -150,17 +154,8 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let mut forms = Vec::new();
         let (mut at, mut line, mut walked) = (0, 1, 0);
-        while let Some((form, place, after)) = self
-            .read_form(src, at, line, source, &mut walked, library)
-            .map_err(|mut e| {
-                // With no memory to spare the values stay as they are, as for any location.
-                if let Some(source) = source
-                    && e.kind == K::ParseError.into()
-                {
-                    let _ = push(&mut e.values, Value::Symbol(source));
-                }
-                e
-            })?
+        while let Some((form, place, after)) =
+            self.read_form(src, at, line, source, &mut walked, library)?
         {
             push(&mut forms, form)?;
             (at, line) = (place.end, after);
@@ -190,6 +185,7 @@ impl<T> Grift<T> {
     ) -> Result<Option<(Value, Range<usize>, u32)>, Error> {
         let mut cur = Cursor {
             src,
+            source,
             at: from,
             line,
             walked,
@@ -201,11 +197,11 @@ impl<T> Grift<T> {
         loop {
             cur.skip_space()?;
             let begin = cur.at;
-            let fail = |reason| parse_error(src, begin, reason);
+            let fail = |reason| parse_error(src, begin, reason, source);
             let Some(c) = cur.next()? else {
                 return match open.last() {
                     None => Ok(None),
-                    Some(list) => Err(parse_error(src, list.start, K::UnclosedList)),
+                    Some(list) => Err(parse_error(src, list.start, K::UnclosedList, source)),
                 };
             };
             let datum = match c {
@@ -334,8 +330,8 @@ impl<T> Grift<T> {
     /// A string after its opening quote, at offset `start`, with the escapes `\\`, `\"`, `\n`,
     /// `\r`, `\t` and `\xHEX;` (a Unicode scalar value in hex).
     fn read_string(&mut self, cur: &mut Cursor, start: usize) -> Result<Value, Error> {
-        let src = cur.src;
-        let unclosed = || parse_error(src, start, K::UnclosedString);
+        let (src, source) = (cur.src, cur.source);
+        let unclosed = || parse_error(src, start, K::UnclosedString, source);
         let mut s = TextBuffer::new();
         loop {
             let escape = cur.at;
@@ -356,10 +352,10 @@ impl<T> Grift<T> {
                         let c = u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
                         match (cur.next()?.ok_or_else(unclosed)?, c) {
                             (';', Some(c)) => c,
-                            _ => return Err(parse_error(src, escape, K::BadEscape)),
+                            _ => return Err(parse_error(src, escape, K::BadEscape, source)),
                         }
                     }
-                    _ => return Err(parse_error(src, escape, K::BadEscape)),
+                    _ => return Err(parse_error(src, escape, K::BadEscape, source)),
                 },
                 c => c,
             };
