@@ -276,7 +276,9 @@ enum What {
 }
 
 /// An argument stack's height and whether the library made the combination, in one word. Written
-/// whole, the frame reads back without waiting on two narrow writes, and stays 56 bytes.
+/// whole, the frame reads back without waiting on two narrow writes, and stays 56 bytes. The mark
+/// goes from a combination's frame to what combines it as a value, never as the machine's state:
+/// the pairs made for the library's combination are the library's, so the code it builds is too.
 #[derive(Clone, Copy)]
 struct Base(usize);
 
@@ -342,9 +344,6 @@ pub(crate) struct Machine {
     /// The innermost combination of the program being evaluated, or [`Ref::NONE`]. A
     /// `Ref`, not a `Value`: this is written and read at every step.
     here: Ref<Pair>,
-    /// Whether the combination being combined is the library's: the pairs made now are too, so
-    /// the code the library builds is the library's, and the code a program builds the program's.
-    pub(crate) library: bool,
     /// Scratch for matching parameter trees.
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
@@ -378,7 +377,6 @@ impl Machine {
             waiting,
             here,
             request,
-            library: _,
             // Not roots. `handed` names a trace only to know it again: a trace collected since
             // can't match, as its slot's generation moved on. `work` is cleared before each use, so
             // what an error leaves in it is never read.
@@ -398,7 +396,6 @@ impl Machine {
             arguments,
             waiting,
             here,
-            library,
             request,
             handed,
             work: _,
@@ -406,7 +403,7 @@ impl Machine {
         frames.clear();
         arguments.clear();
         waiting.clear();
-        (*here, *library, *request, *handed) = (Ref::NONE, false, Value::Inert, None);
+        (*here, *request, *handed) = (Ref::NONE, Value::Inert, None);
     }
 
     /// Gives back the room of stacks that were once much deeper than they are.
@@ -417,7 +414,6 @@ impl Machine {
             waiting,
             work,
             here: _,
-            library: _,
             request: _,
             handed: _,
         } = self;
@@ -435,7 +431,6 @@ impl Default for Machine {
             arguments: Vec::new(),
             waiting: Vec::new(),
             here: Ref::NONE,
-            library: false,
             work: Vec::new(),
             request: Value::Inert,
             handed: None,
@@ -647,8 +642,7 @@ impl<T> Grift<T> {
                     What::Forms { .. } | What::Form => Mode::Return(v),
                     What::Combine { operands, base } => {
                         self.machine.here = at;
-                        self.machine.library = base.library();
-                        self.combine(v, operands, context)?
+                        self.combine(v, operands, context, base.library())?
                     }
                     What::Arguments {
                         combiner,
@@ -748,8 +742,7 @@ impl<T> Grift<T> {
                 What::Handler { handler, base } if !e.limit() => {
                     self.machine.arguments.truncate(base.height());
                     self.machine.here = at;
-                    self.machine.library = base.library();
-                    match self.handle(e, handler, context) {
+                    match self.handle(e, handler, context, base.library()) {
                         Ok(mode) => return Ok(mode),
                         Err(mut failed) => {
                             self.acting_on_refusal(&mut failed);
@@ -798,8 +791,13 @@ impl<T> Grift<T> {
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
     /// `values` and `trace`. The trace is the error's shared list with the places added since on
     /// its front, so this costs those places only.
-    fn handle(&mut self, e: Error, handler: Value, context: Ref<Context>) -> Result<Mode, Error> {
-        let library = self.machine.library;
+    fn handle(
+        &mut self,
+        e: Error,
+        handler: Value,
+        context: Ref<Context>,
+        library: bool,
+    ) -> Result<Mode, Error> {
         let values = self.list_of(e.values.iter().copied(), library)?;
         let handed = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let record = self.heap.make((None, Bindings::default()))?;
@@ -811,7 +809,7 @@ impl<T> Grift<T> {
         self.heap.bind(record, fields)?;
         let operands = self.pair_local(Value::Context(record), Value::EmptyList, library)?;
         self.machine.handed = Some(handed);
-        self.combine(handler, operands, context)
+        self.combine(handler, operands, context, library)
     }
 
     /// Every way into a run comes here first, as beginning one takes what this gives: as
@@ -925,8 +923,14 @@ impl<T> Grift<T> {
         Ok(Mode::Return(function))
     }
 
-    /// Combines a combiner with unevaluated operands.
-    fn combine(&mut self, f: Value, operands: Value, context: Ref<Context>) -> Result<Mode, Error> {
+    /// Combines a combiner with unevaluated operands, for the library's combination if `library`.
+    fn combine(
+        &mut self,
+        f: Value,
+        operands: Value,
+        context: Ref<Context>,
+        library: bool,
+    ) -> Result<Mode, Error> {
         match f {
             Value::Applicative(r) => {
                 let mut inner = *self.heap.read(r)?;
@@ -935,18 +939,24 @@ impl<T> Grift<T> {
                 while let (Value::Applicative(r), Value::EmptyList) = (inner, operands) {
                     inner = *self.heap.read(r)?;
                 }
-                let base = Base::new(self.machine.arguments.len(), self.machine.library);
+                let base = Base::new(self.machine.arguments.len(), library);
                 self.next_argument(inner, context, operands, base)
             }
             Value::Operative(r) => self.call_compound(r, operands, context),
-            Value::Primitive(_) | Value::Host(_) => self.spread(f, operands, context),
+            Value::Primitive(_) | Value::Host(_) => self.spread(f, operands, context, library),
             _ => Err(Error::new(K::NotACombiner, &[f])),
         }
     }
 
     /// Applies a primitive or a host function to its operands as they are.
-    fn spread(&mut self, f: Value, operands: Value, context: Ref<Context>) -> Result<Mode, Error> {
-        let base = self.machine.arguments.len();
+    fn spread(
+        &mut self,
+        f: Value,
+        operands: Value,
+        context: Ref<Context>,
+        library: bool,
+    ) -> Result<Mode, Error> {
+        let base = Base::new(self.machine.arguments.len(), library);
         let mut items = Items::new(operands);
         while let Some(x) = items.next(self)? {
             push(&mut self.machine.arguments, x)?;
@@ -977,42 +987,34 @@ impl<T> Grift<T> {
                 self.frame(arguments, context, self.machine.here)?;
                 Ok(Mode::Evaluate(x, context))
             }
-            Value::EmptyList => {
-                self.machine.library = base.library();
-                self.apply(combiner, context, base.height())
-            }
+            Value::EmptyList => self.apply(combiner, context, base),
             _ => Err(type_error(rest)),
         }
     }
 
     /// Applies a combiner to the arguments on the argument stack from `base`, popping them.
-    fn apply(
-        &mut self,
-        combiner: Value,
-        context: Ref<Context>,
-        base: usize,
-    ) -> Result<Mode, Error> {
+    fn apply(&mut self, combiner: Value, context: Ref<Context>, base: Base) -> Result<Mode, Error> {
         match combiner {
             Value::Primitive(p) => {
                 let mode = self.primitive(p, context, base);
-                self.machine.arguments.truncate(base);
+                self.machine.arguments.truncate(base.height());
                 mode
             }
-            Value::Host(h) => Ok(Mode::Host(h, base)),
+            Value::Host(h) => Ok(Mode::Host(h, base.height())),
             _ => {
-                let list = self.arguments_list(base)?;
-                self.combine(combiner, list, context)
+                let list = self.arguments_list(base.height(), base.library())?;
+                self.combine(combiner, list, context, base.library())
             }
         }
     }
 
     /// The arguments on the argument stack from `base` as a new list, popping them.
-    fn arguments_list(&mut self, base: usize) -> Result<Value, Error> {
+    fn arguments_list(&mut self, base: usize, library: bool) -> Result<Value, Error> {
         let mut list = Value::EmptyList;
         while self.machine.arguments.len() > base
             && let Some(x) = self.machine.arguments.pop()
         {
-            list = self.pair_local(x, list, self.machine.library)?;
+            list = self.pair_local(x, list, library)?;
         }
         Ok(list)
     }
@@ -1129,9 +1131,9 @@ impl<T> Grift<T> {
     /// The names `context` binds, sorted, as a list. Apart from [`Grift::primitive`], so that it
     /// doesn't change how the common primitives inline.
     #[inline(never)]
-    fn names_list(&mut self, context: Ref<Context>) -> Result<Value, Error> {
+    fn names_list(&mut self, context: Ref<Context>, library: bool) -> Result<Value, Error> {
         let names = self.names_of(context)?;
-        self.list_of(names.into_iter().map(Value::Symbol), self.machine.library)
+        self.list_of(names.into_iter().map(Value::Symbol), library)
     }
 
     /// A new list of `items`, built from the last, its pairs the library's if `library`: charged
@@ -1151,8 +1153,12 @@ impl<T> Grift<T> {
     /// The arguments from `base`, exactly as many as the arm's pattern names, or else the
     /// `arity-error`: each primitive's count is the pattern it takes them with.
     #[inline]
-    fn arguments<const N: usize>(&mut self, base: usize) -> Result<[Value; N], Error> {
-        let given = self.machine.arguments.get(base..).unwrap_or_default();
+    fn arguments<const N: usize>(&mut self, base: Base) -> Result<[Value; N], Error> {
+        let given = self
+            .machine
+            .arguments
+            .get(base.height()..)
+            .unwrap_or_default();
         <[Value; N]>::try_from(given).map_err(|_| self.arity_error(base))
     }
 
@@ -1160,17 +1166,21 @@ impl<T> Grift<T> {
         &mut self,
         p: Primitive,
         context: Ref<Context>,
-        base: usize,
+        base: Base,
     ) -> Result<Mode, Error> {
         use Primitive as P;
         let v = match p {
             P::Vau => {
-                let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let given = self
+                    .machine
+                    .arguments
+                    .get(base.height()..)
+                    .unwrap_or_default();
                 let Some(&[x, y]) = given.first_chunk() else {
                     return Err(self.arity_error(base));
                 };
                 let (size, context_parameter) = self.check_parameters(x, y)?;
-                let body = self.arguments_list(base + 2)?;
+                let body = self.arguments_list(base.height() + 2, base.library())?;
                 let op = Operative {
                     parameters: x,
                     context_parameter,
@@ -1219,11 +1229,11 @@ impl<T> Grift<T> {
             },
             P::Names => {
                 let [x] = self.arguments(base)?;
-                self.names_list(context_kind(x)?)?
+                self.names_list(context_kind(x)?, base.library())?
             }
             P::Pair => {
                 let [x, y] = self.arguments(base)?;
-                self.pair_local(x, y, self.machine.library)?
+                self.pair_local(x, y, base.library())?
             }
             P::First | P::Rest => match self.arguments(base)? {
                 [Value::Pair(r)] => {
@@ -1320,12 +1330,11 @@ impl<T> Grift<T> {
                 let c = context_kind(y)?;
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
-                    let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
                     // Under it go its `Finish` and that frame's entry, never one without the
                     // other: all the room comes first, and nothing after it can fail.
-                    let m = &mut self.machine;
+                    let (m, base) = (&mut self.machine, base.height());
                     m.frames.try_reserve(2)?;
                     m.waiting.try_reserve(1)?;
                     let cleanup = What::Cleanup { cleanup: z, base };
@@ -1384,7 +1393,7 @@ impl<T> Grift<T> {
             }
             P::ReadForm => {
                 let [x, y] = self.arguments(base)?;
-                self.read_form_at(x, y)?
+                self.read_form_at(x, y, base.library())?
             }
         };
         Ok(Mode::Return(v))
@@ -1393,7 +1402,7 @@ impl<T> Grift<T> {
     /// `read-form`'s work: the form of string `x` after byte offset `y` and where it is. Apart from
     /// `primitive`, so its size costs the machine's loop nothing.
     #[inline(never)]
-    fn read_form_at(&mut self, x: Value, y: Value) -> Result<Value, Error> {
+    fn read_form_at(&mut self, x: Value, y: Value, library: bool) -> Result<Value, Error> {
         let Value::String(r) = x else {
             return Err(type_error(x));
         };
@@ -1403,13 +1412,13 @@ impl<T> Grift<T> {
         let read = self.lend_text(r, |g, text| {
             offset
                 .filter(|&i| text.is_char_boundary(i))
-                .map(|i| g.read_form(text, i, 1, None, &mut 0, g.machine.library))
+                .map(|i| g.read_form(text, i, 1, None, &mut 0, library))
         })?;
         let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
         Ok(match read? {
             Some((form, place, _)) => {
                 let found = [form, integer(place.start), integer(place.end)];
-                self.list_of(found.into_iter(), self.machine.library)?
+                self.list_of(found.into_iter(), library)?
             }
             None => Value::EmptyList,
         })
@@ -1419,8 +1428,8 @@ impl<T> Grift<T> {
     /// list. Cold and apart, so that the check costs the machine's loop nothing more.
     #[cold]
     #[inline(never)]
-    fn arity_error(&mut self, base: usize) -> Error {
-        match self.arguments_list(base) {
+    fn arity_error(&mut self, base: Base) -> Error {
+        match self.arguments_list(base.height(), base.library()) {
             Ok(operands) => Error::new(K::ArityError, &[operands]),
             Err(e) => e,
         }
@@ -1431,7 +1440,7 @@ impl<T> Grift<T> {
     /// value is a sequence of bytes: the first argument's kind is the answer's, and a string is cut
     /// only on character boundaries.
     #[inline(never)]
-    fn sequence_primitive(&mut self, p: Primitive, base: usize) -> Result<Value, Error> {
+    fn sequence_primitive(&mut self, p: Primitive, base: Base) -> Result<Value, Error> {
         use Primitive as P;
         Ok(match p {
             P::ByteLength => {
@@ -1469,7 +1478,11 @@ impl<T> Grift<T> {
                 }
             }
             P::Join => {
-                let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let given = self
+                    .machine
+                    .arguments
+                    .get(base.height()..)
+                    .unwrap_or_default();
                 let bytes = matches!(given.first(), Some(Value::Bytes(_)));
                 let mut len = 0usize;
                 for &v in given {
@@ -1561,7 +1574,7 @@ impl<T> Grift<T> {
                 let [x] = self.arguments(base)?;
                 let b = collected(self.bytes_of(x)?.iter().copied())?;
                 let items = b.into_iter().map(|byte| Value::Integer(i64::from(byte)));
-                self.list_of(items, self.machine.library)?
+                self.list_of(items, base.library())?
             }
         })
     }
@@ -1806,7 +1819,7 @@ impl<T> Grift<T> {
         args: &[Value],
         context: Ref<Context>,
     ) -> Result<Mode, Error> {
-        let base = self.machine.arguments.len();
+        let base = Base::new(self.machine.arguments.len(), false);
         for &a in args {
             push(&mut self.machine.arguments, a)?;
         }
