@@ -207,6 +207,26 @@ fn a_wrong_count_with_no_memory_for_its_list_is_out_of_memory() {
     assert!(g.evaluate(&mut g.interrupter(), "(one 1)").is_ok());
 }
 
+/// A host function that couldn't be made leaves no registration behind: every collection walks
+/// the registrations, and nothing could ever call this one.
+#[test]
+fn a_host_function_refused_memory_is_not_registered() {
+    let (mut g, _) = host();
+    // The name is there already, so the applicative is the one slot the registration needs.
+    g.symbol("late").unwrap();
+    let before = g.hosts.len();
+    g.heap.probe.refuse_in = Some(0);
+    let refused = g.host_function("late", |_, _, _| Ok(Answer::Now(Value::Inert)));
+    g.heap.probe.refuse_in = None;
+    assert_eq!(kind(&g, &refused.unwrap_err()), "out-of-memory");
+    assert_eq!(g.hosts.len(), before, "a refused registration stayed");
+    // The next try registers it once, and it is called.
+    define(&mut g, "late", |_, _, _| Ok(Answer::Now(Value::Integer(7))));
+    assert_eq!(g.hosts.len(), before + 1);
+    let v = g.evaluate(&mut g.interrupter(), "(late)").unwrap();
+    assert_eq!(v, Value::Integer(7));
+}
+
 /// A host names grift's own kinds as a `Kind`: each makes the error of its spelling, which says it
 /// is that kind whoever raised it, while a host's own kind is none of them. A host's `type-error`
 /// is a primitive's: the one value of the wrong type.

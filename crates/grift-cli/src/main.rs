@@ -136,27 +136,24 @@ fn nanoseconds(g: &mut H, args: &[Value], d: Option<Duration>) -> Result<Value, 
     }
 }
 
-/// A copy of a string value's contents, `None` for anything else; a program that fills memory gets
-/// the limit `out-of-memory`, not an abort.
-fn owned_string(g: &mut H, v: &Value) -> Result<Option<String>, Error> {
+/// A copy of a string value's contents, or a `type-error` for anything else; a program that fills
+/// memory gets the limit `out-of-memory`, not an abort.
+fn owned_string(g: &mut H, v: &Value) -> Result<String, Error> {
     let Some(s) = g.as_str(v)? else {
-        return Ok(None);
+        return Err(g.type_error(*v));
     };
     let mut copy = String::new();
     if copy.try_reserve_exact(s.len()).is_err() {
         return Err(g.limit(Kind::OutOfMemory, &[]));
     }
     copy.push_str(s);
-    Ok(Some(copy))
+    Ok(copy)
 }
 
 /// The one string argument, or a `type-error` or an `arity-error`.
 fn one_string(g: &mut H, args: &[Value]) -> Result<String, Error> {
     let [v] = g.exactly(args)?;
-    match owned_string(g, v)? {
-        Some(s) => Ok(s),
-        None => Err(g.type_error(*v)),
-    }
+    owned_string(g, v)
 }
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
@@ -423,10 +420,7 @@ fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
 fn run_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let mut words = Vec::new();
     for v in args {
-        match owned_string(g, v)? {
-            Some(s) => words.push(s),
-            None => return Err(g.type_error(*v)),
-        }
+        words.push(owned_string(g, v)?);
     }
     let Some((program, arguments)) = words.split_first() else {
         return Err(g.arity_error(args));
@@ -568,12 +562,7 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
 fn read_forms(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [source, text] = g.exactly(args)?;
-    let Some(source) = owned_string(g, source)? else {
-        return Err(g.type_error(*source));
-    };
-    let Some(text) = owned_string(g, text)? else {
-        return Err(g.type_error(*text));
-    };
+    let (source, text) = (owned_string(g, source)?, owned_string(g, text)?);
     g.read_in(&source, &text)
 }
 

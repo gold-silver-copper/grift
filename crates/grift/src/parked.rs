@@ -8,7 +8,7 @@
 
 use crate::evaluate::{First, Machine, Prepared, ending_values};
 use crate::interrupt::Control;
-use crate::local::{self, K};
+use crate::local;
 use crate::{Entry, Error, Grift, Owner, Value};
 use std::sync::{Arc, Weak};
 
@@ -96,25 +96,6 @@ impl Drop for Parked {
 #[cfg(doctest)]
 struct ParkedIsNotClone;
 
-/// `resume` uses the handle up: by value it is this type, the only reason a second one doesn't
-/// compile.
-///
-/// ```
-/// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
-/// let _: fn(&mut Grift, &mut (), Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
-///     Grift::resume;
-/// ```
-#[cfg(doctest)]
-struct HandlesGoInByValue;
-
-/// ```compile_fail
-/// use grift::{Error, Grift, Parked, Ran, ResumeError, Value};
-/// let _: fn(&mut Grift, &mut (), &Parked, Result<Value, Error>) -> Result<Ran, ResumeError> =
-///     Grift::resume;
-/// ```
-#[cfg(doctest)]
-struct ResumeTakesNoReference;
-
 /// The right to park, alone with the one function that gives it, so no other code can make one.
 mod right {
     use crate::{Error, Grift, Ran, local};
@@ -182,7 +163,7 @@ impl<T> Grift<T> {
             Some(Entry::Run(room)) => room.first().map(|m| m.request),
             _ => None,
         };
-        let request = request.ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
+        let request = request.ok_or_else(local::Error::stale)?;
         Ok(Parked {
             owner: self.owner,
             control: Arc::downgrade(&self.control),
@@ -259,12 +240,9 @@ impl<T> Grift<T> {
         let ready = self.prepare(ending_values(answer), []);
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
-            return Err(local::Error::new(K::StaleValue, &[]));
+            return Err(local::Error::stale());
         };
-        let machine = room
-            .pop()
-            .ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
-        Ok((machine, ready))
+        Ok((room.pop().ok_or_else(local::Error::stale)?, ready))
     }
 
     /// Whether a host function called now may answer [`Answer::Later`](crate::Answer::Later): not

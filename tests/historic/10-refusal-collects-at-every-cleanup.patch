@@ -1,13 +1,17 @@
-diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
-index 62a67c0..b9d5484 100644
---- a/crates/grift/src/evaluate.rs
-+++ b/crates/grift/src/evaluate.rs
-@@ -709,7 +709,7 @@ impl<T> Grift<T> {
-     /// An error that began as refused memory: the next safe point collects, and the spare room is
-     /// given up for what reports it. Once: whoever acts on it clears the mark.
-     fn acting_on_refusal(&mut self, e: &mut Error) {
--        if e.take_refusal() {
-+        if e.began == crate::local::Began::Refused {
-             self.heap.request_collection();
-             self.spare = Vec::new();
-         }
+diff --git i/crates/grift/src/local.rs w/crates/grift/src/local.rs
+index f2b9a18a..219db9fb 100644
+--- i/crates/grift/src/local.rs
++++ w/crates/grift/src/local.rs
+@@ -229,11 +229,7 @@ impl Error {
+ 
+     /// Whether memory was refused to make it and nobody acted on that yet; and nobody will again.
+     pub fn take_refusal(&mut self) -> bool {
+-        let refused = self.began == Began::Refused;
+-        if refused {
+-            self.began = Began::Limit;
+-        }
+-        refused
++        self.began == Began::Refused
+     }
+ 
+     /// The machine ran out of memory.

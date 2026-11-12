@@ -1,11 +1,11 @@
 diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
-index aeb0438..51616de 100644
+index 1271bdc5..d771469e 100644
 --- i/crates/grift/src/evaluate.rs
 +++ w/crates/grift/src/evaluate.rs
-@@ -889,10 +889,10 @@ impl<T> Grift<T> {
+@@ -898,10 +898,10 @@ impl<T> Grift<T> {
      ) -> Result<Mode, Error> {
          let function = self.combiner_of(function)?;
-         let operands = self.list_local(arguments, false)?;
+         let operands = self.list_of(arguments.iter().copied(), false)?;
 +        let context = self.heap.make((None, Bindings::default()))?;
          let at = self.machine.here;
          if let Some((then, saved)) = then {
@@ -14,7 +14,7 @@ index aeb0438..51616de 100644
              let base = Base::new(self.machine.arguments.len(), false);
              for v in saved {
                  push(&mut self.machine.arguments, v)?;
-@@ -908,7 +908,6 @@ impl<T> Grift<T> {
+@@ -917,7 +917,6 @@ impl<T> Grift<T> {
                  at,
              )?;
          }

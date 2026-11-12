@@ -116,7 +116,7 @@ primitives! {
     BytesToList "bytes-to-list";
 }
 
-/// A walk along a list's items inside one step, charged to [`Grift::walk_stopped`], so a stop
+/// A walk along a list's items inside one step, charged to [`Control::walk`], so a stop
 /// ends it however long the list is. Every list walk goes through one: the lint on
 /// [`Heap::pair_at`](crate::heap::Heap::pair_at) (`clippy.toml`) refuses another.
 pub(crate) struct Items {
@@ -137,9 +137,7 @@ impl Items {
         let Value::Pair(r) = self.rest else {
             return Ok(None);
         };
-        if g.walk_stopped(&mut self.walked) {
-            return Err(Error::interrupted());
-        }
+        g.control.walk(&mut self.walked)?;
         #[expect(clippy::disallowed_methods, reason = "the one list walk")]
         let (x, rest, _) = g.heap.pair_at(r)?;
         self.rest = rest;
@@ -271,14 +269,16 @@ enum What {
         consequent: Value,
         alternative: Value,
     },
-    /// `sequence!`: the forms left after the one evaluated, at least one.
+    /// An operative's body, `sequence!`'s too: the forms left after the one evaluated, at least one.
     Body { rest: Value },
     /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
     Form,
 }
 
 /// An argument stack's height and whether the library made the combination, in one word. Written
-/// whole, the frame reads back without waiting on two narrow writes, and stays 56 bytes.
+/// whole, the frame reads back without waiting on two narrow writes, and stays 56 bytes. The mark
+/// goes from a combination's frame to what combines it as a value, never as the machine's state:
+/// the pairs made for the library's combination are the library's, so the code it builds is too.
 #[derive(Clone, Copy)]
 struct Base(usize);
 
@@ -344,9 +344,6 @@ pub(crate) struct Machine {
     /// The innermost combination of the program being evaluated, or [`Ref::NONE`]. A
     /// `Ref`, not a `Value`: this is written and read at every step.
     here: Ref<Pair>,
-    /// Whether the combination being combined is the library's: the pairs made now are too, so
-    /// the code the library builds is the library's, and the code a program builds the program's.
-    pub(crate) library: bool,
     /// Scratch for matching parameter trees.
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
@@ -380,7 +377,6 @@ impl Machine {
             waiting,
             here,
             request,
-            library: _,
             // Not roots. `handed` names a trace only to know it again: a trace collected since
             // can't match, as its slot's generation moved on. `work` is cleared before each use, so
             // what an error leaves in it is never read.
@@ -400,7 +396,6 @@ impl Machine {
             arguments,
             waiting,
             here,
-            library,
             request,
             handed,
             work: _,
@@ -408,7 +403,7 @@ impl Machine {
         frames.clear();
         arguments.clear();
         waiting.clear();
-        (*here, *library, *request, *handed) = (Ref::NONE, false, Value::Inert, None);
+        (*here, *request, *handed) = (Ref::NONE, Value::Inert, None);
     }
 
     /// Gives back the room of stacks that were once much deeper than they are.
@@ -419,7 +414,6 @@ impl Machine {
             waiting,
             work,
             here: _,
-            library: _,
             request: _,
             handed: _,
         } = self;
@@ -437,7 +431,6 @@ impl Default for Machine {
             arguments: Vec::new(),
             waiting: Vec::new(),
             here: Ref::NONE,
-            library: false,
             work: Vec::new(),
             request: Value::Inert,
             handed: None,
@@ -649,8 +642,7 @@ impl<T> Grift<T> {
                     What::Forms { .. } | What::Form => Mode::Return(v),
                     What::Combine { operands, base } => {
                         self.machine.here = at;
-                        self.machine.library = base.library();
-                        self.combine(v, operands, context)?
+                        self.combine(v, operands, context, base.library())?
                     }
                     What::Arguments {
                         combiner,
@@ -750,8 +742,7 @@ impl<T> Grift<T> {
                 What::Handler { handler, base } if !e.limit() => {
                     self.machine.arguments.truncate(base.height());
                     self.machine.here = at;
-                    self.machine.library = base.library();
-                    match self.handle(e, handler, context) {
+                    match self.handle(e, handler, context, base.library()) {
                         Ok(mode) => return Ok(mode),
                         Err(mut failed) => {
                             self.acting_on_refusal(&mut failed);
@@ -800,22 +791,25 @@ impl<T> Grift<T> {
     /// Calls a handler with the error as a new context, with no parent, binding `kind`,
     /// `values` and `trace`. The trace is the error's shared list with the places added since on
     /// its front, so this costs those places only.
-    fn handle(&mut self, e: Error, handler: Value, context: Ref<Context>) -> Result<Mode, Error> {
-        let library = self.machine.library;
-        let values = self.list_local(&e.values, library)?;
+    fn handle(
+        &mut self,
+        e: Error,
+        handler: Value,
+        context: Ref<Context>,
+        library: bool,
+    ) -> Result<Mode, Error> {
+        let values = self.list_of(e.values.iter().copied(), library)?;
         let handed = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
-        let mut fields = Bindings::default();
-        fields.try_reserve(3)?;
-        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Kind.into(), Value::Symbol(e.kind));
-        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Values.into(), values);
-        #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Trace.into(), handed.parts().0);
-        let v = Value::Context(self.heap.make((None, fields))?);
-        let operands = self.list_local(&[v], library)?;
+        let record = self.heap.make((None, Bindings::default()))?;
+        let fields = [
+            (K::Kind.into(), Value::Symbol(e.kind)),
+            (K::Values.into(), values),
+            (K::Trace.into(), handed.parts().0),
+        ];
+        self.heap.bind(record, fields)?;
+        let operands = self.pair_local(Value::Context(record), Value::EmptyList, library)?;
         self.machine.handed = Some(handed);
-        self.combine(handler, operands, context)
+        self.combine(handler, operands, context, library)
     }
 
     /// Every way into a run comes here first, as beginning one takes what this gives: as
@@ -903,7 +897,7 @@ impl<T> Grift<T> {
         then: Option<(Value, Vec<Value>)>,
     ) -> Result<Mode, Error> {
         let function = self.combiner_of(function)?;
-        let operands = self.list_local(arguments, false)?;
+        let operands = self.list_of(arguments.iter().copied(), false)?;
         let at = self.machine.here;
         if let Some((then, saved)) = then {
             let combiner = self.combiner_of(then)?;
@@ -929,8 +923,14 @@ impl<T> Grift<T> {
         Ok(Mode::Return(function))
     }
 
-    /// Combines a combiner with unevaluated operands.
-    fn combine(&mut self, f: Value, operands: Value, context: Ref<Context>) -> Result<Mode, Error> {
+    /// Combines a combiner with unevaluated operands, for the library's combination if `library`.
+    fn combine(
+        &mut self,
+        f: Value,
+        operands: Value,
+        context: Ref<Context>,
+        library: bool,
+    ) -> Result<Mode, Error> {
         match f {
             Value::Applicative(r) => {
                 let mut inner = *self.heap.read(r)?;
@@ -939,26 +939,24 @@ impl<T> Grift<T> {
                 while let (Value::Applicative(r), Value::EmptyList) = (inner, operands) {
                     inner = *self.heap.read(r)?;
                 }
-                let base = Base::new(self.machine.arguments.len(), self.machine.library);
+                let base = Base::new(self.machine.arguments.len(), library);
                 self.next_argument(inner, context, operands, base)
             }
             Value::Operative(r) => self.call_compound(r, operands, context),
-            Value::Primitive(_) | Value::Host(_) => self.spread(f, operands, context),
+            // A primitive or a host function is applied to its operands as they are.
+            Value::Primitive(_) | Value::Host(_) => {
+                let base = Base::new(self.machine.arguments.len(), library);
+                let mut items = Items::new(operands);
+                while let Some(x) = items.next(self)? {
+                    push(&mut self.machine.arguments, x)?;
+                }
+                if items.rest() != Value::EmptyList {
+                    return Err(Error::new(K::TypeError, &[f, operands]));
+                }
+                self.apply(f, context, base)
+            }
             _ => Err(Error::new(K::NotACombiner, &[f])),
         }
-    }
-
-    /// Applies a primitive or a host function to its operands as they are.
-    fn spread(&mut self, f: Value, operands: Value, context: Ref<Context>) -> Result<Mode, Error> {
-        let base = self.machine.arguments.len();
-        let mut items = Items::new(operands);
-        while let Some(x) = items.next(self)? {
-            push(&mut self.machine.arguments, x)?;
-        }
-        if items.rest() != Value::EmptyList {
-            return Err(Error::new(K::TypeError, &[f, operands]));
-        }
-        self.apply(f, context, base)
     }
 
     /// Evaluates the next operand of an applicative, or applies its combiner once none is left.
@@ -981,42 +979,34 @@ impl<T> Grift<T> {
                 self.frame(arguments, context, self.machine.here)?;
                 Ok(Mode::Evaluate(x, context))
             }
-            Value::EmptyList => {
-                self.machine.library = base.library();
-                self.apply(combiner, context, base.height())
-            }
+            Value::EmptyList => self.apply(combiner, context, base),
             _ => Err(type_error(rest)),
         }
     }
 
     /// Applies a combiner to the arguments on the argument stack from `base`, popping them.
-    fn apply(
-        &mut self,
-        combiner: Value,
-        context: Ref<Context>,
-        base: usize,
-    ) -> Result<Mode, Error> {
+    fn apply(&mut self, combiner: Value, context: Ref<Context>, base: Base) -> Result<Mode, Error> {
         match combiner {
             Value::Primitive(p) => {
                 let mode = self.primitive(p, context, base);
-                self.machine.arguments.truncate(base);
+                self.machine.arguments.truncate(base.height());
                 mode
             }
-            Value::Host(h) => Ok(Mode::Host(h, base)),
+            Value::Host(h) => Ok(Mode::Host(h, base.height())),
             _ => {
-                let list = self.arguments_list(base)?;
-                self.combine(combiner, list, context)
+                let list = self.arguments_list(base.height(), base.library())?;
+                self.combine(combiner, list, context, base.library())
             }
         }
     }
 
     /// The arguments on the argument stack from `base` as a new list, popping them.
-    fn arguments_list(&mut self, base: usize) -> Result<Value, Error> {
+    fn arguments_list(&mut self, base: usize, library: bool) -> Result<Value, Error> {
         let mut list = Value::EmptyList;
         while self.machine.arguments.len() > base
             && let Some(x) = self.machine.arguments.pop()
         {
-            list = self.pair_local(x, list, self.machine.library)?;
+            list = self.pair_local(x, list, library)?;
         }
         Ok(list)
     }
@@ -1133,27 +1123,34 @@ impl<T> Grift<T> {
     /// The names `context` binds, sorted, as a list. Apart from [`Grift::primitive`], so that it
     /// doesn't change how the common primitives inline.
     #[inline(never)]
-    fn names_list(&mut self, context: Ref<Context>) -> Result<Value, Error> {
+    fn names_list(&mut self, context: Ref<Context>, library: bool) -> Result<Value, Error> {
         let names = self.names_of(context)?;
-        self.list_of(names.iter().map(|&s| Value::Symbol(s)))
+        self.list_of(names.into_iter().map(Value::Symbol), library)
     }
 
-    /// A new list of `items`, built from the last: charged like [`Items`], so a stop ends it.
-    fn list_of(&mut self, items: impl DoubleEndedIterator<Item = Value>) -> Result<Value, Error> {
+    /// A new list of `items`, built from the last, its pairs the library's if `library`: charged
+    /// like [`Items`], so a stop ends it. Every list Rust builds from values it holds is built here.
+    fn list_of(
+        &mut self,
+        items: impl DoubleEndedIterator<Item = Value>,
+        library: bool,
+    ) -> Result<Value, Error> {
         let mut walked = 0;
         items.rev().try_fold(Value::EmptyList, |list, x| {
-            if self.walk_stopped(&mut walked) {
-                return Err(Error::interrupted());
-            }
-            self.pair_local(x, list, self.machine.library)
+            self.control.walk(&mut walked)?;
+            self.pair_local(x, list, library)
         })
     }
 
     /// The arguments from `base`, exactly as many as the arm's pattern names, or else the
     /// `arity-error`: each primitive's count is the pattern it takes them with.
     #[inline]
-    fn arguments<const N: usize>(&mut self, base: usize) -> Result<[Value; N], Error> {
-        let given = self.machine.arguments.get(base..).unwrap_or_default();
+    fn arguments<const N: usize>(&mut self, base: Base) -> Result<[Value; N], Error> {
+        let given = self
+            .machine
+            .arguments
+            .get(base.height()..)
+            .unwrap_or_default();
         <[Value; N]>::try_from(given).map_err(|_| self.arity_error(base))
     }
 
@@ -1161,17 +1158,21 @@ impl<T> Grift<T> {
         &mut self,
         p: Primitive,
         context: Ref<Context>,
-        base: usize,
+        base: Base,
     ) -> Result<Mode, Error> {
         use Primitive as P;
         let v = match p {
             P::Vau => {
-                let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let given = self
+                    .machine
+                    .arguments
+                    .get(base.height()..)
+                    .unwrap_or_default();
                 let Some(&[x, y]) = given.first_chunk() else {
                     return Err(self.arity_error(base));
                 };
                 let (size, context_parameter) = self.check_parameters(x, y)?;
-                let body = self.arguments_list(base + 2)?;
+                let body = self.arguments_list(base.height() + 2, base.library())?;
                 let op = Operative {
                     parameters: x,
                     context_parameter,
@@ -1220,11 +1221,11 @@ impl<T> Grift<T> {
             },
             P::Names => {
                 let [x] = self.arguments(base)?;
-                self.names_list(context_kind(x)?)?
+                self.names_list(context_kind(x)?, base.library())?
             }
             P::Pair => {
                 let [x, y] = self.arguments(base)?;
-                self.pair_local(x, y, self.machine.library)?
+                self.pair_local(x, y, base.library())?
             }
             P::First | P::Rest => match self.arguments(base)? {
                 [Value::Pair(r)] => {
@@ -1321,12 +1322,11 @@ impl<T> Grift<T> {
                 let c = context_kind(y)?;
                 let at = self.machine.here;
                 if p == P::EvaluateWithHandler {
-                    let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
                     // Under it go its `Finish` and that frame's entry, never one without the
                     // other: all the room comes first, and nothing after it can fail.
-                    let m = &mut self.machine;
+                    let (m, base) = (&mut self.machine, base.height());
                     m.frames.try_reserve(2)?;
                     m.waiting.try_reserve(1)?;
                     let cleanup = What::Cleanup { cleanup: z, base };
@@ -1385,7 +1385,7 @@ impl<T> Grift<T> {
             }
             P::ReadForm => {
                 let [x, y] = self.arguments(base)?;
-                self.read_form_at(x, y)?
+                self.read_form_at(x, y, base.library())?
             }
         };
         Ok(Mode::Return(v))
@@ -1394,7 +1394,7 @@ impl<T> Grift<T> {
     /// `read-form`'s work: the form of string `x` after byte offset `y` and where it is. Apart from
     /// `primitive`, so its size costs the machine's loop nothing.
     #[inline(never)]
-    fn read_form_at(&mut self, x: Value, y: Value) -> Result<Value, Error> {
+    fn read_form_at(&mut self, x: Value, y: Value, library: bool) -> Result<Value, Error> {
         let Value::String(r) = x else {
             return Err(type_error(x));
         };
@@ -1404,14 +1404,14 @@ impl<T> Grift<T> {
         let read = self.lend_text(r, |g, text| {
             offset
                 .filter(|&i| text.is_char_boundary(i))
-                .map(|i| g.read_form(text, i, 1, None, &mut 0, g.machine.library))
+                .map(|i| g.read_form(text, i, 1, None, &mut 0, library))
         })?;
         let read = read.ok_or_else(|| Error::new(K::RangeError, &[x, y]))?;
         Ok(match read? {
-            Some((form, place, _)) => self.list_local(
-                &[form, integer(place.start), integer(place.end)],
-                self.machine.library,
-            )?,
+            Some((form, place, _)) => {
+                let found = [form, integer(place.start), integer(place.end)];
+                self.list_of(found.into_iter(), library)?
+            }
             None => Value::EmptyList,
         })
     }
@@ -1420,8 +1420,8 @@ impl<T> Grift<T> {
     /// list. Cold and apart, so that the check costs the machine's loop nothing more.
     #[cold]
     #[inline(never)]
-    fn arity_error(&mut self, base: usize) -> Error {
-        match self.arguments_list(base) {
+    fn arity_error(&mut self, base: Base) -> Error {
+        match self.arguments_list(base.height(), base.library()) {
             Ok(operands) => Error::new(K::ArityError, &[operands]),
             Err(e) => e,
         }
@@ -1432,7 +1432,7 @@ impl<T> Grift<T> {
     /// value is a sequence of bytes: the first argument's kind is the answer's, and a string is cut
     /// only on character boundaries.
     #[inline(never)]
-    fn sequence_primitive(&mut self, p: Primitive, base: usize) -> Result<Value, Error> {
+    fn sequence_primitive(&mut self, p: Primitive, base: Base) -> Result<Value, Error> {
         use Primitive as P;
         Ok(match p {
             P::ByteLength => {
@@ -1470,7 +1470,11 @@ impl<T> Grift<T> {
                 }
             }
             P::Join => {
-                let given = self.machine.arguments.get(base..).unwrap_or_default();
+                let given = self
+                    .machine
+                    .arguments
+                    .get(base.height()..)
+                    .unwrap_or_default();
                 let bytes = matches!(given.first(), Some(Value::Bytes(_)));
                 let mut len = 0usize;
                 for &v in given {
@@ -1561,7 +1565,8 @@ impl<T> Grift<T> {
             _ => {
                 let [x] = self.arguments(base)?;
                 let b = collected(self.bytes_of(x)?.iter().copied())?;
-                self.list_of(b.iter().map(|&byte| Value::Integer(i64::from(byte))))?
+                let items = b.into_iter().map(|byte| Value::Integer(i64::from(byte)));
+                self.list_of(items, base.library())?
             }
         })
     }
@@ -1665,7 +1670,7 @@ impl<T> Grift<T> {
     }
 
     /// The bytes of string or bytes value `v`, or a type error.
-    pub(crate) fn octets(&self, v: Value) -> Result<&[u8], Error> {
+    fn octets(&self, v: Value) -> Result<&[u8], Error> {
         match v {
             Value::String(_) => self.text(v).map(str::as_bytes),
             _ => self.bytes_of(v),
@@ -1678,13 +1683,6 @@ impl<T> Grift<T> {
             Value::Bytes(r) => self.heap.read(r).map(Vec::as_slice),
             _ => Err(type_error(v)),
         }
-    }
-
-    /// A new list of `xs`.
-    pub(crate) fn list_local(&mut self, xs: &[Value], library: bool) -> Result<Value, Error> {
-        xs.iter()
-            .rev()
-            .try_fold(Value::EmptyList, |l, &x| self.pair_local(x, l, library))
     }
 
     /// A new pair, the library's if `library`: what the machine makes is the library's if the
@@ -1711,7 +1709,7 @@ impl<T> Grift<T> {
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
     /// symbol not in the tree. The number of bindings a call makes, and the context parameter's
     /// symbol unless it is `#ignore`.
-    pub(crate) fn check_parameters(
+    fn check_parameters(
         &mut self,
         tree: Value,
         context_parameter: Value,
@@ -1728,7 +1726,7 @@ impl<T> Grift<T> {
     /// Matches a parameter tree to a value, binding its symbols in `bindings`, which it expects to
     /// have none of them: a symbol bound twice is a `parameter-error`, as is a leaf of the tree
     /// other than a symbol, `#ignore` and `()`.
-    pub(crate) fn match_tree(
+    fn match_tree(
         &mut self,
         bindings: &mut Bindings,
         tree: Value,
@@ -1739,8 +1737,7 @@ impl<T> Grift<T> {
         let mut result = push(&mut work, (tree, value));
         let mut walked = 0;
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
-            result = match (t, v) {
-                _ if self.walk_stopped(&mut walked) => Err(Error::interrupted()),
+            result = self.control.walk(&mut walked).and_then(|()| match (t, v) {
                 #[expect(clippy::disallowed_methods, reason = "reserved 1 in the arm")]
                 (Value::Symbol(s), _) => match bindings.try_reserve(1) {
                     Ok(()) if bindings.insert(s, v).is_none() => Ok(()),
@@ -1756,7 +1753,7 @@ impl<T> Grift<T> {
                 }),
                 (Value::Pair(_) | Value::EmptyList, _) => Err(Error::new(K::ArityError, &[value])),
                 _ => Err(Error::new(K::ParameterError, &[tree])),
-            };
+            });
         }
         self.machine.work = work;
         result
@@ -1806,7 +1803,7 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
-    /// Runs primitive `p` on `args` in `context`, for the sweeps in `tests::family`.
+    /// Runs primitive `p` on `args` in `context` with no machine step around it, for the tests.
     #[cfg(test)]
     pub(crate) fn call_primitive(
         &mut self,
@@ -1814,13 +1811,11 @@ impl<T> Grift<T> {
         args: &[Value],
         context: Ref<Context>,
     ) -> Result<Mode, Error> {
-        let base = self.machine.arguments.len();
+        let base = Base::new(self.machine.arguments.len(), false);
         for &a in args {
             push(&mut self.machine.arguments, a)?;
         }
-        let r = self.primitive(p, context, base);
-        self.machine.arguments.truncate(base);
-        r
+        self.apply(Value::Primitive(p), context, base)
     }
 }
 
@@ -1843,7 +1838,7 @@ fn bitwise(p: Primitive, x: Value, y: Value) -> Result<Value, Error> {
 
 /// The Two-Way search (Crochemore and Perrin, 1991), as in Rust's `str::find`, CPython and glibc:
 /// linear time in the text and the pattern, no memory. Every byte it reads is an item of a walk, so
-/// a stop reaches it in every phase through [`Grift::walk_stopped`]. Strings search through it too.
+/// a stop reaches it in every phase through [`Control::walk`]. Strings search through it too.
 impl<T> Grift<T> {
     /// Where `p` first is in `text`; an empty pattern is at 0.
     pub(crate) fn search(&self, text: &[u8], p: &[u8]) -> Result<Option<usize>, Error> {
@@ -1870,17 +1865,13 @@ impl<T> Grift<T> {
         // can't overlap a match.
         let mut held = 0u64;
         for &b in p {
-            if self.walk_stopped(&mut walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(&mut walked)?;
             held |= 1 << (b & 63);
         }
         let (mut at, mut memory) = (0, 0);
         while let Some(window) = text.get(at..at + n) {
             if window.last().is_some_and(|b| held >> (b & 63) & 1 == 0) {
-                if self.walk_stopped(&mut walked) {
-                    return Err(Error::interrupted());
-                }
+                self.control.walk(&mut walked)?;
                 (at, memory) = (at + n, 0);
             } else if let Some(i) = self.difference(split.max(memory)..n, p, window, &mut walked)? {
                 (at, memory) = (at + i + 1 - split, 0);
@@ -1905,9 +1896,7 @@ impl<T> Grift<T> {
         walked: &mut usize,
     ) -> Result<Option<usize>, Error> {
         for i in places {
-            if self.walk_stopped(walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(walked)?;
             if a.get(i) != b.get(i) {
                 return Ok(Some(i));
             }
@@ -1924,9 +1913,7 @@ impl<T> Grift<T> {
     ) -> Result<(usize, usize), Error> {
         let (mut left, mut right, mut offset, mut period) = (0, 1, 0, 1);
         while let (Some(&a), Some(&b)) = (p.get(right + offset), p.get(left + offset)) {
-            if self.walk_stopped(walked) {
-                return Err(Error::interrupted());
-            }
+            self.control.walk(walked)?;
             if a == b {
                 offset += 1;
                 if offset == period {
@@ -1940,20 +1927,6 @@ impl<T> Grift<T> {
             }
         }
         Ok((left, period))
-    }
-}
-
-#[cfg(test)]
-impl<T> Grift<T> {
-    /// The primitive `search` from the start of `text`, with no step of the machine around it.
-    pub(crate) fn search_directly(&mut self, text: Value, pattern: Value) -> Result<Value, Error> {
-        let base = self.machine.arguments.len();
-        for a in [text, pattern, Value::Integer(0)] {
-            push(&mut self.machine.arguments, a)?;
-        }
-        let r = self.sequence_primitive(Primitive::Search, base);
-        self.machine.arguments.truncate(base);
-        r
     }
 }
 

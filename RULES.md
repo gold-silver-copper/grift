@@ -121,7 +121,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - A trace lists the program's combinations around the error, each once, from the innermost out to
   the top-level form; a finished tail call isn't listed ([G-29]). Library code is skipped, by a mark
   set when a pair is made; a handler's values and trace are marked as the combination that set it ([G-173], [G-180], [G-183]). Every `raise` adds its own combination, a re-raise
-  included ([G-170]).
+  included ([G-170]). The mark goes from a combination's frame to what combines it as an argument,
+  never as the machine's state, so no step reads a mark another step left ([G-212]).
 - The host's `Error::trace` is innermost first. A program reads a trace newest first, so the place
   the error began is its last, and a catch and raise adds only the places since ([G-179]).
 - Where a combination was read lives in its pair; `Grift::position` gives its source and line
@@ -132,7 +133,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 
 - A run ends one way: it unwinds with a reason. An error carries one bit, `limit`, which only the
   host (a stop, a force, a host function's error with `limit` set) and the machine (memory refused)
-  can set; a handler runs only if it is clear, and no kind's name decides anything ([G-170]).
+  can set; a handler runs only if it is clear, and no kind's name decides anything ([G-170]). Who
+  began an error is private to `local.rs`: other code can only make an error a limit ([G-212]).
 - So a program can't forge a limit: its error of any kind, `interrupted` included, is caught. If
   several reasons arrive during a cleanup the newest wins, except that a program's error never
   replaces a limit ([G-170]).
@@ -146,7 +148,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - A stop asked before its run starts does nothing ([G-179]). The host's `read`, `read_in`, `write`,
   `describe` and `bind` are runs a stop reaches, or join the run in progress inside a host function
   ([G-179], [G-181]). Inside a step, list walks, `search`, the reader and the printer look for stops
-  as they go ([G-178], [G-179]).
+  as they go ([G-178], [G-179]), and so does every list Rust builds; a walk's look is one fallible
+  call, `Control::walk`, so none can ask and go on ([G-212]).
 - A run is owned by one guard value that ends it as it drops, so a host function that panics ends
   its run: the panic goes on to the host, no cleanup runs, and the next evaluation starts afresh
   ([G-168], [G-182]). One function begins, clears and ends every run on the machine and makes its
@@ -193,7 +196,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - The heap is a growable vector with mark-and-sweep collection and no limit of its own ([G-2]). In
   the core, collections grow fallibly and memory refused is `out-of-memory`, not an abort ([G-32]);
   clippy's `disallowed_methods` refuses aborting allocations ([G-179]). The exception is
-  `Grift::new`'s shared control block, an `Arc::new` ([G-178]).
+  `Grift::new`'s shared control block, an `Arc::new` ([G-178]). The runner's own lint file refuses
+  `print!` and `eprint!`, which panic on a closed stream ([G-212]).
 - Tail calls run in constant space: a compound operative's body, `evaluate` and a `catch!`'s
   handler are tail calls, and a trace records nothing per call ([G-29],
   [`docs/LANGUAGE.md`](docs/LANGUAGE.md#evaluation)). Evaluation and every primitive's walk use the
@@ -202,7 +206,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - Collection happens only at safe points: the top of the machine loop, and a host's entry before its
   run needs a slot. Allocation never collects, and nothing roots by hand ([G-12], [G-155]).
 - A reference carries its slot's generation: a collected value is `stale-value`, never another
-  object, and a slot is retired at its last generation ([G-11], [G-133]). Names are collected like
+  object, and a slot is retired at its last generation ([G-11], [G-133]); `stale-value` has one
+  maker and carries no values ([G-187], [G-212]). Names are collected like
   any value, so a host's `Symbol` can go stale too ([G-179]), except grift's own known names, which
   the heap makes first, at slots that are their numbers, and always marks ([G-206]).
 - A fact that can't be missing has no quiet default: the code's shape leaves none to write, or the
@@ -358,6 +363,7 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-182]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-183]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-185]: DECISIONS.md#the-architecture-audit-2026-11-10
+[G-187]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-188]: DECISIONS.md#owed-work-2026-11-11
 [G-200]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
 [G-201]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
@@ -365,3 +371,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-205]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
 [G-206]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
 [G-210]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
+[G-212]: DECISIONS.md#a-more-solid-foundation-with-fewer-lines-2026-11-12

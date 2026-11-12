@@ -1,11 +1,14 @@
---- a/crates/grift/src/read.rs
-+++ b/crates/grift/src/read.rs
-@@ -125,7 +125,7 @@
-                 if let Some(source) = source
-                     && e.kind == K::ParseError.into()
-                 {
--                    let _ = push(&mut e.values, Value::Symbol(source));
-+                    let _ = source;
-                 }
-                 e
-             })?
+diff --git i/crates/grift/src/read.rs w/crates/grift/src/read.rs
+index 4481f8b6..9aeb7fb4 100644
+--- i/crates/grift/src/read.rs
++++ w/crates/grift/src/read.rs
+@@ -124,8 +124,7 @@ fn parse_error(src: &str, at: usize, reason: K, source: Option<Symbol>) -> Error
+     let column = integer(before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1);
+     let reason = Value::Symbol(reason.into());
+     match source {
+-        Some(s) => Error::new(K::ParseError, &[reason, line, column, Value::Symbol(s)]),
+-        None => Error::new(K::ParseError, &[reason, line, column]),
++        Some(_) | None => Error::new(K::ParseError, &[reason, line, column]),
+     }
+ }
+ 

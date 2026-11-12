@@ -2109,3 +2109,78 @@ The one-truth plan's PR 4: six small facts that were kept by more than one hand.
   in a name. Kept over the limit for the speed and the guarantee. This is the rule G-185 gave host functions
   (`HostCall::exactly`), now for primitives, and it takes over the padded arguments G-210 left to Experiment E.
   `sequence_primitive`'s last arm is `_`, meaning `bytes-to-list`, as `bitwise`'s is shift-right.
+
+## A more solid foundation, with fewer lines, 2026-11-12
+
+Six auditors read the whole crate at 5d5af9c0 (the machine, Rust usage, correct by design, deletion, the heap
+and its neighbours, a newcomer's pass; `notes/projects/grift/audit-2026-11-12/`). Their common verdict: the code
+is already tight and no module should be rewritten or split. What was left is small: two latent bugs, and facts
+still kept by more than one hand.
+
+- **G-212. One owner each for what the audit found kept twice; two bugs fixed.** Set before the work: production
+  lines net negative, every workload within +2% of master, every historic bug still caught, no test weakened.
+  - **Bugs.** `(string-split #bytes(97) #bytes())` made pieces until memory ran out: the guard compared the
+    separator with `""`, which an empty bytes value isn't. It now asks for a separator of no bytes, so both kinds
+    are the `range-error`. `host_function` put its registration in the table before making the applicative, so a
+    refusal there left an entry no value named, walked by every collection for good; the registration's room is
+    now reserved first and filled last. The printer's
+    `stale-value` for a host function with no registration carried the value, against G-187's "no values".
+  - **`stale-value` has one maker**, `Error::stale`, and the heap one check for "a live slot of this kind, to
+    change" (`live_mut`, which `room_in`, `install` and the text loan share; it takes the slots alone, so the
+    pacing counter stays free beside what it gives). Seven hand-made copies are gone.
+  - **Rust builds a list in one place.** `list_local` is folded into `list_of`, which takes whose pairs they
+    are, so a handler's values and the arguments of a host's `Answer::Call` look for a stop like every other
+    built list (the 2026-11-10 audit's item 5, left open then).
+  - **A walk's look for a stop is `Control::walk`**, a `Result`: seven sites that turned a `bool` into
+    `interrupted` by hand are one `?`, so a walk can't ask and go on (historic bugs 25 to 27 were walks that
+    didn't stop). `walk_stopped` and the `walk_charged` forwarder are gone, and the printer's output holds the
+    control word, not the interpreter.
+  - **The library mark is a value** (amends G-183). `Machine.library` was written in a step and read later in
+    the same step, never across steps; forgetting the write read whatever the last step left, which is historic
+    bug 44. A combination's `Base` now hands the mark to `combine`, `apply`, `primitive` and `handle` as an
+    argument and the field is gone, with `spread` folded into `combine`, its one caller. Leaving the mark out
+    doesn't compile, so 44 is retired in `tests/historic/INDEX.tsv`; a wrong constant there still compiles, and
+    no test catches that.
+  - **A caught error's record is filled by `Heap::bind`** (G-209's rule, its last exception): three lint
+    exemptions that each restated the record's size are gone.
+  - **A parse error gets its source where it is made** (`parse_error` takes it; the reader's cursor carries it).
+    The wrapper that added it at one caller, picking errors by their kind's name, is gone: that wrapper losing
+    the source was historic bug 37. One visible change: with no memory for the error's four values it is
+    `out-of-memory`, as for any error, where it was a `parse-error` missing its source.
+  - **Who began an error is private to `local.rs`.** Outside it an error can only be made a limit
+    (`Error::into_limit`): nothing can make a limit catchable again or forge a refusal, which asks for a
+    collection and gives up the spare room (historic bugs 08, 13, 35 and 41 were this flag mishandled).
+  - **Smaller.** `Error::new` copies its values with `collected` and is made by `from_parts`; the reader gathers
+    a string in a `TextBuffer`; the runner's `owned_string` raises the `type-error` its four callers raised
+    (G-196's rule); the runner has a lint file refusing `print!` and `eprint!`, which panic on a closed stream
+    (historic bug 17 is now refused by the lint as well as caught by its test); the printer is one `impl`;
+    helpers used in one file are private to it; a `debug_assert!` that couldn't fail is gone.
+  - **Test hooks.** `search_directly` is gone and `call_primitive` goes through `apply`: the long-search test
+    calls the same search the same way, with no machine step around it. Two doctest-only guards on `resume` are
+    gone: the example above them resumes with the handle itself, so a `resume` taking anything else doesn't
+    compile, and `ParkedIsNotClone` still refuses a second handle. (The `E0382` in that example's
+    `compile_fail` is checked on nightly only, so it was never what held the fact on stable.)
+  - **Not done, and why.** `fetch_update` for the control word's retry loop: deprecated on Rust 1.100 for
+    `try_update`, which 1.88 doesn't have. `kinds!` generating `Object`: it moves the enum into a macro and
+    reorders its variants on the read path, and the compiler already refuses a mismatch. The report's checks
+    run once instead of twice: +1 line and a re-ported patch for a saving nobody measured. `safe_point`
+    returning nothing: G-177 measured it at +37%. `unwrap` through `combiner_of` and interning from a text
+    loan: both in `primitive`, neither shorter. The comparison counter in test builds stays (the audit left it
+    to the owner).
+  - **Speed.** Set before: every workload within +2% of master. Measured on the quiet machine at the head with
+    `perf stat`: instructions +0.2% to +0.7% (fib +0.60, life +0.19, finally +0.37, catch +0.72, host +0.32),
+    cycles +2.0% to +3.1%. So the code does the same work and runs 2 to 3% slower. The cause was looked for and
+    not found in any path: the whole of it arrived with the two-line `host_function` fix, which runs six times
+    at start-up and in no workload (+4 to +6% cycles at the same instruction count, branch misses and cache
+    misses); master rebuilt under other names stays within 0.3%, and padding the allocations made before
+    `Grift::new` moves neither tree by 1%. It is where the build puts the machine's loop, which almost any
+    change moves. **The measure is revised** (the orchestrator's, with this evidence): instructions within +1%
+    of master per workload says whether a change does more work, and this PR is inside it; cycles and wall
+    time within +2% stay wanted, are out here, and are the owner's to accept before merge. Of the
+    instructions, the library mark as a value is +0.3 to +0.4%, kept for making bug 44 unwritable; the
+    off-loop commits had `catch` at +2.2% (the stop check on a handler's values list among them), which
+    `Control::walk` brought back to +0.5%.
+  - **Lines.** Set before: production net negative, aiming at -50. Measured by `tools/lines.sh`:
+    production +238 -312, net -74; tests +38 -2, net +36. The test lines are the two bugs' failing tests. The heap's test probe stays in `heap.rs` (the audit's optional
+    move): its assertions sit where the pacing they check is computed, and moving them would trade that for a
+    `#[path]` module and a four-argument test-only call inside `collect`.

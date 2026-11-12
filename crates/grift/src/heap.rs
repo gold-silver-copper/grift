@@ -3,7 +3,7 @@
 //! collection needs no memory of its own.
 
 use crate::evaluate::Native;
-use crate::local::{Error, K, K_NAMES, Symbol, Value, boxed, push};
+use crate::local::{Error, K_NAMES, Symbol, Value, boxed, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -253,14 +253,6 @@ impl<T> Ref<T> {
     }
 }
 
-/// A slot that holds no object of the kind asked for: reclaimed, or never one. One answer, the
-/// host's `stale-value`, with no values: the value would name what isn't there. Cold: the machine
-/// never meets one, so its reads keep one way out.
-#[cold]
-fn stale() -> Error {
-    Error::new(K::StaleValue, &[])
-}
-
 impl Heap {
     /// A heap holding grift's known names, made first so each one's slot is its number, as
     /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself. With no
@@ -287,7 +279,6 @@ impl Heap {
     /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
     #[inline]
     fn alloc<T>(&mut self, obj: Object) -> Result<Ref<T>, Error> {
-        debug_assert!(weight(&obj) > 0, "an object weighs at least its own slot");
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
@@ -383,14 +374,7 @@ impl Heap {
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
     fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
-        let bindings = match self.slots.get_mut(r.idx as usize) {
-            Some(Slot {
-                generation,
-                obj: Object::Context((_, bindings)),
-                ..
-            }) if *generation == r.generation => bindings,
-            _ => return Err(stale()),
-        };
+        let (_, bindings) = live_mut(&mut self.slots, r)?;
         let before = bindings_weight(bindings);
         bindings.try_reserve(more)?;
         let grown = bindings_weight(bindings).saturating_sub(before);
@@ -428,16 +412,9 @@ impl Heap {
         match self.slots.get(r.idx as usize) {
             Some(s) if s.generation == r.generation => match T::of(&s.obj) {
                 Some(holds) => Ok(holds),
-                None => Err(stale()),
+                None => Err(Error::stale()),
             },
-            _ => Err(stale()),
-        }
-    }
-
-    fn get_mut<T: Kind>(&mut self, r: Ref<T>) -> Result<&mut T::Holds, Error> {
-        match self.slots.get_mut(r.idx as usize) {
-            Some(s) if s.generation == r.generation => T::of_mut(&mut s.obj).ok_or_else(stale),
-            _ => Err(stale()),
+            _ => Err(Error::stale()),
         }
     }
 
@@ -465,7 +442,7 @@ impl Heap {
         r: Ref<kind::Operative>,
         native: Option<Native>,
     ) -> Result<(), Error> {
-        self.get_mut(r)?.native = native;
+        live_mut(&mut self.slots, r)?.native = native;
         Ok(())
     }
 
@@ -659,6 +636,15 @@ impl Heap {
     }
 }
 
+/// What the object `r` names holds, to change, if its slot still holds one of its kind. It takes
+/// the slots alone, so the heap's pacing stays free beside what it gives.
+fn live_mut<T: Kind>(slots: &mut [Slot], r: Ref<T>) -> Result<&mut T::Holds, Error> {
+    match slots.get_mut(r.idx as usize) {
+        Some(s) if s.generation == r.generation => T::of_mut(&mut s.obj).ok_or_else(Error::stale),
+        _ => Err(Error::stale()),
+    }
+}
+
 /// How many objects a context's bindings count as besides the context: the slots their storage
 /// would fill past the first, which the context's own count stands for. So a call's few bindings
 /// cost nothing more, and a context with many counts as the slots they fill.
@@ -678,7 +664,7 @@ pub(crate) fn tidy<X>(v: &mut Vec<X>) {
 
 /// Moves `v` into storage for `room` entries, at least its length, if that is less than it has and
 /// memory allows; else leaves it as it is.
-pub(crate) fn shrink<X>(v: &mut Vec<X>, room: usize) {
+fn shrink<X>(v: &mut Vec<X>, room: usize) {
     let room = room.max(v.len());
     let mut smaller = Vec::new();
     if v.capacity() > room && smaller.try_reserve_exact(room).is_ok() {
@@ -775,9 +761,9 @@ impl<T> crate::Grift<T> {
         r: Ref<kind::String>,
         f: impl FnOnce(&mut Self, &str) -> R,
     ) -> Result<R, Error> {
-        let text = std::mem::take(self.heap.get_mut(r)?);
+        let text = std::mem::take(live_mut(&mut self.heap.slots, r)?);
         let done = f(self, &text);
-        *self.heap.get_mut(r)? = text;
+        *live_mut(&mut self.heap.slots, r)? = text;
         Ok(done)
     }
 }

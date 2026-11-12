@@ -1,7 +1,9 @@
---- a/crates/grift/src/print.rs
-+++ b/crates/grift/src/print.rs
-@@ -202,7 +202,7 @@
-         let mut probe = Paced::new(self, &mut discard, bytes);
+diff --git i/crates/grift/src/print.rs w/crates/grift/src/print.rs
+index 78a630bb..8fba0eb6 100644
+--- i/crates/grift/src/print.rs
++++ w/crates/grift/src/print.rs
+@@ -196,7 +196,7 @@ impl<T> Grift<T> {
+         let mut probe = Paced::new(&self.control, &mut discard, bytes);
          let probed = self.write_report(e, usize::MAX, &mut probe);
          probe.ending(probed)?;
 -        let share = match probe.full && bytes >= REPORT_FLOOR {

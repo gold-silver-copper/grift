@@ -1,0 +1,8 @@
+# Printing that panics when its stream is closed. The runner writes through `say` and its sinks,
+# which report or drop a failed write instead.
+disallowed-macros = [
+  { path = "std::print", reason = "panics when stdout is closed: write through a Sink" },
+  { path = "std::println", reason = "panics when stdout is closed: write through a Sink" },
+  { path = "std::eprint", reason = "panics when stderr is closed: use say" },
+  { path = "std::eprintln", reason = "panics when stderr is closed: use say" },
+]

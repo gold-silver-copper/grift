@@ -18,7 +18,7 @@ mod tests;
 
 use heap::{Bindings, Heap, Ref, kind};
 use interrupt::Control;
-use local::{K, boxed, push};
+use local::{K, push};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -574,8 +574,11 @@ impl<T> Grift<T> {
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
         let made = self.heap.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
-            push(&mut self.hosts, (s, f))?;
+            // The registration's room comes first and its entry last, when nothing can fail.
+            self.hosts.try_reserve(1)?;
             let host = self.heap.make(local::Value::Host(local::Host(id)))?;
+            #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
+            self.hosts.push((s, f));
             Ok(local::Value::Applicative(host))
         });
         self.exported(made)
@@ -703,8 +706,8 @@ impl<T> Grift<T> {
 
     /// A new string holding a copy of `s`.
     pub fn string(&mut self, s: &str) -> Result<Value, Error> {
-        let made = boxed(s).and_then(|s| self.heap.make(s));
-        self.exported(made.map(local::Value::String))
+        let made = self.string_local(s);
+        self.exported(made)
     }
 
     /// The contents of a string value; `None` for anything else. To hold them while it calls
@@ -997,7 +1000,7 @@ impl<T> Grift<T> {
             .owns(&k.owner)
             .and_then(|()| match self.kept.get(k.name as usize) {
                 Some(Entry::Value(v)) => Ok(*v),
-                _ => Err(local::Error::new(K::StaleValue, &[])),
+                _ => Err(local::Error::stale()),
             });
         self.exported(found)
     }
@@ -1015,20 +1018,6 @@ impl<T> Grift<T> {
     /// The name of symbol `s`.
     pub(crate) fn name(&self, s: local::Symbol) -> &str {
         self.heap.symbol(s.0).map_or("", |(name, _)| name)
-    }
-
-    /// Whether a walk inside one step, now `walked` items long, must give up for a stop. Pairs
-    /// can share, so a few objects can be a tree no walk finishes; the failed step then acts on the
-    /// stop. A walk shorter than [`WALK_CHECK`] items never asks, so it can't be cut.
-    #[inline(always)]
-    pub(crate) fn walk_stopped(&self, walked: &mut usize) -> bool {
-        *walked = walked.wrapping_add(1);
-        *walked & (WALK_CHECK - 1) == 0 && self.control.asked()
-    }
-
-    /// [`Grift::walk_stopped`] for `cost` items at once, such as the bytes of a piece of text.
-    pub(crate) fn walk_charged(&self, walked: &mut usize, cost: usize) -> bool {
-        self.control.charged(walked, cost)
     }
 
     /// The context `v` is, or a `type-error`.
@@ -1085,7 +1074,7 @@ impl<T> Grift<T> {
         self.owns(&s.owner)?;
         match self.heap.symbol(s.index) {
             Some((_, generation)) if generation == s.generation => Ok(local::Symbol(s.index)),
-            _ => Err(local::Error::new(K::StaleValue, &[])),
+            _ => Err(local::Error::stale()),
         }
     }
 
@@ -1099,11 +1088,12 @@ impl<T> Grift<T> {
     /// An error the host hands in, as the reason a run unwinds. One that can't come in, its values
     /// reclaimed or another interpreter's, is that error instead. Either is a limit if it was one.
     pub(crate) fn incoming_error(&self, e: &Error) -> local::Error {
-        let (Ok(mut imported) | Err(mut imported)) = self.import_error(e);
-        if e.limit && !imported.limit() {
-            imported.began = local::Began::Limit;
+        let (Ok(imported) | Err(imported)) = self.import_error(e);
+        if e.limit {
+            imported.into_limit()
+        } else {
+            imported
         }
-        imported
     }
 
     /// Validate and root a host call before its first allocation. A call of what isn't an
