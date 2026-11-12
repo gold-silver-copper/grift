@@ -2086,9 +2086,14 @@ The one-truth plan's PR 4: six small facts that were kept by more than one hand.
   `()` is written for an argument that isn't there; a parked handle whose kept name holds no run is `stale-value`
   (`Grift::forgotten` answers `None` for it), not a request of `#inert`; printing a host function with no
   registration is `stale-value`, not `#[host ]`. Left, and why: `waiting.pop().unwrap_or(Ok(v))` is in `step`,
-  the machine's loop; the three padded primitive arguments belong to Experiment E (G-211); `Grift::name`'s `""` and
+  the machine's loop; the three padded primitive arguments belong to Experiment E; `Grift::name`'s `""` and
   `export_symbol`'s generation `0` read a symbol the interpreter holds, which collection keeps, and making them
   `stale-value` would make `export`, every value handed out, and the names sort fallible, far past a small change.
+- **Line budget, revised** (set before: production net ≤ 0 over the PR). Measured: +8 (`tools/lines.sh
+  f49e34f9`), after trimming from +39: each item replaces several hands with one owner that costs a function
+  or a type (`Heap::new`, `Heap::bind`/`unbind`, the `From` impl, `NATIVES`), and the deletions it allows (the
+  load loop, the root chain, `Trace::handed`, `bind_symbol`, `Grift::intern`) are smaller. Dropping item 1 or 5
+  would meet it, at the cost of the fact each moves to one owner.
 - **G-211. A primitive's operand count is its arm's pattern** (Experiment E, timed before it was kept). Each arm
   of `Grift::primitive` takes its arguments with `let [x, y] = self.arguments(base)?`: an array of exactly that
   many, or the `arity-error` carrying the arguments as one list, before any type is checked. The table's fewest and
@@ -2099,9 +2104,8 @@ The one-truth plan's PR 4: six small facts that were kept by more than one hand.
   of its arms its own pattern, so its made-up `type-error` fallback is gone. The float functions share one arm and
   one extraction. docs/LANGUAGE.md's counts and the natives' grift twins stay as independent statements, checked
   by `natives_are_their_definitions`. Speed (set before: every workload within +2% of master): faster on all six,
-  -1.2% to -4.4%. Lines: production net over the +30 set before; the owner decides.
-- **Line budget, revised** (set before: production net ≤ 0 over the PR). Measured: +8 (`tools/lines.sh
-  f49e34f9`), after trimming from +39: each item replaces several hands with one owner that costs a function
-  or a type (`Heap::new`, `Heap::bind`/`unbind`, the `From` impl, `NATIVES`), and the deletions it allows (the
-  load loop, the root chain, `Trace::handed`, `bind_symbol`, `Grift::intern`) are smaller. Dropping item 1 or 5
-  would meet it, at the cost of the fact each moves to one owner.
+  -1.2% to -4.4%. Lines (set before: production net ≤ +30): measured +65 (`tools/lines.sh 5bab96f2`), since about twenty one-line
+  arms became a block with their own pattern; helpers such as `one(base)` would cut lines but restate the count
+  in a name. Kept over the limit for the speed and the guarantee. This is the rule G-185 gave host functions
+  (`HostCall::exactly`), now for primitives, and it takes over the padded arguments G-210 left to Experiment E.
+  `sequence_primitive`'s last arm is `_`, meaning `bytes-to-list`, as `bitwise`'s is shift-right.
