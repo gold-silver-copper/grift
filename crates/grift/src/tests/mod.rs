@@ -10,7 +10,7 @@ mod ending;
 mod family;
 mod parked;
 
-use crate::evaluate::{Native, Primitive};
+use crate::evaluate::{NATIVES, Native, Primitive};
 use crate::heap::Bindings;
 use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKind, Value, local};
 
@@ -85,7 +85,7 @@ impl<T> Grift<T> {
         let here = (self.heap.make((Some(self.built_in), Bindings::default()))).unwrap();
         self.run_text(None, here, None, MEANINGS, true, None)
             .unwrap();
-        let name = self.intern("meanings").unwrap();
+        let name = self.heap.intern("meanings").unwrap();
         let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {
             panic!("natives.grift defines meanings");
         };
@@ -100,8 +100,8 @@ impl<T> Grift<T> {
             };
             self.heap.bind(self.built_in, name, bound).unwrap();
         }
-        for (_, name) in Native::ALL {
-            let name = self.intern(name).unwrap();
+        for (_, name) in NATIVES {
+            let name = self.heap.intern(name).unwrap();
             let Some(local::Value::Operative(form)) = self.find(self.built_in, name).unwrap()
             else {
                 panic!("the library defines each twin as an operative");
@@ -893,13 +893,13 @@ const OTHER_TEXTS: &[&str] = &[
 /// What the generator calls, with what each of its arguments usually is: `i` an integer, `f` a
 /// float, `s` a string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a
 /// symbol, `p` a pair, `b` a test, `B` a bytes value, `l` a list of bytes, `x` anything. The
-/// primitives' come from [`class`], the twins' from [`Native`].
+/// primitives' come from [`class`], the twins' from [`NATIVES`].
 static CALLED: std::sync::LazyLock<Vec<(&str, &str)>> = std::sync::LazyLock::new(|| {
     let primitives = Primitive::ALL
         .iter()
         .flat_map(|&p| class(p).1.iter().map(move |k| (p.name(), *k)));
     primitives
-        .chain(Native::ALL.map(|(n, name)| match n {
+        .chain(NATIVES.map(|(n, name)| match n {
             Native::If => (name, "bxx"),
             Native::Sequence => (name, "xxx"),
         }))

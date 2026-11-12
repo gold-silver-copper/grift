@@ -448,7 +448,7 @@ impl<T> Grift<T> {
         self.built_in = self.heap.make((None, Bindings::default()))?;
         self.top = self.heap.make((Some(self.built_in), Bindings::default()))?;
         for &p in evaluate::Primitive::ALL {
-            let s = self.intern(p.name())?;
+            let s = self.heap.intern(p.name())?;
             let wrapped = self.heap.make(local::Value::Primitive(p))?;
             let v = local::Value::Applicative(wrapped);
             self.heap.bind(self.built_in, s, v)?;
@@ -534,7 +534,7 @@ impl<T> Grift<T> {
         parks: Option<parked::MayPark>,
     ) -> Result<local::Value, local::Error> {
         let ready = self.prepare(std::iter::once(local::Value::Context(context)), []);
-        let source = source.map(|s| self.intern(s)).transpose()?;
+        let source = source.map(|s| self.heap.intern(s)).transpose()?;
         let first = evaluate::First::Text {
             context,
             source,
@@ -572,7 +572,7 @@ impl<T> Grift<T> {
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
     /// hands it to grift code that keeps it private.
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
-        let made = self.intern(name).and_then(|s| {
+        let made = self.heap.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
             let host = self.heap.make(local::Value::Host(local::Host(id)))?;
@@ -618,7 +618,7 @@ impl<T> Grift<T> {
     /// Binds `name` to `v` in the top-level context.
     pub fn define(&mut self, name: &str, v: Value) -> Result<(), Error> {
         let done = self.import(&v).and_then(|v| {
-            let s = self.intern(name)?;
+            let s = self.heap.intern(name)?;
             self.heap.bind(self.top, s, v)
         });
         self.out(done)
@@ -672,7 +672,7 @@ impl<T> Grift<T> {
 
     /// Interns `name`.
     pub fn symbol(&mut self, name: &str) -> Result<Symbol, Error> {
-        let s = self.intern(name);
+        let s = self.heap.intern(name);
         self.out(s.map(|s| self.export_symbol(s)))
     }
 
@@ -683,7 +683,7 @@ impl<T> Grift<T> {
 
     /// An error of kind `kind`, a [`Kind`] or a host's own, with a copy of `values`.
     pub fn error(&mut self, kind: impl AsRef<str>, values: &[Value]) -> Error {
-        let made = self.intern(kind.as_ref()).and_then(|kind| {
+        let made = self.heap.intern(kind.as_ref()).and_then(|kind| {
             Ok(Error {
                 kind: self.export_symbol(kind),
                 values: collected(values.iter().cloned())?,
@@ -833,7 +833,7 @@ impl<T> Grift<T> {
     /// [`Grift::read_in`], or [`Grift::read`] with no `source`.
     fn read_text(&mut self, source: Option<&str>, text: &str) -> Result<Value, Error> {
         let forms = Control::host_run(&self.control).and_then(|_run| {
-            let source = source.map(|s| self.intern(s)).transpose()?;
+            let source = source.map(|s| self.heap.intern(s)).transpose()?;
             self.read_local(text, source, false)
         });
         self.exported(forms)
@@ -1010,11 +1010,6 @@ impl<T> Grift<T> {
         }
         self.clear_kept(k.name);
         Ok(())
-    }
-
-    /// Interns `name`.
-    pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
-        self.heap.intern(name)
     }
 
     /// The name of symbol `s`.

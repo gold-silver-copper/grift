@@ -325,7 +325,7 @@ impl<T> Grift<T> {
                     Err(_) => return Err(fail(K::BadNumber)),
                 }
             }
-            _ => Value::Symbol(self.intern(token)?),
+            _ => Value::Symbol(self.heap.intern(token)?),
         };
         Ok(v)
     }

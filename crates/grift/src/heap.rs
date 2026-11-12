@@ -225,30 +225,6 @@ pub(crate) struct Heap {
     pub probe: probe::Probe,
 }
 
-impl Heap {
-    /// A heap holding grift's known names, made first so each one's slot is its number, as
-    /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself. With no
-    /// memory for them all, the heap is only good for reporting that, and the refusal says so.
-    pub fn new() -> (Heap, Result<(), Error>) {
-        let mut heap = Heap {
-            slots: Vec::new(),
-            free: NONE,
-            names: HashMap::new(),
-            until_gc: Cell::new(GC_MIN),
-            marks: Vec::new(),
-            fresh: 0,
-            early: false,
-            asked: Cell::new(false),
-            #[cfg(test)]
-            probe: probe::Probe::default(),
-        };
-        let made = K_NAMES
-            .iter()
-            .try_for_each(|name| heap.intern(name).map(|_| ()));
-        (heap, made)
-    }
-}
-
 impl<T> Ref<T> {
     /// No object: a reference no slot has.
     pub(crate) const NONE: Ref<T> = Ref {
@@ -286,6 +262,28 @@ fn stale() -> Error {
 }
 
 impl Heap {
+    /// A heap holding grift's known names, made first so each one's slot is its number, as
+    /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself. With no
+    /// memory for them all, the heap is only good for reporting that, and the refusal says so.
+    pub fn new() -> (Heap, Result<(), Error>) {
+        let mut heap = Heap {
+            slots: Vec::new(),
+            free: NONE,
+            names: HashMap::new(),
+            until_gc: Cell::new(GC_MIN),
+            marks: Vec::new(),
+            fresh: 0,
+            early: false,
+            asked: Cell::new(false),
+            #[cfg(test)]
+            probe: probe::Probe::default(),
+        };
+        let made = K_NAMES
+            .iter()
+            .try_for_each(|name| heap.intern(name).map(|_| ()));
+        (heap, made)
+    }
+
     /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
     #[inline]
     fn alloc<T>(&mut self, obj: Object) -> Result<Ref<T>, Error> {

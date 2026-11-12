@@ -131,10 +131,7 @@ mod right {
         ) -> Result<Ran, Error> {
             let done = run(self, MayPark(()));
             match self.parked_as.take() {
-                Some(name) => {
-                    let parked = self.parked_handle(name).map(Ran::Parked);
-                    self.out(parked.ok_or_else(|| local::Error::new(local::K::StaleValue, &[])))
-                }
+                Some(name) => self.out(self.parked_handle(name)).map(Ran::Parked),
                 None => self.exported(done).map(Ran::Finished),
             }
         }
@@ -179,16 +176,18 @@ impl<T> Grift<T> {
         })
     }
 
-    /// A handle to the run parked under kept name `name`, if one is.
-    fn parked_handle(&self, name: u32) -> Option<Parked> {
-        let Some(Entry::Run(room)) = self.kept.get(name as usize) else {
-            return None;
+    /// A handle to the run parked under kept name `name`, or `stale-value` if none is.
+    fn parked_handle(&self, name: u32) -> Result<Parked, local::Error> {
+        let request = match self.kept.get(name as usize) {
+            Some(Entry::Run(room)) => room.first().map(|m| m.request),
+            _ => None,
         };
-        Some(Parked {
+        let request = request.ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
+        Ok(Parked {
             owner: self.owner,
             control: Arc::downgrade(&self.control),
             name,
-            request: self.export(room.first()?.request),
+            request: self.export(request),
         })
     }
 
@@ -293,6 +292,6 @@ impl<T> Grift<T> {
     /// cleanups.
     pub fn forgotten(&mut self) -> Option<Parked> {
         let name = self.control.forgotten().pop()?;
-        self.parked_handle(name)
+        self.parked_handle(name).ok()
     }
 }
