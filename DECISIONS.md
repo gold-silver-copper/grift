@@ -1923,3 +1923,11 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   back as `f` returns; it lives in `heap.rs` beside the raw slots, so no other code can take text out or
   put any back, and a nested lend of the same string takes the empty text and puts it back before the
   outer one returns its own. `Lent`, `take_text` and `put_text` are gone.
+- **G-191. `Ref::NONE` stays** (the typed-heap review's ask to make "no combination" an `Option`). A `Ref` is two
+  `u32`s with no value left over, so `Option<Ref<Pair>>` is 12 bytes and a frame would grow from 56 to 64,
+  which its asserted size refuses. Keeping 56 needs a niche: generations that are never zero, through
+  allocation, the sweep, giving slots back and symbols' generations. `Ref::NONE` also fills a `Form` or
+  `Finish` frame's context and the built-in and top-level contexts before `load` makes them, and those
+  would need a real context in those frames and a constructor that makes the contexts before the
+  interpreter exists, which then has no way to report their `out-of-memory`. Reading `Ref::NONE` is
+  `stale-value`, so nothing is wrong today; reopen with that niche if a second use for it appears.
