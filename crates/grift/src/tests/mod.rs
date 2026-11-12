@@ -1755,3 +1755,20 @@ fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
     g.heap.probe.stress = false;
     assert_eq!(g.symbol_name(&e.kind).unwrap(), "pending-kind");
 }
+
+/// The reader makes a list's pairs as the list closes, and they are steps of its walk as the bytes
+/// are: in a text too short for its bytes alone to reach a check, they reach one, and the stop ends
+/// the read.
+#[test]
+fn a_stop_ends_the_pairs_of_a_list_being_read() {
+    fn reads(g: &mut HostCall<()>, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+        const ITEMS: usize = crate::WALK_CHECK * 2 / 5;
+        assert!(g.interrupter().stop(), "a run to stop");
+        let read = g.read(&format!("({})", "a ".repeat(ITEMS)));
+        assert_eq!(g.symbol_name(&read.unwrap_err().kind)?, "interrupted");
+        Ok(Answer::Now(Value::Inert))
+    }
+    let mut g = Grift::new().unwrap();
+    define(&mut g, "reads", reads);
+    let _ = g.evaluate(&mut (), "(reads)");
+}

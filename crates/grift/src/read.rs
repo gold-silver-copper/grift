@@ -164,7 +164,14 @@ impl<T> Grift<T> {
             push(&mut forms, form)?;
             (at, line) = (place.end, after);
         }
-        self.list_local(&forms, library)
+        self.close(
+            &mut forms,
+            &List::new(0, 0, 1),
+            None,
+            false,
+            library,
+            &mut walked,
+        )
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
@@ -211,7 +218,8 @@ impl<T> Grift<T> {
                     }) => self.bytes_local(bytes)?,
                     Some(list) if list.dot != Dot::Tail => {
                         let place = source.map(|s| (s, list.line));
-                        self.close(&mut items, &list, place, open.is_empty(), library)?
+                        let outer = open.is_empty();
+                        self.close(&mut items, &list, place, outer, library, cur.walked)?
                     }
                     Some(_) => return Err(fail(K::MisplacedDot)),
                     None => return Err(fail(K::UnmatchedParenthesis)),
@@ -264,7 +272,8 @@ impl<T> Grift<T> {
     }
 
     /// The pairs of `list`, its items the last of `items`, which it takes, ending in its tail. Under
-    /// a source name its first pair says where it was read, and whether it is an outer form.
+    /// a source name its first pair says where it was read, and whether it is an outer form. Each
+    /// pair is a step of the walk `walked`, as each byte read is, so a stop ends a long list's too.
     fn close(
         &mut self,
         items: &mut Vec<Value>,
@@ -272,9 +281,13 @@ impl<T> Grift<T> {
         place: Option<(Symbol, u32)>,
         outer: bool,
         library: bool,
+        walked: &mut usize,
     ) -> Result<Value, Error> {
         let mut v = list.tail;
         for (i, &x) in items.iter().enumerate().skip(list.from).rev() {
+            if self.walk_stopped(walked) {
+                return Err(Error::interrupted());
+            }
             let first = i == list.from;
             let origin = Origin {
                 place: place.filter(|_| first),
