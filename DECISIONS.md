@@ -1931,3 +1931,17 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   would need a real context in those frames and a constructor that makes the contexts before the
   interpreter exists, which then has no way to report their `out-of-memory`. Reading `Ref::NONE` is
   `stale-value`, so nothing is wrong today; reopen with that niche if a second use for it appears.
+- **G-192. The heap owns the name index** (the architecture audit's B2). `Grift.symbols` and `tidy_symbols` are gone:
+  the spelling-to-slot index is a private field of `Heap`, `Heap::intern` is the one place a name and its
+  entry are made (the index reserves room first, so it changes only once the name has its slot, and a
+  refusal leaves both as they were), and the sweep removes a name's entry as it frees the name's slot, then
+  gives back the index's storage once under a quarter used, as before. So `collect` has no prune step to
+  remember, and no code outside `heap.rs` can make the index name a freed slot or miss a live name. It
+  removes only the names it frees, where the old prune walked every live one. Pacing is unchanged: the
+  index was never counted in what a collection walks. Each spelling stays in two copies, the slot's and the
+  index key's: one copy needs a key hashed by looking into the heap (hashbrown's `HashTable`, a dependency)
+  or a shared `Rc<str>`/`Arc<str>`, whose making aborts when memory is refused.
+- **G-193. `lend_text` gets no drop guard.** A guard that puts the text back as `f` unwinds must reach the
+  slot, so it borrows the heap while `f` holds the whole interpreter: that takes unsafe or a raw pointer,
+  and `catch_unwind` would change the hot path. Nothing `f` runs can panic (the crate forbids panics and
+  the reader calls no host code), so the plain take-call-put stays.

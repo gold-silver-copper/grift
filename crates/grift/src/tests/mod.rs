@@ -121,7 +121,8 @@ impl<T> Grift<T> {
     /// Whether `v` is the definition this interpreter runs for primitive `p`.
     fn is_definition_of(&self, v: &Value, p: Primitive) -> bool {
         let Some(found) = self
-            .symbols
+            .heap
+            .names()
             .get(p.name())
             .copied()
             .map(local::Symbol)
@@ -1759,7 +1760,7 @@ fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
     let held = g.symbol("only-the-host-holds-this").unwrap();
     g.evaluate(&mut (), "(define! bound-name 42)").unwrap();
     let bound = g.symbol("bound-name").unwrap();
-    let before = g.symbols.len();
+    let before = g.heap.names().len();
     g.evaluate(
         &mut (),
         "(define! dead (lambda! (n) (if! (same? n 0) #inert (dead-step n))))
@@ -1771,11 +1772,15 @@ fn a_name_nothing_holds_is_collected_and_the_host_s_symbol_of_it_goes_stale() {
     g.evaluate(&mut (), "0").unwrap();
     // Only the two definitions' names and `n` were added; the 20,000 and the host's are gone.
     assert!(
-        g.symbols.len() <= before + 3,
+        g.heap.names().len() <= before + 3,
         "{} {before}",
-        g.symbols.len()
+        g.heap.names().len()
     );
-    assert!(g.symbols.capacity() < 4096, "{}", g.symbols.capacity());
+    assert!(
+        g.heap.names().capacity() < 4096,
+        "{}",
+        g.heap.names().capacity()
+    );
     let e = g.symbol_name(&held).unwrap_err();
     assert_eq!(kind(&g, &e), "stale-value");
     let again = g.symbol("only-the-host-holds-this").unwrap();

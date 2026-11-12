@@ -830,7 +830,6 @@ impl<T> Grift<T> {
         let hosts = self.hosts.iter().map(|&(name, _)| Value::Symbol(name));
         let roots = roots.chain(known).chain(hosts);
         self.heap.collect(roots, held.into_iter(), walked);
-        self.tidy_symbols();
         self.tidy_kept();
         self.machine.tidy();
     }
