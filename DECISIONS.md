@@ -2070,7 +2070,7 @@ The one-truth plan's PR 4: six small facts that were kept by more than one hand.
   `impl From<TryReserveError> for local::Error` makes each of the 16 `try_reserve` sites a plain `?`, `boxed` and
   `push` included. Kept as they were: the three `u32::try_from(..).map_err(|_| Error::oom())` (a count past `u32`,
   not a reservation), the heap's `map_err(|_| self.refused())` (it also asks for a collection), and `match_tree`'s
-  arm that reserves in a match. Five of the sites are in `primitive`; the conversion is the same code.
+  arm that reserves in a match. Four of the sites are in `primitive`; the conversion is the same code.
 - **G-208. A handed trace is a `Trace`** (item 4). `Trace::onto` gives back the same trace with its added places put
   on its shared list; `Machine.handed` holds that `Trace`, the list a handler got is its `parts().0`, and raising
   that list again takes the whole value back. `Trace::handed`, which accepted any list with any set, is gone, so the
@@ -2084,7 +2084,7 @@ The one-truth plan's PR 4: six small facts that were kept by more than one hand.
   Reshaped: `install_natives` reads the twin with `value_of` (an `unbound-symbol` naming it, not `type-error` on a
   made-up `#inert`); `arguments_list` pops while the stack is above `base` with a `while let` chain, so no
   `()` is written for an argument that isn't there; a parked handle whose kept name holds no run is `stale-value`
-  (`Grift::forgotten` skips it as `None`), not a request of `#inert`; printing a host function with no
+  (`Grift::forgotten` answers `None` for it), not a request of `#inert`; printing a host function with no
   registration is `stale-value`, not `#[host ]`. Left, and why: `waiting.pop().unwrap_or(Ok(v))` is in `step`,
   the machine's loop; the three padded primitive arguments belong to Experiment E; `Grift::name`'s `""` and
   `export_symbol`'s generation `0` read a symbol the interpreter holds, which collection keeps, and making them
