@@ -254,7 +254,9 @@ impl<T> Ref<T> {
 }
 
 /// A slot that holds no object of the kind asked for: reclaimed, or never one. One answer, the
-/// host's `stale-value`, with no values: the value would name what isn't there.
+/// host's `stale-value`, with no values: the value would name what isn't there. Cold: the machine
+/// never meets one, so its reads keep one way out.
+#[cold]
 fn stale() -> Error {
     Error::new(K::StaleValue, &[])
 }
@@ -376,7 +378,12 @@ impl Heap {
     #[inline]
     fn get<T: Kind>(&self, r: Ref<T>) -> Result<&T::Holds, Error> {
         match self.slots.get(r.idx as usize) {
-            Some(s) if s.generation == r.generation => T::of(&s.obj).ok_or_else(stale),
+            Some(s)
+                if s.generation == r.generation
+                    && let Some(holds) = T::of(&s.obj) =>
+            {
+                Ok(holds)
+            }
             _ => Err(stale()),
         }
     }
