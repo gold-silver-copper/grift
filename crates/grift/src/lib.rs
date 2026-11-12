@@ -536,8 +536,10 @@ impl<T> Grift<T> {
         let ready = self.prepare(std::iter::once(local::Value::Context(context)), []);
         let source = source.map(|s| self.intern(s)).transpose()?;
         let run = self.begin_run(ready, parks);
-        let forms = self.read_local(src, source, library)?;
-        let mode = self.forms(forms, context);
+        // A text that doesn't read ends as every run does, through enter.
+        let mode = self
+            .read_local(src, source, library)
+            .and_then(|forms| self.forms(forms, context));
         self.enter(run, state, mode)
     }
 
