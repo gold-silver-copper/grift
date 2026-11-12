@@ -174,7 +174,9 @@ impl Trace {
 /// can name them as constants; the kinds of error come first, and are the public [`Kind`] too.
 macro_rules! known_symbols {
     ($($e:ident $kind:literal)* ; $($k:ident $name:literal)*) => {
-        /// A kind of error grift raises, which a host makes or recognises without spelling it.
+        /// A kind of error grift raises, which a host makes or recognises without spelling it. For
+        /// `type-error` and `arity-error` use `HostCall::type_error` and `HostCall::arity_error`,
+        /// which give the error a primitive's values too.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Kind { $($e),* }
         pub(crate) const KINDS: &[Kind] = &[$(Kind::$e),*];

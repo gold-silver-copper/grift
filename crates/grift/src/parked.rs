@@ -197,7 +197,7 @@ impl<T> Grift<T> {
     /// let Ran::Parked(parked) = g.start_in(&mut (), &top, "script", src)? else {
     ///     panic!("it waits");
     /// };
-    /// let ending = grift::Error { limit: true, ..g.error("given-up", &[]) };
+    /// let ending = g.limit("given-up", &[]);
     /// let Err(ResumeError { error, parked: None }) = g.resume(&mut (), parked, Err(ending)) else {
     ///     panic!("it ends");
     /// };
