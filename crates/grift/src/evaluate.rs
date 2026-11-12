@@ -1266,13 +1266,26 @@ impl<T> Grift<T> {
                     let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
-                    // Under it go its `Finish` and that frame's entry, never one without the other.
-                    let room = &mut self.machine.waiting;
-                    room.try_reserve(1).map_err(|_| Error::oom())?;
-                    self.frame(What::Finish, Ref::NONE, Ref::NONE)?;
-                    #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
-                    self.machine.waiting.push(Ok(Value::Inert));
-                    self.frame(What::Cleanup { cleanup: z, base }, c, at)?;
+                    // Under it go its `Finish` and that frame's entry, never one without the
+                    // other: all the room comes first, and nothing after it can fail.
+                    let m = &mut self.machine;
+                    m.frames.try_reserve(2).map_err(|_| Error::oom())?;
+                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    let finish = Frame {
+                        what: What::Finish,
+                        context: Ref::NONE,
+                        at: Ref::NONE,
+                    };
+                    let cleanup = Frame {
+                        what: What::Cleanup { cleanup: z, base },
+                        context: c,
+                        at,
+                    };
+                    #[expect(clippy::disallowed_methods, reason = "reserved all three above")]
+                    {
+                        m.waiting.push(Ok(Value::Inert));
+                        m.frames.extend([finish, cleanup]);
+                    }
                 }
                 return Ok(Mode::Evaluate(x, c));
             }
