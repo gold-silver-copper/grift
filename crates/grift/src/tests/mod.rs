@@ -46,7 +46,34 @@ fn class(p: Primitive) -> (bool, &'static [&'static str]) {
         // Core, called on bytes values, as the definitions call them.
         P::ByteAt => (false, &["Bo"]),
         P::Join => (false, &["BB"]),
-        _ => (false, &[]),
+        // Core, listed so a new primitive is classed here or this doesn't compile.
+        P::Vau
+        | P::Wrap
+        | P::Unwrap
+        | P::Evaluate
+        | P::EvaluateWithCleanup
+        | P::EvaluateWithHandler
+        | P::Raise
+        | P::Context
+        | P::Bind
+        | P::Unbind
+        | P::Names
+        | P::Pair
+        | P::Same
+        | P::TypeOf
+        | P::Add
+        | P::Subtract
+        | P::Multiply
+        | P::Divide
+        | P::Sine
+        | P::Cosine
+        | P::Tangent
+        | P::Exponential
+        | P::NaturalLogarithm
+        | P::StringToSymbol
+        | P::StringToFloat
+        | P::ReadForm
+        | P::ValueToString => (false, &[]),
     }
 }
 
