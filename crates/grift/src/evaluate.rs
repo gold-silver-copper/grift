@@ -1806,7 +1806,8 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
-    /// Runs primitive `p` on `args` in `context`, for the sweeps in `tests::family`.
+    /// Runs primitive `p` on `args` in `context`, with no step of the machine around it, for the
+    /// tests of what a primitive does by itself.
     #[cfg(test)]
     pub(crate) fn call_primitive(
         &mut self,
@@ -1818,9 +1819,7 @@ impl<T> Grift<T> {
         for &a in args {
             push(&mut self.machine.arguments, a)?;
         }
-        let r = self.primitive(p, context, base);
-        self.machine.arguments.truncate(base);
-        r
+        self.apply(Value::Primitive(p), context, base)
     }
 }
 
@@ -1940,20 +1939,6 @@ impl<T> Grift<T> {
             }
         }
         Ok((left, period))
-    }
-}
-
-#[cfg(test)]
-impl<T> Grift<T> {
-    /// The primitive `search` from the start of `text`, with no step of the machine around it.
-    pub(crate) fn search_directly(&mut self, text: Value, pattern: Value) -> Result<Value, Error> {
-        let base = self.machine.arguments.len();
-        for a in [text, pattern, Value::Integer(0)] {
-            push(&mut self.machine.arguments, a)?;
-        }
-        let r = self.sequence_primitive(Primitive::Search, base);
-        self.machine.arguments.truncate(base);
-        r
     }
 }
 

@@ -1600,9 +1600,10 @@ fn searches_with_a_stop_waiting(
 ) -> Result<Answer, Error> {
     assert!(stop.stop(), "a run to stop");
     let (text, pattern) = (g.import(&args[0]).unwrap(), g.import(&args[1]).unwrap());
-    match g.0.search_directly(text, pattern) {
+    let args = [text, pattern, local::Value::Integer(0)];
+    match g.0.call_primitive(Primitive::Search, &args, g.built_in) {
         Err(e) => assert_eq!(kind(g, &g.export_error(e)), "interrupted"),
-        Ok(v) => panic!("the search went on past a stop and answered {v:?}"),
+        Ok(_) => panic!("the search went on past a stop"),
     }
     Ok(Answer::Now(Value::Inert))
 }
