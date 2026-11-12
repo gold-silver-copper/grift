@@ -1,10 +1,12 @@
---- a/crates/grift/src/interrupt.rs
-+++ b/crates/grift/src/interrupt.rs
-@@ -72,7 +72,7 @@
+diff --git i/crates/grift/src/interrupt.rs w/crates/grift/src/interrupt.rs
+index 43b24144..8cb08bf2 100644
+--- i/crates/grift/src/interrupt.rs
++++ w/crates/grift/src/interrupt.rs
+@@ -84,7 +84,7 @@ impl Control {
  
      /// Sets `bit`, in one atomic step, if `run` is in progress; whether it was.
      fn ask(&self, bit: u64, run: u64) -> bool {
--        self.update(|word| (word & !ASKED == run).then_some(word | bit))
+-        self.update(|word| (word & !NOT_NUMBER == run).then_some(word | bit))
 +        self.update(|word| (word & RUNNING != 0).then_some(word | bit))
      }
  
