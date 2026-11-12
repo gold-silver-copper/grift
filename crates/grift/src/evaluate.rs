@@ -475,11 +475,8 @@ pub(crate) enum First<'a> {
 /// A whole run on the machine, alone with the proof [`Control::begin`] takes, so no other code can
 /// begin one.
 mod whole {
-    use super::{First, Mode, Prepared, What};
-    use crate::heap::Ref;
-    use crate::interrupt::Control;
-    use crate::local::{Error, Value};
-    use crate::{Grift, parked::MayPark};
+    use super::*;
+    use crate::{interrupt::Control, parked::MayPark};
 
     /// That a run begins in [`Grift::run_on_machine`], on a prepared heap.
     pub(crate) struct OnMachine(Prepared);
@@ -1285,20 +1282,14 @@ impl<T> Grift<T> {
                     let m = &mut self.machine;
                     m.frames.try_reserve(2).map_err(|_| Error::oom())?;
                     m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
-                    let finish = Frame {
-                        what: What::Finish,
-                        context: Ref::NONE,
-                        at: Ref::NONE,
-                    };
-                    let cleanup = Frame {
-                        what: What::Cleanup { cleanup: z, base },
-                        context: c,
-                        at,
-                    };
+                    let cleanup = What::Cleanup { cleanup: z, base };
+                    let frames = [(What::Finish, Ref::NONE, Ref::NONE), (cleanup, c, at)];
                     #[expect(clippy::disallowed_methods, reason = "reserved all three above")]
                     {
                         m.waiting.push(Ok(Value::Inert));
-                        m.frames.extend([finish, cleanup]);
+                        for (what, context, at) in frames {
+                            m.frames.push(Frame { what, context, at });
+                        }
                     }
                 }
                 return Ok(Mode::Evaluate(x, c));
