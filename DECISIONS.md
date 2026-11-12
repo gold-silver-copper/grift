@@ -1967,6 +1967,41 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   machine's test-only step count moved to the heap's probe, so the patterns need no `cfg`. The README's and
   LANGUAGE.md's error reports put the place last, where the printer writes it after the kind; they say it in
   words now, as no test runs those examples.
+- **G-196. A host's `type-error` is a primitive's: `HostCall::type_error(value)`** (the one-truth plan's PR 3; the
+  same drift G-185 ended for `arity-error`). The runner and the editor made theirs by hand with
+  `g.error("type-error", args)`, some with all the arguments and some with the one wrong value, so
+  `(catch! (read-forms 1 "x") e ...)` saw `(1 "x")` where `(catch! (first 1) e ...)` sees `(1)`, and a misspelled
+  kind made a new kind no handler matched. `g.type_error(v)` makes it from the core's own name, its one value the
+  value of the wrong type, as `evaluate.rs`'s `type_error` does; the runner, the editor, the README and the
+  examples use it at every site. Programs see a change only where a host function took more than one argument:
+  the runner's `read-forms` (`(read-forms 1 "x")` gives `(1)`, `(read-forms "s" 2)` gives `(2)`, before
+  `(1 "x")` and `("s" 2)`) and the editor's `write-file` (the path or the contents, before both). The runner's
+  other sites already carried one value or are reachable only through `runner.grift`'s closures, which pass the
+  right types. The core itself carries a second value at three places (`spread`'s operands, `list->bytes`'s
+  index), so "one value" is the primitive's rule for a host, not a claim about every core site. The core's own
+  `"arity-error"` literal in `arity_error` is now its constant. Evidence: `a_host_names_grift_s_own_kinds`,
+  `exit_ends_the_run_with_its_status`.
+- **G-197. grift's own kinds of error are a public `Kind`, which `error` and `limit` take beside a host's `&str`**
+  (the brief's question a). `known_symbols!` lists the error kinds first, and from that one list makes the
+  public `Kind`, its spelling (`AsRef<str>`) and the first slots of the private `K`, so a `Kind` and its symbol
+  can't disagree. `Grift::error(kind: impl AsRef<str>, ..)` takes either, so `g.error(Kind::RangeError, args)`
+  can't be misspelled and a host's own `g.error("closed", ..)` is as before. No helper per kind beyond
+  `type_error` and `arity_error`: `range-error`, `encoding-error`, `overflow` and `parse-error` carry the values
+  involved, and how many differs from one core site to the next, so a helper would fix only the spelling, which `Kind` does
+  for all of them with one item. Cost: `g.error(Kind::TypeError, args)` still compiles with the wrong shape; the
+  docs send a host to `type_error`. Rejected: helpers for every kind (more surface, no shape to hold), and an
+  `error` that takes only a `Kind` (a host's own kinds need a name).
+- **G-198. `Error::grift_kind()` says which of grift's own kinds an error is** (the brief's question b; fux
+  matches `"parse-error"` and `"unbound-symbol"` by spelling, where a typo is a silent miss). It reads the kind's
+  slot, needing no interpreter: the known names take the first slots of every interpreter and are always roots,
+  as the collector's own `e.kind == K::X.into()` already relies on. It doesn't check the owner: another
+  interpreter's `type-error` is still a `type-error`. `None` for a host's or a program's own kind.
+- **G-199. `Grift::limit(kind, values)` makes a limit** (the brief's question c; historic bug 13 was a limit
+  recognised by its name with the flag forgotten). `Error { limit: true, ..g.error(kind, values) }` was written
+  in the runner (its own `limit` helper), the editor, `examples/stops.rs`, the README (five times) and the
+  tests; one method replaces each. Recognising a host's own limit stays `e.limit && g.symbol_name(&e.kind)? ==
+  "exit"`: the kind is the host's own spelling, and a helper would take the same string, so it would add a
+  method and remove nothing.
 
 ## A run's lifecycle has one owner, 2026-11-12
 

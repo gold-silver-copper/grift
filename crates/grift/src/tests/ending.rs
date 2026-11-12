@@ -1,7 +1,7 @@
 //! How a run ends: who began the unwinding decides what may catch it, never what its kind is called.
 
 use crate::tests::{define, kind};
-use crate::{Answer, Grift, Interrupter, Value};
+use crate::{Answer, Grift, Interrupter, Kind, Value, local};
 
 /// A host whose program can stop its own run and force it, with a run that waits.
 fn host() -> (Grift<Interrupter>, Interrupter) {
@@ -205,4 +205,30 @@ fn a_wrong_count_with_no_memory_for_its_list_is_out_of_memory() {
     let e = g.evaluate(&mut g.interrupter(), "(one)").unwrap_err();
     assert_eq!(kind(&g, &e), "arity-error");
     assert!(g.evaluate(&mut g.interrupter(), "(one 1)").is_ok());
+}
+
+/// A host names grift's own kinds as a `Kind`: each makes the error of its spelling, which says it
+/// is that kind whoever raised it, while a host's own kind is none of them. A host's `type-error`
+/// is a primitive's: the one value of the wrong type.
+#[test]
+fn a_host_names_grift_s_own_kinds() {
+    let (mut g, _) = host();
+    for &k in local::KINDS {
+        let e = g.error(k, &[]);
+        assert_eq!((kind(&g, &e), e.grift_kind()), (k.as_ref().into(), Some(k)));
+    }
+    assert_eq!(g.error("closed", &[]).grift_kind(), None);
+    define(&mut g, "head", |g, _, args| {
+        let [v] = g.exactly(args)?;
+        Err(g.type_error(*v))
+    });
+    let host = g.evaluate(&mut g.interrupter(), "(head 1)").unwrap_err();
+    let core = g.evaluate(&mut g.interrupter(), "(first 1)").unwrap_err();
+    assert_eq!(
+        (host.grift_kind(), &host.values),
+        (Some(Kind::TypeError), &core.values)
+    );
+    let raised = "(raise (error (quote! parse-error)))";
+    let raised = g.evaluate(&mut g.interrupter(), raised).unwrap_err();
+    assert_eq!(raised.grift_kind(), Some(Kind::ParseError));
 }

@@ -75,10 +75,7 @@ pub fn main() -> Result<(), grift::Error> {
     };
     assert_eq!(g.parked(), 1);
     assert_eq!(g.evaluate(&mut host, "(add 2 2)")?, Value::Integer(4));
-    let ending = grift::Error {
-        limit: true,
-        ..g.error("given-up", &[])
-    };
+    let ending = g.limit("given-up", &[]);
     let Err(ResumeError {
         error,
         parked: None,

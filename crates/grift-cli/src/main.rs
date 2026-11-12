@@ -13,7 +13,7 @@
 //! For scripting, the program gets a small fixed set of operations, which `runner.grift` binds and
 //! the README lists.
 
-use grift::{Answer, Error, Grift, HostCall, HostFunction, Ran, ReportStatus, Value};
+use grift::{Answer, Error, Grift, HostCall, HostFunction, Kind, Ran, ReportStatus, Value};
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
@@ -81,11 +81,13 @@ const STANDARD_OUTPUT: i64 = 2;
 fn put(g: &mut H, r: &mut Runner, id: i64, values: &[Value]) -> Result<Value, Error> {
     let id = Value::Integer(id);
     let (path, Stream::Writing(w)) = file(g, r, &id)? else {
-        return Err(g.error("type-error", values));
+        return Err(g.type_error(id));
     };
     let mut out = Sink { w, error: None };
     let printed = values.iter().try_for_each(|v| match g.as_str(v) {
-        Ok(Some(s)) => fmt::Write::write_str(&mut out, s).map_err(|_| g.error("output-error", &[])),
+        Ok(Some(s)) => {
+            fmt::Write::write_str(&mut out, s).map_err(|_| g.error(Kind::OutputError, &[]))
+        }
         _ => g.write(v, &mut out),
     });
     // The sink's own error first: it says what really failed, and `written` turns it into the
@@ -130,7 +132,7 @@ fn nanoseconds(g: &mut H, args: &[Value], d: Option<Duration>) -> Result<Value, 
     let [] = g.exactly(args)?;
     match d.and_then(|d| i64::try_from(d.as_nanos()).ok()) {
         Some(n) => Ok(Value::Integer(n)),
-        None => Err(g.error("range-error", &[])),
+        None => Err(g.error(Kind::RangeError, &[])),
     }
 }
 
@@ -142,7 +144,7 @@ fn owned_string(g: &mut H, v: &Value) -> Result<Option<String>, Error> {
     };
     let mut copy = String::new();
     if copy.try_reserve_exact(s.len()).is_err() {
-        return Err(limit(g, "out-of-memory", &[]));
+        return Err(g.limit(Kind::OutOfMemory, &[]));
     }
     copy.push_str(s);
     Ok(Some(copy))
@@ -153,15 +155,7 @@ fn one_string(g: &mut H, args: &[Value]) -> Result<String, Error> {
     let [v] = g.exactly(args)?;
     match owned_string(g, v)? {
         Some(s) => Ok(s),
-        None => Err(g.error("type-error", args)),
-    }
-}
-
-/// A limit of `kind`: the runner's are `out-of-memory`, `broken-pipe` and `exit`.
-fn limit(g: &mut H, kind: &str, values: &[Value]) -> Error {
-    Error {
-        limit: true,
-        ..g.error(kind, values)
+        None => Err(g.type_error(*v)),
     }
 }
 
@@ -169,14 +163,14 @@ fn limit(g: &mut H, kind: &str, values: &[Value]) -> Error {
 /// aren't UTF-8, else `kind` with the system's message.
 fn failed(g: &mut H, kind: &str, what: &str, e: &io::Error) -> Error {
     if e.kind() == io::ErrorKind::OutOfMemory {
-        return limit(g, "out-of-memory", &[]);
+        return g.limit(Kind::OutOfMemory, &[]);
     }
     let what = match g.string(what) {
         Ok(v) => v,
         Err(e) => return e,
     };
     if e.kind() == io::ErrorKind::InvalidData {
-        return g.error("encoding-error", &[what]);
+        return g.error(Kind::EncodingError, &[what]);
     }
     match g.string(&e.to_string()) {
         Ok(message) => g.error(kind, &[what, message]),
@@ -194,7 +188,7 @@ fn opened(
     let path = one_string(g, args)?;
     match open(&path) {
         Ok(file) => {
-            let id = i64::try_from(r.files.len()).map_err(|_| limit(g, "out-of-memory", &[]))?;
+            let id = i64::try_from(r.files.len()).map_err(|_| g.limit(Kind::OutOfMemory, &[]))?;
             r.files.push(Opened { path, file });
             Ok(Value::Integer(id))
         }
@@ -229,7 +223,7 @@ fn file<'r>(g: &mut H, r: &'r mut Runner, id: &Value) -> Result<(&'r str, &'r mu
             Err(g.error("closed", &[path]))
         }
         Some(Opened { path, file }) => Ok((path, file)),
-        None => Err(g.error("type-error", std::slice::from_ref(id))),
+        None => Err(g.type_error(*id)),
     }
 }
 
@@ -242,7 +236,7 @@ fn reading(
 ) -> Result<Value, Error> {
     let [id] = g.exactly(args)?;
     let (path, Stream::Reading(input)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*id));
     };
     let mut s = String::new();
     match read(input.as_mut(), &mut s) {
@@ -268,11 +262,11 @@ fn read_all_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Err
 fn read_bytes_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id, count] = g.exactly(args)?;
     let &Value::Integer(n) = count else {
-        return Err(g.error("type-error", std::slice::from_ref(count)));
+        return Err(g.type_error(*count));
     };
-    let n = u64::try_from(n).map_err(|_| g.error("range-error", std::slice::from_ref(count)))?;
+    let n = u64::try_from(n).map_err(|_| g.error(Kind::RangeError, &[*count]))?;
     let (path, Stream::Reading(input)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*id));
     };
     let mut input = input.as_mut().take(n);
     let mut bytes = Vec::new();
@@ -284,7 +278,7 @@ fn read_bytes_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, E
             Err(e) => return Err(failed(g, "file-error", path, &e)),
         };
         if bytes.try_reserve(chunk.len()).is_err() {
-            return Err(limit(g, "out-of-memory", &[]));
+            return Err(g.limit(Kind::OutOfMemory, &[]));
         }
         bytes.extend_from_slice(chunk);
         let used = chunk.len();
@@ -297,14 +291,14 @@ fn read_bytes_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, E
 fn write_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [id, data] = g.exactly(args)?;
     let (path, Stream::Writing(out)) = file(g, r, id)? else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*id));
     };
     let bytes = match g.as_str(data)? {
         Some(text) => Some(text.as_bytes()),
         None => g.as_bytes(data)?,
     };
     let Some(bytes) = bytes else {
-        return Err(g.error("type-error", std::slice::from_ref(data)));
+        return Err(g.type_error(*data));
     };
     let wrote = out.write_all(bytes).and_then(|()| out.flush());
     written(g, path, wrote)
@@ -317,7 +311,7 @@ fn written(g: &mut H, path: &str, wrote: io::Result<()>) -> Result<Value, Error>
         Ok(()) => Ok(Value::Inert),
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
             let path = g.string(path)?;
-            Err(limit(g, "broken-pipe", &[path]))
+            Err(g.limit("broken-pipe", &[path]))
         }
         Err(e) => Err(failed(g, "file-error", path, &e)),
     }
@@ -345,7 +339,7 @@ fn environment_variable(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Val
     match std::env::var(&name) {
         Ok(value) => g.string(&value),
         Err(std::env::VarError::NotPresent) => Err(g.error("unset-variable", args)),
-        Err(std::env::VarError::NotUnicode(_)) => Err(g.error("encoding-error", args)),
+        Err(std::env::VarError::NotUnicode(_)) => Err(g.error(Kind::EncodingError, args)),
     }
 }
 
@@ -355,10 +349,10 @@ fn environment_variable(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Val
 fn exit(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [status] = g.exactly(args)?;
     let &Value::Integer(n) = status else {
-        return Err(g.error("type-error", args));
+        return Err(g.type_error(*status));
     };
-    u8::try_from(n).map_err(|_| g.error("range-error", args))?;
-    Err(limit(g, "exit", args))
+    u8::try_from(n).map_err(|_| g.error(Kind::RangeError, args))?;
+    Err(g.limit("exit", args))
 }
 
 /// The status a run ended with by the runner's own limits, which a program can't begin: what `exit`
@@ -431,7 +425,7 @@ fn run_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     for v in args {
         match owned_string(g, v)? {
             Some(s) => words.push(s),
-            None => return Err(g.error("type-error", std::slice::from_ref(v))),
+            None => return Err(g.type_error(*v)),
         }
     }
     let Some((program, arguments)) = words.split_first() else {
@@ -446,12 +440,12 @@ fn run_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
         .map_or(Value::Inert, |n| Value::Integer(i64::from(n)));
     // Refused memory is the limit, whichever output it was refused to, before either is text.
     let [Some(stderr), Some(stdout)] = outputs else {
-        return Err(limit(g, "out-of-memory", &[]));
+        return Err(g.limit(Kind::OutOfMemory, &[]));
     };
     let mut list = Value::EmptyList;
     for bytes in [stderr, stdout] {
         let Ok(text) = String::from_utf8(bytes) else {
-            return Err(g.error("encoding-error", args));
+            return Err(g.error(Kind::EncodingError, args));
         };
         let text = g.string(&text)?;
         list = g.pair(text, list)?;
@@ -574,8 +568,11 @@ const HOSTS: [(&str, HostFunction<Runner>); 18] = [
 /// `(read-forms source text)`: the forms of the text, each combination with `source` and its line.
 fn read_forms(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let [source, text] = g.exactly(args)?;
-    let (Some(source), Some(text)) = (owned_string(g, source)?, owned_string(g, text)?) else {
-        return Err(g.error("type-error", args));
+    let Some(source) = owned_string(g, source)? else {
+        return Err(g.type_error(*source));
+    };
+    let Some(text) = owned_string(g, text)? else {
+        return Err(g.type_error(*text));
     };
     g.read_in(&source, &text)
 }
@@ -636,7 +633,7 @@ fn main() -> ExitCode {
             Ok(word) => words.push(word),
             Err(word) => {
                 let e = match g.bytes(word.as_encoded_bytes()) {
-                    Ok(bytes) => g.error("encoding-error", &[bytes]),
+                    Ok(bytes) => g.error(Kind::EncodingError, &[bytes]),
                     Err(e) => e,
                 };
                 return report(&g, "grift", &e);

@@ -166,12 +166,21 @@ impl Trace {
 }
 
 /// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core
-/// can name them as constants.
+/// can name them as constants; the kinds of error come first, and are the public [`Kind`] too.
 macro_rules! known_symbols {
-    ($($k:ident $name:literal)*) => {
+    ($($e:ident $kind:literal)* ; $($k:ident $name:literal)*) => {
+        /// A kind of error grift raises, which a host makes or recognises without spelling it. For
+        /// `type-error` and `arity-error` use `HostCall::type_error` and `HostCall::arity_error`,
+        /// which give the error a primitive's values too.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Kind { $($e),* }
+        pub(crate) const KINDS: &[Kind] = &[$(Kind::$e),*];
+        impl AsRef<str> for Kind {
+            fn as_ref(&self) -> &str { match self { $(Kind::$e => $kind),* } }
+        }
         #[derive(Clone, Copy)]
-        pub(crate) enum K { $($k),* }
-        pub(crate) const K_NAMES: &[&str] = &[$($name),*];
+        pub(crate) enum K { $($e,)* $($k),* }
+        pub(crate) const K_NAMES: &[&str] = &[$($kind,)* $($name),*];
     };
 }
 
@@ -181,13 +190,14 @@ known_symbols! {
     DivisionByZero "division-by-zero" OutOfMemory "out-of-memory" ParseError "parse-error"
     StaleValue "stale-value" ForeignValue "foreign-value" Interrupted "interrupted"
     RangeError "range-error" CannotPark "cannot-park" OutputError "output-error"
+    EncodingError "encoding-error";
     EmptyList "empty-list" Boolean "boolean" Inert "inert" Ignore "ignore" Integer "integer"
     Float "float" Symbol "symbol" Pair "pair" String "string" Context "context"
     Operative "operative" Applicative "applicative" Kind "kind" Values "values" Trace "trace"
     UnclosedList "unclosed-list" UnclosedString "unclosed-string"
     UnmatchedParenthesis "unmatched-parenthesis" MisplacedDot "misplaced-dot"
     BadEscape "bad-escape" BadNumber "bad-number" UnknownConstant "unknown-constant"
-    Bytes "bytes" BadByte "bad-byte" EncodingError "encoding-error"
+    Bytes "bytes" BadByte "bad-byte"
 }
 
 impl From<K> for Symbol {
