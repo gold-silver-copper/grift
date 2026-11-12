@@ -121,6 +121,7 @@ impl Control {
 /// The run in progress, owned: the only way to begin one is to get this, and the run ends as it
 /// drops, however its owner leaves, a panic's unwinding included. Ending a run already over, as a
 /// parked one is, keeps the number the next will have.
+#[must_use]
 pub(crate) struct Run(Arc<Control>);
 
 impl Drop for Run {
