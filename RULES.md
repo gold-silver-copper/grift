@@ -45,8 +45,9 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - No truthiness: the tests of `if!`, `when!`, `conditional!`, `and!?` and `or!?` must be booleans;
   `and!?` and `or!?` check every operand they evaluate, the last too ([G-52], [G-65]).
 - `same?` is identity for pairs, contexts and combiners, equality of value for integers, symbols,
-  strings and bytes, and of the stored bits for floats; `equal?` compares pairs by structure and
-  floats as IEEE does. Values of different kinds are never equal ([G-51], [G-145]).
+  strings and bytes, and of the stored bits for floats, any two not-a-numbers being the same;
+  `equal?` compares pairs by structure and floats as IEEE does. Values of different kinds are never
+  equal ([G-51], [G-145], [G-188]).
 - Strings are immutable UTF-8 with byte offsets, and a code point is an integer ([G-27]); bytes are
   a kind of their own, never equal to a string ([G-142]). Both share `byte-length`, `byte-at`,
   `slice`, `join` and `search`: `slice` and `join` answer in their first argument's kind,

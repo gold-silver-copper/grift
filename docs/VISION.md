@@ -85,7 +85,7 @@ follows `lambda!`: both name the abstraction they make).
 Kernel's markings are respelled, not lost: `$` became the `!` suffix, and Kernel's mutation `!`
 became the verb itself. Equality is `same?` and `equal?`: `same?` is identity for pairs, contexts
 and combiners, equality of value for integers, symbols, strings and bytes, and equality of the
-stored bits for floats; `equal?` compares pairs by structure, floats as IEEE does (NaN is never equal), and
+stored bits for floats, any two not-a-numbers being the same; `equal?` compares pairs by structure, floats as IEEE does (NaN is never equal), and
 everything else as `same?` does. Values of different types are never equal (`(equal? 1 1.0)` is
 `#false`).
 

@@ -1898,7 +1898,7 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
 
 ## Owed work, 2026-11-11
 
-- **G-188. Every not-a-number is one value** (amends G-61). `same?`
+- **G-188. Every not-a-number is one value** (amends G-51's "equality of the stored bits for floats"). `same?`
   compared floats by their bits, and the bits a not-a-number gets are the machine's, not the program's: Rust
   promises no sign or payload for an operation's not-a-number, x86_64's `(divide 0.0 0.0)` has its sign set
   and aarch64's hasn't, and aarch64's `trunc`, `floor` and `ceil` quieten a signalling one a host hands in
