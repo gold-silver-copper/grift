@@ -18,7 +18,7 @@
 //! runs the operative's body, so what a program sees never differs.
 
 use crate::heap::kind::{Context, Pair};
-use crate::heap::{Bindings, Operative, Origin, Ref, Seen, kind};
+use crate::heap::{Bindings, Operative, Origin, Ref, kind};
 use crate::local::{Error, Host, K, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
@@ -363,9 +363,10 @@ pub(crate) struct Machine {
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
     pub request: Value,
-    /// The trace the last handler got, and its combinations: raising that trace again takes them
-    /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
-    handed: Option<(Value, Seen)>,
+    /// The trace the last handler got, as one shared list: raising that list again takes it back
+    /// with its combinations, so a catch and raise doesn't walk it. Held until replaced or the run
+    /// ends.
+    handed: Option<Trace>,
 }
 
 /// What an ending holds for the collector: its value, or its error's values and trace.
@@ -814,7 +815,7 @@ impl<T> Grift<T> {
     fn handle(&mut self, e: Error, handler: Value, context: Ref<Context>) -> Result<Mode, Error> {
         let library = self.machine.library;
         let values = self.list_local(&e.values, library)?;
-        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
+        let handed = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let mut fields = Bindings::default();
         fields.try_reserve(3)?;
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
@@ -822,10 +823,10 @@ impl<T> Grift<T> {
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Values.into(), values);
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Trace.into(), trace);
+        fields.insert(K::Trace.into(), handed.parts().0);
         let v = Value::Context(self.heap.make((None, fields))?);
         let operands = self.list_local(&[v], library)?;
-        self.machine.handed = Some((trace, seen));
+        self.machine.handed = Some(handed);
         self.combine(handler, operands, context)
     }
 
@@ -1525,8 +1526,8 @@ impl<T> Grift<T> {
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
         let values = self.items(values, e)?;
         // The trace the last handler got comes back whole, its combinations with it.
-        if let Some((_, seen)) = self.machine.handed.take_if(|(h, _)| *h == trace) {
-            return Ok(Error::from_parts(kind, values, Trace::handed(trace, seen)));
+        if let Some(handed) = self.machine.handed.take_if(|h| h.parts().0 == trace) {
+            return Ok(Error::from_parts(kind, values, handed));
         }
         let mut given = self.items(trace, e)?;
         given.reverse();

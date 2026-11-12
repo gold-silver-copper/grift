@@ -87,7 +87,7 @@ pub(crate) enum Began {
 /// An error's trace as the machine carries it: the list handlers got or a program gave, newest
 /// first, shared and never copied, then the places added since. Nothing copies it: a handler gets
 /// the added places put on the list's front ([`Trace::onto`]), raising the list it got takes it
-/// back whole ([`Trace::handed`]), and only the host's export reads all of it ([`Trace::parts`]).
+/// back whole, and only the host's export reads all of it ([`Trace::parts`]).
 /// So a catch and raise at every level costs only the places each level adds. Only the last
 /// handler's list is remembered: a handler that catches another error before raising its own
 /// raises a list given back, which is walked once.
@@ -103,15 +103,10 @@ pub(crate) struct Trace {
 impl Trace {
     /// No places.
     pub fn new() -> Trace {
-        Trace::handed(Value::EmptyList, Seen::default())
-    }
-
-    /// A list a handler got, `seen` its combinations, as [`Trace::onto`] gave them.
-    pub fn handed(shared: Value, seen: Seen) -> Trace {
         Trace {
-            shared,
+            shared: Value::EmptyList,
             added: Vec::new(),
-            seen,
+            seen: Seen::default(),
         }
     }
 
@@ -144,14 +139,19 @@ impl Trace {
         }
     }
 
-    /// The trace as one list, newest first, the added places put on the shared list's front with
-    /// `pair`, and its combinations.
+    /// The same trace as one shared list, newest first, the added places put on the shared list's
+    /// front with `pair`: the list a handler gets is its [`Trace::parts`].
     pub fn onto(
         self,
         mut pair: impl FnMut(Value, Value) -> Result<Value, Error>,
-    ) -> Result<(Value, Seen), Error> {
-        let list = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
-        Ok((list, self.seen))
+    ) -> Result<Trace, Error> {
+        let shared = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
+        let (added, seen) = (Vec::new(), self.seen);
+        Ok(Trace {
+            shared,
+            added,
+            seen,
+        })
     }
 
     /// The shared list, newest first, and the places added since, innermost first.
