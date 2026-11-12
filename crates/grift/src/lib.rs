@@ -422,12 +422,13 @@ impl<T> Grift<T> {
     /// shared control block, which its interrupters point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
+        let (heap, made) = Heap::new();
         #[expect(
             clippy::disallowed_methods,
             reason = "Arc::try_new is unstable: the one abort `new` documents"
         )]
         let mut g = Grift {
-            heap: Heap::default(),
+            heap,
             hosts: Vec::new(),
             built_in: Ref::NONE,
             top: Ref::NONE,
@@ -439,22 +440,18 @@ impl<T> Grift<T> {
             control: Arc::new(Control::default()),
             owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
         };
-        let loaded = g.load();
+        let loaded = made.and_then(|()| g.load());
         g.out(loaded).map(|()| g)
     }
 
     fn load(&mut self) -> Result<(), local::Error> {
-        // The known names come first, so their slots are their ids, and they are always roots.
-        for name in local::K_NAMES {
-            self.intern(name)?;
-        }
         self.built_in = self.heap.make((None, Bindings::default()))?;
         self.top = self.heap.make((Some(self.built_in), Bindings::default()))?;
         for &p in evaluate::Primitive::ALL {
-            let s = self.intern(p.name())?;
+            let s = self.heap.intern(p.name())?;
             let wrapped = self.heap.make(local::Value::Primitive(p))?;
             let v = local::Value::Applicative(wrapped);
-            self.bind_symbol(self.built_in, s, v)?;
+            self.heap.bind(self.built_in, [(s, v)])?;
         }
         self.run_text(None, self.built_in, None, LIBRARY, true, None)?;
         self.install_natives()
@@ -537,7 +534,7 @@ impl<T> Grift<T> {
         parks: Option<parked::MayPark>,
     ) -> Result<local::Value, local::Error> {
         let ready = self.prepare(std::iter::once(local::Value::Context(context)), []);
-        let source = source.map(|s| self.intern(s)).transpose()?;
+        let source = source.map(|s| self.heap.intern(s)).transpose()?;
         let first = evaluate::First::Text {
             context,
             source,
@@ -575,7 +572,7 @@ impl<T> Grift<T> {
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
     /// hands it to grift code that keeps it private.
     pub fn host_function(&mut self, name: &str, f: HostFunction<T>) -> Result<Value, Error> {
-        let made = self.intern(name).and_then(|s| {
+        let made = self.heap.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             push(&mut self.hosts, (s, f))?;
             let host = self.heap.make(local::Value::Host(local::Host(id)))?;
@@ -621,8 +618,8 @@ impl<T> Grift<T> {
     /// Binds `name` to `v` in the top-level context.
     pub fn define(&mut self, name: &str, v: Value) -> Result<(), Error> {
         let done = self.import(&v).and_then(|v| {
-            let s = self.intern(name)?;
-            self.bind_symbol(self.top, s, v)
+            let s = self.heap.intern(name)?;
+            self.heap.bind(self.top, [(s, v)])
         });
         self.out(done)
     }
@@ -675,7 +672,7 @@ impl<T> Grift<T> {
 
     /// Interns `name`.
     pub fn symbol(&mut self, name: &str) -> Result<Symbol, Error> {
-        let s = self.intern(name);
+        let s = self.heap.intern(name);
         self.out(s.map(|s| self.export_symbol(s)))
     }
 
@@ -686,7 +683,7 @@ impl<T> Grift<T> {
 
     /// An error of kind `kind`, a [`Kind`] or a host's own, with a copy of `values`.
     pub fn error(&mut self, kind: impl AsRef<str>, values: &[Value]) -> Error {
-        let made = self.intern(kind.as_ref()).and_then(|kind| {
+        let made = self.heap.intern(kind.as_ref()).and_then(|kind| {
             Ok(Error {
                 kind: self.export_symbol(kind),
                 values: collected(values.iter().cloned())?,
@@ -836,7 +833,7 @@ impl<T> Grift<T> {
     /// [`Grift::read_in`], or [`Grift::read`] with no `source`.
     fn read_text(&mut self, source: Option<&str>, text: &str) -> Result<Value, Error> {
         let forms = Control::host_run(&self.control).and_then(|_run| {
-            let source = source.map(|s| self.intern(s)).transpose()?;
+            let source = source.map(|s| self.heap.intern(s)).transpose()?;
             self.read_local(text, source, false)
         });
         self.exported(forms)
@@ -1013,11 +1010,6 @@ impl<T> Grift<T> {
         }
         self.clear_kept(k.name);
         Ok(())
-    }
-
-    /// Interns `name`.
-    pub(crate) fn intern(&mut self, name: &str) -> Result<local::Symbol, local::Error> {
-        self.heap.intern(name)
     }
 
     /// The name of symbol `s`.
@@ -1211,8 +1203,7 @@ impl<T> Grift<T> {
         let (shared, added) = e.trace.parts();
         let trace = self.items(shared, shared).and_then(|mut v| {
             v.reverse();
-            v.try_reserve_exact(added.len())
-                .map_err(|_| local::Error::oom())?;
+            v.try_reserve_exact(added.len())?;
             #[expect(clippy::disallowed_methods, reason = "reserved added.len() above")]
             v.extend_from_slice(added);
             exported(&v)
@@ -1248,8 +1239,7 @@ fn context_kind(v: local::Value) -> Result<Ref<kind::Context>, local::Error> {
 /// The items in a new vector, reporting `out-of-memory` instead of aborting.
 fn collected<X>(items: impl ExactSizeIterator<Item = X>) -> Result<Vec<X>, local::Error> {
     let mut v = Vec::new();
-    v.try_reserve_exact(items.len())
-        .map_err(|_| local::Error::oom())?;
+    v.try_reserve_exact(items.len())?;
     #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     v.extend(items);
     Ok(v)

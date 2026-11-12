@@ -87,7 +87,7 @@ pub(crate) enum Began {
 /// An error's trace as the machine carries it: the list handlers got or a program gave, newest
 /// first, shared and never copied, then the places added since. Nothing copies it: a handler gets
 /// the added places put on the list's front ([`Trace::onto`]), raising the list it got takes it
-/// back whole ([`Trace::handed`]), and only the host's export reads all of it ([`Trace::parts`]).
+/// back whole, and only the host's export reads all of it ([`Trace::parts`]).
 /// So a catch and raise at every level costs only the places each level adds. Only the last
 /// handler's list is remembered: a handler that catches another error before raising its own
 /// raises a list given back, which is walked once.
@@ -103,22 +103,17 @@ pub(crate) struct Trace {
 impl Trace {
     /// No places.
     pub fn new() -> Trace {
-        Trace::handed(Value::EmptyList, Seen::default())
-    }
-
-    /// A list a handler got, `seen` its combinations, as [`Trace::onto`] gave them.
-    pub fn handed(shared: Value, seen: Seen) -> Trace {
         Trace {
-            shared,
+            shared: Value::EmptyList,
             added: Vec::new(),
-            seen,
+            seen: Seen::default(),
         }
     }
 
     /// The places a program or host gave, innermost first, kept as they are, repeats and all.
     pub fn given(places: Vec<Value>) -> Result<Trace, Error> {
         let mut seen = Seen::default();
-        seen.try_reserve(places.len()).map_err(|_| Error::oom())?;
+        seen.try_reserve(places.len())?;
         #[expect(clippy::disallowed_methods, reason = "reserved places.len() above")]
         seen.extend(places.iter().filter_map(|v| match v {
             Value::Pair(r) => Some(r.slot()),
@@ -144,14 +139,15 @@ impl Trace {
         }
     }
 
-    /// The trace as one list, newest first, the added places put on the shared list's front with
-    /// `pair`, and its combinations.
+    /// The same trace as one shared list, newest first, the added places put on the shared list's
+    /// front with `pair`: the list a handler gets is its [`Trace::parts`].
     pub fn onto(
-        self,
+        mut self,
         mut pair: impl FnMut(Value, Value) -> Result<Value, Error>,
-    ) -> Result<(Value, Seen), Error> {
-        let list = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
-        Ok((list, self.seen))
+    ) -> Result<Trace, Error> {
+        self.shared = (self.added.iter()).try_fold(self.shared, |l, &x| pair(x, l))?;
+        self.added.clear();
+        Ok(self)
     }
 
     /// The shared list, newest first, and the places added since, innermost first.
@@ -165,8 +161,9 @@ impl Trace {
     }
 }
 
-/// Declares the symbols every [`Grift`](crate::Grift) interns first, in this order, so the core
-/// can name them as constants; the kinds of error come first, and are the public [`Kind`] too.
+/// Declares the symbols every heap makes first, in this order ([`Heap::new`](crate::heap::Heap::new)),
+/// so the core can name them as constants; the kinds of error come first, and are the public
+/// [`Kind`] too.
 macro_rules! known_symbols {
     ($($e:ident $kind:literal)* ; $($k:ident $name:literal)*) => {
         /// A kind of error grift raises, which a host makes or recognises without spelling it. For
@@ -265,6 +262,13 @@ impl Error {
     }
 }
 
+/// Memory refused.
+impl From<std::collections::TryReserveError> for Error {
+    fn from(_: std::collections::TryReserveError) -> Error {
+        Error::oom()
+    }
+}
+
 /// The output refused the text.
 impl From<fmt::Error> for Error {
     fn from(_: fmt::Error) -> Error {
@@ -275,7 +279,7 @@ impl From<fmt::Error> for Error {
 /// A copy of `s`, reporting `out-of-memory` instead of aborting.
 pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
     let mut b = String::new();
-    b.try_reserve_exact(s.len()).map_err(|_| Error::oom())?;
+    b.try_reserve_exact(s.len())?;
     #[expect(clippy::disallowed_methods, reason = "reserved exactly above")]
     b.push_str(s);
     Ok(b.into_boxed_str())
@@ -283,7 +287,7 @@ pub(crate) fn boxed(s: &str) -> Result<Box<str>, Error> {
 
 /// Pushes onto a vector, reporting `out-of-memory` instead of aborting.
 pub(crate) fn push<T>(v: &mut Vec<T>, x: T) -> Result<(), Error> {
-    v.try_reserve(1).map_err(|_| Error::oom())?;
+    v.try_reserve(1)?;
     #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
     v.push(x);
     Ok(())

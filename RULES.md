@@ -106,7 +106,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   `power`, `remainder` and `less-than?` are defined in grift for part of their inputs only and call
   the Rust primitive for the rest (`natives.grift`).
 - `if!` and `sequence!` stay grift in `library.grift`, with native twins: Rust that runs in their
-  place only for the operand shapes it handles ([G-117], [G-173]). `error`, `equal?`, `catch!`, `finally!`, `catch-kind!`, `float-to-string` and
+  place only for the operand shapes it handles ([G-117], [G-173]). The twins are named once, in
+  `NATIVES`, which installing them and the tests both read ([G-205]). `error`, `equal?`, `catch!`, `finally!`, `catch-kind!`, `float-to-string` and
   `symbol-to-string` are library grift ([G-48], [G-64], [G-66], [G-86], [G-93], [G-99]).
 
 ## Errors and traces
@@ -202,7 +203,13 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   run needs a slot. Allocation never collects, and nothing roots by hand ([G-12], [G-155]).
 - A reference carries its slot's generation: a collected value is `stale-value`, never another
   object, and a slot is retired at its last generation ([G-11], [G-133]). Names are collected like
-  any value, so a host's `Symbol` can go stale too ([G-179]).
+  any value, so a host's `Symbol` can go stale too ([G-179]), except grift's own known names, which
+  the heap makes first, at slots that are their numbers, and always marks ([G-206]).
+- A fact that can't be missing has no quiet default: the code's shape leaves none to write, or the
+  answer is `stale-value`. Three are kept, each with its reason: the machine's step pops a
+  cleanup's saved ending with a fallback (it is on the loop), and a symbol the interpreter holds
+  has `""` for a missing name and `0` for a missing generation (an error there would make handing
+  any value to the host fallible) ([G-210]).
 - A value returned to the host lives until the next run; to keep one, bind it or `keep` it. A `Kept`
   is neither `Copy` nor `Clone` ([G-21], [G-108], [G-172]).
 - Only memory really refused asks for a collection ([G-170]). A run refused memory gives up a spare
@@ -355,3 +362,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-200]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
 [G-201]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
 [G-202]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
+[G-205]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
+[G-206]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
+[G-210]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12

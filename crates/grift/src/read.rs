@@ -325,7 +325,7 @@ impl<T> Grift<T> {
                     Err(_) => return Err(fail(K::BadNumber)),
                 }
             }
-            _ => Value::Symbol(self.intern(token)?),
+            _ => Value::Symbol(self.heap.intern(token)?),
         };
         Ok(v)
     }
@@ -362,7 +362,7 @@ impl<T> Grift<T> {
                 },
                 c => c,
             };
-            s.try_reserve(c.len_utf8()).map_err(|_| Error::oom())?;
+            s.try_reserve(c.len_utf8())?;
             #[expect(
                 clippy::disallowed_methods,
                 reason = "reserved the character's length above"

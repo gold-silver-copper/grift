@@ -109,10 +109,10 @@ impl<T> Grift<T> {
                 Value::Symbol(s) => out.write_str(self.name(s))?,
                 Value::Primitive(p) => write!(out, "#[primitive {}]", p.name())?,
                 Value::Host(h) => {
-                    let name = self
-                        .hosts
-                        .get(h.0 as usize)
-                        .map_or("", |&(s, _)| self.name(s));
+                    let Some(&(name, _)) = self.hosts.get(h.0 as usize) else {
+                        return Err(Error::new(K::StaleValue, &[Value::Host(h)]));
+                    };
+                    let name = self.name(name);
                     out.write_str("#[host ")?;
                     match report {
                         Some(_) => write_name(name, usize::MAX, out)?,

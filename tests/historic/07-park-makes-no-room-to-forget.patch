@@ -18,7 +18,7 @@ index 5654651..a82ca57 100644
      pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
 -        let mut forgotten = self.control.forgotten();
 -        let more = self.kept.len().saturating_sub(forgotten.len());
--        forgotten.try_reserve(more).map_err(|_| local::Error::oom())
+-        Ok(forgotten.try_reserve(more)?)
 +        Ok(())
      }
  

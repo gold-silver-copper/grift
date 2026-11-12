@@ -18,8 +18,8 @@
 //! runs the operative's body, so what a program sees never differs.
 
 use crate::heap::kind::{Context, Pair};
-use crate::heap::{Bindings, Operative, Origin, Ref, Seen, kind};
-use crate::local::{Error, Host, K, K_NAMES, Symbol, Trace, Value, boxed, push};
+use crate::heap::{Bindings, Operative, Origin, Ref, kind};
+use crate::local::{Error, Host, K, Symbol, Trace, Value, boxed, push};
 use crate::read::float_name;
 use crate::{Answer, Entry, Grift, HostCall, collected, context_kind};
 
@@ -162,6 +162,11 @@ pub(crate) enum Native {
     If,
     Sequence,
 }
+
+/// Every twin and the library operative it is the twin of. One left out here is never made, which
+/// the compiler warns of.
+pub(crate) const NATIVES: [(Native, &str); 2] =
+    [(Native::If, "if!"), (Native::Sequence, "sequence!")];
 
 /// What the machine does next.
 #[derive(Clone, Copy)]
@@ -350,9 +355,10 @@ pub(crate) struct Machine {
     work: Vec<(Value, Value)>,
     /// What a parked run asked its host for, held for as long as it waits.
     pub request: Value,
-    /// The trace the last handler got, and its combinations: raising that trace again takes them
-    /// back, so a catch and raise doesn't walk the trace. Held until replaced or the run ends.
-    handed: Option<(Value, Seen)>,
+    /// The trace the last handler got, as one shared list: raising that list again takes it back
+    /// with its combinations, so a catch and raise doesn't walk it. Held until replaced or the run
+    /// ends.
+    handed: Option<Trace>,
 }
 
 /// What an ending holds for the collector: its value, or its error's values and trace.
@@ -540,7 +546,7 @@ impl<T> Grift<T> {
             return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
-        room.try_reserve_exact(1).map_err(|_| Error::oom())?;
+        room.try_reserve_exact(1)?;
         let name = self.free_name()?;
         self.room_to_forget()?;
         if !self.control.parks() {
@@ -801,18 +807,18 @@ impl<T> Grift<T> {
     fn handle(&mut self, e: Error, handler: Value, context: Ref<Context>) -> Result<Mode, Error> {
         let library = self.machine.library;
         let values = self.list_local(&e.values, library)?;
-        let (trace, seen) = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
+        let handed = e.trace.onto(|x, l| self.pair_local(x, l, library))?;
         let mut fields = Bindings::default();
-        fields.try_reserve(3).map_err(|_| Error::oom())?;
+        fields.try_reserve(3)?;
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Kind.into(), Value::Symbol(e.kind));
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
         fields.insert(K::Values.into(), values);
         #[expect(clippy::disallowed_methods, reason = "reserved 3 above")]
-        fields.insert(K::Trace.into(), trace);
+        fields.insert(K::Trace.into(), handed.parts().0);
         let v = Value::Context(self.heap.make((None, fields))?);
         let operands = self.list_local(&[v], library)?;
-        self.machine.handed = Some((trace, seen));
+        self.machine.handed = Some(handed);
         self.combine(handler, operands, context)
     }
 
@@ -837,12 +843,10 @@ impl<T> Grift<T> {
         current: impl Iterator<Item = Value>,
         held: impl IntoIterator<Item = Ref>,
     ) {
-        // Names are heap objects: the known ones and host functions' are roots too.
-        let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
+        // Names are heap objects: host functions' are roots too.
         let roots = (self.machine.roots().chain(current))
             .chain(self.kept.iter().flat_map(Entry::roots))
             .chain([Value::Context(self.built_in), Value::Context(self.top)])
-            .chain(known)
             .chain(self.hosts.iter().map(|&(name, _)| Value::Symbol(name)));
         self.heap.collect(roots, held.into_iter());
         self.tidy_kept();
@@ -1013,8 +1017,9 @@ impl<T> Grift<T> {
     /// The arguments on the argument stack from `base` as a new list, popping them.
     fn arguments_list(&mut self, base: usize) -> Result<Value, Error> {
         let mut list = Value::EmptyList;
-        while self.machine.arguments.len() > base {
-            let x = self.machine.arguments.pop().unwrap_or(Value::EmptyList);
+        while self.machine.arguments.len() > base
+            && let Some(x) = self.machine.arguments.pop()
+        {
             list = self.pair_local(x, list, self.machine.library)?;
         }
         Ok(list)
@@ -1036,9 +1041,7 @@ impl<T> Grift<T> {
         }
         // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
-        bindings
-            .try_reserve(op.size as usize)
-            .map_err(|_| Error::oom())?;
+        bindings.try_reserve(op.size as usize)?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Some(s) = op.context_parameter {
             #[expect(
@@ -1100,12 +1103,13 @@ impl<T> Grift<T> {
 
     /// Flags the library's operatives that have a native twin.
     pub(crate) fn install_natives(&mut self) -> Result<(), Error> {
-        for (name, native) in [("if!", Native::If), ("sequence!", Native::Sequence)] {
+        for (native, name) in NATIVES {
             let found = self
+                .heap
                 .intern(name)
-                .and_then(|s| self.find(self.built_in, s))?;
-            let Some(Value::Operative(r)) = found else {
-                return Err(Error::new(K::TypeError, &[found.unwrap_or(Value::Inert)]));
+                .and_then(|s| self.value_of(self.built_in, s))?;
+            let Value::Operative(r) = found else {
+                return Err(type_error(found));
             };
             self.heap.install(r, Some(native))?;
         }
@@ -1203,7 +1207,7 @@ impl<T> Grift<T> {
                     return Err(type_error(bad));
                 };
                 match p {
-                    P::Unbind => Value::Boolean(self.heap.room_in(c, 0)?.remove(&s).is_some()),
+                    P::Unbind => Value::Boolean(self.heap.unbind(c, s)?),
                     _ => self.find(c, s)?.unwrap_or(z),
                 }
             }
@@ -1280,8 +1284,8 @@ impl<T> Grift<T> {
                     // Under it go its `Finish` and that frame's entry, never one without the
                     // other: all the room comes first, and nothing after it can fail.
                     let m = &mut self.machine;
-                    m.frames.try_reserve(2).map_err(|_| Error::oom())?;
-                    m.waiting.try_reserve(1).map_err(|_| Error::oom())?;
+                    m.frames.try_reserve(2)?;
+                    m.waiting.try_reserve(1)?;
                     let cleanup = What::Cleanup { cleanup: z, base };
                     let frames = [(What::Finish, Ref::NONE, Ref::NONE), (cleanup, c, at)];
                     #[expect(clippy::disallowed_methods, reason = "reserved all three above")]
@@ -1313,7 +1317,7 @@ impl<T> Grift<T> {
             }
             P::StringToSymbol => {
                 let name = boxed(self.text(x)?)?;
-                Value::Symbol(self.intern(&name)?)
+                Value::Symbol(self.heap.intern(&name)?)
             }
             P::IntegerToString => {
                 integer_of(x)?;
@@ -1426,7 +1430,7 @@ impl<T> Grift<T> {
                 // Exactly the length, so boxing a string never reallocates.
                 if bytes {
                     let mut joined = Vec::new();
-                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    joined.try_reserve_exact(len)?;
                     for &v in given {
                         #[expect(
                             clippy::disallowed_methods,
@@ -1437,7 +1441,7 @@ impl<T> Grift<T> {
                     self.bytes_local(joined)?
                 } else {
                     let mut joined = String::new();
-                    joined.try_reserve_exact(len).map_err(|_| Error::oom())?;
+                    joined.try_reserve_exact(len)?;
                     for &v in given {
                         #[expect(
                             clippy::disallowed_methods,
@@ -1516,8 +1520,8 @@ impl<T> Grift<T> {
         let (values, trace) = (field(K::Values)?, field(K::Trace)?);
         let values = self.items(values, e)?;
         // The trace the last handler got comes back whole, its combinations with it.
-        if let Some((_, seen)) = self.machine.handed.take_if(|(h, _)| *h == trace) {
-            return Ok(Error::from_parts(kind, values, Trace::handed(trace, seen)));
+        if let Some(handed) = self.machine.handed.take_if(|h| h.parts().0 == trace) {
+            return Ok(Error::from_parts(kind, values, handed));
         }
         let mut given = self.items(trace, e)?;
         given.reverse();
@@ -1709,22 +1713,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut matched = Bindings::default();
         self.match_tree(&mut matched, tree, value)?;
-        let bindings = self.heap.room_in(c, matched.len())?;
-        #[expect(clippy::disallowed_methods, reason = "room_in reserved matched.len()")]
-        bindings.extend(matched);
-        Ok(())
-    }
-
-    /// Binds `s` in `context` itself, replacing an existing binding there.
-    pub(crate) fn bind_symbol(
-        &mut self,
-        context: Ref<Context>,
-        s: Symbol,
-        v: Value,
-    ) -> Result<(), Error> {
-        #[expect(clippy::disallowed_methods, reason = "room_in reserved 1")]
-        self.heap.room_in(context, 1)?.insert(s, v);
-        Ok(())
+        self.heap.bind(c, matched)
     }
 
     fn value_of(&self, context: Ref<Context>, s: Symbol) -> Result<Value, Error> {

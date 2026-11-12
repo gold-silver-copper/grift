@@ -131,7 +131,7 @@ mod right {
         ) -> Result<Ran, Error> {
             let done = run(self, MayPark(()));
             match self.parked_as.take() {
-                Some(name) => Ok(Ran::Parked(self.parked_handle(name))),
+                Some(name) => self.out(self.parked_handle(name)).map(Ran::Parked),
                 None => self.exported(done).map(Ran::Finished),
             }
         }
@@ -176,18 +176,19 @@ impl<T> Grift<T> {
         })
     }
 
-    /// A handle to the run parked under kept name `name`.
-    fn parked_handle(&self, name: u32) -> Parked {
+    /// A handle to the run parked under kept name `name`, or `stale-value` if none is.
+    fn parked_handle(&self, name: u32) -> Result<Parked, local::Error> {
         let request = match self.kept.get(name as usize) {
             Some(Entry::Run(room)) => room.first().map(|m| m.request),
             _ => None,
         };
-        Parked {
+        let request = request.ok_or_else(|| local::Error::new(K::StaleValue, &[]))?;
+        Ok(Parked {
             owner: self.owner,
             control: Arc::downgrade(&self.control),
             name,
-            request: self.export(request.unwrap_or(local::Value::Inert)),
-        }
+            request: self.export(request),
+        })
     }
 
     /// Takes up a parked run: the waiting call answers `answer` as a host function's return does,
@@ -278,7 +279,7 @@ impl<T> Grift<T> {
     pub(crate) fn room_to_forget(&self) -> Result<(), local::Error> {
         let mut forgotten = self.control.forgotten();
         let more = self.kept.len().saturating_sub(forgotten.len());
-        forgotten.try_reserve(more).map_err(|_| local::Error::oom())
+        Ok(forgotten.try_reserve(more)?)
     }
 
     /// How many runs are parked. Each holds what it refers to until it ends, so a host that sees this grow has forgotten some: [`Grift::forgotten`].
@@ -291,6 +292,6 @@ impl<T> Grift<T> {
     /// cleanups.
     pub fn forgotten(&mut self) -> Option<Parked> {
         let name = self.control.forgotten().pop()?;
-        Some(self.parked_handle(name))
+        self.parked_handle(name).ok()
     }
 }

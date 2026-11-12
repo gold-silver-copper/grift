@@ -3,7 +3,7 @@
 //! collection needs no memory of its own.
 
 use crate::evaluate::Native;
-use crate::local::{Error, K, Symbol, Value, boxed, push};
+use crate::local::{Error, K, K_NAMES, Symbol, Value, boxed, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -225,23 +225,6 @@ pub(crate) struct Heap {
     pub probe: probe::Probe,
 }
 
-impl Default for Heap {
-    fn default() -> Heap {
-        Heap {
-            slots: Vec::new(),
-            free: NONE,
-            names: HashMap::new(),
-            until_gc: Cell::new(GC_MIN),
-            marks: Vec::new(),
-            fresh: 0,
-            early: false,
-            asked: Cell::new(false),
-            #[cfg(test)]
-            probe: probe::Probe::default(),
-        }
-    }
-}
-
 impl<T> Ref<T> {
     /// No object: a reference no slot has.
     pub(crate) const NONE: Ref<T> = Ref {
@@ -279,6 +262,28 @@ fn stale() -> Error {
 }
 
 impl Heap {
+    /// A heap holding grift's known names, made first so each one's slot is its number, as
+    /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself. With no
+    /// memory for them all, the heap is only good for reporting that, and the refusal says so.
+    pub fn new() -> (Heap, Result<(), Error>) {
+        let mut heap = Heap {
+            slots: Vec::new(),
+            free: NONE,
+            names: HashMap::new(),
+            until_gc: Cell::new(GC_MIN),
+            marks: Vec::new(),
+            fresh: 0,
+            early: false,
+            asked: Cell::new(false),
+            #[cfg(test)]
+            probe: probe::Probe::default(),
+        };
+        let made = K_NAMES
+            .iter()
+            .try_for_each(|name| heap.intern(name).map(|_| ()));
+        (heap, made)
+    }
+
     /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
     #[inline]
     fn alloc<T>(&mut self, obj: Object) -> Result<Ref<T>, Error> {
@@ -350,16 +355,34 @@ impl Heap {
             return Ok(Symbol(id));
         }
         let (name, key) = (boxed(spelling)?, boxed(spelling)?);
-        self.names.try_reserve(1).map_err(|_| Error::oom())?;
+        self.names.try_reserve(1)?;
         let id = self.alloc::<()>(Object::Symbol(name))?.idx;
         #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.names.insert(key, id);
         Ok(Symbol(id))
     }
 
+    /// Binds each of `new` in context `r` itself, replacing bindings there: all of them, or with
+    /// no room, none.
+    pub fn bind<I>(&mut self, r: Ref<kind::Context>, new: I) -> Result<(), Error>
+    where
+        I: IntoIterator<Item = (Symbol, Value), IntoIter: ExactSizeIterator>,
+    {
+        let new = new.into_iter();
+        let bindings = self.room_in(r, new.len())?;
+        #[expect(clippy::disallowed_methods, reason = "room_in reserved new.len()")]
+        bindings.extend(new);
+        Ok(())
+    }
+
+    /// Takes `s`'s binding out of context `r` itself: whether it had one.
+    pub fn unbind(&mut self, r: Ref<kind::Context>, s: Symbol) -> Result<bool, Error> {
+        Ok(self.room_in(r, 0)?.remove(&s).is_some())
+    }
+
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
-    pub fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
+    fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
         let bindings = match self.slots.get_mut(r.idx as usize) {
             Some(Slot {
                 generation,
@@ -369,7 +392,7 @@ impl Heap {
             _ => return Err(stale()),
         };
         let before = bindings_weight(bindings);
-        bindings.try_reserve(more).map_err(|_| Error::oom())?;
+        bindings.try_reserve(more)?;
         let grown = bindings_weight(bindings).saturating_sub(before);
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(grown);
@@ -481,12 +504,12 @@ impl Heap {
         self.until_gc.set(0);
     }
 
-    /// Marks everything reachable from `roots` and the host's `held`, and frees the rest, with no
-    /// memory of its own: a slot goes on the mark stack only as it is first marked, so once at
-    /// most, and every slot reserved its entry as it was made. Each root and held reference is a
-    /// step of the walk outside the heap, counted as it is marked, so what pacing pays for is what
-    /// was walked. The free list is made again from the bottom up, so the lowest slots are reused
-    /// first and the top empties, to be given back.
+    /// Marks everything reachable from `roots`, the known names and the host's `held`, and frees
+    /// the rest, with no memory of its own: a slot goes on the mark stack only as it is first
+    /// marked, so once at most, and every slot reserved its entry as it was made. Each root, known
+    /// name and held reference is a step of the walk outside the heap, counted as it is marked, so
+    /// what pacing pays for is what was walked. The free list is made again from the bottom up, so
+    /// the lowest slots are reused first and the top empties, to be given back.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>, held: impl Iterator<Item = Ref>) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
@@ -494,7 +517,8 @@ impl Heap {
         let marks = &mut self.marks;
         #[cfg(test)]
         let room = marks.capacity();
-        let walked = roots.map(|v| mark(slots, marks, v)).count()
+        let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
+        let walked = (roots.chain(known)).map(|v| mark(slots, marks, v)).count()
             + held.map(|r| hold(slots, marks, r)).count();
         while let Some(idx) = marks.pop() {
             if let Some(s) = slots.get(idx as usize) {

@@ -2047,3 +2047,50 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   code in the crate, `evaluate.rs` included, can begin a run on the machine. Host-side runs keep
   `Control::host_run`, which runs no machine. Cost: 18 production lines, about 8 and 10. Evidence: the
   won't-compile examples in the PR.
+
+## Small ones, each with one owner, 2026-11-12
+
+The one-truth plan's PR 4: six small facts that were kept by more than one hand.
+
+- **G-205. The native twins are named once, in `NATIVES`** (item 2). `evaluate::NATIVES` is the only list of the
+  twins and their spellings, each beside its `Native`; `install_natives`, the test interpreter that takes them out
+  for `natives_are_their_definitions`, and the generator's `CALLED` table all read it, the last through a match on
+  the variant with no catch-all. A twin left out of `NATIVES` is never made, which the compiler warns of (clippy
+  `-D warnings` refuses it). Before, the spellings were in three places, and forgetting the test's list made the
+  twin comparison compare Rust with Rust.
+- **G-206. The heap makes grift's known names and keeps them** (item 1). `Heap::new` interns `K_NAMES` into the
+  empty heap, so each name's slot is its number, and `Heap::collect` marks them itself, counted in what the walk
+  outside the heap costs (G-194 stays honest: the same names are walked and counted, only by their owner). The
+  interning loop at the top of `Grift::load` and the known names in `Grift::collect`'s root chain are gone, so no
+  load order or root list holds the fact. `Error::grift_kind` (G-198) still reads a kind by its number. `Heap::new`
+  returns the heap with whether it made every name, so a refusal goes through `Grift::new`'s ordinary error path;
+  a heap that couldn't make them is only used to report that. Not done: making `Symbol`'s field private to the
+  heap, which needs a heap accessor at each of the import, export, name and test sites for no fact it would add.
+- **G-207. A refused reservation is `out-of-memory` through one conversion** (item 3).
+  `impl From<TryReserveError> for local::Error` makes each of the 16 `try_reserve` sites a plain `?`, `boxed` and
+  `push` included. Kept as they were: the three `u32::try_from(..).map_err(|_| Error::oom())` (a count past `u32`,
+  not a reservation), the heap's `map_err(|_| self.refused())` (it also asks for a collection), and `match_tree`'s
+  arm that reserves in a match. Four of the sites are in `primitive`; the conversion is the same code.
+- **G-208. A handed trace is a `Trace`** (item 4). `Trace::onto` gives back the same trace with its added places put
+  on its shared list; `Machine.handed` holds that `Trace`, the list a handler got is its `parts().0`, and raising
+  that list again takes the whole value back. `Trace::handed`, which accepted any list with any set, is gone, so the
+  list and its combinations can't be paired wrongly (G-76 records them diverging once): both fields stay private to
+  `local.rs`.
+- **G-209. The heap fills a context's bindings itself** (item 5). `Heap::bind` binds any exact-size list of
+  bindings (one pair, or a matched parameter tree's `Bindings`), all or none, and `Heap::unbind` takes one out;
+  `room_in`, which reserved, charged and handed out `&mut Bindings` under a lint exemption at each caller, is
+  private to the heap. `Grift::bind_symbol` is gone.
+- **G-210. No quiet stand-ins for "can't happen"** (item 6, from the f3 research's list, checked at f49e34f9).
+  Reshaped: `install_natives` reads the twin with `value_of` (an `unbound-symbol` naming it, not `type-error` on a
+  made-up `#inert`); `arguments_list` pops while the stack is above `base` with a `while let` chain, so no
+  `()` is written for an argument that isn't there; a parked handle whose kept name holds no run is `stale-value`
+  (`Grift::forgotten` answers `None` for it), not a request of `#inert`; printing a host function with no
+  registration is `stale-value`, not `#[host ]`. Left, and why: `waiting.pop().unwrap_or(Ok(v))` is in `step`,
+  the machine's loop; the three padded primitive arguments belong to Experiment E; `Grift::name`'s `""` and
+  `export_symbol`'s generation `0` read a symbol the interpreter holds, which collection keeps, and making them
+  `stale-value` would make `export`, every value handed out, and the names sort fallible, far past a small change.
+- **Line budget, revised** (set before: production net ≤ 0 over the PR). Measured: +8 (`tools/lines.sh
+  f49e34f9`), after trimming from +39: each item replaces several hands with one owner that costs a function
+  or a type (`Heap::new`, `Heap::bind`/`unbind`, the `From` impl, `NATIVES`), and the deletions it allows (the
+  load loop, the root chain, `Trace::handed`, `bind_symbol`, `Grift::intern`) are smaller. Dropping item 1 or 5
+  would meet it, at the cost of the fact each moves to one owner.
