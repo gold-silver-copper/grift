@@ -17,7 +17,7 @@ mod read;
 mod tests;
 
 use heap::{Bindings, Heap, Ref, kind};
-use interrupt::{Control, Run};
+use interrupt::Control;
 use local::{K, boxed, push};
 use std::fmt;
 use std::sync::Arc;
@@ -404,7 +404,7 @@ pub struct Grift<T = ()> {
     /// The kept values and parked runs, and the first free entry.
     kept: Vec<Entry>,
     kept_free: Option<u32>,
-    /// The kept name of the run that has just parked, for whoever began or resumed it.
+    /// The kept name of the run that has just parked, for [`Grift::started`] alone to read.
     parked_as: Option<u32>,
     machine: evaluate::Machine,
     /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
@@ -456,7 +456,7 @@ impl<T> Grift<T> {
             let v = local::Value::Applicative(wrapped);
             self.bind_symbol(self.built_in, s, v)?;
         }
-        self.run_text(None, self.built_in, None, LIBRARY, true, false)?;
+        self.run_text(None, self.built_in, None, LIBRARY, true, None)?;
         self.install_natives()
     }
 
@@ -464,7 +464,7 @@ impl<T> Grift<T> {
     /// Returns the last form's value (`#inert` for no forms). Nothing is evaluated if `src`
     /// doesn't read. Host functions get `state`. [`Grift::evaluate_in`] names the source.
     pub fn evaluate(&mut self, state: &mut T, src: &str) -> Result<Value, Error> {
-        let done = self.run_text(Some(state), self.top, None, src, false, false);
+        let done = self.run_text(Some(state), self.top, None, src, false, None);
         self.exported(done)
     }
 
@@ -493,7 +493,7 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let done = self
             .context_of(context)
-            .and_then(|c| self.run_text(Some(state), c, Some(source), src, false, false));
+            .and_then(|c| self.run_text(Some(state), c, Some(source), src, false, None));
         self.exported(done)
     }
 
@@ -521,13 +521,12 @@ impl<T> Grift<T> {
     ) -> Result<Value, Error> {
         let done = self
             .context_of(context)
-            .and_then(|c| self.run_text(Some(state), c, Some(source), src, true, false));
+            .and_then(|c| self.run_text(Some(state), c, Some(source), src, true, None));
         self.exported(done)
     }
 
     /// Reads `src`, the text of `source` if it has a name, and evaluates its forms in `context`;
-    /// `library` marks it as a host's own grift code, and `parks` says whether the run may park.
-    /// Reading is the run's first part, so a stop reaches it too.
+    /// `library` marks it as a host's own grift code, and `parks` is the run's right to park.
     fn run_text(
         &mut self,
         state: Option<&mut T>,
@@ -535,39 +534,42 @@ impl<T> Grift<T> {
         source: Option<&str>,
         src: &str,
         library: bool,
-        parks: bool,
+        parks: Option<parked::MayPark>,
     ) -> Result<local::Value, local::Error> {
         let ready = self.prepare(std::iter::once(local::Value::Context(context)), []);
         let source = source.map(|s| self.intern(s)).transpose()?;
-        let run = self.begin_run(ready, parks);
-        // A text that doesn't read ends as every run does, through enter.
-        let mode = self
-            .read_local(src, source, library)
-            .and_then(|forms| self.forms(forms, context));
-        self.enter(run, state, mode)
+        let first = evaluate::First::Text {
+            context,
+            source,
+            src,
+            library,
+        };
+        self.run_on_machine(ready, parks, state, first)
     }
 
     /// Calls applicative `f` with `arguments` as `apply` does: its underlying combiner gets the
     /// arguments as its operands, in a new empty context; anything else is apply's `type-error`.
     /// Host functions get `state`; one that wants a call answers [`Answer::Call`] instead.
     pub fn call(&mut self, state: &mut T, f: &Value, arguments: &[Value]) -> Result<Value, Error> {
-        let done = self.run_call(state, f, arguments, false);
+        let done = self.run_call(state, f, arguments, None);
         self.exported(done)
     }
 
-    /// Calls `f` as [`Grift::call`] does; `parks` says whether the run may park.
+    /// Calls `f` as [`Grift::call`] does; `parks` is the run's right to park.
     fn run_call(
         &mut self,
         state: &mut T,
         f: &Value,
         arguments: &[Value],
-        parks: bool,
+        parks: Option<parked::MayPark>,
     ) -> Result<local::Value, local::Error> {
         let (f, ready) = self.prepare_call(f, arguments)?;
         let arguments = self.imported(arguments)?;
-        let run = self.begin_run(ready, parks);
-        let mode = self.call_on_machine(f, &arguments, None);
-        self.enter(run, Some(state), mode)
+        let first = evaluate::First::Call {
+            f,
+            arguments: &arguments,
+        };
+        self.run_on_machine(ready, parks, Some(state), first)
     }
 
     /// An applicative calling `f`, bound nowhere: the host binds it with [`Grift::define`], or
@@ -1035,17 +1037,6 @@ impl<T> Grift<T> {
     /// [`Grift::walk_stopped`] for `cost` items at once, such as the bytes of a piece of text.
     pub(crate) fn walk_charged(&self, walked: &mut usize, cost: usize) -> bool {
         self.control.charged(walked, cost)
-    }
-
-    /// Begins a run, once nothing before it can refuse, which ends as the guard drops; `parks`
-    /// says whether it may park. A host function, given a [`HostCall`], begins none; what a run
-    /// left behind when a host function panicked is over, and its machine is cleared.
-    pub(crate) fn begin_run(&mut self, ready: evaluate::Prepared, parks: bool) -> Run {
-        // Refused, this run goes without: an `out-of-memory` trace can miss places.
-        let _ = self.spare.try_reserve_exact(SPARE);
-        self.machine.clear();
-        self.machine.may_park = parks;
-        Control::begin(&self.control, ready)
     }
 
     /// The context `v` is, or a `type-error`.

@@ -83,7 +83,7 @@ impl<T> Grift<T> {
     /// twin. As the library's own code, what this loads is skipped by traces.
     pub(crate) fn run_definitions(&mut self) {
         let here = (self.heap.make((Some(self.built_in), Bindings::default()))).unwrap();
-        self.run_text(None, here, None, MEANINGS, true, false)
+        self.run_text(None, here, None, MEANINGS, true, None)
             .unwrap();
         let name = self.intern("meanings").unwrap();
         let Some(local::Value::Context(meanings)) = self.find(here, name).unwrap() else {
@@ -686,9 +686,9 @@ fn collection_pays_for_what_it_walks() {
           (add 1 (sequence! (bind c (quote! d) (add d 1)) (evaluate body c))))))
         (evaluate body c)";
     g.evaluate(&mut (), deep).unwrap();
-    // The stacks give back room as collections come, all but what a cleanup's install set aside
-    // for its start: a deep stack, gone when the cleanup is installed, and a collection just
-    // before the cleanup starts.
+    // The stacks give back room as collections come, and a cleanup still starts: its call goes
+    // into the slot its popped Cleanup frame left. A deep stack, gone when the cleanup is
+    // installed, and a collection just before the cleanup starts.
     define(&mut g, "collect-always", |g, _, _| {
         g.0.heap.probe.stress = true;
         Ok(crate::Answer::Now(Value::Inert))

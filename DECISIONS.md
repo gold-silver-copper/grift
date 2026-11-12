@@ -2002,3 +2002,48 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   tests; one method replaces each. Recognising a host's own limit stays `e.limit && g.symbol_name(&e.kind)? ==
   "exit"`: the kind is the host's own spelling, and a helper would take the same string, so it would add a
   method and remove nothing.
+
+## A run's lifecycle has one owner, 2026-11-12
+
+- **G-200. One function is a run on the machine** (the one-truth plan's PR 2a; amends G-182 and G-189). Each entry
+  point called `begin_run`, built its first frames, then `enter` (or `wake` for a resume), and its parts could be
+  paired wrongly: a text that didn't read once skipped `enter` (G-189), and frames built before `begin_run` would
+  have been cleared. `run_on_machine` now begins the run on the prepared heap with the machine clear, makes the
+  first frames from a `First` (`Text`, `Call` or `Resume`), runs, clears and ends; `begin_run`, `enter`, `wake` and
+  `forms` are gone, and `call_on_machine` and the loop are private to `evaluate.rs`, so no other file can build
+  frames or step the machine outside a run. A closure for the first frames was the starting idea and was left: the
+  frame builders it calls would have to stay reachable from `lib.rs` and `parked.rs`, which keeps "frames before
+  the run" writable; the enum keeps them private. `First` is 280 bytes for its `Resume` (the machine); one is
+  made per run, so the size lint is expected, not boxed. Evidence: the won't-compile examples in the PR.
+- **G-201. The right to park is a token, and "may park" a bit of the run word** (amends G-169, G-180). `Machine.may_park`
+  and the `parks: bool` arguments are gone. `MayPark`'s field is private to `parked.rs`, where only `started`
+  makes one; `started` hands it to the run it is given and then reads `parked_as`, so `start`, `start_in` and
+  `resume` can't finish a run that parked as if it hadn't, and no other entry point can begin a run that parks.
+  `Control::begin` takes the token and sets `PARKS` in the run word, which ending a run (by its guard or by
+  parking) already clears with the rest, so the right can't outlive its run, a host function's panic included.
+  The bit is not part of a run's number: a handle taken before a run that may park reaches it
+  (`a_handle_reaches_only_the_run_it_was_taken_for` now checks this). Numbers move by 16, so they wrap after
+  thirty-six years at a run a nanosecond. Still writable: `First::Resume` with no token, a resumed run that then
+  can't park (it fails with `cannot-park`, loudly); only `parked.rs` takes a machine out of the kept table.
+- **G-202. A cleanup's `Finish` frame is pushed when it is installed** (the plan's 2b; amends G-170 and G-180's
+  "a cleanup's reserved start"). Installing a `finally!` reserved capacity for two frames that `start_cleanup`
+  spent with unchecked pushes and a test-only assertion, and `heap::tidy` had to keep that capacity (G-180's
+  review found it lost once). Now the install pushes the `Finish` frame with its `waiting` entry and the `Cleanup`
+  frame above it; starting the cleanup pops the `Cleanup` frame and pushes its call into the slot just freed,
+  and replaces the entry in place, both through the ordinary fallible pushes. Nothing is promised across files,
+  and `tidy` no longer mentions cleanups. Timing at the change's head against master: `finally` −2.2%, `catch`
+  −1.6%, every workload in band.
+- **G-203. A cleanup's install is all or nothing, and its start can't fail before the ending is saved** (amends
+  G-202, from the judges' review). The install reserves room for two frames and one `waiting` entry, then puts the
+  `Finish` frame, its entry and the `Cleanup` frame on with nothing between that can fail, so a `Finish` never
+  exists without its entry and its `Cleanup` above it. `start_cleanup` writes the ending into that entry in place
+  (it popped and pushed again). The run's `Run` guard is `#[must_use]`. `a_text_that_does_not_read_ends_its_run_clear`
+  now checks what a host sees, `cannot-park` from a plain evaluation after the failed text, since the may-park
+  bit is clear after any run ends; it fails when ending a run leaves the bit set. Cost: 10 production lines.
+- **G-204. The right to park and the beginning of a run are each made in one function only** (amends G-200 and
+  G-201's "still writable"). `MayPark` and `started` are a module of their own inside `parked.rs`, so no other code
+  there can make the right and skip reading how the run came back. `Control::begin` takes `OnMachine`, which wraps
+  the `Prepared` proof and is made only in a module of `evaluate.rs` that holds `run_on_machine` alone, so no other
+  code in the crate, `evaluate.rs` included, can begin a run on the machine. Host-side runs keep
+  `Control::host_run`, which runs no machine. Cost: 18 production lines, about 8 and 10. Evidence: the
+  won't-compile examples in the PR.

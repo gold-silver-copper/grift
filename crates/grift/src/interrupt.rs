@@ -1,15 +1,15 @@
 //! Stopping a run from another thread. An interpreter and its interrupters share one word: the
-//! number of the run in progress or else of the next to begin, whether it is in progress, and two
-//! bits a run is asked to stop by. Every handle names one run, the one it was taken for, and
-//! everything here is one atomic operation on that word, so nothing can come between looking at
-//! the run and asking it: a handle reaches its run while that run is in progress, and never
-//! another. Ending a run moves to the next number and clears the rest. The machine reads the word
-//! once a step and clears only [`STOP`], so a later stop asks again and a force, which it never
-//! clears, is found by every check to the end of its run. No other memory is published through
-//! the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]: never repeated, at a
-//! run a nanosecond they wrap after seventy years.
+//! number of the run in progress or else of the next to begin, whether it is in progress and may
+//! park, and two bits a run is asked to stop by. Every handle names one run, the one it was taken
+//! for, and everything here is one atomic operation on that word, so nothing can come between
+//! looking at the run and asking it: a handle reaches its run while that run is in progress, and
+//! never another. Ending a run, by parking too, moves to the next number and clears the rest. The
+//! machine reads the word once a step and clears only [`STOP`], so a later stop asks again and a
+//! force, which it never clears, is found by every check to the end of its run. No other memory is
+//! published through the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]:
+//! never repeated, at a run a nanosecond they wrap after thirty-six years.
 
-use crate::WALK_CHECK;
+use crate::{WALK_CHECK, evaluate::OnMachine, parked::MayPark};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -17,11 +17,14 @@ const STOP: u64 = 1;
 const FORCE: u64 = 2;
 const ASKED: u64 = STOP | FORCE;
 const RUNNING: u64 = 4;
-const NEXT: u64 = 8;
+const PARKS: u64 = 8;
+const NEXT: u64 = 16;
+/// The bits that don't say which run: a handle taken before its run began names it as well.
+const NOT_NUMBER: u64 = ASKED | PARKS;
 
 /// The word that ends the run `word` is, or is the number of.
 fn after(word: u64) -> u64 {
-    (word & !(ASKED | RUNNING)).wrapping_add(NEXT)
+    (word & !(NOT_NUMBER | RUNNING)).wrapping_add(NEXT)
 }
 
 /// What an interpreter shares with its interrupters and the handles of its parked runs.
@@ -34,20 +37,23 @@ pub(crate) struct Control {
 
 impl Control {
     /// Begins a run on the machine, which ends as the [`Run`] drops. It takes the proof that the
-    /// heap was prepared for it ([`crate::evaluate::Prepared`]), so no run begins uncollected.
-    pub fn begin(control: &Arc<Control>, _: crate::evaluate::Prepared) -> Run {
-        control.word.fetch_or(RUNNING, Relaxed);
+    /// run is the whole one and its heap prepared ([`OnMachine`]), and the right to park, if it
+    /// has it, which ending the run takes back.
+    pub fn begin(control: &Arc<Control>, _: OnMachine, parks: Option<MayPark>) -> Run {
+        control
+            .word
+            .fetch_or(RUNNING | parks.map_or(0, |_| PARKS), Relaxed);
         Run(Arc::clone(control))
     }
 
-    /// Whether a run is in progress.
-    pub fn running(&self) -> bool {
-        self.word.load(Relaxed) & RUNNING != 0
+    /// Whether a run is in progress that may park: ending it, or parking it, takes the right back.
+    pub fn may_park(&self) -> bool {
+        self.word.load(Relaxed) & PARKS != 0
     }
 
     /// The run in progress, or the number of the next: it changes when a run ends.
     pub fn run(&self) -> u64 {
-        self.word.load(Relaxed) & !ASKED
+        self.word.load(Relaxed) & !NOT_NUMBER
     }
 
     /// Whether the run in progress is asked to stop. Read at every step.
@@ -78,7 +84,7 @@ impl Control {
 
     /// Sets `bit`, in one atomic step, if `run` is in progress; whether it was.
     fn ask(&self, bit: u64, run: u64) -> bool {
-        self.update(|word| (word & !ASKED == run).then_some(word | bit))
+        self.update(|word| (word & !NOT_NUMBER == run).then_some(word | bit))
     }
 
     /// The machine acts on the stops asked so far: they count as one.
@@ -115,6 +121,7 @@ impl Control {
 /// The run in progress, owned: the only way to begin one is to get this, and the run ends as it
 /// drops, however its owner leaves, a panic's unwinding included. Ending a run already over, as a
 /// parked one is, keeps the number the next will have.
+#[must_use]
 pub(crate) struct Run(Arc<Control>);
 
 impl Drop for Run {

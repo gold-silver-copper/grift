@@ -1,19 +1,19 @@
 diff --git i/crates/grift/src/lib.rs w/crates/grift/src/lib.rs
-index 58a6870..6879c85 100644
+index 712d649a..8b523a06 100644
 --- i/crates/grift/src/lib.rs
 +++ w/crates/grift/src/lib.rs
-@@ -557,8 +557,9 @@ impl<T> Grift<T> {
+@@ -548,8 +548,9 @@ impl<T> Grift<T> {
          arguments: &[Value],
-         parks: bool,
+         parks: Option<parked::MayPark>,
      ) -> Result<local::Value, local::Error> {
 -        let (f, ready) = self.prepare_call(f, arguments)?;
 +        let f = self.prepare_call(f, arguments)?;
          let arguments = self.imported(arguments)?;
 +        let ready = self.prepare(std::iter::once(f).chain(arguments.iter().copied()), []);
-         let run = self.begin_run(ready, parks);
-         let mode = self.call_on_machine(f, &arguments, None);
-         self.enter(run, Some(state), mode)
-@@ -1143,7 +1144,7 @@ impl<T> Grift<T> {
+         let first = evaluate::First::Call {
+             f,
+             arguments: &arguments,
+@@ -1098,7 +1099,7 @@ impl<T> Grift<T> {
          &mut self,
          f: &Value,
          arguments: &[Value],
@@ -22,7 +22,7 @@ index 58a6870..6879c85 100644
          let f = self.import(f)?;
          arguments
              .iter()
-@@ -1175,7 +1176,8 @@ impl<T> Grift<T> {
+@@ -1130,7 +1131,8 @@ impl<T> Grift<T> {
              Value::Symbol(s) => Some(local::Value::Symbol(local::Symbol(s.index))),
              _ => None,
          });

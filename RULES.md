@@ -136,7 +136,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   several reasons arrive during a cleanup the newest wins, except that a program's error never
   replaces a limit ([G-170]).
 - The host can always end a run, and that beats "cleanups always finish": a stop can cut a cleanup
-  that has begun ([G-168], [G-170]). A cleanup's install makes the room its start needs ([G-170]).
+  that has begun ([G-168], [G-170]). A cleanup's install puts the frame its ending waits in on the stack, so its start needs no
+  memory ([G-170], [G-202]).
 - `Grift::interrupter` gives a handle for the run in progress, or else the next to begin; its `stop`
   and `force` reach only that run, and a clone is for the same run ([G-175]). A stop ends the run
   with `interrupted`; a force also cuts every cleanup it meets; `true` from either says the run was
@@ -147,7 +148,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   as they go ([G-178], [G-179]).
 - A run is owned by one guard value that ends it as it drops, so a host function that panics ends
   its run: the panic goes on to the host, no cleanup runs, and the next evaluation starts afresh
-  ([G-168], [G-182]).
+  ([G-168], [G-182]). One function begins, clears and ends every run on the machine and makes its
+  first frames ([G-200]).
 
 ## Parked runs
 
@@ -160,7 +162,9 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   dropped ([G-169]).
 - Each `resume` is a new run, so a host takes an interrupter just before it; no stop reaches a
   parked run ([G-169], [G-175]). Where a run can't park, `Later` fails with `cannot-park`;
-  `can_park` is `false` with no run in progress ([G-169], [G-180]).
+  `can_park` is `false` with no run in progress ([G-169], [G-180]). Only `start`, `start_in` and
+  `resume` give a run the right to park, a bit of the run word that ending or parking it clears
+  ([G-201]).
 
 ## Host API
 
@@ -348,3 +352,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-183]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-185]: DECISIONS.md#the-architecture-audit-2026-11-10
 [G-188]: DECISIONS.md#owed-work-2026-11-11
+[G-200]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
+[G-201]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
+[G-202]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
