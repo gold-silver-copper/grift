@@ -1,8 +1,8 @@
 diff --git i/crates/grift/src/heap.rs w/crates/grift/src/heap.rs
-index b9aab08..0029657 100644
+index b9e0db6..4a34e65 100644
 --- i/crates/grift/src/heap.rs
 +++ w/crates/grift/src/heap.rs
-@@ -390,7 +390,10 @@ impl Heap {
+@@ -417,7 +417,10 @@ impl Heap {
  
      /// A host's reference as one to an object of kind `T`, if it still names one.
      pub fn kind<T: Kind>(&self, r: Ref) -> Result<Ref<T>, Error> {
