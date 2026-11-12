@@ -645,8 +645,7 @@ fn bindings_weight(b: &Bindings) -> usize {
 }
 
 /// Gives back `v`'s room once it holds under a quarter of it and that is more than [`GC_MIN`]
-/// entries: a stack or table that was deep once costs nothing after. It keeps twice its length,
-/// and at least [`GC_MIN`].
+/// entries, keeping twice its length and at least that: a deep stack or table costs nothing after.
 pub(crate) fn tidy<X>(v: &mut Vec<X>) {
     if v.capacity() / 4 > v.len().max(GC_MIN) {
         shrink(v, v.len().saturating_mul(2).max(GC_MIN));

@@ -156,8 +156,7 @@ impl<T> Grift<T> {
         })
     }
 
-    /// Runs `run` with the right to park, and what it came to: parked, if it left its kept name,
-    /// or else what it returned.
+    /// Runs `run` with the right to park: parked, if it left its kept name, else what it returned.
     fn started(
         &mut self,
         run: impl FnOnce(&mut Self, MayPark) -> Result<local::Value, local::Error>,
@@ -234,15 +233,14 @@ impl<T> Grift<T> {
         };
         parked.control = Weak::new(); // Spent: nothing to find again.
         let first = First::Resume { machine, answer };
-        let ran = self.started(|g, parks| g.run_on_machine(ready, Some(parks), Some(state), first));
-        ran.map_err(|error| ResumeError {
-            error,
-            parked: None,
-        })
+        self.started(|g, parks| g.run_on_machine(ready, Some(parks), Some(state), first))
+            .map_err(|error| ResumeError {
+                error,
+                parked: None,
+            })
     }
 
-    /// The parked run's machine, its entry freed, and the heap prepared for its run: nothing
-    /// after this can refuse.
+    /// The parked run's machine, its entry freed, and the heap prepared: nothing after can refuse.
     fn claim(
         &mut self,
         parked: &Parked,
