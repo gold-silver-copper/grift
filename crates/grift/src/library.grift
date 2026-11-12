@@ -378,7 +378,7 @@
        ; string-split: the parts between the separators, empty ones too; string-join undoes it. An
        ; empty separator is a range-error.
        (lambda! (text separator)
-         (if! (same? separator "")
+         (if! (same? (byte-length separator) 0)
            (raise (error (quote! range-error) separator))
            (pieces text separator 0 (search text separator 0))))))))
 

@@ -529,6 +529,21 @@ fn string_helpers() {
             ("(string-to-lowercase 1)", "type-error"),
         ],
     );
+    // A bytes value splits as a string does, and its empty separator is the same `range-error`:
+    // with nothing to move past, the split would make pieces until memory ran out, so memory is
+    // bounded here and a split that doesn't refuse ends as `out-of-memory`.
+    holds(
+        &mut g,
+        &["(equal? (string-split #bytes(97 44 98) #bytes(44)) (list #bytes(97) #bytes(98)))"],
+    );
+    g.heap.probe.slot_limit = Some(g.heap.len() + 20_000);
+    fails(
+        &mut g,
+        &[
+            ("(string-split #bytes(97) #bytes())", "range-error"),
+            ("(string-split #bytes() #bytes())", "range-error"),
+        ],
+    );
 }
 
 #[test]
