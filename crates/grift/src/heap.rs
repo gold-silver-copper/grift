@@ -279,7 +279,6 @@ impl Heap {
     /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
     #[inline]
     fn alloc<T>(&mut self, obj: Object) -> Result<Ref<T>, Error> {
-        debug_assert!(weight(&obj) > 0, "an object weighs at least its own slot");
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
         #[cfg(test)]
@@ -665,7 +664,7 @@ pub(crate) fn tidy<X>(v: &mut Vec<X>) {
 
 /// Moves `v` into storage for `room` entries, at least its length, if that is less than it has and
 /// memory allows; else leaves it as it is.
-pub(crate) fn shrink<X>(v: &mut Vec<X>, room: usize) {
+fn shrink<X>(v: &mut Vec<X>, room: usize) {
     let room = room.max(v.len());
     let mut smaller = Vec::new();
     if v.capacity() > room && smaller.try_reserve_exact(room).is_ok() {

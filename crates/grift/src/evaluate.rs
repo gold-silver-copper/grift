@@ -271,7 +271,7 @@ enum What {
         consequent: Value,
         alternative: Value,
     },
-    /// `sequence!`: the forms left after the one evaluated, at least one.
+    /// An operative's body, `sequence!`'s too: the forms left after the one evaluated, at least one.
     Body { rest: Value },
     /// A named outer form evaluated by grift: keep it as the boundary through its tail calls.
     Form,
@@ -1669,7 +1669,7 @@ impl<T> Grift<T> {
     }
 
     /// The bytes of string or bytes value `v`, or a type error.
-    pub(crate) fn octets(&self, v: Value) -> Result<&[u8], Error> {
+    fn octets(&self, v: Value) -> Result<&[u8], Error> {
         match v {
             Value::String(_) => self.text(v).map(str::as_bytes),
             _ => self.bytes_of(v),
@@ -1708,7 +1708,7 @@ impl<T> Grift<T> {
     /// Checks a parameter tree by matching it to itself, and a context parameter, `#ignore` or a
     /// symbol not in the tree. The number of bindings a call makes, and the context parameter's
     /// symbol unless it is `#ignore`.
-    pub(crate) fn check_parameters(
+    fn check_parameters(
         &mut self,
         tree: Value,
         context_parameter: Value,
@@ -1725,7 +1725,7 @@ impl<T> Grift<T> {
     /// Matches a parameter tree to a value, binding its symbols in `bindings`, which it expects to
     /// have none of them: a symbol bound twice is a `parameter-error`, as is a leaf of the tree
     /// other than a symbol, `#ignore` and `()`.
-    pub(crate) fn match_tree(
+    fn match_tree(
         &mut self,
         bindings: &mut Bindings,
         tree: Value,

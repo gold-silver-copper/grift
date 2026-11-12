@@ -18,7 +18,7 @@ mod tests;
 
 use heap::{Bindings, Heap, Ref, kind};
 use interrupt::Control;
-use local::{K, boxed, push};
+use local::{K, push};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -703,8 +703,8 @@ impl<T> Grift<T> {
 
     /// A new string holding a copy of `s`.
     pub fn string(&mut self, s: &str) -> Result<Value, Error> {
-        let made = boxed(s).and_then(|s| self.heap.make(s));
-        self.exported(made.map(local::Value::String))
+        let made = self.string_local(s);
+        self.exported(made)
     }
 
     /// The contents of a string value; `None` for anything else. To hold them while it calls

@@ -178,9 +178,7 @@ impl<T> Grift<T> {
         }
         Ok(())
     }
-}
 
-impl<T> Grift<T> {
     /// What [`Grift::describe`] writes, into `bytes` bytes of `out`. Nothing is copied: the error
     /// is printed from where it is, each value checked first. All of its work, every check, item
     /// and byte, is one walk, which a stop ends.
