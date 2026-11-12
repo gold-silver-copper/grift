@@ -4,7 +4,8 @@ use crate::evaluate::integer;
 use crate::heap::Origin;
 use crate::interrupt::Control;
 use crate::local::{Error, K, Symbol, Value, push};
-use crate::{Grift, WALK_CHECK};
+use crate::{Grift, TextBuffer, WALK_CHECK};
+use std::fmt::Write;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -335,7 +336,7 @@ impl<T> Grift<T> {
     fn read_string(&mut self, cur: &mut Cursor, start: usize) -> Result<Value, Error> {
         let src = cur.src;
         let unclosed = || parse_error(src, start, K::UnclosedString);
-        let mut s = String::new();
+        let mut s = TextBuffer::new();
         loop {
             let escape = cur.at;
             let c = match cur.next()?.ok_or_else(unclosed)? {
@@ -362,13 +363,9 @@ impl<T> Grift<T> {
                 },
                 c => c,
             };
-            s.try_reserve(c.len_utf8())?;
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "reserved the character's length above"
-            )]
-            s.push(c);
+            // All a text buffer refuses for is memory to grow.
+            s.write_char(c).map_err(|_| Error::oom())?;
         }
-        self.string_local(&s)
+        self.string_local(s.as_str())
     }
 }
