@@ -10,7 +10,7 @@ mod ending;
 mod family;
 mod parked;
 
-use crate::evaluate::Primitive;
+use crate::evaluate::{Native, Primitive};
 use crate::heap::Bindings;
 use crate::{Answer, Error, Grift, HostCall, Interrupter, Operative, OperativeKind, Value, local};
 
@@ -100,11 +100,11 @@ impl<T> Grift<T> {
             };
             self.bind_symbol(self.built_in, name, bound).unwrap();
         }
-        for name in ["if!", "sequence!"] {
-            let name = self.intern(name).unwrap();
+        for native in Native::ALL {
+            let name = self.intern(native.name()).unwrap();
             let Some(local::Value::Operative(form)) = self.find(self.built_in, name).unwrap()
             else {
-                panic!("the library defines if! and sequence! as operatives");
+                panic!("the library defines each twin as an operative");
             };
             self.heap.install(form, None).unwrap();
         }
@@ -893,13 +893,16 @@ const OTHER_TEXTS: &[&str] = &[
 /// What the generator calls, with what each of its arguments usually is: `i` an integer, `f` a
 /// float, `s` a string, `t` a part of one, `o` an offset, `n` a shift amount, `c` a context, `y` a
 /// symbol, `p` a pair, `b` a test, `B` a bytes value, `l` a list of bytes, `x` anything. The
-/// primitives' come from [`class`]; the twins are the library's two operatives.
+/// primitives' come from [`class`], the twins' from [`Native`].
 static CALLED: std::sync::LazyLock<Vec<(&str, &str)>> = std::sync::LazyLock::new(|| {
     let primitives = Primitive::ALL
         .iter()
         .flat_map(|&p| class(p).1.iter().map(move |k| (p.name(), *k)));
     primitives
-        .chain([("if!", "bxx"), ("sequence!", "xxx")])
+        .chain(Native::ALL.map(|n| match n {
+            Native::If => (n.name(), "bxx"),
+            Native::Sequence => (n.name(), "xxx"),
+        }))
         .collect()
 });
 

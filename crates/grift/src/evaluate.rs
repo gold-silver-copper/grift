@@ -163,6 +163,19 @@ pub(crate) enum Native {
     Sequence,
 }
 
+impl Native {
+    /// Every twin. One left out here is never made, which the compiler warns of.
+    pub(crate) const ALL: [Native; 2] = [Native::If, Native::Sequence];
+
+    /// The library operative it is the twin of.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Native::If => "if!",
+            Native::Sequence => "sequence!",
+        }
+    }
+}
+
 /// What the machine does next.
 #[derive(Clone, Copy)]
 pub(crate) enum Mode {
@@ -1098,9 +1111,9 @@ impl<T> Grift<T> {
 
     /// Flags the library's operatives that have a native twin.
     pub(crate) fn install_natives(&mut self) -> Result<(), Error> {
-        for (name, native) in [("if!", Native::If), ("sequence!", Native::Sequence)] {
+        for native in Native::ALL {
             let found = self
-                .intern(name)
+                .intern(native.name())
                 .and_then(|s| self.find(self.built_in, s))?;
             let Some(Value::Operative(r)) = found else {
                 return Err(Error::new(K::TypeError, &[found.unwrap_or(Value::Inert)]));

@@ -106,7 +106,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   `power`, `remainder` and `less-than?` are defined in grift for part of their inputs only and call
   the Rust primitive for the rest (`natives.grift`).
 - `if!` and `sequence!` stay grift in `library.grift`, with native twins: Rust that runs in their
-  place only for the operand shapes it handles ([G-117], [G-173]). `error`, `equal?`, `catch!`, `finally!`, `catch-kind!`, `float-to-string` and
+  place only for the operand shapes it handles ([G-117], [G-173]). The twins are named once, on
+  `Native`, which installing them and the tests both read ([G-205]). `error`, `equal?`, `catch!`, `finally!`, `catch-kind!`, `float-to-string` and
   `symbol-to-string` are library grift ([G-48], [G-64], [G-66], [G-86], [G-93], [G-99]).
 
 ## Errors and traces
@@ -355,3 +356,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-200]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
 [G-201]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
 [G-202]: DECISIONS.md#a-runs-lifecycle-has-one-owner-2026-11-12
+[G-205]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12

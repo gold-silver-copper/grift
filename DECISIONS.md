@@ -2047,3 +2047,13 @@ or kinds. The only new public names are `Grift::read_in` and `grift::write_strin
   code in the crate, `evaluate.rs` included, can begin a run on the machine. Host-side runs keep
   `Control::host_run`, which runs no machine. Cost: 18 production lines, about 8 and 10. Evidence: the
   won't-compile examples in the PR.
+
+## Small ones, each with one owner, 2026-11-12
+
+The one-truth plan's PR 4: six small facts that were kept by more than one hand.
+
+- **G-205. The native twins are named once, on `Native`** (item 2). `Native::ALL` and `Native::name` are the only
+  list of the twins and their spellings; `install_natives`, the test interpreter that takes them out for
+  `natives_are_their_definitions`, and the generator's `CALLED` table all read it, the last through a match with no
+  catch-all. A twin left out of `ALL` is never made, which the compiler warns of. Before, the spellings were in
+  three places and forgetting the test's list made the twin comparison compare Rust with Rust.
