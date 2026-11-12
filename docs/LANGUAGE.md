@@ -236,7 +236,7 @@ alone on a line), has no combination to list, so its trace is empty and it has n
 added only if there is memory to spare for it, so an `out-of-memory` error's trace can miss some.
 Cleanups (`finally!`) run on the way out. A combination read from
 a named text, such as a file the runner runs or loads, keeps its source and line beside it, not in
-it, so the host reports `in (first x) at lib/table.grift:12`.
+it, so the host can report each combination of a trace with its file and line.
 Rust hosts can read such forms without evaluating them with `Grift::read_in(source, text)`, which
 returns the list of all forms, as `Grift::read(text)` does. `Grift::position` gives each combination's
 source and opening line, also after a loader evaluates it later. If `read_in` or `evaluate_in`

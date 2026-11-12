@@ -375,11 +375,16 @@ fn a_token_with_two_signs_is_a_symbol() {
 /// What evaluating `src` does: machine steps, collections, and references and symbols compared.
 /// Counts, so they say the same on a loaded machine.
 fn work(g: &mut Grift, src: &str) -> (Result<Value, Error>, u64, usize, u64) {
-    (g.machine.steps, g.heap.probe.collections) = (0, 0);
+    (g.heap.probe.steps, g.heap.probe.collections) = (0, 0);
     local::COMPARED.with(|n| n.set(0));
     let value = g.evaluate(&mut (), src);
     let compared = local::COMPARED.with(std::cell::Cell::get);
-    (value, g.machine.steps, g.heap.probe.collections, compared)
+    (
+        value,
+        g.heap.probe.steps,
+        g.heap.probe.collections,
+        compared,
+    )
 }
 
 #[test]
@@ -695,6 +700,28 @@ fn collection_pays_for_what_it_walks() {
     let kept: Vec<_> = (0..50_000).map(|_| g.keep(Value::Inert).unwrap()).collect();
     kept.into_iter().for_each(|k| g.release(k).unwrap());
     g.evaluate(&mut (), "(spin 100000)").unwrap();
+}
+
+/// Every collection walks the host-function table, so a run that allocates little beside a large
+/// one collects as rarely as the table says: here each collection's walk of it is paid for.
+#[test]
+fn collection_pays_for_the_host_functions_it_walks() {
+    let mut g = grift();
+    let hosts = 100_000;
+    for _ in 0..hosts {
+        g.host_function("h", |_, _, _| Ok(crate::Answer::Now(Value::Inert)))
+            .unwrap();
+    }
+    let count = "(define! down (lambda! (n) (if! (same? n 0) 0 (down (subtract n 1)))))";
+    g.evaluate(&mut (), count).unwrap();
+    let (collections, allocated) = (g.heap.probe.collections, g.heap.probe.work.0);
+    g.evaluate(&mut (), "(down 100000)").unwrap();
+    let collections = g.heap.probe.collections - collections;
+    let allocated = g.heap.probe.work.0 - allocated;
+    assert!(
+        collections * hosts <= 8 * allocated,
+        "{collections} collections walked {hosts} host functions each for {allocated} allocated"
+    );
 }
 
 #[test]

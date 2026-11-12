@@ -78,9 +78,10 @@ rlwrap cargo run --release                        # interactive: prints each res
 reader takes `#!` as starting a comment, as `;` does. The first argument is always the script,
 whatever its spelling: `grift --help`, `grift --version` and `grift -` look for files of those names,
 and one that isn't there is a `file-error` followed by the usage, status 1. With no script it reads
-the program from stdin. Data goes to stdout, errors to stderr as `SOURCE: KIND VALUE...` and the
-combinations it happened in, each with its file and line: `stdin: type-error 1 in (if! 1 2 3) at
-stdin:1`. It exits with 0, 1 on a grift error, a failed write (`file-error`) or a script it can't
+the program from stdin. Data goes to stdout, errors to stderr: the source, the error's kind, the file
+and line it happened at, its values and the combination it happened in, then one line for each
+combination around it that awaited it, with its own file and line if it has one. It exits with 0, 1
+on a grift error, a failed write (`file-error`) or a script it can't
 read, 141 on a write to a pipe no one reads, or the status the program gave `exit`. A script path or
 argument that isn't UTF-8 is refused before anything runs, as `grift: encoding-error` with its bytes:
 text can't hold it, and a lossy copy would name another file. A standard stream the shell closed

@@ -374,20 +374,14 @@ impl Entry {
     /// What this entry holds for the collector.
     pub(crate) fn roots(&self) -> impl Iterator<Item = local::Value> {
         let (value, runs) = match self {
-            Entry::Free(_) => (None, &[][..]),
+            // Nothing, but passing it is a step of the walk, which an immediate counts.
+            Entry::Free(_) => (Some(local::Value::Inert), &[][..]),
             Entry::Value(v) => (Some(*v), &[][..]),
             Entry::Run(room) => (None, room.as_slice()),
         };
-        let machines = runs.iter().flat_map(evaluate::Machine::roots);
-        value.into_iter().chain(machines)
-    }
-
-    /// How much of the next collection's walk this entry is, beyond its value's heap objects.
-    pub(crate) fn weight(&self) -> usize {
-        match self {
-            Entry::Run(room) => room.iter().map(evaluate::Machine::weight).sum(),
-            _ => 0,
-        }
+        value
+            .into_iter()
+            .chain(runs.iter().flat_map(evaluate::Machine::roots))
     }
 }
 
