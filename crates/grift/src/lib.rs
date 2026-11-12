@@ -422,18 +422,7 @@ impl<T> Grift<T> {
     /// shared control block, which its interrupters point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
-        let owner = Owner(OWNERS.fetch_add(1, Ordering::Relaxed));
-        // With no heap there is no interpreter to name the error: its kind says it all.
-        let heap = Heap::new().map_err(|_| Error {
-            kind: Symbol {
-                owner,
-                index: K::OutOfMemory as u32,
-                generation: 0,
-            },
-            values: Vec::new(),
-            trace: Vec::new(),
-            limit: true,
-        })?;
+        let (heap, made) = Heap::new();
         #[expect(
             clippy::disallowed_methods,
             reason = "Arc::try_new is unstable: the one abort `new` documents"
@@ -449,9 +438,9 @@ impl<T> Grift<T> {
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
             control: Arc::new(Control::default()),
-            owner,
+            owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
         };
-        let loaded = g.load();
+        let loaded = made.and_then(|()| g.load());
         g.out(loaded).map(|()| g)
     }
 

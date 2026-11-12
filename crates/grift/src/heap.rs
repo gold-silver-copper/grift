@@ -227,8 +227,9 @@ pub(crate) struct Heap {
 
 impl Heap {
     /// A heap holding grift's known names, made first so each one's slot is its number, as
-    /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself.
-    pub fn new() -> Result<Heap, Error> {
+    /// `Symbol::from(K)` says, and live for good: [`Heap::collect`] marks them itself. With no
+    /// memory for them all, the heap is only good for reporting that, and the refusal says so.
+    pub fn new() -> (Heap, Result<(), Error>) {
         let mut heap = Heap {
             slots: Vec::new(),
             free: NONE,
@@ -241,10 +242,10 @@ impl Heap {
             #[cfg(test)]
             probe: probe::Probe::default(),
         };
-        for name in K_NAMES {
-            heap.intern(name)?;
-        }
-        Ok(heap)
+        let made = K_NAMES
+            .iter()
+            .try_for_each(|name| heap.intern(name).map(|_| ()));
+        (heap, made)
     }
 }
 
