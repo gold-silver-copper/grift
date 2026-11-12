@@ -531,7 +531,8 @@ fn run_session(g: &mut G, r: &mut Runner, session: &Value) -> Result<Value, Erro
         let thunk = *parked.request();
         let answer = match g.call(r, &thunk, &[]) {
             Err(e) if exit_status(g, &e).is_none() => {
-                report(g, "stdin", &e);
+                // A session goes on after an error, so the status its report would end with is dropped.
+                let _ = report(g, "stdin", &e);
                 Ok(Value::Inert)
             }
             done => done,
