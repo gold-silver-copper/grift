@@ -4,7 +4,6 @@
 //! too deep for its stack as `...`.
 
 use crate::Grift;
-use crate::heap::Object;
 use crate::local::{Error, K, Value, push};
 use std::fmt::{self, Write};
 
@@ -81,7 +80,7 @@ impl<T> Grift<T> {
                 }
                 Item::Tail(Value::Pair(r), text) => {
                     #[expect(clippy::disallowed_methods, reason = "the printer's loop is charged")]
-                    let (element, rest) = self.pair_at(r)?;
+                    let (element, rest, _) = self.heap.pair_at(r)?;
                     out.write_char(' ')?;
                     push(&mut todo, Item::Tail(rest, text))?;
                     push(&mut todo, Item::Value(element))?;
@@ -142,44 +141,38 @@ impl<T> Grift<T> {
                     out.left_out = true;
                     out.write_str("...")?;
                 }
-                Value::Pair(r)
-                | Value::String(r)
-                | Value::Bytes(r)
-                | Value::Operative(r)
-                | Value::Applicative(r) => {
-                    match self.heap.get(r) {
-                        Ok(Object::Pair(a, b, _)) => {
-                            out.write_char('(')?;
-                            push(&mut todo, Item::Tail(*b, ")"))?;
-                            push(&mut todo, Item::Value(*a))?;
+                Value::Pair(r) => {
+                    #[expect(clippy::disallowed_methods, reason = "the printer's loop is charged")]
+                    let (a, b, _) = self.heap.pair_at(r)?;
+                    out.write_char('(')?;
+                    push(&mut todo, Item::Tail(b, ")"))?;
+                    push(&mut todo, Item::Value(a))?;
+                }
+                Value::String(r) => write_string(self.heap.string_at(r)?, out)?,
+                // The literal: each byte as the integer `byte-at` gives for it.
+                Value::Bytes(r) => {
+                    out.write_str("#bytes(")?;
+                    for (i, byte) in self.heap.bytes_at(r)?.iter().enumerate() {
+                        if i > 0 {
+                            out.write_char(' ')?;
                         }
-                        Ok(Object::String(s)) => write_string(s, out)?,
-                        // The literal: each byte as the integer `byte-at` gives for it.
-                        Ok(Object::Bytes(b)) => {
-                            out.write_str("#bytes(")?;
-                            for (i, byte) in b.iter().enumerate() {
-                                if i > 0 {
-                                    out.write_char(' ')?;
-                                }
-                                write!(out, "{byte}")?;
-                            }
-                            out.write_char(')')?;
-                        }
-                        Ok(Object::Operative(op)) => {
-                            out.write_str("#[operative ")?;
-                            push(&mut todo, Item::Tail(op.body, "]"))?;
-                            let c = op.context_parameter.map_or(Value::Ignore, Value::Symbol);
-                            push(&mut todo, Item::Value(c))?;
-                            push(&mut todo, Item::Tail(Value::EmptyList, " "))?;
-                            push(&mut todo, Item::Value(op.parameters))?;
-                        }
-                        Ok(Object::Applicative(c)) => {
-                            out.write_str("#[applicative ")?;
-                            push(&mut todo, Item::Tail(Value::EmptyList, "]"))?;
-                            push(&mut todo, Item::Value(*c))?;
-                        }
-                        _ => return Err(Error::new(K::StaleValue, &[v])),
+                        write!(out, "{byte}")?;
                     }
+                    out.write_char(')')?;
+                }
+                Value::Operative(r) => {
+                    let op = self.heap.operative_at(r)?;
+                    out.write_str("#[operative ")?;
+                    push(&mut todo, Item::Tail(op.body, "]"))?;
+                    let c = op.context_parameter.map_or(Value::Ignore, Value::Symbol);
+                    push(&mut todo, Item::Value(c))?;
+                    push(&mut todo, Item::Tail(Value::EmptyList, " "))?;
+                    push(&mut todo, Item::Value(op.parameters))?;
+                }
+                Value::Applicative(r) => {
+                    out.write_str("#[applicative ")?;
+                    push(&mut todo, Item::Tail(Value::EmptyList, "]"))?;
+                    push(&mut todo, Item::Value(self.heap.applicative_at(r)?))?;
                 }
             }
         }

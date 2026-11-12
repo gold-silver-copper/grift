@@ -239,7 +239,7 @@ impl<T> Grift<T> {
         answer: &Result<local::Value, local::Error>,
     ) -> Result<(Machine, Run), local::Error> {
         self.owns(&parked.owner)?;
-        let ready = self.prepare(ending_values(answer));
+        let ready = self.prepare(ending_values(answer), []);
         // A handle is linear and of this interpreter, so its name is still that run.
         let Some(Entry::Run(mut room)) = self.clear_kept(parked.name) else {
             return Err(local::Error::new(K::StaleValue, &[]));

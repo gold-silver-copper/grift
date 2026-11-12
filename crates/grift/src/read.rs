@@ -1,7 +1,7 @@
 //! The reader: source text to forms, with an explicit stack of open lists.
 
 use crate::evaluate::integer;
-use crate::heap::{Object, Reference};
+use crate::heap::{Open, Origin};
 use crate::interrupt::Control;
 use crate::local::{Error, K, Symbol, Value, push};
 use crate::{Grift, WALK_CHECK};
@@ -11,8 +11,8 @@ use std::sync::Arc;
 /// A list being read: its first pair, its last pair, where a dotted tail stands, and the offset
 /// and line of its `(`. A `#bytes(` literal is a list whose elements go in `bytes` instead.
 struct List {
-    head: Value,
-    last: Value,
+    head: Option<Open>,
+    last: Option<Open>,
     dot: Dot,
     start: usize,
     line: u32,
@@ -22,13 +22,19 @@ struct List {
 impl List {
     fn new(start: usize, line: u32) -> List {
         List {
-            head: Value::EmptyList,
-            last: Value::EmptyList,
+            head: None,
+            last: None,
             dot: Dot::No,
             start,
             line,
             bytes: None,
         }
+    }
+
+    /// The list read so far, its tail aside.
+    fn value(&self) -> Value {
+        self.head
+            .map_or(Value::EmptyList, |p| Value::Pair(p.pair()))
     }
 }
 
@@ -163,7 +169,7 @@ impl<T> Grift<T> {
             self.add(&mut forms, form, library)?;
             (at, line) = (place.end, after);
         }
-        Ok(forms.head)
+        Ok(forms.value())
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
@@ -209,13 +215,11 @@ impl<T> Grift<T> {
                         bytes: Some(bytes), ..
                     }) => self.bytes_local(bytes)?,
                     Some(list) if list.dot != Dot::Tail => {
-                        if let (Some(source), Value::Pair(r)) = (source, list.head)
-                            && let Object::Pair(_, _, origin) = self.heap.get_mut(r)?
-                        {
-                            origin.place = Some((source, list.line));
-                            origin.outer = open.is_empty();
+                        if let (Some(source), Some(head)) = (source, list.head) {
+                            self.heap
+                                .place(head, (source, list.line), open.is_empty())?;
                         }
-                        list.head
+                        list.value()
                     }
                     Some(_) => return Err(fail(K::MisplacedDot)),
                     None => return Err(fail(K::UnmatchedParenthesis)),
@@ -228,7 +232,7 @@ impl<T> Grift<T> {
                     let token = src.get(begin..cur.at).unwrap_or_default();
                     if token == "." {
                         match open.last_mut() {
-                            Some(list) if list.dot == Dot::No && list.last != Value::EmptyList => {
+                            Some(list) if list.dot == Dot::No && list.last.is_some() => {
                                 list.dot = Dot::Tail;
                                 continue;
                             }
@@ -269,26 +273,18 @@ impl<T> Grift<T> {
     /// Adds `datum` to the end of a list being read: an element, or its tail after a `.`.
     fn add(&mut self, list: &mut List, datum: Value, library: bool) -> Result<(), Error> {
         if list.dot == Dot::Tail {
-            if let Value::Pair(r) = list.last {
-                self.set_rest(r, datum)?;
+            if let Some(last) = list.last {
+                self.heap.set_rest(last, datum)?;
             }
             list.dot = Dot::Done;
             return Ok(());
         }
-        let pair = self.pair_local(datum, Value::EmptyList, library)?;
+        let pair = self.heap.open(datum, Origin::new(library))?;
         match list.last {
-            Value::Pair(r) => self.set_rest(r, pair)?,
-            _ => list.head = pair,
+            Some(last) => self.heap.set_rest(last, Value::Pair(pair.pair()))?,
+            None => list.head = Some(pair),
         }
-        list.last = pair;
-        Ok(())
-    }
-
-    /// Sets the rest of a pair the reader made and nobody else has seen yet.
-    fn set_rest(&mut self, r: Reference, v: Value) -> Result<(), Error> {
-        if let Object::Pair(_, d, _) = self.heap.get_mut(r)? {
-            *d = v;
-        }
+        list.last = Some(pair);
         Ok(())
     }
 

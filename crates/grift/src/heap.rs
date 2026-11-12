@@ -7,20 +7,79 @@ use crate::local::{Error, K, Symbol, Value, push};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::marker::PhantomData;
 
-/// A reference to a heap slot. The generation tells a live object from a reclaimed one.
-#[derive(Clone, Copy, Debug, Eq)]
-#[cfg_attr(not(test), derive(PartialEq))]
+/// A reference to a heap slot, of no kind: what a host holds, and what the collector and the slot
+/// table see. The generation tells a live object from a reclaimed one. Only [`Heap::kind`] turns
+/// one into a [`Ref`], checking the object's kind.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Reference {
-    pub idx: u32,
-    pub generation: u32,
+    idx: u32,
+    generation: u32,
 }
 
+/// A reference to an object of kind `T`, one of [`kind`]'s. Only the heap makes one, from an object
+/// of that kind, so a value's tag and the object its reference names agree, and a reader's
+/// argument says which kind it reads.
+#[derive(Debug, Eq)]
+#[cfg_attr(not(test), derive(PartialEq))]
+pub(crate) struct Ref<T> {
+    idx: u32,
+    generation: u32,
+    kind: PhantomData<T>,
+}
+
+// Copied whatever the kind: derived, it would be only for a kind that is `Copy`.
+impl<T> Clone for Ref<T> {
+    fn clone(&self) -> Ref<T> {
+        *self
+    }
+}
+
+impl<T> Copy for Ref<T> {}
+
 #[cfg(test)]
-impl PartialEq for Reference {
-    fn eq(&self, other: &Reference) -> bool {
+impl<T> PartialEq for Ref<T> {
+    fn eq(&self, other: &Ref<T>) -> bool {
         crate::local::COMPARED.with(|n| n.set(n.get() + 1));
         self.idx == other.idx && self.generation == other.generation
+    }
+}
+
+/// The kinds of object a [`Ref`] names, each the object variant it is.
+pub(crate) trait Kind {
+    fn holds(obj: &Object) -> bool;
+}
+
+macro_rules! kinds {
+    ($($kind:ident)*) => {
+        /// One type per kind of object, named for its variant of [`Object`] and of `Value`.
+        pub(crate) mod kind {
+            $(
+                #[derive(Debug, PartialEq, Eq)]
+                pub(crate) enum $kind {}
+
+                impl super::Kind for $kind {
+                    fn holds(obj: &super::Object) -> bool {
+                        matches!(obj, super::Object::$kind(..))
+                    }
+                }
+            )*
+        }
+    };
+}
+
+kinds!(Pair String Context Operative Applicative Bytes);
+
+/// A pair the reader is still making: until it lets go, its rest and its origin may change. Only
+/// [`Heap::open`] makes one, and nothing turns a pair's [`Ref`] into one, so no pair changes once
+/// anything else has seen it.
+#[derive(Clone, Copy)]
+pub(crate) struct Open(Ref<kind::Pair>);
+
+impl Open {
+    pub(crate) fn pair(self) -> Ref<kind::Pair> {
+        self.0
     }
 }
 
@@ -32,7 +91,7 @@ pub(crate) struct Operative {
     pub parameters: Value,
     pub context_parameter: Option<Symbol>,
     pub body: Value,
-    pub context: Reference,
+    pub context: Ref<kind::Context>,
     pub size: u32,
     pub native: Option<Native>,
 }
@@ -46,7 +105,7 @@ pub(crate) enum Object {
     /// refers to it, and is collected like any value when nothing does.
     Symbol(Box<str>),
     /// An optional parent and the bindings.
-    Context(Option<Reference>, Bindings),
+    Context(Option<Ref<kind::Context>>, Bindings),
     Operative(Operative),
     Applicative(Value),
     Bytes(Vec<u8>),
@@ -95,6 +154,17 @@ pub(crate) struct Origin {
     pub place: Option<(Symbol, u32)>,
     pub library: bool,
     pub outer: bool,
+}
+
+impl Origin {
+    /// A pair made where no source says, the library's if `library`.
+    pub(crate) fn new(library: bool) -> Origin {
+        Origin {
+            place: None,
+            library,
+            outer: false,
+        }
+    }
 }
 
 const NONE: u32 = u32::MAX;
@@ -166,17 +236,38 @@ impl Default for Heap {
     }
 }
 
-impl Reference {
+impl<T> Ref<T> {
     /// No object: a reference no slot has.
-    pub(crate) const NONE: Reference = Reference {
+    pub(crate) const NONE: Ref<T> = Ref {
         idx: NONE,
         generation: 0,
+        kind: PhantomData,
     };
+
+    /// Its slot's number, which tells one live object from another.
+    pub(crate) fn slot(self) -> u32 {
+        self.idx
+    }
+
+    /// The same reference, of no kind.
+    pub(crate) fn untyped(self) -> Reference {
+        Reference {
+            idx: self.idx,
+            generation: self.generation,
+        }
+    }
+}
+
+/// A slot that holds no object of the kind asked for: reclaimed, or never one. One answer, the
+/// host's `stale-value`, with no values: the value would name what isn't there.
+fn stale() -> Error {
+    Error::new(K::StaleValue, &[])
 }
 
 impl Heap {
+    /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
     #[inline]
-    pub fn alloc(&mut self, obj: Object) -> Result<Reference, Error> {
+    fn alloc<T>(&mut self, obj: Object) -> Result<Ref<T>, Error> {
         debug_assert!(weight(&obj) > 0, "an object weighs at least its own slot");
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(weight(&obj));
@@ -201,9 +292,10 @@ impl Heap {
         {
             self.free = next;
             slot.obj = obj;
-            return Ok(Reference {
+            return Ok(Ref {
                 idx,
                 generation: slot.generation,
+                kind: PhantomData,
             });
         }
         #[cfg(test)]
@@ -224,18 +316,64 @@ impl Heap {
             obj,
         };
         push(&mut self.slots, slot).map_err(|_| self.refused())?;
-        Ok(Reference { idx, generation })
+        Ok(Ref {
+            idx,
+            generation,
+            kind: PhantomData,
+        })
+    }
+
+    #[inline]
+    pub fn pair(&mut self, a: Value, d: Value, origin: Origin) -> Result<Ref<kind::Pair>, Error> {
+        self.alloc(Object::Pair(a, d, origin))
+    }
+
+    /// A new pair for the reader to finish.
+    pub fn open(&mut self, a: Value, origin: Origin) -> Result<Open, Error> {
+        self.pair(a, Value::EmptyList, origin).map(Open)
+    }
+
+    pub fn string(&mut self, s: Box<str>) -> Result<Ref<kind::String>, Error> {
+        self.alloc(Object::String(s))
+    }
+
+    pub fn bytes(&mut self, b: Vec<u8>) -> Result<Ref<kind::Bytes>, Error> {
+        self.alloc(Object::Bytes(b))
+    }
+
+    #[inline]
+    pub fn context(
+        &mut self,
+        parent: Option<Ref<kind::Context>>,
+        bindings: Bindings,
+    ) -> Result<Ref<kind::Context>, Error> {
+        self.alloc(Object::Context(parent, bindings))
+    }
+
+    pub fn operative(&mut self, op: Operative) -> Result<Ref<kind::Operative>, Error> {
+        self.alloc(Object::Operative(op))
+    }
+
+    pub fn applicative(&mut self, c: Value) -> Result<Ref<kind::Applicative>, Error> {
+        self.alloc(Object::Applicative(c))
+    }
+
+    /// A new symbol spelled `spelling`.
+    pub fn name(&mut self, spelling: Box<str>) -> Result<Symbol, Error> {
+        self.alloc::<()>(Object::Symbol(spelling))
+            .map(|r| Symbol(r.idx))
     }
 
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
-    pub fn room_in(&mut self, r: Reference, more: usize) -> Result<&mut Bindings, Error> {
+    pub fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
         let bindings = match self.slots.get_mut(r.idx as usize) {
-            Some(s) if s.generation == r.generation => match &mut s.obj {
-                Object::Context(_, bindings) => bindings,
-                _ => return Err(Error::new(K::StaleValue, &[Value::Context(r)])),
-            },
-            _ => return Err(Error::new(K::StaleValue, &[])),
+            Some(Slot {
+                generation,
+                obj: Object::Context(_, bindings),
+                ..
+            }) if *generation == r.generation => bindings,
+            _ => return Err(stale()),
         };
         let before = bindings_weight(bindings);
         bindings.try_reserve(more).map_err(|_| Error::oom())?;
@@ -260,12 +398,6 @@ impl Heap {
         }
     }
 
-    /// A new empty context.
-    #[inline]
-    pub fn context(&mut self, parent: Option<Reference>) -> Result<Reference, Error> {
-        self.alloc(Object::Context(parent, Bindings::default()))
-    }
-
     /// No room for an object: collection comes next, at the machine's next safe point or as a
     /// host's next run begins.
     #[cold]
@@ -275,19 +407,121 @@ impl Heap {
     }
 
     #[inline]
-    pub fn get(&self, r: Reference) -> Result<&Object, Error> {
+    pub fn get<T>(&self, r: Ref<T>) -> Result<&Object, Error> {
         match self.slots.get(r.idx as usize) {
             Some(s) if s.generation == r.generation => Ok(&s.obj),
-            _ => Err(Error::new(K::StaleValue, &[])),
+            _ => Err(stale()),
+        }
+    }
+
+    fn get_mut<T>(&mut self, r: Ref<T>) -> Result<&mut Object, Error> {
+        match self.slots.get_mut(r.idx as usize) {
+            Some(s) if s.generation == r.generation => Ok(&mut s.obj),
+            _ => Err(stale()),
+        }
+    }
+
+    /// A host's reference as one to an object of kind `T`, if it still names one.
+    pub fn kind<T: Kind>(&self, r: Reference) -> Result<Ref<T>, Error> {
+        let r = Ref {
+            idx: r.idx,
+            generation: r.generation,
+            kind: PhantomData,
+        };
+        match self.get(r)? {
+            obj if T::holds(obj) => Ok(r),
+            _ => Err(stale()),
+        }
+    }
+
+    /// A pair's first, its rest and its origin. A walk along a list goes through `Items`, which a
+    /// stop ends (`clippy.toml`).
+    #[inline]
+    pub fn pair_at(&self, r: Ref<kind::Pair>) -> Result<(Value, Value, Origin), Error> {
+        match self.get(r)? {
+            Object::Pair(a, d, origin) => Ok((*a, *d, *origin)),
+            _ => Err(stale()),
+        }
+    }
+
+    pub fn string_at(&self, r: Ref<kind::String>) -> Result<&str, Error> {
+        match self.get(r)? {
+            Object::String(s) => Ok(s),
+            _ => Err(stale()),
+        }
+    }
+
+    pub fn bytes_at(&self, r: Ref<kind::Bytes>) -> Result<&[u8], Error> {
+        match self.get(r)? {
+            Object::Bytes(b) => Ok(b),
+            _ => Err(stale()),
         }
     }
 
     #[inline]
-    pub fn get_mut(&mut self, r: Reference) -> Result<&mut Object, Error> {
-        match self.slots.get_mut(r.idx as usize) {
-            Some(s) if s.generation == r.generation => Ok(&mut s.obj),
-            _ => Err(Error::new(K::StaleValue, &[])),
+    pub fn operative_at(&self, r: Ref<kind::Operative>) -> Result<Operative, Error> {
+        match self.get(r)? {
+            Object::Operative(op) => Ok(*op),
+            _ => Err(stale()),
         }
+    }
+
+    /// The combiner an applicative wraps.
+    #[inline]
+    pub fn applicative_at(&self, r: Ref<kind::Applicative>) -> Result<Value, Error> {
+        match self.get(r)? {
+            Object::Applicative(c) => Ok(*c),
+            _ => Err(stale()),
+        }
+    }
+
+    /// Sets the rest of a pair the reader is making.
+    pub fn set_rest(&mut self, p: Open, v: Value) -> Result<(), Error> {
+        let Object::Pair(_, d, _) = self.get_mut(p.0)? else {
+            return Err(stale());
+        };
+        *d = v;
+        Ok(())
+    }
+
+    /// Says where the reader read a list whose first pair it is making, and whether it is an outer
+    /// form.
+    pub fn place(&mut self, p: Open, place: (Symbol, u32), outer: bool) -> Result<(), Error> {
+        let Object::Pair(_, _, origin) = self.get_mut(p.0)? else {
+            return Err(stale());
+        };
+        (origin.place, origin.outer) = (Some(place), outer);
+        Ok(())
+    }
+
+    /// Flags a library operative as having a native twin, or as having none.
+    pub fn install(
+        &mut self,
+        r: Ref<kind::Operative>,
+        native: Option<Native>,
+    ) -> Result<(), Error> {
+        let Object::Operative(op) = self.get_mut(r)? else {
+            return Err(stale());
+        };
+        op.native = native;
+        Ok(())
+    }
+
+    /// Takes a string's text out, leaving it empty until [`Heap::put_text`] puts it back: lent so,
+    /// it needs no copy.
+    pub fn take_text(&mut self, r: Ref<kind::String>) -> Result<Box<str>, Error> {
+        match self.get_mut(r)? {
+            Object::String(s) => Ok(std::mem::take(s)),
+            _ => Err(stale()),
+        }
+    }
+
+    pub fn put_text(&mut self, r: Ref<kind::String>, text: Box<str>) -> Result<(), Error> {
+        let Object::String(s) = self.get_mut(r)? else {
+            return Err(stale());
+        };
+        *s = text;
+        Ok(())
     }
 
     /// The name in symbol slot `id` and its generation, if the slot holds a name.
@@ -325,12 +559,17 @@ impl Heap {
         self.until_gc.set(0);
     }
 
-    /// Marks everything reachable from `roots` and frees the rest, with no memory of its own: a
+    /// Marks everything reachable from `roots` and the host's `held` and frees the rest, with no memory of its own: a
     /// slot goes on the mark stack only as it is first marked, so once at most, and every slot
     /// reserved its entry as it was made. `walked` is how much outside the heap the collection
     /// walks too. The free list is made again from the bottom up, so the lowest slots are reused
     /// first and the top empties, to be given back.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, walked: usize) {
+    pub fn collect(
+        &mut self,
+        roots: impl Iterator<Item = Value>,
+        held: impl Iterator<Item = Reference>,
+        walked: usize,
+    ) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
         #[cfg(test)]
@@ -374,6 +613,7 @@ impl Heap {
         #[cfg(test)]
         let room = marks.capacity();
         roots.for_each(|v| mark(slots, marks, v));
+        held.for_each(|r| hold(slots, marks, r));
         while let Some(idx) = marks.pop() {
             if let Some(s) = slots.get(idx as usize) {
                 children(&s.obj, |v| mark(slots, marks, v));
@@ -508,12 +748,12 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
             }
             return;
         }
-        Value::Pair(r)
-        | Value::String(r)
-        | Value::Bytes(r)
-        | Value::Context(r)
-        | Value::Operative(r)
-        | Value::Applicative(r) => r,
+        Value::Pair(r) => r.untyped(),
+        Value::String(r) => r.untyped(),
+        Value::Bytes(r) => r.untyped(),
+        Value::Context(r) => r.untyped(),
+        Value::Operative(r) => r.untyped(),
+        Value::Applicative(r) => r.untyped(),
         // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
         Value::EmptyList
         | Value::Boolean(_)
@@ -524,6 +764,12 @@ fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
         | Value::Primitive(_)
         | Value::Host(_) => return,
     };
+    hold(slots, marks, r);
+}
+
+/// Puts the object `r` names on the mark stack, unless a collection already reached it: a value's,
+/// or one a host holds, whose kind marking needn't know.
+fn hold(slots: &[Slot], marks: &mut Vec<u32>, r: Reference) {
     if let Some(s) = slots.get(r.idx as usize)
         && s.generation == r.generation
         && !s.marked.replace(true)

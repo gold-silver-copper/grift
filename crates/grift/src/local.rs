@@ -4,7 +4,7 @@
 //! entry (see `Grift::import`), so nothing stale or foreign ever gets in.
 
 use crate::evaluate::Primitive;
-use crate::heap::{Reference, Seen};
+use crate::heap::{Ref, Seen, kind};
 use std::fmt;
 
 /// A value of this interpreter: the language's types, as the public [`Value`](crate::Value) shows
@@ -21,14 +21,14 @@ pub(crate) enum Value {
     Integer(i64),
     Float(f64),
     Symbol(Symbol),
-    Pair(Reference),
-    String(Reference),
-    Context(Reference),
-    Operative(Reference),
-    Applicative(Reference),
+    Pair(Ref<kind::Pair>),
+    String(Ref<kind::String>),
+    Context(Ref<kind::Context>),
+    Operative(Ref<kind::Operative>),
+    Applicative(Ref<kind::Applicative>),
     Primitive(Primitive),
     Host(Host),
-    Bytes(Reference),
+    Bytes(Ref<kind::Bytes>),
 }
 
 // Two words, and aligned to one: every step copies values, so a bigger one costs every program.
@@ -121,7 +121,7 @@ impl Trace {
         seen.try_reserve(places.len()).map_err(|_| Error::oom())?;
         #[expect(clippy::disallowed_methods, reason = "reserved places.len() above")]
         seen.extend(places.iter().filter_map(|v| match v {
-            Value::Pair(r) => Some(r.idx),
+            Value::Pair(r) => Some(r.slot()),
             _ => None,
         }));
         Ok(Trace {
@@ -134,11 +134,11 @@ impl Trace {
     /// Adds program combination `r`, unless it is there already. With no memory to spare the
     /// trace stays as it is: the error matters more than its last location.
     #[expect(clippy::disallowed_methods, reason = "reserved 1 in the condition")]
-    pub fn add(&mut self, r: Reference) {
-        if r != Reference::NONE
+    pub fn add(&mut self, r: Ref<kind::Pair>) {
+        if r != Ref::NONE
             && self.seen.try_reserve(1).is_ok()
             && self.added.try_reserve(1).is_ok()
-            && self.seen.insert(r.idx)
+            && self.seen.insert(r.slot())
         {
             self.added.push(Value::Pair(r));
         }
