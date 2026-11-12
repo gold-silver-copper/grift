@@ -943,28 +943,20 @@ impl<T> Grift<T> {
                 self.next_argument(inner, context, operands, base)
             }
             Value::Operative(r) => self.call_compound(r, operands, context),
-            Value::Primitive(_) | Value::Host(_) => self.spread(f, operands, context, library),
+            // A primitive or a host function is applied to its operands as they are.
+            Value::Primitive(_) | Value::Host(_) => {
+                let base = Base::new(self.machine.arguments.len(), library);
+                let mut items = Items::new(operands);
+                while let Some(x) = items.next(self)? {
+                    push(&mut self.machine.arguments, x)?;
+                }
+                if items.rest() != Value::EmptyList {
+                    return Err(Error::new(K::TypeError, &[f, operands]));
+                }
+                self.apply(f, context, base)
+            }
             _ => Err(Error::new(K::NotACombiner, &[f])),
         }
-    }
-
-    /// Applies a primitive or a host function to its operands as they are.
-    fn spread(
-        &mut self,
-        f: Value,
-        operands: Value,
-        context: Ref<Context>,
-        library: bool,
-    ) -> Result<Mode, Error> {
-        let base = Base::new(self.machine.arguments.len(), library);
-        let mut items = Items::new(operands);
-        while let Some(x) = items.next(self)? {
-            push(&mut self.machine.arguments, x)?;
-        }
-        if items.rest() != Value::EmptyList {
-            return Err(Error::new(K::TypeError, &[f, operands]));
-        }
-        self.apply(f, context, base)
     }
 
     /// Evaluates the next operand of an applicative, or applies its combiner once none is left.
