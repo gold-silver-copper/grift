@@ -454,14 +454,10 @@ pub(crate) fn type_error(v: Value) -> Error {
 }
 
 /// What a run begins with, which makes its first frames once it has begun.
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one is made per run and matched at once"
-)]
+#[expect(clippy::large_enum_variant, reason = "one per run, matched at once")]
 pub(crate) enum First<'a> {
-    /// Reads `src`, the text of `source` if it has a name, and evaluates its forms in `context` in
-    /// order; `library` marks it as a host's own grift code. Reading is the run's first part, so a
-    /// stop reaches it too, and a text that doesn't read ends as every run does.
+    /// Reads `src` (of `source`), and evaluates its forms in `context`; `library` marks a host's own
+    /// grift code. Reading is the run's first part, so a stop reaches it too.
     Text {
         context: Ref<Context>,
         source: Option<Symbol>,
@@ -470,8 +466,7 @@ pub(crate) enum First<'a> {
     },
     /// Calls applicative `f` with `arguments` as `apply` does.
     Call { f: Value, arguments: &'a [Value] },
-    /// Takes up parked `machine`, its waiting call answering `answer`. Nothing is around it: the
-    /// machine is its own, as it was when it began.
+    /// Takes up parked `machine`, as it was when it began, its waiting call answering `answer`.
     Resume {
         machine: Machine,
         answer: Result<Value, Error>,
@@ -487,11 +482,8 @@ impl<T> Grift<T> {
         }
     }
 
-    /// A run on the machine, whole: it begins on the prepared heap with the machine clear, makes
-    /// its first frames, runs until they are gone, then clears the machine and ends, as `run`
-    /// drops, which a host function's panic does too (the next run clears what that left).
-    /// `parks` is the right to park, which only [`Grift::started`] makes and ending takes back.
-    /// A host function, given a [`HostCall`], begins none.
+    /// A whole run: begun with the machine clear, its first frames made, run, cleared, and ended as
+    /// `run` drops (a host function's panic too). `parks` is the right to park: [`Grift::started`].
     pub(crate) fn run_on_machine(
         &mut self,
         ready: Prepared,
@@ -771,10 +763,9 @@ impl<T> Grift<T> {
         Err(e)
     }
 
-    /// A popped `Cleanup` frame becomes a call of the cleanup, above the `Finish` frame its install
-    /// put under it, and that install's entry in `waiting` holds this ending. Both go into the room
-    /// just freed, so a cleanup's start needs no memory: the next check comes first, and a refusal
-    /// after it is the cleanup's first step failing.
+    /// A popped `Cleanup` frame becomes a call of the cleanup above the `Finish` its install put
+    /// under it, whose `waiting` entry holds this ending. Both fill room just freed, so the start
+    /// needs no memory: a refusal after the next check is the cleanup's first step failing.
     fn start_cleanup(
         &mut self,
         ending: Result<Value, Error>,
@@ -1274,12 +1265,9 @@ impl<T> Grift<T> {
                     let base = Base::new(base, self.machine.library);
                     self.frame(What::Handler { handler: z, base }, c, at)?;
                 } else {
-                    // Its `Finish` goes under it now, with that frame's entry in `waiting`, so
-                    // its start only fills the room the `Cleanup` frame leaves.
-                    self.machine
-                        .waiting
-                        .try_reserve(1)
-                        .map_err(|_| Error::oom())?;
+                    // Its `Finish` and that one's entry go under it now: its start needs no room.
+                    let room = &mut self.machine.waiting;
+                    room.try_reserve(1).map_err(|_| Error::oom())?;
                     self.frame(What::Finish, Ref::NONE, Ref::NONE)?;
                     #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
                     self.machine.waiting.push(Ok(Value::Inert));

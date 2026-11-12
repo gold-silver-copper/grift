@@ -16,11 +16,9 @@ mod read;
 )]
 mod tests;
 
-use evaluate::First;
 use heap::{Bindings, Heap, Ref, kind};
 use interrupt::Control;
 use local::{K, boxed, push};
-use parked::MayPark;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -391,8 +389,7 @@ pub struct Grift<T = ()> {
     /// The kept values and parked runs, and the first free entry.
     kept: Vec<Entry>,
     kept_free: Option<u32>,
-    /// The kept name of the run that has just parked, read only by [`Grift::started`], the one
-    /// place that gives a run the right to park.
+    /// The kept name of the run that has just parked, for [`Grift::started`] alone to read.
     parked_as: Option<u32>,
     machine: evaluate::Machine,
     /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
@@ -522,11 +519,11 @@ impl<T> Grift<T> {
         source: Option<&str>,
         src: &str,
         library: bool,
-        parks: Option<MayPark>,
+        parks: Option<parked::MayPark>,
     ) -> Result<local::Value, local::Error> {
         let ready = self.prepare(std::iter::once(local::Value::Context(context)), []);
         let source = source.map(|s| self.intern(s)).transpose()?;
-        let first = First::Text {
+        let first = evaluate::First::Text {
             context,
             source,
             src,
@@ -549,11 +546,11 @@ impl<T> Grift<T> {
         state: &mut T,
         f: &Value,
         arguments: &[Value],
-        parks: Option<MayPark>,
+        parks: Option<parked::MayPark>,
     ) -> Result<local::Value, local::Error> {
         let (f, ready) = self.prepare_call(f, arguments)?;
         let arguments = self.imported(arguments)?;
-        let first = First::Call {
+        let first = evaluate::First::Call {
             f,
             arguments: &arguments,
         };

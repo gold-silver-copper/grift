@@ -1,15 +1,15 @@
 //! Stopping a run from another thread. An interpreter and its interrupters share one word: the
-//! number of the run in progress or else of the next to begin, whether it is in progress, whether
-//! it may park, and two bits a run is asked to stop by. Every handle names one run, the one it was taken for, and
-//! everything here is one atomic operation on that word, so nothing can come between looking at
-//! the run and asking it: a handle reaches its run while that run is in progress, and never
-//! another. Ending a run, parking it too, moves to the next number and clears the rest. The machine reads the word
-//! once a step and clears only [`STOP`], so a later stop asks again and a force, which it never
-//! clears, is found by every check to the end of its run. No other memory is published through
-//! the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]: never repeated, at a
-//! run a nanosecond they wrap after seventy years.
+//! number of the run in progress or else of the next to begin, whether it is in progress and may
+//! park, and two bits a run is asked to stop by. Every handle names one run, the one it was taken
+//! for, and everything here is one atomic operation on that word, so nothing can come between
+//! looking at the run and asking it: a handle reaches its run while that run is in progress, and
+//! never another. Ending a run, by parking too, moves to the next number and clears the rest. The
+//! machine reads the word once a step and clears only [`STOP`], so a later stop asks again and a
+//! force, which it never clears, is found by every check to the end of its run. No other memory is
+//! published through the word, so every ordering is relaxed. Numbers are multiples of [`NEXT`]:
+//! never repeated, at a run a nanosecond they wrap after thirty-six years.
 
-use crate::WALK_CHECK;
+use crate::{WALK_CHECK, evaluate::Prepared, parked::MayPark};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -37,15 +37,12 @@ pub(crate) struct Control {
 
 impl Control {
     /// Begins a run on the machine, which ends as the [`Run`] drops. It takes the proof that the
-    /// heap was prepared for it ([`crate::evaluate::Prepared`]), so no run begins uncollected, and
-    /// the right to park, if it has it, which ending the run takes back.
-    pub fn begin(
-        control: &Arc<Control>,
-        _: crate::evaluate::Prepared,
-        parks: Option<crate::parked::MayPark>,
-    ) -> Run {
-        let parks = if parks.is_some() { PARKS } else { 0 };
-        control.word.fetch_or(RUNNING | parks, Relaxed);
+    /// heap was prepared for it ([`Prepared`]), so no run begins uncollected, and the right to
+    /// park, if it has it, which ending the run takes back.
+    pub fn begin(control: &Arc<Control>, _: Prepared, parks: Option<MayPark>) -> Run {
+        control
+            .word
+            .fetch_or(RUNNING | parks.map_or(0, |_| PARKS), Relaxed);
         Run(Arc::clone(control))
     }
 

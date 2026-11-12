@@ -115,9 +115,8 @@ struct HandlesGoInByValue;
 #[cfg(doctest)]
 struct ResumeTakesNoReference;
 
-/// The right to park, given to a run as it begins. Its field is private to this file, and
-/// [`Grift::started`] is the one place that makes one, then reads how the run came back: no other
-/// run can park, and no run that parked can end as if it hadn't.
+/// The right to park, given to a run as it begins. Its field is private here, and only
+/// [`Grift::started`] makes one, then reads how the run came back.
 pub(crate) struct MayPark(());
 
 /// Why [`Grift::resume`] didn't take the run up, or what ended it.
@@ -159,7 +158,7 @@ impl<T> Grift<T> {
 
     /// Runs `run` with the right to park, and what it came to: parked, if it left its kept name,
     /// or else what it returned.
-    pub(crate) fn started(
+    fn started(
         &mut self,
         run: impl FnOnce(&mut Self, MayPark) -> Result<local::Value, local::Error>,
     ) -> Result<Ran, Error> {
