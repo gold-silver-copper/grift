@@ -1806,8 +1806,7 @@ impl<T> Grift<T> {
         Ok(names)
     }
 
-    /// Runs primitive `p` on `args` in `context`, with no step of the machine around it, for the
-    /// tests of what a primitive does by itself.
+    /// Runs primitive `p` on `args` in `context` with no machine step around it, for the tests.
     #[cfg(test)]
     pub(crate) fn call_primitive(
         &mut self,
