@@ -1,15 +1,15 @@
-diff --git a/crates/grift/src/heap.rs b/crates/grift/src/heap.rs
-index 2a49d2d..ce7bdec 100644
---- a/crates/grift/src/heap.rs
-+++ b/crates/grift/src/heap.rs
-@@ -405,7 +405,10 @@ impl Heap {
+diff --git i/crates/grift/src/heap.rs w/crates/grift/src/heap.rs
+index a9749f01..df7949a0 100644
+--- i/crates/grift/src/heap.rs
++++ w/crates/grift/src/heap.rs
+@@ -420,7 +420,10 @@ impl Heap {
  
      /// A host's reference as one to an object of kind `T`, if it still names one.
      pub fn kind<T: Kind>(&self, r: Ref) -> Result<Ref<T>, Error> {
 -        self.get(r.cast::<T>()).map(|_| r.cast())
 +        match self.slots.get(r.idx as usize) {
 +            Some(s) if s.generation == r.generation => Ok(r.cast()),
-+            _ => Err(stale()),
++            _ => Err(Error::stale()),
 +        }
      }
  
