@@ -764,8 +764,8 @@ impl<T> Grift<T> {
     }
 
     /// A popped `Cleanup` frame becomes a call of the cleanup above the `Finish` its install put
-    /// under it, whose `waiting` entry holds this ending. Both fill room just freed, so the start
-    /// needs no memory: a refusal after the next check is the cleanup's first step failing.
+    /// under it, whose `waiting` entry, written in place, holds this ending. The call fills the
+    /// room just freed: a refusal after the next check is the cleanup's first step failing.
     fn start_cleanup(
         &mut self,
         ending: Result<Value, Error>,
@@ -773,8 +773,9 @@ impl<T> Grift<T> {
         context: Ref<Context>,
         at: Ref<Pair>,
     ) -> Result<Mode, Error> {
-        self.machine.waiting.pop();
-        push(&mut self.machine.waiting, ending)?;
+        if let Some(waiting) = self.machine.waiting.last_mut() {
+            *waiting = ending;
+        }
         let call = What::Combine {
             operands: Value::EmptyList,
             base: Base::new(self.machine.arguments.len(), false),
