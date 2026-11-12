@@ -400,12 +400,10 @@ impl Heap {
     #[inline]
     fn get<T: Kind>(&self, r: Ref<T>) -> Result<&T::Holds, Error> {
         match self.slots.get(r.idx as usize) {
-            Some(s)
-                if s.generation == r.generation
-                    && let Some(holds) = T::of(&s.obj) =>
-            {
-                Ok(holds)
-            }
+            Some(s) if s.generation == r.generation => match T::of(&s.obj) {
+                Some(holds) => Ok(holds),
+                None => Err(stale()),
+            },
             _ => Err(stale()),
         }
     }
