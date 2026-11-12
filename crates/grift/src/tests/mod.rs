@@ -100,8 +100,8 @@ impl<T> Grift<T> {
             };
             self.heap.bind(self.built_in, name, bound).unwrap();
         }
-        for native in Native::ALL {
-            let name = self.intern(native.name()).unwrap();
+        for (_, name) in Native::ALL {
+            let name = self.intern(name).unwrap();
             let Some(local::Value::Operative(form)) = self.find(self.built_in, name).unwrap()
             else {
                 panic!("the library defines each twin as an operative");
@@ -899,9 +899,9 @@ static CALLED: std::sync::LazyLock<Vec<(&str, &str)>> = std::sync::LazyLock::new
         .iter()
         .flat_map(|&p| class(p).1.iter().map(move |k| (p.name(), *k)));
     primitives
-        .chain(Native::ALL.map(|n| match n {
-            Native::If => (n.name(), "bxx"),
-            Native::Sequence => (n.name(), "xxx"),
+        .chain(Native::ALL.map(|(n, name)| match n {
+            Native::If => (name, "bxx"),
+            Native::Sequence => (name, "xxx"),
         }))
         .collect()
 });

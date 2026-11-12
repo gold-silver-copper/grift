@@ -164,16 +164,10 @@ pub(crate) enum Native {
 }
 
 impl Native {
-    /// Every twin. One left out here is never made, which the compiler warns of.
-    pub(crate) const ALL: [Native; 2] = [Native::If, Native::Sequence];
-
-    /// The library operative it is the twin of.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Native::If => "if!",
-            Native::Sequence => "sequence!",
-        }
-    }
+    /// Every twin and the library operative it is the twin of. One left out here is never made,
+    /// which the compiler warns of.
+    pub(crate) const ALL: [(Native, &str); 2] =
+        [(Native::If, "if!"), (Native::Sequence, "sequence!")];
 }
 
 /// What the machine does next.
@@ -1111,9 +1105,9 @@ impl<T> Grift<T> {
 
     /// Flags the library's operatives that have a native twin.
     pub(crate) fn install_natives(&mut self) -> Result<(), Error> {
-        for native in Native::ALL {
+        for (native, name) in Native::ALL {
             let found = self
-                .intern(native.name())
+                .intern(name)
                 .and_then(|s| self.value_of(self.built_in, s))?;
             let Value::Operative(r) = found else {
                 return Err(type_error(found));
