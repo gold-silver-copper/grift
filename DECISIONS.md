@@ -2261,15 +2261,23 @@ the owner may overrule any.
     argument of the runner's own (G-5: no limit of grift's own); asking the running system (`sysconf`,
     `getrlimit`), `unsafe` or a dependency to call it with a buffer of our own (the workspace denies `unsafe`
     and has no dependencies).
-  - **What still aborts, and why.** The library's copy of a path or arguments the system would take: at
-    most 4 KiB for a path, and on Linux up to 6 MiB of arguments, more than the system really takes at
-    the usual stack limit (a quarter of it, 2 MiB at 8 MiB), which only `getrlimit` can say. It can't be
-    removed: the system must be given a string that ends in a zero byte, only the library can hand it one,
-    and its copy is `CString::new`. A program and 50 arguments of 100 KiB under 481 limits from 6,000 to
-    30,000 KiB aborted at 98 before and 98 after. The environment the library copies for
-    `environment-variable` is the size the system gave the runner, not a program's.
-  - **`environment-variable` looks through the environment** (`env::vars_os`) for a name equal to the
-    one asked, so the name is never copied. On a system whose names ignore case, this one doesn't.
+  - **What still aborts, and why.** The length checks remove no copy of a value the system would take;
+    they only bound it. Left in Rust's library, each a `CString` that can't be refused, sizes on Linux:
+    (1) the path of `open-file`, `create-file`, `read-file` and `load`, when it is 384 bytes or more (a
+    shorter one is kept on the stack today), at most 4,096 bytes; (2) in `run-process`, the program
+    twice and each argument once, together at most 6 MiB, with two tables of three pointers a word that
+    grow by doubling; (3) the name given to `environment-variable`, when it is 384 bytes or more, at most
+    6 MiB, and the variable's value, whose size the system gave the runner. 6 MiB is more than the system
+    really takes at the usual stack limit (a quarter of it, 2 MiB at 8 MiB), which only `getrlimit` can
+    say. A program and 50 arguments of 100 KiB under 481 limits from 6,000 to 30,000 KiB aborted at 98
+    before and 98 after. Ending these means giving the system a string of our own that ends in a zero
+    byte, which needs `unsafe` or a dependency: the owner's to decide, not done here.
+  - **`environment-variable` gives the library no name the environment can't hold.** The runner never
+    sets a variable, so its environment is what the system started it with, and a name past what `execve`
+    takes is `unset-variable` without a lookup. Any other name goes to `env::var` uncopied by the runner.
+    Rejected: looking through `env::vars_os` (it copies the whole environment at every lookup, in memory
+    that can't be refused), and refusing every name the library would copy to the heap (384 bytes is the
+    library's own number, not the system's, and a variable with such a name can be set: G-5).
   - **`run-process` starts no thread, and the program's stderr is the runner's** (the owner's choice,
     2026-11-13, over reading two pipes with `poll`, which needs `unsafe` or a dependency, and over a file
     for stderr). One pipe is read on the one thread, so no thread's start is there to be refused: the

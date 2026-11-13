@@ -137,9 +137,9 @@ success. A program's own error of that name is only that, and uncaught is status
 `run-process` still reads the process's output to its end and waits for it to end, and starts no
 thread. A path longer than the system's longest, or a program and arguments longer than it runs, is
 the `file-error` or `process-error` the system gives, before Rust's library sees it. Rust's library
-copies a path, a program and its arguments in memory that can't be refused, so one the system would
-take, at most 4 KiB of path or 6 MiB of arguments on Linux, still aborts the process if there is no
-memory for that copy, as does the runner's start when there is none for its first allocations. A
+copies a path, a variable's name, a program and its arguments in memory that can't be refused, so one
+the system would take, at most 4 KiB of path or 6 MiB of name or arguments on Linux, still aborts the
+process if there is no memory for that copy, as does the runner's start when there is none for its first allocations. A
 start refused memory after those says `grift: out-of-memory while starting`.
 
 ```lisp

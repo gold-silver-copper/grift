@@ -250,10 +250,9 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   before it copies and reads lines itself. Rust's library copies a path, a program and its arguments
   in memory that can't be refused, so the runner gives it none the system would refuse for its
   length: those are the system's `file-error` or `process-error` first, by the system's own numbers
-  (`system` in `main.rs`), and no probe asks whether there is room. A variable is found by looking
-  through the environment, its name never copied. Still aborting: that copy of a path or arguments
-  the system would take, and what Rust's library and the system allocate to start the process
-  ([G-215]).
+  (`system` in `main.rs`), and no probe asks whether there is room. Still aborting: the library's
+  copy of a path, a variable's name or arguments the system would take, and what Rust's library and
+  the system allocate to start the process ([G-215]).
 - `run-process` starts no thread and reads one pipe: the program's stderr is the runner's own
   ([G-215]).
 - `(load path)` evaluates a file in the caller's context, a relative path resolved against the

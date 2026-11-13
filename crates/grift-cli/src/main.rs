@@ -32,8 +32,9 @@ const RUNNER: &str = include_str!("runner.grift");
 /// it gives: a path of more than `PATH` bytes, its ending zero byte counted, and a program with
 /// arguments of more than `EXEC` bytes together, each one's zero byte counted. Rust's library
 /// copies a path, a program and each argument before the system sees it, in memory that can't be
-/// refused, so the runner refuses these first, with the system's error: the copies that are left
-/// are no longer than this. The numbers are the system's own, from its headers.
+/// refused, so the runner refuses these first, with the system's error. That removes no copy of
+/// what the system would take: those are left, each at most this long, and still abort the
+/// process when memory for them is refused. The numbers are the system's own, from its headers.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod system {
     /// `PATH_MAX` (`linux/limits.h`) and `ENAMETOOLONG`.
@@ -423,14 +424,15 @@ fn environment_variable(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Val
     let Some(name) = g.as_str(name)? else {
         return Err(g.type_error(*name));
     };
-    // Found by looking through the environment, so Rust's library never copies the name. What it
-    // copies is the environment, whose size the system bounded when the runner started.
-    let Some((_, value)) = std::env::vars_os().find(|(set, _)| set.as_os_str() == name) else {
+    // The environment came through the system's start of the runner, which takes no name that
+    // long, so it is unset without Rust's library copying it to ask.
+    if too_long(system::EXEC, name.len()).is_some() {
         return Err(g.error("unset-variable", args));
-    };
-    match value.to_str() {
-        Some(value) => g.string(value),
-        None => Err(g.error(Kind::EncodingError, args)),
+    }
+    match std::env::var(name) {
+        Ok(value) => g.string(&value),
+        Err(std::env::VarError::NotPresent) => Err(g.error("unset-variable", args)),
+        Err(std::env::VarError::NotUnicode(_)) => Err(g.error(Kind::EncodingError, args)),
     }
 }
 
