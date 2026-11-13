@@ -1,0 +1,59 @@
+#!/usr/bin/env grift
+; ledger: runs a batch of transfers between three accounts as one transaction.
+;
+;   main.grift '((alice bob 30) (bob reserve 10))'
+;
+; prints the outcome (committed, or the kind of the error that stopped the batch), the balances,
+; their total and the lock's state. A failed batch puts every balance back as it was, and the lock
+; is released either way: `catch!` handles the error and `finally!` runs the cleanup.
+(define! balances (record (quote! (alice bob reserve)) (list 100 20 0)))
+(define! state (record (quote! (locked released)) (list #false 0)))
+(define! balance
+  (lambda! (name)
+    (if! (binds? balances name)
+      (lookup balances name 0)
+      (raise (error (quote! unknown-account) name)))))
+(define! transfer
+  (lambda! (source target amount)
+    (when! (less-than? amount 0)
+      (raise (error (quote! negative-transfer) amount)))
+    (let! ((from (balance source))
+           (to (balance target)))
+      (when! (less-than? from amount)
+        (raise (error (quote! insufficient-funds) source amount)))
+      (when! (not? (same? source target))
+        (bind balances source (subtract from amount))
+        (bind balances target (add to amount))))))
+(define! restore
+  (lambda! (saved)
+    (for-each
+      (lambda! (row)
+        (bind balances (first row) (second row)))
+      saved)))
+(define! batch
+  (lambda! (commands)
+    (let! ((saved (bindings balances)))
+      (bind state (quote! locked) #true)
+      (finally!
+        (catch!
+          (sequence!
+            (for-each
+              (lambda! (row)
+                (apply transfer row))
+              commands)
+            (quote! committed))
+          failure
+          (restore saved)
+          (evaluate-in! kind failure))
+        (bind state (quote! locked) #false)
+        (bind state (quote! released)
+          (add (evaluate-in! released state) 1))))))
+(define! commands
+  (first (read-form (first command-line-arguments) 0)))
+(define! outcome (batch commands))
+(define! total
+  (fold add 0
+    (map (lambda! (row) (second row)) (bindings balances))))
+(display
+  (list outcome (bindings balances) total (bindings state))
+  "\n")

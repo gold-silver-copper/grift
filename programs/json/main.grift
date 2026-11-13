@@ -1,0 +1,330 @@
+#!/usr/bin/env grift
+; json: reads a JSON document and prints it back compactly.
+;
+;   main.grift ' { "x": [true, null, 12.50e+03] } '      prints {"x":[true,null,12.50e+03]}
+;
+; Numbers keep their spelling, and string escapes, \u surrogate pairs included, are decoded and
+; re-escaped. A syntax error prints error:KIND:OFFSET. The parser's cursor is a record it updates.
+(define! node
+  (lambda! (tag value)
+    (record (quote! (tag value)) (list tag value))))
+(define! tag-of
+  (lambda! (value)
+    (evaluate-in! tag value)))
+(define! value-of
+  (lambda! (value)
+    (evaluate-in! value value)))
+(define! parser
+  (lambda! (source)
+    (record (quote! (source offset limit))
+      (list source 0 (byte-length source)))))
+(define! offset-of
+  (lambda! (state)
+    (evaluate-in! offset state)))
+(define! text-of
+  (lambda! (state)
+    (evaluate-in! source state)))
+(define! limit-of
+  (lambda! (state)
+    (evaluate-in! limit state)))
+(define! fail
+  (lambda! (state reason)
+    (raise (error reason (offset-of state)))))
+(define! end?
+  (lambda! (state)
+    (same? (offset-of state) (limit-of state))))
+(define! peek
+  (lambda! (state)
+    (if! (end? state)
+      -1
+      (byte-at (text-of state) (offset-of state)))))
+(define! advance
+  (lambda! (state)
+    (when! (end? state)
+      (fail state (quote! unexpected-end)))
+    (define! byte (peek state))
+    (bind state (quote! offset) (add (offset-of state) 1))
+    byte))
+(define! whitespace?
+  (lambda! (byte)
+    (member? byte (list 9 10 13 32))))
+(define! skip-space
+  (lambda! (state)
+    (when! (whitespace? (peek state))
+      (advance state)
+      (skip-space state))))
+(define! demand
+  (lambda! (state byte)
+    (when! (not? (same? (peek state) byte))
+      (fail state (quote! expected-character)))
+    (advance state)))
+(define! digit?
+  (lambda! (byte)
+    (and!? (greater-than-or-equal? byte 48)
+      (less-than-or-equal? byte 57))))
+(define! nonzero-digit?
+  (lambda! (byte)
+    (and!? (greater-than-or-equal? byte 49)
+      (less-than-or-equal? byte 57))))
+(define! hex-digit
+  (lambda! (state)
+    (define! byte (advance state))
+    (conditional!
+      ((digit? byte) (subtract byte 48))
+      ((and!? (greater-than-or-equal? byte 65)
+          (less-than-or-equal? byte 70))
+        (subtract byte 55))
+      ((and!? (greater-than-or-equal? byte 97)
+          (less-than-or-equal? byte 102))
+        (subtract byte 87))
+      (#true (fail state (quote! bad-unicode))))))
+(define! hex-four
+  (lambda! (state)
+    (fold
+      (lambda! (value ignored)
+        (add (multiply value 16) (hex-digit state)))
+      0
+      (range 0 4))))
+(define! high-surrogate?
+  (lambda! (point)
+    (and!? (greater-than-or-equal? point 55296)
+      (less-than-or-equal? point 56319))))
+(define! low-surrogate?
+  (lambda! (point)
+    (and!? (greater-than-or-equal? point 56320)
+      (less-than-or-equal? point 57343))))
+(define! unicode-escape
+  (lambda! (state)
+    (define! first-point (hex-four state))
+    (if! (high-surrogate? first-point)
+      (sequence!
+        (demand state 92)
+        (demand state 117)
+        (define! second-point (hex-four state))
+        (when! (not? (low-surrogate? second-point))
+          (fail state (quote! bad-surrogate)))
+        (code-point-to-string
+          (add 65536
+            (add
+              (multiply (subtract first-point 55296) 1024)
+              (subtract second-point 56320)))))
+      (sequence!
+        (when! (low-surrogate? first-point)
+          (fail state (quote! bad-surrogate)))
+        (code-point-to-string first-point)))))
+(define! escaped-byte
+  (lambda! (state)
+    (define! byte (advance state))
+    (conditional!
+      ((same? byte 34) "\"")
+      ((same? byte 92) "\\")
+      ((same? byte 47) "/")
+      ((same? byte 98) "\x8;")
+      ((same? byte 102) "\xc;")
+      ((same? byte 110) "\n")
+      ((same? byte 114) "\r")
+      ((same? byte 116) "\t")
+      ((same? byte 117) (unicode-escape state))
+      (#true (fail state (quote! bad-escape))))))
+(define! string-body
+  (lambda! (state reversed)
+    (define! byte (peek state))
+    (conditional!
+      ((same? byte -1)
+        (fail state (quote! unclosed-string)))
+      ((same? byte 34)
+        (advance state)
+        (bytes-to-string
+          (list-to-bytes (reverse reversed))))
+      ((same? byte 92)
+        (advance state)
+        (string-body state
+          (append
+            (reverse (bytes-to-list (string-to-bytes (escaped-byte state))))
+            reversed)))
+      ((less-than? byte 32)
+        (fail state (quote! control-in-string)))
+      (#true
+        (advance state)
+        (string-body state (pair byte reversed))))))
+(define! parse-string
+  (lambda! (state)
+    (demand state 34)
+    (string-body state ())))
+(define! consume-digits
+  (lambda! (state)
+    (when! (digit? (peek state))
+      (advance state)
+      (consume-digits state))))
+(define! required-digits
+  (lambda! (state)
+    (when! (not? (digit? (peek state)))
+      (fail state (quote! expected-digit)))
+    (consume-digits state)))
+(define! number-integer
+  (lambda! (state)
+    (when! (same? (peek state) 45)
+      (advance state))
+    (if! (same? (peek state) 48)
+      (sequence!
+        (advance state)
+        (when! (digit? (peek state))
+          (fail state (quote! leading-zero))))
+      (sequence!
+        (when! (not? (nonzero-digit? (peek state)))
+          (fail state (quote! expected-digit)))
+        (consume-digits state)))))
+(define! number-fraction
+  (lambda! (state)
+    (when! (same? (peek state) 46)
+      (advance state)
+      (required-digits state))))
+(define! number-exponent
+  (lambda! (state)
+    (when! (member? (peek state) (list 69 101))
+      (advance state)
+      (when! (member? (peek state) (list 43 45))
+        (advance state))
+      (required-digits state))))
+(define! parse-number
+  (lambda! (state)
+    (define! start (offset-of state))
+    (number-integer state)
+    (number-fraction state)
+    (number-exponent state)
+    (node (quote! number)
+      (slice (text-of state) start (offset-of state)))))
+(define! literal
+  (lambda! (state spelling tag value)
+    (for-each
+      (lambda! (byte)
+        (demand state byte))
+      (bytes-to-list (string-to-bytes spelling)))
+    (node tag value)))
+(define! array-tail
+  (lambda! (state values)
+    (skip-space state)
+    (if! (same? (peek state) 93)
+      (sequence!
+        (advance state)
+        (node (quote! array) (reverse values)))
+      (sequence!
+        (demand state 44)
+        (skip-space state)
+        (array-tail state (pair (parse-value state) values))))))
+(define! parse-array
+  (lambda! (state)
+    (demand state 91)
+    (skip-space state)
+    (if! (same? (peek state) 93)
+      (sequence!
+        (advance state)
+        (node (quote! array) ()))
+      (array-tail state (list (parse-value state))))))
+(define! object-member
+  (lambda! (state)
+    (skip-space state)
+    (define! key (parse-string state))
+    (skip-space state)
+    (demand state 58)
+    (skip-space state)
+    (list key (parse-value state))))
+(define! object-tail
+  (lambda! (state members)
+    (skip-space state)
+    (if! (same? (peek state) 125)
+      (sequence!
+        (advance state)
+        (node (quote! object) (reverse members)))
+      (sequence!
+        (demand state 44)
+        (object-tail state (pair (object-member state) members))))))
+(define! parse-object
+  (lambda! (state)
+    (demand state 123)
+    (skip-space state)
+    (if! (same? (peek state) 125)
+      (sequence!
+        (advance state)
+        (node (quote! object) ()))
+      (object-tail state (list (object-member state))))))
+(define! parse-value
+  (lambda! (state)
+    (skip-space state)
+    (define! byte (peek state))
+    (conditional!
+      ((same? byte 34) (node (quote! string) (parse-string state)))
+      ((same? byte 91) (parse-array state))
+      ((same? byte 123) (parse-object state))
+      ((same? byte 116) (literal state "true" (quote! boolean) #true))
+      ((same? byte 102) (literal state "false" (quote! boolean) #false))
+      ((same? byte 110) (literal state "null" (quote! null) #inert))
+      ((or!? (same? byte 45) (digit? byte)) (parse-number state))
+      (#true (fail state (quote! expected-value))))))
+(define! hex-character
+  (lambda! (value)
+    (slice "0123456789abcdef" value (add value 1))))
+(define! escape-control
+  (lambda! (byte)
+    (join "\\u00"
+      (hex-character (divide byte 16))
+      (hex-character (remainder byte 16)))))
+(define! printable-byte
+  (lambda! (byte)
+    (conditional!
+      ((same? byte 34) "\\\"")
+      ((same? byte 92) "\\\\")
+      ((same? byte 8) "\\b")
+      ((same? byte 12) "\\f")
+      ((same? byte 10) "\\n")
+      ((same? byte 13) "\\r")
+      ((same? byte 9) "\\t")
+      ((less-than? byte 32) (escape-control byte))
+      (#true (code-point-to-string byte)))))
+; Escape ASCII bytes individually; copy Unicode runs as complete UTF-8.
+(define! print-string-bytes
+  (lambda! (bytes reversed)
+    (if! (empty-list? bytes)
+      (bytes-to-string (list-to-bytes (reverse reversed)))
+      (let! ((byte (first bytes)))
+        (if! (less-than? byte 128)
+          (print-string-bytes (rest bytes)
+            (append
+              (reverse (bytes-to-list (string-to-bytes (printable-byte byte))))
+              reversed))
+          (print-string-bytes (rest bytes) (pair byte reversed)))))))
+(define! print-string
+  (lambda! (text)
+    (join "\""
+      (print-string-bytes (bytes-to-list (string-to-bytes text)) ())
+      "\"")))
+(define! print-member
+  (lambda! (member)
+    (join (print-string (first member)) ":" (print-json (second member)))))
+(define! print-json
+  (lambda! (value)
+    (define! tag (tag-of value))
+    (define! payload (value-of value))
+    (conditional!
+      ((same? tag (quote! string)) (print-string payload))
+      ((same? tag (quote! number)) payload)
+      ((same? tag (quote! null)) "null")
+      ((same? tag (quote! boolean)) (if! payload "true" "false"))
+      ((same? tag (quote! array))
+        (join "[" (string-join (map print-json payload) ",") "]"))
+      ((same? tag (quote! object))
+        (join "{" (string-join (map print-member payload) ",") "}"))
+      (#true (raise (error (quote! invalid-node) tag))))))
+(define! parse-document
+  (lambda! (source)
+    (define! state (parser source))
+    (define! value (parse-value state))
+    (skip-space state)
+    (when! (not? (end? state))
+      (fail state (quote! trailing-data)))
+    value))
+(catch!
+  (display (print-json (parse-document (first command-line-arguments))) "\n")
+  failure
+  (display "error:" (evaluate-in! kind failure) ":"
+    (first (evaluate-in! values failure)) "\n"))

@@ -1,0 +1,127 @@
+#!/usr/bin/env grift
+; request: parses one HTTP/1.1 request with a fixed content length.
+;
+;   main.grift $'GET / HTTP/1.1\r\nHost: example\r\n\r\n'
+;
+; prints (method target headers body), or (kind (value)) for the first thing wrong with it. It
+; refuses ambiguity, such as folded or duplicate header fields, rather than guessing.
+(define! reject
+  (lambda! (kind value)
+    (raise (error kind value))))
+(define! token-byte?
+  (lambda! (byte)
+    (or!?
+      (and!? (greater-than-or-equal? byte 48)
+             (less-than-or-equal? byte 57))
+      (and!? (greater-than-or-equal? byte 65)
+             (less-than-or-equal? byte 90))
+      (and!? (greater-than-or-equal? byte 97)
+             (less-than-or-equal? byte 122))
+      (member? byte
+        (list 33 35 36 37 38 39 42 43 45 46 94 95 96 124 126)))))
+(define! token?
+  (lambda! (text)
+    (and!?
+      (greater-than? (byte-length text) 0)
+      (all? token-byte? (bytes-to-list (string-to-bytes text))))))
+(define! control-free?
+  (lambda! (text)
+    (all?
+      (lambda! (byte)
+        (and!? (greater-than-or-equal? byte 32)
+               (not? (same? byte 127))))
+      (bytes-to-list (string-to-bytes text)))))
+(define! parse-start-line
+  (lambda! (line)
+    (let! ((parts (string-split line " ")))
+      (when! (not? (same? (length parts) 3))
+        (reject (quote! bad-start-line) line))
+      (let! (((method target protocol) parts))
+        (when! (not? (token? method))
+          (reject (quote! bad-method) method))
+        (when! (or!? (same? target "")
+                     (not? (string-starts-with? target "/"))
+                     (not? (control-free? target)))
+          (reject (quote! bad-target) target))
+        (when! (not? (same? protocol "HTTP/1.1"))
+          (reject (quote! bad-version) protocol))
+        (list method target)))))
+(define! parse-header
+  (lambda! (line)
+    (let! ((separator (search line ":" 0)))
+      (when! (empty-list? separator)
+        (reject (quote! bad-header) line))
+      (let! ((name (slice line 0 separator))
+             (value
+               (string-trim
+                 (slice line (add separator 1) (byte-length line)))))
+        (when! (not? (token? name))
+          (reject (quote! bad-header-name) name))
+        (when! (not? (control-free? value))
+          (reject (quote! bad-header-value) value))
+        (list (string-to-symbol (string-to-lowercase name)) value)))))
+(define! decimal?
+  (lambda! (text)
+    (and!?
+      (not? (same? text ""))
+      (all?
+        (lambda! (byte)
+          (and!? (greater-than-or-equal? byte 48)
+                 (less-than-or-equal? byte 57)))
+        (bytes-to-list (string-to-bytes text))))))
+(define! body-length
+  (lambda! (headers)
+    (let! ((text (lookup headers (quote! content-length) "0")))
+      (when! (not? (decimal? text))
+        (reject (quote! bad-content-length) text))
+      (catch-kind!
+        (string-to-integer text)
+        parse-error
+        failure
+        (reject (quote! bad-content-length) text)))))
+(define! validate-host
+  (lambda! (value)
+    (when! (or!? (not? (control-free? value))
+        (member? 32 (bytes-to-list (string-to-bytes value)))
+        (member? 9 (bytes-to-list (string-to-bytes value))))
+      (reject (quote! bad-host) value))
+    value))
+(define! parse-request
+  (lambda! (text)
+    (let! ((boundary (search text "\r\n\r\n" 0)))
+      (when! (empty-list? boundary)
+        (reject (quote! incomplete-headers) text))
+      (let! ((head (slice text 0 boundary))
+             (body (slice text (add boundary 4) (byte-length text)))
+             (lines (string-split head "\r\n"))
+             ((method target) (parse-start-line (first lines)))
+             (headers (context ())))
+        (for-each
+          (lambda! (line)
+            (let! (((name value) (parse-header line)))
+              (when! (binds? headers name)
+                (reject (quote! duplicate-header) name))
+              (bind headers name value)))
+          (rest lines))
+        (when! (not? (binds? headers (quote! host)))
+          (reject (quote! missing-host) target))
+        (when! (same? (lookup headers (quote! host) "") "")
+          (reject (quote! empty-host) target))
+        (validate-host (lookup headers (quote! host) ""))
+        (when! (binds? headers (quote! transfer-encoding))
+          (reject (quote! unsupported-transfer-encoding)
+            (lookup headers (quote! transfer-encoding) "")))
+        (let! ((expected-length (body-length headers)))
+          (when! (not? (same? expected-length (byte-length body)))
+            (reject (quote! body-length-mismatch)
+              (list expected-length (byte-length body))))
+          (list method target (bindings headers) body))))))
+(define! request (first command-line-arguments))
+(define! result
+  (catch!
+    (parse-request request)
+    failure
+    (list
+      (evaluate-in! kind failure)
+      (evaluate-in! values failure))))
+(display result "\n")
