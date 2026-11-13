@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs bignum on recorded arguments: each operation on numbers wider than 64 bits, and the errors.
 # Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/bignum/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/bignum/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

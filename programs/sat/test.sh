@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs sat on recorded arguments: satisfiable and unsatisfiable sets of clauses, and a bad literal.
 # Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/sat/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/sat/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

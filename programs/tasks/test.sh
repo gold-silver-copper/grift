@@ -2,7 +2,7 @@
 # Runs tasks on recorded arguments: dependencies built once in order, a body that sees its own
 # definitions, and the errors. Each must print exactly the line given, nothing on standard error,
 # and exit 0.
-#   GRIFT=path programs/tasks/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/tasks/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

@@ -2,7 +2,7 @@
 # Runs ledger on recorded arguments: a committed batch, and failed ones that leave every balance as
 # it was and the lock released. Each must print exactly the line given, nothing on standard error,
 # and exit 0.
-#   GRIFT=path programs/ledger/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/ledger/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

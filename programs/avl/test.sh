@@ -2,7 +2,7 @@
 # Runs avl on recorded arguments: inserts, deletes, undo and the two queries, checked against the
 # tree invariants as it goes. Each must print exactly the line given, nothing on standard error, and
 # exit 0.
-#   GRIFT=path programs/avl/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/avl/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

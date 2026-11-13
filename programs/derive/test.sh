@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs derive on recorded arguments: derivatives simplified as they are built, and one evaluated at
 # a point. Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/derive/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/derive/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

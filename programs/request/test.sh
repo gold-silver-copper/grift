@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs request on recorded arguments: two requests that parse, and one of each way a request is
 # refused. Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/request/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/request/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

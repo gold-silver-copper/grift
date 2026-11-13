@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs forms on recorded arguments: each operative of the little language, a nested local, and its
 # errors. Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/forms/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/forms/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

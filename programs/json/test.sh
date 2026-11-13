@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs json on recorded arguments: documents printed back compactly, and each kind of syntax error
 # with its offset. Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/json/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/json/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}

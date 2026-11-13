@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs message on recorded arguments: messages that survive encoding and decoding, and malformed
 # ones. Each must print exactly the line given, nothing on standard error, and exit 0.
-#   GRIFT=path programs/message/test.sh
+#   GRIFT=/path/to/grift TMPDIR=/a/scratch/directory programs/message/test.sh
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}
