@@ -2187,8 +2187,7 @@ still kept by more than one hand.
 
 ## Eleven small programs join the list, 2026-11-12
 
-Sixty small programs were written against grift 6.0.0 by someone new to it, each with recorded arguments and
-output; all sixty ran. Eleven were kept, one strong program per part of the language, as examples a newcomer
+Sixty small candidate programs, each with recorded arguments and output, all ran on grift 6.0.0. Eleven were kept, one strong program per part of the language, as examples a newcomer
 can read; the pull request that added them gives the reason for every one of the sixty.
 
 - **G-213. `programs/` gains forms, tasks, ledger, request, json, message, derive, bignum, avl, sat and

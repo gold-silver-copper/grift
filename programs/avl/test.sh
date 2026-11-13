@@ -6,13 +6,15 @@
 set -u
 cd "$(dirname "$0")"
 grift=${GRIFT:?set GRIFT to the runner}
+errors=$(mktemp "${TMPDIR:?set TMPDIR}/program-test.XXXXXX")
+trap 'rm -f "$errors"' EXIT
 failures=0
 check() { # EXPECTED-LINE ARGUMENT...
     local want=$1 got
     shift
-    got=$("$grift" main.grift "$@" 2>&1; echo "exit $?")
-    if [ "$got" == "$want"$'\n'"exit 0" ]; then echo "ok   $want"; else
-        echo "FAIL $(printf "%q " "$@")"; echo "  expected: $want"; echo "  actual:   $got"; failures=$((failures + 1)); fi
+    got=$("$grift" main.grift "$@" 2> "$errors"; echo "exit $?")
+    if [ "$got" == "$want"$'\n'"exit 0" ] && [ ! -s "$errors" ]; then echo "ok   $want"; else
+        echo "FAIL $(printf "%q " "$@")"; echo "  expected: $want"; echo "  actual:   $got"; sed "s/^/  standard error: /" "$errors"; failures=$((failures + 1)); fi
 }
 
 check '1:a,2:b,3:c;queries=2,(2 "b")' '((insert 3 "c") (insert 1 "a") (insert 2 "b") (rank 3) (select 1))'

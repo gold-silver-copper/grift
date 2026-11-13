@@ -5,8 +5,9 @@
 ;
 ; OPERATION is add, subtract, multiply, divide (prints quotient,remainder), remainder, compare,
 ; gcd, lcm, power, factorial, sqrt (the whole part) or negate. A number is a list of decimal
-; digits, least significant first, so no input passes through a 64-bit integer; the digit loops
-; recurse as deep as the numbers are long.
+; digits, least significant first, so no NUMBER passes through a 64-bit integer; the digit loops
+; recurse as deep as the numbers are long. power's exponent and factorial's argument are ordinary
+; integers, at most 1000.
 (define! invalid
   (lambda! (kind value)
     (raise (error kind value))))

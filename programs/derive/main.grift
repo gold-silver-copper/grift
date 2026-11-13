@@ -45,7 +45,9 @@
               ((same? operator (quote! multiply))
                 (binary (quote! add) (binary (quote! multiply) da b) (binary (quote! multiply) a db)))
               ((and!? (same? operator (quote! power)) (integer? b))
-                (binary (quote! multiply) (binary (quote! multiply) b (binary (quote! power) a (subtract b 1))) da))
+                ; A constant's power is a constant: nothing is built, so (power 2 0) never asks for 2 to the -1.
+                (if! (same? da 0) 0
+                  (binary (quote! multiply) (binary (quote! multiply) b (binary (quote! power) a (subtract b 1))) da)))
               (#true (fail expression))))))
       (#true (fail expression)))))
 (define! numeric
