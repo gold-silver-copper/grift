@@ -508,6 +508,13 @@ a run with a `finally!` around its wait, and the editor stays responsive. `progr
 with its own `test.sh`. `cargo test --workspace` runs all of those scripts against the test-profile
 runner, so the local suite and CI both exercise the corpus.
 
+To learn grift from code, start with the small ones, 50 to 330 lines each, that say at the top how
+to run them: `forms` (operatives and first-class contexts), `tasks` (a build language of
+operatives, with `finally!`), `ledger` (`catch!` and `finally!` for a rollback), `request` (errors
+as values), `json` (strings and escapes), `message` (bytes and bitwise operations), `derive`
+(symbolic data, and floats), `bignum` (deep recursion over digit lists), `avl` (a persistent tree),
+`sat` (search with backtracking) and `calendar` (date arithmetic).
+
 ## Inside
 
 The `grift` crate holds values and a heap that is a growable `Vec` of slots

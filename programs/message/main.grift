@@ -1,0 +1,145 @@
+#!/usr/bin/env grift
+; message: a typed binary message format with length-prefixed fields and a CRC-32.
+;
+;   main.grift encode '(("name" "café") ("count" 3))'     prints the message in hex
+;   main.grift decode HEX                                prints the fields
+;   main.grift roundtrip FIELDS                          encodes and decodes again
+;
+; A field's value is a string, an integer, bytes or a boolean. The work is bytes values: `join`,
+; `slice`, `byte-at`, `#bytes(...)` literals, and the bitwise operations for the integers and CRC.
+(define! fail (lambda! (kind value) (raise (error kind value))))
+(define! integer-bytes
+  (lambda! (number count)
+    (list-to-bytes
+      (map
+        (lambda! (index)
+          (bitwise-and (shift-right number (multiply index 8)) 255))
+        (reverse (range 0 count))))))
+(define! unsigned
+  (lambda! (bytes)
+    (fold (lambda! (value byte) (add (multiply value 256) byte))
+      0 (bytes-to-list bytes))))
+(define! signed-eight
+  (lambda! (bytes)
+    (define! first-byte (byte-at bytes 0))
+    (define! prefix (if! (greater-than-or-equal? first-byte 128) (subtract first-byte 256) first-byte))
+    (fold (lambda! (value byte) (add (multiply value 256) byte))
+      prefix (rest (bytes-to-list bytes)))))
+(define! crc-step
+  (lambda! (crc remaining)
+    (if! (same? remaining 0) crc
+      (crc-step
+        (bitwise-exclusive-or (shift-right crc 1)
+          (if! (same? (bitwise-and crc 1) 1) 3988292384 0))
+        (subtract remaining 1)))))
+(define! crc32
+  (lambda! (bytes)
+    (bitwise-exclusive-or
+      (fold (lambda! (crc byte) (crc-step (bitwise-exclusive-or crc byte) 8))
+        4294967295 (bytes-to-list bytes))
+      4294967295)))
+(define! encode-field
+  (lambda! (entry)
+    (when! (not? (same? (length entry) 2))
+      (fail (quote! message-field) entry))
+    (define! name (string-to-bytes (first entry)))
+    (when! (or!? (same? (byte-length name) 0) (greater-than? (byte-length name) 255))
+      (fail (quote! message-name) entry))
+    (define! value (second entry))
+    (define! encoded
+      (conditional!
+        ((string? value) (list 1 (string-to-bytes value)))
+        ((integer? value) (list 2 (integer-bytes value 8)))
+        ((bytes? value) (list 3 value))
+        ((boolean? value) (list 4 (if! value #bytes(1) #bytes(0))))
+        (#true (fail (quote! message-type) value))))
+    (define! body (second encoded))
+    (when! (greater-than? (byte-length body) 65535)
+      (fail (quote! message-field-budget) value))
+    (join (integer-bytes (byte-length name) 1) name
+      (integer-bytes (first encoded) 1) (integer-bytes (byte-length body) 2) body)))
+(define! encode
+  (lambda! (entries)
+    (define! body (fold join #bytes() (map encode-field entries)))
+    (define! header (join #bytes(76 81 1 0) (integer-bytes (byte-length body) 4)))
+    (define! message (join header body))
+    (join message (integer-bytes (crc32 message) 4))))
+(define! take
+  (lambda! (state count)
+    (define! bytes (evaluate-in! bytes state))
+    (define! offset (evaluate-in! offset state))
+    (when! (greater-than? (add offset count) (byte-length bytes))
+      (fail (quote! message-truncated) offset))
+    (bind state (quote! offset) (add offset count))
+    (slice bytes offset (add offset count))))
+(define! decode-value
+  (lambda! (tag bytes)
+    (conditional!
+      ((same? tag 1) (bytes-to-string bytes))
+      ((same? tag 3) bytes)
+      ((same? tag 2)
+        (when! (not? (same? (byte-length bytes) 8))
+          (fail (quote! message-integer-width) bytes))
+        (signed-eight bytes))
+      ((same? tag 4)
+        (when! (or!? (not? (same? (byte-length bytes) 1))
+            (greater-than? (byte-at bytes 0) 1))
+          (fail (quote! message-boolean) bytes))
+        (same? (byte-at bytes 0) 1))
+      (#true (fail (quote! message-tag) tag)))))
+(define! decode-fields
+  (lambda! (state reversed)
+    (if! (same? (evaluate-in! offset state) (byte-length (evaluate-in! bytes state)))
+      (reverse reversed)
+      (let! ((name-length (unsigned (take state 1)))
+             (name (bytes-to-string (take state name-length)))
+             (tag (unsigned (take state 1)))
+             (length (unsigned (take state 2)))
+             (value (decode-value tag (take state length))))
+        (when! (same? name "") (fail (quote! message-name) name))
+        (decode-fields state (pair (list name value) reversed))))))
+(define! decode
+  (lambda! (message)
+    (when! (less-than? (byte-length message) 12)
+      (fail (quote! message-truncated) 0))
+    (when! (not? (same? (slice message 0 4) #bytes(76 81 1 0)))
+      (fail (quote! message-header) message))
+    (define! size (unsigned (slice message 4 8)))
+    (when! (not? (same? (byte-length message) (add size 12)))
+      (fail (quote! message-length) size))
+    (define! end (subtract (byte-length message) 4))
+    (when! (not? (same? (crc32 (slice message 0 end)) (unsigned (slice message end (byte-length message)))))
+      (fail (quote! message-checksum) message))
+    (decode-fields (record (quote! (bytes offset)) (list (slice message 8 end) 0)) ())))
+(define! hex-digit
+  (lambda! (n) (slice "0123456789abcdef" n (add n 1))))
+(define! to-hex
+  (lambda! (bytes)
+    (string-join
+      (map (lambda! (byte) (join (hex-digit (divide byte 16)) (hex-digit (remainder byte 16))))
+        (bytes-to-list bytes)) "")))
+(define! from-hex
+  (lambda! (text)
+    (when! (not? (same? (remainder (byte-length text) 2) 0))
+      (fail (quote! message-hex) text))
+    (list-to-bytes
+      (map
+        (lambda! (index)
+          (define! digits (slice text (multiply index 2) (add (multiply index 2) 2)))
+          (fold
+            (lambda! (value byte)
+              (define! digit (search "0123456789abcdef" (code-point-to-string byte) 0))
+              (when! (empty-list? digit) (fail (quote! message-hex) text))
+              (add (multiply value 16) digit))
+            0 (bytes-to-list (string-to-bytes (string-to-lowercase digits)))))
+        (range 0 (divide (byte-length text) 2))))))
+(catch!
+  (let! ((mode (first command-line-arguments)) (text (second command-line-arguments)))
+    (display
+      (conditional!
+        ((same? mode "decode") (value-to-string (decode (from-hex text))))
+        ((same? mode "encode") (to-hex (encode (first (read-form text 0)))))
+        (#true (value-to-string (decode (encode (first (read-form text 0)))))))
+      "\n"))
+  failure
+  (display "error:" (evaluate-in! kind failure) "\n"))

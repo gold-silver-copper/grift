@@ -2185,11 +2185,31 @@ still kept by more than one hand.
     move): its assertions sit where the pacing they check is computed, and moving them would trade that for a
     `#[path]` module and a four-argument test-only call inside `collect`.
 
+## Eleven small programs join the list, 2026-11-12
+
+Sixty small candidate programs, each with recorded arguments and output, all ran on grift 6.0.0.
+Eleven were kept, one strong program per part of the language, as examples a newcomer
+can read; the pull request that added them gives the reason for every one of the sixty.
+
+- **G-213. `programs/` gains forms, tasks, ledger, request, json, message, derive, bignum, avl, sat and
+  calendar** (VISION's "adding a program to the list is a decision"). Each is `main.grift` with a header
+  saying how to run it, and a `test.sh` that runs its recorded arguments and wants exactly the recorded
+  line, nothing on standard error and exit 0, so the existing corpus test runs them with no change to it.
+  Rejected: programs that overlap one already here (adventure, diff, markdown, template, sheet, query,
+  meta, build), that key a context by integers spelled as symbols (a workaround for memo tables and
+  sets), that decode UTF-8 by hand, that test the runtime rather than do a job, or that are padded or
+  near-copies of a kept one. Edits kept every recorded output: headers, a named operator table in
+  derive, `solve` in sat returning the assignment instead of storing it in a global record, an emptiness
+  test in avl, and bignum's square root starting Newton's method at 10^(digits/2) rounded up instead of
+  at the number itself (one case went from about 30 s to under 2 s on the test-profile runner). All
+  eleven scripts together take about 5 s run one after another on that runner.
+
 ## A string walked by character, 2026-11-12
 
 A test run wrote 60 grift programs; three (a byte regex, a Markdown renderer, a UTF-8 codec) each wrote their own
 UTF-8 boundary code, and two Markdown cases first failed when a helper sliced inside "é". The owner approved a
-library function giving a string's characters, shape `("n" "é")`; strings stay byte-addressed (G-27).
+library function giving a string's characters as `("n" "é")`; its name, and leaving byte offsets out of the
+result, were chosen in this change. Strings stay byte-addressed (G-27).
 
 - **G-214. `string-to-characters`: a string's Unicode scalar values as one-character strings, in grift.**
   - **Name.** A conversion spells out `to` (G-38), as `string-to-bytes` and `string-to-lowercase`; "characters"

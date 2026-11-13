@@ -1,0 +1,314 @@
+#!/usr/bin/env grift
+; bignum: arithmetic on signed decimal numbers of any length.
+;
+;   main.grift OPERATION NUMBER [NUMBER]
+;
+; OPERATION is add, subtract, multiply, divide (prints quotient,remainder), remainder, compare,
+; gcd, lcm, power, factorial, sqrt (the whole part) or negate. A number is a list of decimal
+; digits, least significant first, so no NUMBER passes through a 64-bit integer; the digit loops
+; recurse as deep as the numbers are long. power's exponent and factorial's argument are ordinary
+; integers, at most 1000.
+(define! invalid
+  (lambda! (kind value)
+    (raise (error kind value))))
+(define! strip-zero-prefix
+  (lambda! (digits)
+    (if! (and!? (pair? digits) (same? (first digits) 0))
+      (strip-zero-prefix (rest digits))
+      digits)))
+(define! normalized
+  (lambda! (digits)
+    (reverse (strip-zero-prefix (reverse digits)))))
+(define! big
+  (lambda! (negative digits)
+    (define! canonical (normalized digits))
+    (record (quote! (negative digits))
+      (list (and!? negative (not? (empty-list? canonical))) canonical))))
+(define! digits-of
+  (lambda! (value)
+    (evaluate-in! digits value)))
+(define! negative?
+  (lambda! (value)
+    (evaluate-in! negative value)))
+(define! zero?
+  (lambda! (value)
+    (empty-list? (digits-of value))))
+(define! zero (big #false ()))
+(define! one (big #false (list 1)))
+(define! parse-big
+  (lambda! (source)
+    (define! text (string-trim source))
+    (when! (same? text "")
+      (invalid (quote! decimal-empty) text))
+    (define! sign (byte-at text 0))
+    (define! start (if! (member? sign (list 43 45)) 1 0))
+    (when! (same? start (byte-length text))
+      (invalid (quote! decimal-empty) text))
+    (define! digits
+      (map
+        (lambda! (byte)
+          (when! (or!? (less-than? byte 48) (greater-than? byte 57))
+            (invalid (quote! decimal-digit) byte))
+          (subtract byte 48))
+        (bytes-to-list
+          (string-to-bytes (slice text start (byte-length text))))))
+    (big (same? sign 45) (reverse digits))))
+(define! print-big
+  (lambda! (value)
+    (if! (zero? value)
+      "0"
+      (join
+        (if! (negative? value) "-" "")
+        (bytes-to-string
+          (list-to-bytes
+            (map
+              (lambda! (digit) (add digit 48))
+              (reverse (digits-of value)))))))))
+(define! compare-leading
+  (lambda! (left right)
+    (if! (empty-list? left)
+      0
+      (if! (same? (first left) (first right))
+        (compare-leading (rest left) (rest right))
+        (if! (less-than? (first left) (first right)) -1 1)))))
+(define! compare-magnitudes
+  (lambda! (left right)
+    (define! left-length (length left))
+    (define! right-length (length right))
+    (if! (same? left-length right-length)
+      (compare-leading (reverse left) (reverse right))
+      (if! (less-than? left-length right-length) -1 1))))
+(define! compare-big
+  (lambda! (left right)
+    (if! (same? (negative? left) (negative? right))
+      (multiply
+        (if! (negative? left) -1 1)
+        (compare-magnitudes (digits-of left) (digits-of right)))
+      (if! (negative? left) -1 1))))
+(define! first-or-zero
+  (lambda! (digits)
+    (if! (empty-list? digits) 0 (first digits))))
+(define! rest-or-empty
+  (lambda! (digits)
+    (if! (empty-list? digits) () (rest digits))))
+(define! add-digits
+  (lambda! (left right carry)
+    (if! (and!? (empty-list? left) (empty-list? right) (same? carry 0))
+      ()
+      (let! ((sum (add carry (add (first-or-zero left) (first-or-zero right)))))
+        (pair (remainder sum 10)
+          (add-digits
+            (rest-or-empty left)
+            (rest-or-empty right)
+            (divide sum 10)))))))
+(define! subtract-digits
+  (lambda! (left right borrow)
+    (if! (empty-list? left)
+      (sequence!
+        (when! (or!? (not? (empty-list? right)) (not? (same? borrow 0)))
+          (invalid (quote! subtraction-order) right))
+        ())
+      (let! ((difference
+                (subtract (subtract (first left) borrow) (first-or-zero right))))
+        (pair
+          (if! (less-than? difference 0) (add difference 10) difference)
+          (subtract-digits
+            (rest left)
+            (rest-or-empty right)
+            (if! (less-than? difference 0) 1 0)))))))
+(define! negate-big
+  (lambda! (value)
+    (big (not? (negative? value)) (digits-of value))))
+(define! absolute-big
+  (lambda! (value)
+    (big #false (digits-of value))))
+(define! add-big
+  (lambda! (left right)
+    (define! a (digits-of left))
+    (define! b (digits-of right))
+    (if! (same? (negative? left) (negative? right))
+      (big (negative? left) (add-digits a b 0))
+      (if! (less-than? (compare-magnitudes a b) 0)
+        (big (negative? right) (subtract-digits b a 0))
+        (big (negative? left) (subtract-digits a b 0))))))
+(define! subtract-big
+  (lambda! (left right)
+    (add-big left (negate-big right))))
+(define! multiply-digit
+  (lambda! (digits digit carry)
+    (if! (empty-list? digits)
+      (if! (same? carry 0) () (list carry))
+      (let! ((product (add carry (multiply (first digits) digit))))
+        (pair (remainder product 10)
+          (multiply-digit (rest digits) digit (divide product 10)))))))
+(define! zero-digits
+  (lambda! (count)
+    (map (lambda! (ignored) 0) (range 0 count))))
+(define! multiply-magnitudes
+  (lambda! (left right shift accumulated)
+    (if! (empty-list? right)
+      (normalized accumulated)
+      (multiply-magnitudes left (rest right) (add shift 1)
+        (add-digits accumulated
+          (append (zero-digits shift) (multiply-digit left (first right) 0))
+          0)))))
+(define! multiply-big
+  (lambda! (left right)
+    (big
+      (not? (same? (negative? left) (negative? right)))
+      (multiply-magnitudes (digits-of left) (digits-of right) 0 ()))))
+(define! quotient-digit
+  (lambda! (remainder divisor candidate)
+    (if! (less-than? (compare-magnitudes remainder divisor) 0)
+      (list candidate remainder)
+      (quotient-digit
+        (normalized (subtract-digits remainder divisor 0))
+        divisor
+        (add candidate 1)))))
+(define! divide-leading
+  (lambda! (leading divisor remainder quotient)
+    (if! (empty-list? leading)
+      (list (normalized quotient) (normalized remainder))
+      (let! ((shifted (normalized (pair (first leading) remainder)))
+             ((digit next-remainder) (quotient-digit shifted divisor 0)))
+        (divide-leading
+          (rest leading) divisor next-remainder (pair digit quotient))))))
+(define! divide-big
+  (lambda! (left right)
+    (when! (zero? right)
+      (invalid (quote! decimal-division-by-zero) right))
+    (define! result
+      (divide-leading
+        (reverse (digits-of left)) (digits-of right) () ()))
+    (list
+      (big
+        (not? (same? (negative? left) (negative? right)))
+        (first result))
+      (big (negative? left) (second result)))))
+(define! power-big
+  (lambda! (base exponent accumulated)
+    (when! (less-than? exponent 0)
+      (invalid (quote! decimal-negative-power) exponent))
+    (if! (same? exponent 0)
+      accumulated
+      (power-big
+        (multiply-big base base)
+        (divide exponent 2)
+        (if! (same? (remainder exponent 2) 1)
+          (multiply-big accumulated base)
+          accumulated)))))
+(define! gcd-big
+  (lambda! (left right)
+    (if! (zero? right)
+      (absolute-big left)
+      (gcd-big (absolute-big right)
+        (absolute-big (second (divide-big left right)))))))
+(define! factorial-big
+  (lambda! (next end accumulated)
+    (if! (greater-than? next end)
+      accumulated
+      (factorial-big (add next 1) end
+        (multiply-big accumulated (parse-big (integer-to-string next)))))))
+(define! check-division
+  (lambda! (left right quotient remainder)
+    (when! (not? (same? (compare-big left
+          (add-big (multiply-big quotient right) remainder)) 0))
+      (invalid (quote! decimal-division-invariant) left))
+    (when! (not? (less-than?
+          (compare-big (absolute-big remainder) (absolute-big right)) 0))
+      (invalid (quote! decimal-remainder-bound) remainder))
+    #true))
+(define! read-exponent
+  (lambda! (text)
+    (define! exponent (string-to-integer text))
+    (when! (greater-than? exponent 1000)
+      (invalid (quote! decimal-exponent-budget) exponent))
+    exponent))
+(define! sqrt-step
+  (lambda! (number guess)
+    (define! quotient (first (divide-big number guess)))
+    (define! next
+      (first (divide-big (add-big guess quotient) (parse-big "2"))))
+    (if! (greater-than-or-equal? (compare-big next guess) 0)
+      guess
+      (sqrt-step number next))))
+; Newton's method from above stops at the whole part of the root. A number of D digits is below
+; 10^D, so its root is below 10^K for K = D/2 rounded up: the first guess.
+(define! square-root-big
+  (lambda! (number)
+    (when! (negative? number)
+      (invalid (quote! decimal-negative-root) number))
+    (if! (zero? number)
+      zero
+      (let! ((half (divide (add (length (digits-of number)) 1) 2)))
+        (sqrt-step number (big #false (append (zero-digits half) (list 1))))))))
+(define! lcm-big
+  (lambda! (left right)
+    (if! (or!? (zero? left) (zero? right))
+      zero
+      (absolute-big
+        (first
+          (divide-big
+            (multiply-big left right)
+            (gcd-big left right)))))))
+(define! operation-table
+  (record
+    (quote! (add subtract multiply compare gcd lcm))
+    (list
+      add-big
+      subtract-big
+      multiply-big
+      (lambda! (a b) (parse-big (integer-to-string (compare-big a b))))
+      gcd-big
+      lcm-big)))
+(define! checked-divide
+  (lambda! (left right)
+    (define! result (divide-big left right))
+    (check-division left right (first result) (second result))
+    result))
+(define! execute
+  (lambda! (operation operands)
+    (define! name (string-to-symbol operation))
+    (conditional!
+      ((same? operation "sqrt")
+        (when! (not? (same? (length operands) 1))
+          (invalid (quote! calculator-arity) operands))
+        (print-big
+          (square-root-big
+            (parse-big (first operands)))))
+      ((same? operation "factorial")
+        (when! (not? (same? (length operands) 1))
+          (invalid (quote! calculator-arity) operands))
+        (define! number (read-exponent (first operands)))
+        (when! (less-than? number 0)
+          (invalid (quote! decimal-negative-factorial) number))
+        (print-big (factorial-big 2 number one)))
+      ((same? operation "negate")
+        (when! (not? (same? (length operands) 1))
+          (invalid (quote! calculator-arity) operands))
+        (print-big (negate-big (parse-big (first operands)))))
+      ((same? operation "power")
+        (when! (not? (same? (length operands) 2))
+          (invalid (quote! calculator-arity) operands))
+        (print-big
+          (power-big (parse-big (first operands))
+            (read-exponent (second operands)) one)))
+      (#true
+        (when! (not? (same? (length operands) 2))
+          (invalid (quote! calculator-arity) operands))
+        (define! left (parse-big (first operands)))
+        (define! right (parse-big (second operands)))
+        (conditional!
+          ((same? operation "divide")
+            (string-join (map print-big (checked-divide left right)) ","))
+          ((same? operation "remainder")
+            (print-big (second (checked-divide left right))))
+          ((binds? operation-table name)
+            (print-big ((lookup operation-table name #inert) left right)))
+          (#true (invalid (quote! calculator-operation) operation)))))))
+(when! (empty-list? command-line-arguments)
+  (invalid (quote! calculator-usage) "operation and operands required"))
+(catch!
+  (display (execute (first command-line-arguments) (rest command-line-arguments)) "\n")
+  failure
+  (display "error:" (evaluate-in! kind failure) "\n"))
