@@ -2189,7 +2189,7 @@ still kept by more than one hand.
 
 Sixty small programs were written against grift 6.0.0 by someone new to it, each with recorded arguments and
 output; all sixty ran. Eleven were kept, one strong program per part of the language, as examples a newcomer
-can read; the reasons for every one of the sixty are in `notes/projects/fux/soak-fixes-2026-11-12/out/e/report.md`.
+can read; the pull request that added them gives the reason for every one of the sixty.
 
 - **G-213. `programs/` gains forms, tasks, ledger, request, json, message, derive, bignum, avl, sat and
   calendar** (VISION's "adding a program to the list is a decision"). Each is `main.grift` with a header
