@@ -40,15 +40,15 @@ fn script(dir: &Path, program: &str, args: &[&str], stdin: &str) -> (Option<i32>
     (out.status.code(), text(out.stdout), text(out.stderr))
 }
 
-/// Memory refused to a process's output is the same limit: the runner reads both of its pipes to
-/// their ends, so the process isn't left blocked on a full one or killed by a closed one, and waits
-/// for it to end.
+/// Memory refused to a process's output is the same limit: the runner reads its pipe to the end,
+/// so the process isn't left blocked on a full one or killed by a closed one, and waits for it to
+/// end. What the process writes to stderr goes to the runner's, text or not.
 #[cfg(target_os = "linux")]
 #[test]
 fn memory_refused_to_a_process_s_output_is_a_limit() {
     let dir = scratch("process-refused");
     let path = dir.join("big.grift");
-    // Refused stdout is the limit even when stderr isn't text, which alone is catchable.
+    // Refused stdout is the limit whatever the process wrote to stderr before it.
     for before in ["", "printf '\\377' >&2; "] {
         let flood =
             format!("{before}head -c 900000000 /dev/zero; echo $? > finished; echo err >&2");
@@ -75,6 +75,7 @@ fn memory_refused_to_a_process_s_output_is_a_limit() {
             "{before}: {err}"
         );
         assert!(err.contains("out-of-memory"), "{before}: {err}");
+        assert!(err.contains("err\n"), "{before}: {err}");
         assert_eq!(
             std::fs::read_to_string(dir.join("finished")).unwrap(),
             "0\n"
@@ -101,9 +102,10 @@ fn under_a_limit(dir: &Path, limit: u32, path: &Path, argument: &Path) -> (Optio
     )
 }
 
-/// Memory refused for a line being read, or for the copy Rust's library makes of a path, a name,
-/// a program or an argument, is the limit `out-of-memory`, never an abort: each operation given
-/// 30 MB ends by itself at every limit, and with too little for it says `out-of-memory`.
+/// A long line being read, and a path, a name, a program or an argument longer than the system
+/// takes, never abort the runner, whose memory for them can be refused: each operation given
+/// 30 MB ends by itself at every limit, as `out-of-memory` or as the error the system would give,
+/// and with too little memory for it says `out-of-memory`.
 #[cfg(target_os = "linux")]
 #[test]
 fn memory_refused_for_a_long_line_or_name_is_a_limit() {
@@ -112,28 +114,46 @@ fn memory_refused_for_a_long_line_or_name_is_a_limit() {
     std::fs::write(&long, vec![b'a'; 30_000_000]).unwrap();
     let path = dir.join("long.grift");
     let on_text = [
-        "(open-file a)",
-        "(create-file a)",
-        "(read-file a)",
-        "(load a)",
-        "(environment-variable a)",
-        "(run-process \"true\" a)",
-        "(run-process a)",
+        ("(open-file a)", "file-error"),
+        ("(create-file a)", "file-error"),
+        ("(read-file a)", "file-error"),
+        ("(load a)", "file-error"),
+        ("(environment-variable a)", "unset-variable"),
+        ("(run-process \"true\" a)", "process-error"),
+        ("(run-process a)", "process-error"),
     ];
     let read = "(define! a (read-file (first command-line-arguments)))";
-    let programs = on_text.map(|op| format!("{read}{op}"));
+    let programs = on_text.map(|(op, kind)| (format!("{read}{op}"), kind));
     let line = "((evaluate-in! read-line (open-file (first command-line-arguments))))";
-    for program in programs.iter().map(String::as_str).chain([line]) {
+    let line = (line.to_owned(), "out-of-memory");
+    for (program, kind) in programs.iter().chain([&line]) {
         std::fs::write(&path, program).unwrap();
         for limit in [40_000, 55_000, 70_000, 85_000, 100_000, 115_000] {
             let (code, err) = under_a_limit(&dir, limit, &path, &long);
-            assert!(code.is_some(), "{program} under {limit}: {err}");
+            let refused = err.contains("out-of-memory");
+            // The line is read where there is room for it; the others fail whatever there is.
+            let read = code == Some(0) && *kind == "out-of-memory";
             assert!(
-                limit > 40_000 || err.contains("out-of-memory"),
-                "{program} under {limit}: {err}"
+                read || (code == Some(1) && (refused || err.contains(kind))),
+                "{program} under {limit}: {code:?} {err}"
             );
+            assert!(limit > 40_000 || refused, "{program} under {limit}: {err}");
         }
     }
+}
+
+/// `run-process` starts no thread: a process it runs, looking once the runner sleeps waiting for
+/// its output, finds the runner has one. So no thread's start is there to abort the runner when
+/// memory for it is refused.
+#[cfg(target_os = "linux")]
+#[test]
+fn run_process_starts_no_thread() {
+    let dir = scratch("no-thread");
+    let look = "until grep -q '^State:.S' /proc/$PPID/status; do :; done; \
+                grep '^Threads:' /proc/$PPID/status | tr -d '[:space:]'";
+    let program = format!("(display (evaluate-in! output (run-process \"sh\" \"-c\" {look:?})))");
+    let (status, out, err) = script(&dir, &program, &[], "");
+    assert_eq!((status, out.as_str()), (Some(0), "Threads:1"), "{err}");
 }
 
 /// A runner refused memory as it starts says so: at every limit where it gives up by itself, its

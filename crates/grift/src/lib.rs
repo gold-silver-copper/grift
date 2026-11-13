@@ -418,32 +418,15 @@ pub struct Grift<T = ()> {
 
 impl<T> Grift<T> {
     /// Builds the built-in context, evaluates the library in it and makes an empty top level.
-    /// Memory refused is `out-of-memory`. One allocation, the first, has no way to be refused: the
-    /// interpreter's shared control block, which its interrupters point to, is an `Arc::new`. So
-    /// `new` asks for that room before it and gives it back, and the `Arc::new` aborts the process
-    /// only if another thread takes the room in between. It becomes `Arc::try_new` once that is
-    /// stable.
+    /// Memory refused is `out-of-memory`, but for one allocation, the first: the interpreter's
+    /// shared control block, which its interrupters point to, is an `Arc::new`, and so
+    /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
-        let owner = Owner(OWNERS.fetch_add(1, Ordering::Relaxed));
-        // An `Arc` holds two counts before its value.
-        let mut room = Vec::<(usize, usize, Control)>::new();
-        if room.try_reserve_exact(1).is_err() {
-            // What `export_error` makes of `local::Error::oom()`, with no heap to ask.
-            return Err(Error {
-                kind: Symbol {
-                    owner,
-                    index: local::Symbol::from(K::OutOfMemory).0,
-                    generation: 0,
-                },
-                values: Vec::new(),
-                trace: Vec::new(),
-                limit: true,
-            });
-        }
-        drop(room);
+        // First, before the heap, so that this is the only allocation of `new` that can abort:
+        // made last, it aborted whenever the heap had left no room, and after a refusal too.
         #[expect(
             clippy::disallowed_methods,
-            reason = "Arc::try_new is unstable: `new` asked for this room just above"
+            reason = "Arc::try_new is unstable: the one abort `new` documents"
         )]
         let control = Arc::new(Control::default());
         let (heap, made) = Heap::new();
@@ -458,7 +441,7 @@ impl<T> Grift<T> {
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
             control,
-            owner,
+            owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
         };
         let loaded = made.and_then(|()| g.load());
         g.out(loaded).map(|()| g)

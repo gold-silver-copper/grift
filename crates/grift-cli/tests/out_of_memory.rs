@@ -176,11 +176,12 @@ fn a_call_collects_before_copying_its_arguments() {
     assert_eq!(called, Ok(grift::Value::Integer(3)));
 }
 
-/// A new interpreter refused memory says so, from its first allocation on: with room for nothing,
-/// or for part of what it makes, it is `out-of-memory`, never an abort.
+/// A new interpreter refused memory after its first allocation says so: with room for part of
+/// what it makes, it is `out-of-memory`, never an abort. The first is its control block, the one
+/// allocation it can't have refused, which is under 64 bytes.
 #[test]
 fn a_new_interpreter_refused_memory_says_so() {
-    for budget in (0..8192).step_by(8) {
+    for budget in (64..8192).step_by(8) {
         LIMIT.set(LIVE.get() + budget);
         let made = Grift::<()>::new();
         LIMIT.set(usize::MAX);

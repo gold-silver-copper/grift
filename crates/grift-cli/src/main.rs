@@ -20,7 +20,6 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, reads the program \
@@ -28,6 +27,41 @@ const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, read
 
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
+
+/// What the system refuses for its length, whatever memory there is, each with the error number
+/// it gives: a path of more than `PATH` bytes, its ending zero byte counted, and a program with
+/// arguments of more than `EXEC` bytes together, each one's zero byte counted. Rust's library
+/// copies a path, a program and each argument before the system sees it, in memory that can't be
+/// refused, so the runner refuses these first, with the system's error: the copies that are left
+/// are no longer than this. The numbers are the system's own, from its headers.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+mod system {
+    /// `PATH_MAX` (`linux/limits.h`) and `ENAMETOOLONG`.
+    pub const PATH: Option<(usize, i32)> = Some((4096, 36));
+    /// The most `execve` takes at any stack limit, three quarters of `_STK_LIM`, 8 MiB
+    /// (`bprm_stack_limits` in `fs/exec.c`), and `E2BIG`.
+    pub const EXEC: Option<(usize, i32)> = Some((6 << 20, 7));
+}
+#[cfg(target_os = "macos")]
+mod system {
+    /// `PATH_MAX` (`sys/syslimits.h`) and `ENAMETOOLONG`.
+    pub const PATH: Option<(usize, i32)> = Some((1024, 63));
+    /// `ARG_MAX` (`sys/syslimits.h`) and `E2BIG`.
+    pub const EXEC: Option<(usize, i32)> = Some((1 << 20, 7));
+}
+/// A system whose numbers the runner doesn't know: nothing is refused first, and the library's
+/// copy of a long path or argument aborts the process if memory for it is refused.
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+mod system {
+    pub const PATH: Option<(usize, i32)> = None;
+    pub const EXEC: Option<(usize, i32)> = None;
+}
+
+/// The system's error for `bytes` that are more than its `limit` takes, if they are.
+fn too_long(limit: Option<(usize, i32)>, bytes: usize) -> Option<io::Error> {
+    let (most, number) = limit?;
+    (bytes > most).then(|| io::Error::from_raw_os_error(number))
+}
 
 /// A file a program opened: its path, and its stream.
 struct Opened {
@@ -170,39 +204,10 @@ fn owned_string(g: &mut H, v: &Value) -> Result<String, Error> {
     }
 }
 
-/// Makes sure there is memory for the copies Rust's library is about to make, each of as many
-/// bytes as `sizes` says: it asks for them all, holds them together, and gives them back. The
-/// library's functions on paths, the environment and processes copy what they are given, a long
-/// path or name or argument with a zero byte after it, and a copy refused there aborts the
-/// process, where this one is the limit. Nothing else allocates between this and those copies:
-/// the runner's one other thread lives only inside [`ran`].
-fn room_for(g: &mut H, sizes: impl IntoIterator<Item = usize>) -> Result<(), Error> {
-    let mut held = Vec::new();
-    for size in sizes {
-        let mut room = Vec::<u8>::new();
-        if room.try_reserve_exact(size).is_err() || pushed(&mut held, room).is_none() {
-            return Err(refused(g));
-        }
-    }
-    Ok(())
-}
-
-/// The bytes the library's copy of the path, name or argument `s` takes.
-fn copy_of(s: &str) -> usize {
-    s.len().saturating_add(1)
-}
-
 /// The one string argument, or a `type-error` or an `arity-error`.
 fn one_string(g: &mut H, args: &[Value]) -> Result<String, Error> {
     let [v] = g.exactly(args)?;
     owned_string(g, v)
-}
-
-/// The one string argument, a path or a name the library is about to copy, with room for the copy.
-fn one_name(g: &mut H, args: &[Value]) -> Result<String, Error> {
-    let name = one_string(g, args)?;
-    room_for(g, [copy_of(&name)])?;
-    Ok(name)
 }
 
 /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
@@ -228,6 +233,17 @@ fn failed(g: &mut H, kind: &str, what: &str, e: &io::Error) -> Error {
     }
 }
 
+/// The one string argument, a path. One longer than the system's longest is the `file-error` the
+/// system would give, before Rust's library copies it: the copy it makes of any other is at most
+/// that long.
+fn one_path(g: &mut H, args: &[Value]) -> Result<String, Error> {
+    let path = one_string(g, args)?;
+    match too_long(system::PATH, path.len().saturating_add(1)) {
+        Some(e) => Err(failed(g, "file-error", &path, &e)),
+        None => Ok(path),
+    }
+}
+
 /// Opens a file as `open` does, and gives its number.
 fn opened(
     g: &mut H,
@@ -235,7 +251,7 @@ fn opened(
     args: &[Value],
     open: fn(&str) -> io::Result<Stream>,
 ) -> Result<Value, Error> {
-    let path = one_name(g, args)?;
+    let path = one_path(g, args)?;
     // The file's place in the list comes first, so none is opened that the list can't hold.
     let id = i64::try_from(r.files.len()).ok();
     let (Some(id), Ok(())) = (id, r.files.try_reserve(1)) else {
@@ -394,7 +410,7 @@ fn close_host(g: &mut H, r: &mut Runner, args: &[Value]) -> Result<Value, Error>
 
 /// `(read-file path)`: the file's whole text.
 fn read_file(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let path = one_name(g, args)?;
+    let path = one_path(g, args)?;
     match std::fs::read_to_string(&path) {
         Ok(text) => g.string(&text),
         Err(e) => Err(failed(g, "file-error", &path, &e)),
@@ -403,11 +419,18 @@ fn read_file(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> 
 
 /// `(environment-variable name)`: its value; `unset-variable` when it has none.
 fn environment_variable(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
-    let name = one_name(g, args)?;
-    match std::env::var(&name) {
-        Ok(value) => g.string(&value),
-        Err(std::env::VarError::NotPresent) => Err(g.error("unset-variable", args)),
-        Err(std::env::VarError::NotUnicode(_)) => Err(g.error(Kind::EncodingError, args)),
+    let [name] = g.exactly(args)?;
+    let Some(name) = g.as_str(name)? else {
+        return Err(g.type_error(*name));
+    };
+    // Found by looking through the environment, so Rust's library never copies the name. What it
+    // copies is the environment, whose size the system bounded when the runner started.
+    let Some((_, value)) = std::env::vars_os().find(|(set, _)| set.as_os_str() == name) else {
+        return Err(g.error("unset-variable", args));
+    };
+    match value.to_str() {
+        Some(value) => g.string(value),
+        None => Err(g.error(Kind::EncodingError, args)),
     }
 }
 
@@ -437,33 +460,22 @@ fn exit_status(g: &G, e: &Error) -> Option<u8> {
     }
 }
 
-/// Runs `program` to its end with no input: its exit status, then what it wrote to stderr and to
-/// stdout, each `None` if memory was refused for it. A thread reads stderr while this one reads
-/// stdout, so neither pipe fills and blocks the program.
-fn ran(program: &str, arguments: &[String]) -> io::Result<(ExitStatus, [Option<Vec<u8>>; 2])> {
+/// Runs `program` to its end with no input: its exit status, and what it wrote to stdout, `None`
+/// if memory was refused for it. Its stderr is the runner's own, so there is one pipe to read and
+/// no thread to read a second.
+fn ran(program: &str, arguments: &[String]) -> io::Result<(ExitStatus, Option<Vec<u8>>)> {
     let mut child = Command::new(program)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()?;
-    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+    let Some(stdout) = child.stdout.take() else {
         return Err(io::Error::other("no pipe"));
     };
-    let read_stderr = match thread::Builder::new().spawn(move || drain(stderr)) {
-        Ok(thread) => thread,
-        Err(e) => {
-            let _ = child.kill();
-            child.wait()?;
-            return Err(e);
-        }
-    };
-    let stdout = drain(stdout);
-    let stderr = read_stderr
-        .join()
-        .unwrap_or_else(|_| Err(io::Error::other("panic")));
+    let output = drain(stdout);
     let status = child.wait()?;
-    Ok((status, [stderr?, stdout?]))
+    Ok((status, output?))
 }
 
 /// Reads `pipe` to its end: all of it, or `None` if memory was refused, the rest read and dropped.
@@ -487,12 +499,15 @@ fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-/// `(run-host program argument ...)`: runs it to its end, with no input, and gives its exit code
-/// (`#inert` if a signal ended it) and what it wrote to stdout and stderr, as a list.
+/// `(run-host program argument ...)`: runs it to its end, with no input and with the runner's
+/// stderr as its own, and gives its exit code (`#inert` if a signal ended it) and what it wrote to
+/// stdout, as a list.
 fn run_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let mut words = Vec::new();
+    let mut bytes = 0_usize;
     for v in args {
         let word = owned_string(g, v)?;
+        bytes = bytes.saturating_add(word.len()).saturating_add(1);
         if pushed(&mut words, word).is_none() {
             return Err(refused(g));
         }
@@ -500,31 +515,27 @@ fn run_host(g: &mut H, _: &mut Runner, args: &[Value]) -> Result<Value, Error> {
     let Some((program, arguments)) = words.split_first() else {
         return Err(g.arity_error(args));
     };
-    // The library keeps the program's name twice, each word once, and two tables of the words,
-    // three pointers a word between them, which grow by doubling: thrice that while one grows.
-    let tables = words.len().saturating_mul(9 * size_of::<usize>());
-    let copies = words.iter().chain([program]).map(|word| copy_of(word));
-    room_for(g, copies.chain([tables]))?;
-    let (status, outputs) = match ran(program, arguments) {
+    // More than the system runs is the `process-error` it would give, before Rust's library
+    // copies the words: the copies it makes of any others are together at most that long.
+    if let Some(e) = too_long(system::EXEC, bytes) {
+        return Err(failed(g, "process-error", program, &e));
+    }
+    let (status, output) = match ran(program, arguments) {
         Ok(ran) => ran,
         Err(e) => return Err(failed(g, "process-error", program, &e)),
     };
     let status = status
         .code()
         .map_or(Value::Inert, |n| Value::Integer(i64::from(n)));
-    // Refused memory is the limit, whichever output it was refused to, before either is text.
-    let [Some(stderr), Some(stdout)] = outputs else {
+    // Refused memory is the limit, before the output is text.
+    let Some(output) = output else {
         return Err(refused(g));
     };
-    let mut list = Value::EmptyList;
-    for bytes in [stderr, stdout] {
-        let Ok(text) = String::from_utf8(bytes) else {
-            return Err(g.error(Kind::EncodingError, args));
-        };
-        let text = g.string(&text)?;
-        list = g.pair(text, list)?;
-    }
-    g.pair(status, list)
+    let Ok(output) = String::from_utf8(output) else {
+        return Err(g.error(Kind::EncodingError, args));
+    };
+    let output = g.string(&output)?;
+    g.list(&[status, output])
 }
 
 /// Prints an error to stderr as its source, then its kind, where it happened and its values, the

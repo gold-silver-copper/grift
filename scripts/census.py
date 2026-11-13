@@ -8,7 +8,7 @@ usage: scripts/census.py RUNNER  (from the repository root; prints a Markdown ta
 """
 import glob, re, subprocess, sys
 
-FIELDS = "read-line read-all read-bytes write close path status output error-output \
+FIELDS = "read-line read-all read-bytes write close path status output \
 kind values trace".split()
 TOKEN = re.compile(r'\s+|(?:;|#!)[^\n]*|"(?:\\.|[^"\\])*"?|[()]|[^\s();"]+', re.S)
 
