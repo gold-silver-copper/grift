@@ -1,0 +1,13 @@
+--- a/crates/grift-cli/src/main.rs
++++ b/crates/grift-cli/src/main.rs
+@@ -201,9 +201,7 @@ fn one_string(g: &mut H, args: &[Value]) -> Result<String, Error> {
+ 
+ /// The one string argument, a path or a name the library is about to copy, with room for the copy.
+ fn one_name(g: &mut H, args: &[Value]) -> Result<String, Error> {
+-    let name = one_string(g, args)?;
+-    room_for(g, [copy_of(&name)])?;
+-    Ok(name)
++    one_string(g, args)
+ }
+ 
+ /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that

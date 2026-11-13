@@ -1,0 +1,11 @@
+--- a/crates/grift/src/lib.rs
++++ b/crates/grift/src/lib.rs
+@@ -427,7 +427,7 @@ impl<T> Grift<T> {
+         let owner = Owner(OWNERS.fetch_add(1, Ordering::Relaxed));
+         // An `Arc` holds two counts before its value.
+         let mut room = Vec::<(usize, usize, Control)>::new();
+-        if room.try_reserve_exact(1).is_err() {
++        if false {
+             // What `export_error` makes of `local::Error::oom()`, with no heap to ask.
+             return Err(Error {
+                 kind: Symbol {
