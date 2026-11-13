@@ -509,6 +509,11 @@ fn string_helpers() {
                  (and!? (same? (string-to-lowercase low) low)
                         (same? (byte-length low) (byte-length t)))))
                texts)",
+            // string-to-characters: one string per scalar value, of 1 to 4 bytes, and joined they are
+            // the text.
+            "(same? (string-to-characters \"\") ())",
+            "(equal? (string-to-characters \"aé€𝄞\") (list \"a\" \"é\" \"€\" \"𝄞\"))",
+            "(all? (lambda! (t) (same? (string-join (string-to-characters t) \"\") t)) texts)",
         ],
     );
     fails(
@@ -527,6 +532,7 @@ fn string_helpers() {
             ("(string-repeat 1 2)", "type-error"),
             ("(string-repeat \"a\" 1.0)", "type-error"),
             ("(string-to-lowercase 1)", "type-error"),
+            ("(string-to-characters #bytes(195 169))", "type-error"),
         ],
     );
     // A bytes value splits as a string does, and its empty separator is the same `range-error`:
