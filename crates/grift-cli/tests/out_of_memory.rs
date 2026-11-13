@@ -53,14 +53,15 @@ static ALLOCATOR: Budgeted = Budgeted;
 
 /// However little the last refusal left, the ending keeps every place of its trace, 3 or 302,
 /// and the report says the kind and all three. The budgets are spread so that many run out on a
-/// small object with almost nothing left over.
+/// small object with almost nothing left over. The least is past the heap's first growth after
+/// the library, so every run reaches `f`'s recursion before it runs out.
 #[test]
 fn an_out_of_memory_report_is_whole_with_nothing_left_to_allocate() {
     let f = "(define! f (lambda! (n) (add 1 (f n))))\n";
     let deep = format!("{f}{}(f 1){}", "(add 1 ".repeat(300), ")".repeat(300));
     let mut short = Vec::new();
     for (program, places) in [(format!("{f}(f 1)"), 3), (deep, 302)] {
-        for budget in (0..150).map(|k| (1 << 18) + k * 53003) {
+        for budget in (0..150).map(|k| (1 << 19) + k * 53003) {
             let mut g: Grift = Grift::new().unwrap();
             let mut text = String::with_capacity(4096);
             LIMIT.set(LIVE.get() + budget);

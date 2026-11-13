@@ -178,6 +178,7 @@ which a test shows no program can tell from the Rust, but for how the combiner i
 | `(string-repeat s count)` | `s` `count` times; a count below 1 is no copies, `""`. |
 | `(string-pad-left s width fill)`, `(string-pad-right s width fill)` | `s` with copies of `fill`, a string of one byte, before it, after it, up to `width` bytes; `s` itself if it is that long already: `(string-pad-left "7" 2 "0")` is `"07"`. A `fill` of any other length is a `range-error`. |
 | `(string-to-lowercase s)` | `s` with `A` to `Z` made `a` to `z` and every other byte as it is, as Rust's `to_ascii_lowercase`. |
+| `(string-to-characters s)` | The characters of `s`, its Unicode scalar values, each a string of one, in order: `(string-to-characters "né")` is `("n" "é")`, and `(string-join (string-to-characters s) "")` is `s`. A character's `byte-length` is how far it moves a byte offset. Anything but a string is a `type-error`. |
 | `(standard-context)` | A new child of the built-in context: it sees the language and nothing of any program, and what is bound in it stays there (6.7.7). The built-in context itself stays out of reach. |
 | `built-in-names` | The list of every name above and every primitive's, bound when the library is loaded. |
 

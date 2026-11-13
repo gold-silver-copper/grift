@@ -52,6 +52,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   a kind of their own, never equal to a string ([G-142]). Both share `byte-length`, `byte-at`,
   `slice`, `join` and `search`: `slice` and `join` answer in their first argument's kind,
   `byte-length` and `byte-at` give integers, and `search` an offset or `()` ([G-173]).
+  `string-to-characters` gives a string's characters as one-character strings, so a program moves
+  by whole characters without decoding UTF-8 ([G-214]).
 - An offset out of range is `range-error`, and so is a `slice` or `search` offset off a string's
   character boundary ([G-27]). `less-than?` orders two integers, floats, strings or bytes values
   ([G-177]). Bytes that aren't UTF-8 are `encoding-error` from `bytes-to-string` ([G-144]).
@@ -372,3 +374,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-206]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
 [G-210]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
 [G-212]: DECISIONS.md#a-more-solid-foundation-with-fewer-lines-2026-11-12
+[G-214]: DECISIONS.md#a-string-walked-by-character-2026-11-12

@@ -441,6 +441,25 @@
                (parts s from next end))))))
      (lambda! (s) (apply join (parts s 0 0 (byte-length s)))))))
 
+; string-to-characters: the Unicode scalar values of s, each a string of one, in order; joined
+; they are s. Anything but a string is a type-error. A character ends where the next byte isn't a continuation byte (128 to 191).
+(define! string-to-characters
+  ((lambda! ()
+     (define! end-of
+       (lambda! (s at end)
+         (if! (same? at end)
+           at
+           (let! ((byte (byte-at s at)))
+             (if! (and!? (less-than? 127 byte) (less-than? byte 192)) (end-of s (add at 1) end) at)))))
+     (define! characters
+       (lambda! (s at end)
+         (if! (same? at end)
+           ()
+           (let! ((next (end-of s (add at 1) end)))
+             (pair (slice s at next) (characters s next end))))))
+     (lambda! (s)
+       (if! (string? s) (characters s 0 (byte-length s)) (raise (error (quote! type-error) s)))))))
+
 ; standard-context (6.7.7, make-kernel-standard-environment): a new child of the built-in context,
 ; which sees the language and nothing of any program. The context itself stays out of reach.
 (define! standard-context

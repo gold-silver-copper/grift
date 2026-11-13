@@ -2203,3 +2203,26 @@ can read; the pull request that added them gives the reason for every one of the
   test in avl, and bignum's square root starting Newton's method at 10^(digits/2) rounded up instead of
   at the number itself (one case went from about 30 s to under 2 s on the test-profile runner). All
   eleven scripts together take about 5 s run one after another on that runner.
+
+## A string walked by character, 2026-11-12
+
+A test run wrote 60 grift programs; three (a byte regex, a Markdown renderer, a UTF-8 codec) each wrote their own
+UTF-8 boundary code, and two Markdown cases first failed when a helper sliced inside "é". The owner approved a
+library function giving a string's characters as `("n" "é")`; its name, and leaving byte offsets out of the
+result, were chosen in this change. Strings stay byte-addressed (G-27).
+
+- **G-214. `string-to-characters`: a string's Unicode scalar values as one-character strings, in grift.**
+  - **Name.** A conversion spells out `to` (G-38), as `string-to-bytes` and `string-to-lowercase`; "characters"
+    because each element is a whole character, though grift still has no character type (G-27).
+  - **Shape: one-character strings, no offsets.** What the three needed: the codec wanted each scalar with its byte
+    offset, and the regex and the renderer wanted the width of the character at an offset, to copy or group it
+    whole. A character's `byte-length` is its width, so a walk that carries its byte offset adds it, and offsets
+    in the result would be a second copy of that. Each element is a string, so `join`, `search` and `same?` take
+    it as it is. Copies of all three rewritten on it pass their 30 recorded cases with no width table left; the
+    renderer's bracket matcher needed none (its delimiters are ASCII, which no byte of a longer character
+    equals), and the codec's validation became `bytes-to-string`'s.
+  - **In the library, not a native.** It needs only `byte-at`, `byte-length` and `slice`: a character ends where
+    the next byte isn't 128 to 191. It is linear: 10,000 characters in 0.34 s, 100,000 in 2.9 s (release build,
+    one run each), so a native isn't wanted. No invalid string can exist (`bytes-to-string` refuses one, `slice`
+    refuses an offset inside a character), so there is no such case to handle; a bytes value, which `byte-at`
+    and `slice` would take, is a `type-error`.
