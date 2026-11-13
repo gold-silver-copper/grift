@@ -1,5 +1,10 @@
-; Parse a single HTTP/1.1 request with a fixed content length.
-; Reject ambiguity rather than silently accepting folded or duplicate fields.
+#!/usr/bin/env grift
+; request: parses one HTTP/1.1 request with a fixed content length.
+;
+;   main.grift $'GET / HTTP/1.1\r\nHost: example\r\n\r\n'
+;
+; prints (method target headers body), or (kind (value)) for the first thing wrong with it. It
+; refuses ambiguity, such as folded or duplicate header fields, rather than guessing.
 (define! reject
   (lambda! (kind value)
     (raise (error kind value))))

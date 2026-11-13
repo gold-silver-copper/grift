@@ -1,5 +1,12 @@
-; Signed decimal arithmetic, long division, powers, factorials and Euclid's gcd.
-; Every digit is small; no whole input number passes through an i64 conversion.
+#!/usr/bin/env grift
+; bignum: arithmetic on signed decimal numbers of any length.
+;
+;   main.grift OPERATION NUMBER [NUMBER]
+;
+; OPERATION is add, subtract, multiply, divide (prints quotient,remainder), remainder, compare,
+; gcd, lcm, power, factorial, sqrt (the whole part) or negate. A number is a list of decimal
+; digits, least significant first, so no input passes through a 64-bit integer; the digit loops
+; recurse as deep as the numbers are long.
 (define! invalid
   (lambda! (kind value)
     (raise (error kind value))))
@@ -224,13 +231,16 @@
     (if! (greater-than-or-equal? (compare-big next guess) 0)
       guess
       (sqrt-step number next))))
+; Newton's method from above stops at the whole part of the root. A number of D digits is below
+; 10^D, so its root is below 10^K for K = D/2 rounded up: the first guess.
 (define! square-root-big
   (lambda! (number)
     (when! (negative? number)
       (invalid (quote! decimal-negative-root) number))
     (if! (zero? number)
       zero
-      (sqrt-step number number))))
+      (let! ((half (divide (add (length (digits-of number)) 1) 2)))
+        (sqrt-step number (big #false (append (zero-digits half) (list 1))))))))
 (define! lcm-big
   (lambda! (left right)
     (if! (or!? (zero? left) (zero? right))

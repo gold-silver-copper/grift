@@ -1,4 +1,12 @@
-; A typed binary message with byte-counted fields, UTF-8 text and CRC32 integrity.
+#!/usr/bin/env grift
+; message: a typed binary message format with length-prefixed fields and a CRC-32.
+;
+;   main.grift encode '(("name" "café") ("count" 3))'     prints the message in hex
+;   main.grift decode HEX                                prints the fields
+;   main.grift roundtrip FIELDS                          encodes and decodes again
+;
+; A field's value is a string, an integer, bytes or a boolean. The work is bytes values: `join`,
+; `slice`, `byte-at`, `#bytes(...)` literals, and the bitwise operations for the integers and CRC.
 (define! fail (lambda! (kind value) (raise (error kind value))))
 (define! integer-bytes
   (lambda! (number count)

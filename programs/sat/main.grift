@@ -1,4 +1,11 @@
-; A DPLL satisfiability solver with unit propagation and pure literals.
+#!/usr/bin/env grift
+; sat: decides whether a set of clauses can all be true, with the DPLL algorithm.
+;
+;   main.grift '((1) (-1 2) (-2 3))'      prints sat:1=T,2=T,3=T
+;
+; A clause is a list of literals: N is variable N, -N its negation. It prints sat: and an
+; assignment, checked against every clause, or unsat. Unit clauses and pure literals are assigned
+; first, and otherwise it tries a literal both ways.
 (define! fail (lambda! (kind value) (raise (error kind value))))
 (define! validate-clauses
   (lambda! (clauses)
@@ -50,14 +57,11 @@
       (fail (quote! sat-conflicting-assignment) variable))
     (pair (list variable value)
       (filter (lambda! (entry) (not? (same? (first entry) variable))) assignment))))
-(define! satisfiable (record (quote! (solved assignment)) (list #false ())))
+; An assignment that satisfies the clauses, or #false when none does.
 (define! solve
   (lambda! (clauses assignment)
     (conditional!
-      ((empty-list? clauses)
-        (bind satisfiable (quote! solved) #true)
-        (bind satisfiable (quote! assignment) assignment)
-        #true)
+      ((empty-list? clauses) assignment)
       ((any? empty-list? clauses) #false)
       (#true
         (define! unit (unit-literal clauses))
@@ -69,10 +73,12 @@
             (solve (simplify clauses pure) (extend-assignment assignment pure)))
           (#true
             (define! selected (first (first clauses)))
-            (or!?
-              (solve (simplify clauses selected) (extend-assignment assignment selected))
+            (define! chosen
+              (solve (simplify clauses selected) (extend-assignment assignment selected)))
+            (if! (same? chosen #false)
               (solve (simplify clauses (subtract 0 selected))
-                (extend-assignment assignment (subtract 0 selected))))))))))
+                (extend-assignment assignment (subtract 0 selected)))
+              chosen)))))))
 (define! literal-true?
   (lambda! (literal assignment)
     (define! value (assignment-value assignment (absolute-value literal)))
@@ -112,10 +118,11 @@
   (sequence!
     (define! original (validate-clauses (first (read-form (first command-line-arguments) 0))))
     (define! names (variables original))
-    (if! (solve (remove-tautologies original) ())
-      (let! ((answer (complete-assignment names (evaluate-in! assignment satisfiable))))
+    (define! found (solve (remove-tautologies original) ()))
+    (if! (same? found #false)
+      (display "unsat\n")
+      (let! ((answer (complete-assignment names found)))
         (check-answer original answer)
-        (display (render answer) "\n"))
-      (display "unsat\n")))
+        (display (render answer) "\n"))))
   failure
   (display "error:" (evaluate-in! kind failure) "\n"))

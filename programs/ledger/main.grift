@@ -1,4 +1,11 @@
-; Transfer ledger: failed batches roll back, and every batch releases a lock.
+#!/usr/bin/env grift
+; ledger: runs a batch of transfers between three accounts as one transaction.
+;
+;   main.grift '((alice bob 30) (bob reserve 10))'
+;
+; prints the outcome (committed, or the kind of the error that stopped the batch), the balances,
+; their total and the lock's state. A failed batch puts every balance back as it was, and the lock
+; is released either way: `catch!` handles the error and `finally!` runs the cleanup.
 (define! balances (record (quote! (alice bob reserve)) (list 100 20 0)))
 (define! state (record (quote! (locked released)) (list #false 0)))
 (define! balance

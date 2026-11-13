@@ -1,5 +1,10 @@
-; A JSON reader and compact printer. Number spellings are preserved exactly.
-; The parser owns its cursor; nodes are tagged records, not host code.
+#!/usr/bin/env grift
+; json: reads a JSON document and prints it back compactly.
+;
+;   main.grift ' { "x": [true, null, 12.50e+03] } '      prints {"x":[true,null,12.50e+03]}
+;
+; Numbers keep their spelling, and string escapes, \u surrogate pairs included, are decoded and
+; re-escaped. A syntax error prints error:KIND:OFFSET. The parser's cursor is a record it updates.
 (define! node
   (lambda! (tag value)
     (record (quote! (tag value)) (list tag value))))

@@ -1,10 +1,21 @@
-; Symbolic differentiation with constant folding and optional numeric evaluation.
+#!/usr/bin/env grift
+; derive: differentiates an expression symbolically.
+;
+;   main.grift '(add (power x 3) (multiply 2 x))' x       prints (add (multiply 3 (power x 2)) 2)
+;   main.grift '(power x 3)' x 2.0                        prints 12.0, the derivative at x = 2.0
+;
+; Expressions are grift data: integers, symbols, and (add a b), (subtract a b), (multiply a b),
+; (power a N), (sine a), (cosine a). Products and sums of constants fold as they are built. The
+; value at a point is computed in floats.
 (define! fail (lambda! (value) (raise (error (quote! derivative-expression) value))))
+; The operators by name, for folding constants and for evaluating at a point.
+(define! arithmetic
+  (record (quote! (add subtract multiply power)) (list add subtract multiply power)))
 (define! binary
   (lambda! (operator left right)
     (conditional!
       ((and!? (integer? left) (integer? right))
-        ((lookup (record (quote! (add subtract multiply power)) (list add subtract multiply power)) operator #inert) left right))
+        ((lookup arithmetic operator #inert) left right))
       ((and!? (same? operator (quote! add)) (same? left 0)) right)
       ((and!? (same? operator (quote! add)) (same? right 0)) left)
       ((and!? (same? operator (quote! subtract)) (same? right 0)) left)
@@ -49,7 +60,7 @@
           ((same? operator (quote! sine)) (sine a))
           ((same? operator (quote! cosine)) (cosine a))
           (#true
-            ((lookup (record (quote! (add subtract multiply power)) (list add subtract multiply power)) operator #inert)
+            ((lookup arithmetic operator #inert)
               a (numeric (third expression) variable point)))))
       (#true (fail expression)))))
 (catch!

@@ -1,4 +1,11 @@
-; A small task language whose task! operative keeps a body and its lexical caller.
+#!/usr/bin/env grift
+; tasks: a small build language. `task!` is an operative: it keeps its body unevaluated with
+; the context it was written in, and a build evaluates the body there once its dependencies ran.
+;
+;   main.grift '(task! a () (say "a")) (task! b (a) (say "b"))' b      prints a,b;done=2
+;
+; The program is evaluated in a fresh standard context with task! and say added. A cycle is an
+; error, and `finally!` clears the in-progress mark however a task ends.
 (define! tasks (context ()))
 (define! completed (context ()))
 (define! active (context ()))

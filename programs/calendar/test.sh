@@ -11,8 +11,8 @@ check() { # EXPECTED-LINE ARGUMENT...
     local want=$1 got
     shift
     got=$("$grift" main.grift "$@" 2>&1; echo "exit $?")
-    if [ "$got" == "$want"$'\n'"exit 0" ]; then echo "ok   $*"; else
-        echo "FAIL $*"; echo "  expected: $want"; echo "  actual:   $got"; failures=$((failures + 1)); fi
+    if [ "$got" == "$want"$'\n'"exit 0" ]; then echo "ok   $want"; else
+        echo "FAIL $(printf "%q " "$@")"; echo "  expected: $want"; echo "  actual:   $got"; failures=$((failures + 1)); fi
 }
 
 check '2000-03-01' 'add' '2000-02-28' '2'

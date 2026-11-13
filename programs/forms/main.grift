@@ -1,5 +1,11 @@
-; A tiny expression DSL whose control forms are user-defined operatives.
-; Evaluations use first-class contexts and explicit caller evaluation.
+#!/usr/bin/env grift
+; forms: evaluates one expression of a tiny language whose control forms are operatives
+; (`vau!`) bound in a first-class context.
+;
+;   main.grift '(local! x 6 (times x (plus x 1)))'      prints 42
+;
+; `choose!` evaluates only the branch it takes, `local!` evaluates its body in a child of the
+; caller's context, so its name never leaks, and `literal!` returns its operand unevaluated.
 (define! make-engine
   (lambda! ()
     (let! ((engine (context ()))

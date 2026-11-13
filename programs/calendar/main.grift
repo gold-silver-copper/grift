@@ -1,4 +1,13 @@
-; Gregorian date arithmetic, business days and anchored monthly recurrences.
+#!/usr/bin/env grift
+; calendar: Gregorian date arithmetic.
+;
+;   main.grift add DATE DAYS              main.grift between DATE DATE
+;   main.grift weekday DATE               main.grift monthly DATE COUNT
+;   main.grift leap DATE                  main.grift business DATE DAYS [HOLIDAY,...]
+;
+; Dates are YYYY-MM-DD. Each date becomes its day number since 0001-01-01 and back; `monthly`
+; keeps the day of the month where it can (Jan 31, Feb 29, Mar 31) and `business` skips weekends
+; and holidays.
 (define! fail (lambda! (kind value) (raise (error kind value))))
 (define! leap?
   (lambda! (year)

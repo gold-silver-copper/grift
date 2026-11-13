@@ -1,4 +1,11 @@
-; Persistent AVL map with deletion, rank/select and a retained undo history.
+#!/usr/bin/env grift
+; avl: a persistent AVL tree map, driven by a list of operations.
+;
+;   main.grift '((insert 3 "c") (insert 1 "a") (rank 3) (select 0) (delete 1) (undo))'
+;
+; An insert or delete builds a new tree that shares the unchanged branches with the old one, so
+; undo is keeping the old root. `rank` counts the keys below one; `select` finds the entry at an
+; index. The invariants are checked after every operation. Prints the entries, then the answers.
 (define! field (lambda! (tree key) (lookup tree key #inert)))
 (define! height (lambda! (tree) (if! (empty-list? tree) 0 (field tree (quote! height)))))
 (define! size (lambda! (tree) (if! (empty-list? tree) 0 (field tree (quote! size)))))
@@ -103,7 +110,7 @@
       (#true (select-entry (field tree (quote! right)) (subtract index (add left-size 1)))))))
 (define! validate
   (lambda! (tree lower upper)
-    (when! (pair? (entries tree))
+    (when! (not? (empty-list? tree))
       (define! key (field tree (quote! key)))
       (when! (or!? (and!? (integer? lower) (less-than-or-equal? key lower))
           (and!? (integer? upper) (greater-than-or-equal? key upper))
