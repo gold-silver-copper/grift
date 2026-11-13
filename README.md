@@ -92,9 +92,10 @@ When stdin is a terminal, grift is a session. It prompts `> ` on stderr, and `  
 still open, reads lines until the input holds only whole forms, evaluates them in turn and prints
 the last one's value on stdout: `1 2 3` prints `3`. An input that doesn't read runs none of its forms;
 an error stops the rest of its input. Lines are numbered from the session's first, so `at stdin:12` is
-the session's twelfth line, not counting lines a program read. A program's `read-line` takes the next
-line typed, and `read-bytes` what it asks for of it, the rest of the line staying for the next read:
-`(read-bytes 3)` then `abcdef` gives `#bytes(97 98 99)`, and `def` is the next input. Errors are shown
+the session's twelfth line, not counting lines a program read. `standard-input`'s `read-line` takes
+the next line typed, and its `read-bytes` what it asks for of it, the rest of the line staying for the
+next read: `((evaluate-in! read-bytes standard-input) 3)` then `abcdef` gives `#bytes(97 98 99)`, and
+`def` is the next input, read as source. Errors are shown
 and the session goes on. A pipe closing ends it with 141; otherwise it ends 0 unless the program calls
 `exit`, input ends inside a form, or standard input or error fails or is closed by `close`, which ends
 it with 1. C-c ends it as it ends any program, its definitions with it: the runner handles no
