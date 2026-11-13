@@ -1,6 +1,6 @@
 --- a/crates/grift-cli/src/main.rs
 +++ b/crates/grift-cli/src/main.rs
-@@ -479,7 +479,7 @@ fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
+@@ -490,7 +490,7 @@ fn drain(mut pipe: impl Read) -> io::Result<Option<Vec<u8>>> {
              Err(e) => return Err(e),
          };
          if let Some(bytes) = &mut kept {

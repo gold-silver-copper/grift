@@ -1,13 +1,11 @@
 --- a/crates/grift-cli/src/main.rs
 +++ b/crates/grift-cli/src/main.rs
-@@ -201,9 +201,7 @@ fn one_string(g: &mut H, args: &[Value]) -> Result<String, Error> {
- 
- /// The one string argument, a path or a name the library is about to copy, with room for the copy.
- fn one_name(g: &mut H, args: &[Value]) -> Result<String, Error> {
--    let name = one_string(g, args)?;
--    room_for(g, [copy_of(&name)])?;
--    Ok(name)
-+    one_string(g, args)
- }
- 
- /// An I/O error about `what` (a path or a program): out of memory, `encoding-error` for bytes that
+@@ -238,7 +238,7 @@ fn failed(g: &mut H, kind: &str, what: &str, e: &io::Error) -> Error {
+ /// that long.
+ fn one_path(g: &mut H, args: &[Value]) -> Result<String, Error> {
+     let path = one_string(g, args)?;
+-    match too_long(system::PATH, path.len().saturating_add(1)) {
++    match too_long(None, path.len().saturating_add(1)) {
+         Some(e) => Err(failed(g, "file-error", &path, &e)),
+         None => Ok(path),
+     }
