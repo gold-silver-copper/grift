@@ -16,10 +16,8 @@ The core crate has no dependencies and no `unsafe` code; it does no I/O, starts 
 keeps no global state: the host owns all of that. It uses the memory the allocator gives it and
 sets no limits of its own; when the allocator refuses, evaluation returns an `out-of-memory`
 error instead of aborting. There is one exception: `Grift::new`'s first allocation, the
-interpreter's shared control block, is an `Arc::new`, which can't be refused until Rust's
-`Arc::try_new` is stable. `Grift::new` asks for that room first, so a refusal there is
-`out-of-memory` too, and the process aborts only if another thread takes the room in between;
-every later refusal is `out-of-memory`. It reaches the outside world only through functions the host
+interpreter's shared control block, is an `Arc::new`, which aborts if refused, until Rust's
+`Arc::try_new` is stable; every later refusal is `out-of-memory`. It reaches the outside world only through functions the host
 registers, and every error goes to the host with its kind, its values and where it happened.
 
 ## The language on one screen
@@ -123,7 +121,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
 | `(environment-variable name)` | Its value, a string; `unset-variable` when it has none. |
 | `(exit status)` | Ends the run with `status`, 0 to 255, by a limit of kind `exit`: no `catch!` can keep it going. A `finally!` whose body it leaves runs its cleanup forms; a cleanup that calls `exit` ends there, its later forms cut, and the last `exit` says the status. |
-| `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it), `output` and `error-output` (what it wrote, as strings). |
+| `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it) and `output` (what it wrote to stdout, a string). What it writes to stderr goes to the runner's stderr as it is written; a program that wants it runs a shell with `2>&1`: `(run-process "sh" "-c" "make 2>&1")`. |
 
 Call an operation a context holds by looking it up there: `((evaluate-in! write f) "text")`. The
 operations call host functions that are bound only in a context no program can reach, so a
@@ -136,11 +134,13 @@ ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can k
 `finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
 program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
 success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading, a process's output included, is the limit `out-of-memory`;
-`run-process` still reads both of the process's pipes to their ends and waits for it to end. So is
-memory refused for a long path, name, program or argument, and a runner with no memory to start
-says `grift: out-of-memory while starting`. What Rust's library and the system allocate for
-themselves can still abort the process when the last memory is gone: the runner's start before its
-first line, and the start of the thread that reads a process's stderr.
+`run-process` still reads the process's output to its end and waits for it to end, and starts no
+thread. A path longer than the system's longest, or a program and arguments longer than it runs, is
+the `file-error` or `process-error` the system gives, before Rust's library sees it. Rust's library
+copies a path, a program and its arguments in memory that can't be refused, so one the system would
+take, at most 4 KiB of path or 6 MiB of arguments on Linux, still aborts the process if there is no
+memory for that copy, as does the runner's start when there is none for its first allocations. A
+start refused memory after those says `grift: out-of-memory while starting`.
 
 ```lisp
 #!/usr/bin/env grift
