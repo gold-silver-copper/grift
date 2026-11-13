@@ -2226,3 +2226,56 @@ result, were chosen in this change. Strings stay byte-addressed (G-27).
     one run each), so a native isn't wanted. No invalid string can exist (`bytes-to-string` refuses one, `slice`
     refuses an offset inside a character), so there is no such case to handle; a bytes value, which `byte-at`
     and `slice` would take, is a `type-error`.
+
+## The runner refuses memory out loud, 2026-11-12
+
+A tester ran grift under `ulimit -v` and under allocators that refuse (findings F100 to F108 of
+`notes/projects/fux/soak-fixes-2026-11-12`). The runner aborted where a program chose the size: a long
+line read, and a long path, name, program or argument, which Rust's library copies in memory that can't be
+refused. `Grift::new` aborted whenever memory ran out before its control block, which it made last. Made
+alone in this change; the owner may overrule any.
+
+- **G-215. In the runner, memory refused for a size a program chooses is the `out-of-memory` limit**
+  (completes G-32 and G-175 for the runner; narrows G-178's one abort).
+  - **One way to refuse.** `refused` makes the limit; `copied` and `pushed` reserve before they copy or push;
+    `gathered` reads a line, the rest of a file or a count of bytes into a buffer that grows fallibly, in place
+    of `BufRead::read_line`, whose buffer aborts. `read-line`, `read-all` and `read-bytes` are that one loop.
+  - **Room asked for before Rust's library copies** (`room_for`). `File::open`, `File::create`,
+    `fs::read_to_string`, `env::var` and `Command` copy a long argument with a zero byte after it, and no
+    stable function makes that copy refusable. So the runner asks for as many bytes first, holding all the
+    copies of one call together, and gives them back: the library's copy then finds the room, since the
+    runner's one other thread lives only while a process runs. Rejected: a longest path or argument of the
+    runner's own (G-5: no limit of grift's own, and the system's differ); `unsafe` or a dependency to call the
+    system with a buffer of our own (the workspace denies `unsafe` and has no dependencies).
+  - **The lint.** The runner's `clippy.toml` gets the library's list of aborting allocations (G-179), so a new
+    `push` or `to_owned` there must say what made its room. It found `position`'s copy of a source name and
+    the list of open files, which grew with every file a program opened. Kept, each marked with its reason:
+    the three standard streams, a file's buffer and handle (fixed sizes), the command line's words.
+  - **`Grift::new` asks for its control block's room first** and makes the block before the heap. `Arc::new`
+    still can't be refused (G-178), but a `Vec` of the same size can: refused, `new` returns `out-of-memory`
+    with nothing made. It aborts only if the allocator refuses a size it has just given and taken back, which
+    means another thread took it. Before, the block was made after the heap's 95 allocations and even when
+    one of them had been refused, so a start out of memory always aborted.
+  - **The start's message.** `grift: out-of-memory while starting`, in place of `the library failed to load
+    (0 values)`; with no interpreter to describe the error, the runner spells the kind itself.
+  - **Evidence.** `memory_refused_for_a_long_line_or_name_is_a_limit` and
+    `a_start_refused_memory_says_out_of_memory` (the runner under `ulimit -v`: its own process and the
+    system's refusal are what is tested, so no generator, twin or guard can say it), and
+    `a_new_interpreter_refused_memory_says_so`; all three fail on 34911d89. Under 1,200 limits from 4,200 to
+    9,000 KiB, `(display 1)` aborted at 174 before and 16 after, and 179 now say `out-of-memory while
+    starting` where 16 said `failed to load`.
+  - **Not done.** (1) Rust's runtime aborts before `main` when it can't make the main thread's signal stack,
+    and `run-process` aborts in a band of limits where the thread that reads stderr starts but its own setup
+    is refused (F107). Asking for 192 KiB before the spawn did not remove those: the allocations are small
+    ones inside the library and the C library, on both threads. Ending them means reading two pipes with no
+    thread, which needs `poll` (`unsafe` or a dependency) or stderr sent to a file: a decision of its own.
+    (2) The standard streams' buffers at the start are fixed sizes and still abort (1 limit of 1,200).
+    (3) F102 and F108, a small program refused on a later run under a budget it fitted once: allocation never
+    collects (G-12), a refusal ends the run and only the next one collects (G-155, G-170), and the heap grows
+    by doubling, so whether a program fits depends on where its doublings fall; F108's heap does give its room
+    back (107,456 slots to 6,716) and then doubles from 6,716 where the first run doubled from 4,096, past the
+    budget. No change here: collecting and trying again on a refusal is a change to G-12. (4) F103: after a
+    refusal with under 64 KiB left, the heap can't give back its unused room, because shrinking copies into
+    new storage that is itself refused (`heap::shrink`), and each later run takes the 64 KiB spare (G-176) and
+    is left with nothing. A real stuck state, for its own change: shrinking in place (`Vec::shrink_to`) aborts
+    if an allocator refuses to shrink, so it trades one rule for another.

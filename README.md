@@ -110,7 +110,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 |---|---|
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
-| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. A line or rest that isn't UTF-8 is `encoding-error` and is read all the same: the next read starts after it, so text that may not be UTF-8 is read with `read-bytes`. |
+| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end; `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. A line or rest that isn't UTF-8 is `encoding-error` and is read all the same: the next read starts after it, so text that may not be UTF-8 is read with `read-bytes`. |
 | `standard-output`, `standard-error` | Contexts of operations, as `create-file`'s: `(write data)`, a string or a bytes value, to stdout or stderr, and `path` and `close`. After `close`, `display` or `display-error` is the error `closed` too; the descriptor stays open, and the runner's own report of an error still prints. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write data)`, a string's or a bytes value's bytes as they are, `close`, and `path`. |
@@ -136,7 +136,11 @@ ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can k
 `finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
 program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
 success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading, a process's output included, is the limit `out-of-memory`;
-`run-process` still reads both of the process's pipes to their ends and waits for it to end.
+`run-process` still reads both of the process's pipes to their ends and waits for it to end. So is
+memory refused for a long path, name, program or argument, and a runner with no memory to start
+says `grift: out-of-memory while starting`. What Rust's library and the system allocate for
+themselves can still abort the process when the last memory is gone: the runner's start before its
+first line, and the start of the thread that reads a process's stderr.
 
 ```lisp
 #!/usr/bin/env grift
