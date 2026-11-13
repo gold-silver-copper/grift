@@ -1,5 +1,11 @@
 //! The runner: its exit statuses, where its output goes, and each of its operations.
-#![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -72,6 +78,77 @@ fn memory_refused_to_a_process_s_output_is_a_limit() {
         assert_eq!(
             std::fs::read_to_string(dir.join("finished")).unwrap(),
             "0\n"
+        );
+    }
+}
+
+/// Runs the runner on `path` with `argument` under `limit` KiB of address space: its exit code,
+/// `None` if a signal ended it, and what it wrote to stderr.
+#[cfg(target_os = "linux")]
+fn under_a_limit(dir: &Path, limit: u32, path: &Path, argument: &Path) -> (Option<i32>, String) {
+    let out = Command::new("bash")
+        .args(["-c", "ulimit -c 0; ulimit -v $0; exec \"$@\""])
+        .arg(limit.to_string())
+        .arg(env!("CARGO_BIN_EXE_grift"))
+        .args([path, argument])
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Memory refused for a line being read, or for the copy Rust's library makes of a path, a name,
+/// a program or an argument, is the limit `out-of-memory`, never an abort: each operation given
+/// 30 MB ends by itself at every limit, and with too little for it says `out-of-memory`.
+#[cfg(target_os = "linux")]
+#[test]
+fn memory_refused_for_a_long_line_or_name_is_a_limit() {
+    let dir = scratch("long-refused");
+    let long = dir.join("long.txt");
+    std::fs::write(&long, vec![b'a'; 30_000_000]).unwrap();
+    let path = dir.join("long.grift");
+    let on_text = [
+        "(open-file a)",
+        "(create-file a)",
+        "(read-file a)",
+        "(load a)",
+        "(environment-variable a)",
+        "(run-process \"true\" a)",
+        "(run-process a)",
+    ];
+    let read = "(define! a (read-file (first command-line-arguments)))";
+    let programs = on_text.map(|op| format!("{read}{op}"));
+    let line = "((evaluate-in! read-line (open-file (first command-line-arguments))))";
+    for program in programs.iter().map(String::as_str).chain([line]) {
+        std::fs::write(&path, program).unwrap();
+        for limit in [40_000, 55_000, 70_000, 85_000, 100_000, 115_000] {
+            let (code, err) = under_a_limit(&dir, limit, &path, &long);
+            assert!(code.is_some(), "{program} under {limit}: {err}");
+            assert!(
+                limit > 40_000 || err.contains("out-of-memory"),
+                "{program} under {limit}: {err}"
+            );
+        }
+    }
+}
+
+/// A runner refused memory as it starts says so: at every limit where it gives up by itself, its
+/// message names `out-of-memory`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_refused_memory_says_out_of_memory() {
+    let dir = scratch("start-refused");
+    let path = dir.join("one.grift");
+    std::fs::write(&path, "(display 1)").unwrap();
+    for limit in (3000..9000).step_by(8) {
+        let (code, err) = under_a_limit(&dir, limit, &path, &path);
+        assert!(
+            code != Some(1) || err.contains("out-of-memory"),
+            "under {limit}: {err}"
         );
     }
 }

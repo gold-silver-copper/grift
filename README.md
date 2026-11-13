@@ -16,8 +16,10 @@ The core crate has no dependencies and no `unsafe` code; it does no I/O, starts 
 keeps no global state: the host owns all of that. It uses the memory the allocator gives it and
 sets no limits of its own; when the allocator refuses, evaluation returns an `out-of-memory`
 error instead of aborting. There is one exception: `Grift::new`'s first allocation, the
-interpreter's shared control block, is an `Arc::new`, which aborts if refused, until Rust's
-`Arc::try_new` is stable; every later refusal is `out-of-memory`. It reaches the outside world only through functions the host
+interpreter's shared control block, is an `Arc::new`, which can't be refused until Rust's
+`Arc::try_new` is stable. `Grift::new` asks for that room first, so a refusal there is
+`out-of-memory` too, and the process aborts only if another thread takes the room in between;
+every later refusal is `out-of-memory`. It reaches the outside world only through functions the host
 registers, and every error goes to the host with its kind, its values and where it happened.
 
 ## The language on one screen

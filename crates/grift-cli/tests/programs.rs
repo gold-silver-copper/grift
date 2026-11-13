@@ -1,6 +1,11 @@
 //! The corpus: every program in `programs/` passes its own `test.sh` on this runner, three at a time,
 //! each within two minutes, so a program that never ends fails instead of hanging the suite.
-#![allow(clippy::unwrap_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 
 use std::path::Path;
 use std::process::Command;

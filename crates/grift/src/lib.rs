@@ -418,15 +418,35 @@ pub struct Grift<T = ()> {
 
 impl<T> Grift<T> {
     /// Builds the built-in context, evaluates the library in it and makes an empty top level.
-    /// Memory refused is `out-of-memory`, but for one allocation, the first: the interpreter's
-    /// shared control block, which its interrupters point to, is an `Arc::new`, and so
-    /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
+    /// Memory refused is `out-of-memory`. One allocation, the first, has no way to be refused: the
+    /// interpreter's shared control block, which its interrupters point to, is an `Arc::new`. So
+    /// `new` asks for that room before it and gives it back, and the `Arc::new` aborts the process
+    /// only if another thread takes the room in between. It becomes `Arc::try_new` once that is
+    /// stable.
     pub fn new() -> Result<Grift<T>, Error> {
-        let (heap, made) = Heap::new();
+        let owner = Owner(OWNERS.fetch_add(1, Ordering::Relaxed));
+        // An `Arc` holds two counts before its value.
+        let mut room = Vec::<(usize, usize, Control)>::new();
+        if room.try_reserve_exact(1).is_err() {
+            // What `export_error` makes of `local::Error::oom()`, with no heap to ask.
+            return Err(Error {
+                kind: Symbol {
+                    owner,
+                    index: local::Symbol::from(K::OutOfMemory).0,
+                    generation: 0,
+                },
+                values: Vec::new(),
+                trace: Vec::new(),
+                limit: true,
+            });
+        }
+        drop(room);
         #[expect(
             clippy::disallowed_methods,
-            reason = "Arc::try_new is unstable: the one abort `new` documents"
+            reason = "Arc::try_new is unstable: `new` asked for this room just above"
         )]
+        let control = Arc::new(Control::default());
+        let (heap, made) = Heap::new();
         let mut g = Grift {
             heap,
             hosts: Vec::new(),
@@ -437,8 +457,8 @@ impl<T> Grift<T> {
             parked_as: None,
             machine: evaluate::Machine::default(),
             spare: Vec::new(),
-            control: Arc::new(Control::default()),
-            owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
+            control,
+            owner,
         };
         let loaded = made.and_then(|()| g.load());
         g.out(loaded).map(|()| g)

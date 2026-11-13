@@ -1,9 +1,16 @@
 //! What a program's `out-of-memory` report needs, when the allocator refuses for real. A budget
 //! on this thread's allocations stands in for the operating system's limit, at the same point in
 //! a program every time; it lives in this package because the core forbids `unsafe`.
-#![allow(unsafe_code, clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    unsafe_code,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::disallowed_methods,
+    clippy::disallowed_macros,
+    reason = "a test may abort when memory is refused"
+)]
 
-use grift::Grift;
+use grift::{Grift, Kind};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -167,4 +174,17 @@ fn a_call_collects_before_copying_its_arguments() {
     let called = g.call(&mut (), &f, &[grift::Value::Integer(3)]);
     LIMIT.set(usize::MAX);
     assert_eq!(called, Ok(grift::Value::Integer(3)));
+}
+
+/// A new interpreter refused memory says so, from its first allocation on: with room for nothing,
+/// or for part of what it makes, it is `out-of-memory`, never an abort.
+#[test]
+fn a_new_interpreter_refused_memory_says_so() {
+    for budget in (0..8192).step_by(8) {
+        LIMIT.set(LIVE.get() + budget);
+        let made = Grift::<()>::new();
+        LIMIT.set(usize::MAX);
+        let kind = made.err().and_then(|e| e.grift_kind());
+        assert_eq!(kind, Some(Kind::OutOfMemory), "with {budget} bytes");
+    }
 }
