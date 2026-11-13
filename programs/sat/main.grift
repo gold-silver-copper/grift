@@ -1,0 +1,121 @@
+; A DPLL satisfiability solver with unit propagation and pure literals.
+(define! fail (lambda! (kind value) (raise (error kind value))))
+(define! validate-clauses
+  (lambda! (clauses)
+    (for-each
+      (lambda! (clause)
+        (for-each
+          (lambda! (literal)
+            (when! (or!? (not? (integer? literal)) (same? literal 0)
+                (less-than? literal -1000) (greater-than? literal 1000))
+              (fail (quote! sat-literal) literal)))
+          clause))
+      clauses)
+    clauses))
+(define! variables
+  (lambda! (clauses)
+    (sort
+      (fold
+        (lambda! (found literal)
+          (define! variable (absolute-value literal))
+          (if! (member? variable found) found (pair variable found)))
+        () (fold append () clauses))
+      less-than?)))
+(define! simplify
+  (lambda! (clauses literal)
+    (map
+      (lambda! (clause)
+        (filter (lambda! (candidate) (not? (same? candidate (subtract 0 literal)))) clause))
+      (filter (lambda! (clause) (not? (member? literal clause))) clauses))))
+(define! unit-literal
+  (lambda! (clauses)
+    (define! units (filter (lambda! (clause) (same? (length clause) 1)) clauses))
+    (if! (empty-list? units) 0 (first (first units)))))
+(define! pure-literal
+  (lambda! (clauses)
+    (define! all (fold append () clauses))
+    (define! found
+      (filter (lambda! (literal) (not? (member? (subtract 0 literal) all))) all))
+    (if! (empty-list? found) 0 (first found))))
+(define! assignment-value
+  (lambda! (assignment variable)
+    (define! entry (find-association variable assignment))
+    (if! (empty-list? entry) #inert (second entry))))
+(define! extend-assignment
+  (lambda! (assignment literal)
+    (define! variable (absolute-value literal))
+    (define! value (greater-than? literal 0))
+    (define! previous (assignment-value assignment variable))
+    (when! (and!? (boolean? previous) (not? (same? previous value)))
+      (fail (quote! sat-conflicting-assignment) variable))
+    (pair (list variable value)
+      (filter (lambda! (entry) (not? (same? (first entry) variable))) assignment))))
+(define! satisfiable (record (quote! (solved assignment)) (list #false ())))
+(define! solve
+  (lambda! (clauses assignment)
+    (conditional!
+      ((empty-list? clauses)
+        (bind satisfiable (quote! solved) #true)
+        (bind satisfiable (quote! assignment) assignment)
+        #true)
+      ((any? empty-list? clauses) #false)
+      (#true
+        (define! unit (unit-literal clauses))
+        (define! pure (if! (same? unit 0) (pure-literal clauses) 0))
+        (conditional!
+          ((not? (same? unit 0))
+            (solve (simplify clauses unit) (extend-assignment assignment unit)))
+          ((not? (same? pure 0))
+            (solve (simplify clauses pure) (extend-assignment assignment pure)))
+          (#true
+            (define! selected (first (first clauses)))
+            (or!?
+              (solve (simplify clauses selected) (extend-assignment assignment selected))
+              (solve (simplify clauses (subtract 0 selected))
+                (extend-assignment assignment (subtract 0 selected))))))))))
+(define! literal-true?
+  (lambda! (literal assignment)
+    (define! value (assignment-value assignment (absolute-value literal)))
+    (and!? (boolean? value) (same? value (greater-than? literal 0)))))
+(define! complete-assignment
+  (lambda! (variables partial)
+    (map
+      (lambda! (variable)
+        (define! value (assignment-value partial variable))
+        (list variable (if! (inert? value) #false value)))
+      variables)))
+(define! check-answer
+  (lambda! (clauses assignment)
+    (when! (not?
+        (all?
+          (lambda! (clause)
+            (any? (lambda! (literal) (literal-true? literal assignment)) clause))
+          clauses))
+      (fail (quote! sat-invalid-model) assignment))
+    #true))
+(define! render
+  (lambda! (assignment)
+    (join "sat:"
+      (string-join
+        (map
+          (lambda! (entry)
+            (join (integer-to-string (first entry)) "=" (if! (second entry) "T" "F")))
+          assignment)
+        ","))))
+(define! remove-tautologies
+  (lambda! (clauses)
+    (filter
+      (lambda! (clause)
+        (not? (any? (lambda! (literal) (member? (subtract 0 literal) clause)) clause)))
+      clauses)))
+(catch!
+  (sequence!
+    (define! original (validate-clauses (first (read-form (first command-line-arguments) 0))))
+    (define! names (variables original))
+    (if! (solve (remove-tautologies original) ())
+      (let! ((answer (complete-assignment names (evaluate-in! assignment satisfiable))))
+        (check-answer original answer)
+        (display (render answer) "\n"))
+      (display "unsat\n")))
+  failure
+  (display "error:" (evaluate-in! kind failure) "\n"))

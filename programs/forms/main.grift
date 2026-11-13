@@ -1,0 +1,46 @@
+; A tiny expression DSL whose control forms are user-defined operatives.
+; Evaluations use first-class contexts and explicit caller evaluation.
+(define! make-engine
+  (lambda! ()
+    (let! ((engine (context ()))
+           (check-number
+             (lambda! (x)
+               (if! (integer? x) x
+                 (raise (error (quote! expected-number) x))))))
+      (bind engine (quote! plus)
+        (lambda! (a b) (add (check-number a) (check-number b))))
+      (bind engine (quote! times)
+        (lambda! (a b) (multiply (check-number a) (check-number b))))
+      (bind engine (quote! choose!)
+        (vau! (test yes no) caller
+          (if! (evaluate test caller)
+            (evaluate yes caller)
+            (evaluate no caller))))
+      (bind engine (quote! local!)
+        (vau! (name value body) caller
+          (let! ((child (context caller)))
+            (bind child name (evaluate value caller))
+            (evaluate body child))))
+      (bind engine (quote! both!)
+        (vau! (first-form second-form) caller
+          (evaluate first-form caller)
+          (evaluate second-form caller)))
+      (bind engine (quote! literal!)
+        (vau! (value) #ignore value))
+      (bind engine (quote! equal)
+        (lambda! (a b) (equal? a b)))
+      (bind engine (quote! true) #true)
+      (bind engine (quote! false) #false)
+      engine)))
+(define! source (first command-line-arguments))
+(define! engine (make-engine))
+(define! form (first (read-form source 0)))
+(define! result
+  (catch!
+    (evaluate form engine)
+    failure
+    (list (evaluate-in! kind failure)
+          (evaluate-in! values failure))))
+(when! (binds? engine (quote! x))
+  (raise (error (quote! leaked-local))))
+(display result "\n")

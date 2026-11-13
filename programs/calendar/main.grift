@@ -1,0 +1,122 @@
+; Gregorian date arithmetic, business days and anchored monthly recurrences.
+(define! fail (lambda! (kind value) (raise (error kind value))))
+(define! leap?
+  (lambda! (year)
+    (and!? (same? (remainder year 4) 0)
+      (or!? (not? (same? (remainder year 100) 0)) (same? (remainder year 400) 0)))))
+(define! month-days
+  (lambda! (year month)
+    (when! (or!? (less-than? month 1) (greater-than? month 12))
+      (fail (quote! calendar-month) month))
+    (if! (same? month 2)
+      (if! (leap? year) 29 28)
+      (if! (member? month (list 4 6 9 11)) 30 31))))
+(define! validate
+  (lambda! (date)
+    (when! (not? (same? (length date) 3))
+      (fail (quote! calendar-date) date))
+    (define! (year month day) date)
+    (when! (or!? (less-than? year 1) (greater-than? year 9999)
+        (less-than? day 1) (greater-than? day (month-days year month)))
+      (fail (quote! calendar-date) date))
+    date))
+(define! parse-date
+  (lambda! (text)
+    (validate (map string-to-integer (string-split text "-")))))
+(define! format-date
+  (lambda! (date)
+    (string-join
+      (map (lambda! (number width) (string-pad-left (integer-to-string number) width "0"))
+        date (list 4 2 2))
+      "-")))
+(define! before-year
+  (lambda! (year)
+    (define! previous (subtract year 1))
+    (subtract (add (multiply previous 365) (add (divide previous 4) (divide previous 400)))
+      (divide previous 100))))
+(define! ordinal
+  (lambda! (date)
+    (define! (year month day) date)
+    (add (before-year year)
+      (add day (fold add 0 (map (lambda! (m) (month-days year m)) (range 1 month)))))))
+(define! year-for
+  (lambda! (number low high)
+    (if! (same? (add low 1) high) low
+      (let! ((middle (divide (add low high) 2)))
+        (if! (less-than? (before-year middle) number)
+          (year-for number middle high)
+          (year-for number low middle))))))
+(define! month-for
+  (lambda! (year remaining month)
+    (define! days (month-days year month))
+    (if! (less-than-or-equal? remaining days)
+      (list year month remaining)
+      (month-for year (subtract remaining days) (add month 1)))))
+(define! from-ordinal
+  (lambda! (number)
+    (when! (or!? (less-than? number 1) (greater-than? number (ordinal (list 9999 12 31))))
+      (fail (quote! calendar-range) number))
+    (define! year (year-for number 1 10000))
+    (month-for year (subtract number (before-year year)) 1)))
+(define! add-days
+  (lambda! (date count)
+    (from-ordinal (add (ordinal date) count))))
+(define! weekday
+  (lambda! (date)
+    (remainder (subtract (ordinal date) 1) 7)))
+(define! holidays (context ()))
+(define! business-day?
+  (lambda! (date)
+    (and!? (less-than? (weekday date) 5)
+      (not? (binds? holidays (string-to-symbol (format-date date)))))))
+(define! add-business
+  (lambda! (date remaining direction budget)
+    (when! (same? budget 0)
+      (fail (quote! calendar-business-budget) remaining))
+    (if! (same? remaining 0)
+      date
+      (let! ((next (add-days date direction)))
+        (add-business next
+          (if! (business-day? next) (subtract remaining 1) remaining)
+          direction (subtract budget 1))))))
+(define! add-months
+  (lambda! (date count anchor)
+    (define! absolute (add (add (multiply (subtract (first date) 1) 12) (subtract (second date) 1)) count))
+    (when! (or!? (less-than? absolute 0) (greater-than-or-equal? absolute 119988))
+      (fail (quote! calendar-range) absolute))
+    (define! year (add (divide absolute 12) 1))
+    (define! month (add (remainder absolute 12) 1))
+    (list year month (minimum anchor (month-days year month)))))
+(define! recurrence
+  (lambda! (date count interval)
+    (when! (or!? (less-than? count 0) (greater-than? count 1000))
+      (fail (quote! calendar-recurrence-budget) count))
+    (map
+      (lambda! (index)
+        (format-date (add-months date (multiply index interval) (third date))))
+      (range 0 count))))
+(define! weekday-names
+  (list "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday" "Sunday"))
+(catch!
+  (let! ((mode (first command-line-arguments)) (date (parse-date (second command-line-arguments))))
+    (when! (not? (equal? date (from-ordinal (ordinal date))))
+      (fail (quote! calendar-roundtrip) date))
+    (display
+      (conditional!
+        ((same? mode "leap")
+          (if! (leap? (first date)) "yes" "no"))
+        ((same? mode "weekday") (element-at weekday-names (weekday date)))
+        ((same? mode "between")
+          (integer-to-string (subtract (ordinal (parse-date (third command-line-arguments))) (ordinal date))))
+        ((same? mode "monthly")
+          (string-join (recurrence date (string-to-integer (third command-line-arguments)) 1) ","))
+        ((same? mode "business")
+          (when! (greater-than? (length command-line-arguments) 3)
+            (for-each (lambda! (text) (bind holidays (string-to-symbol (format-date (parse-date text))) #true))
+              (string-split (element-at command-line-arguments 3) ",")))
+          (define! count (string-to-integer (third command-line-arguments)))
+          (format-date (add-business date (absolute-value count) (if! (less-than? count 0) -1 1) 100000)))
+        (#true (format-date (add-days date (string-to-integer (third command-line-arguments))))))
+      "\n"))
+  failure
+  (display "error:" (evaluate-in! kind failure) "\n"))

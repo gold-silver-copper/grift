@@ -1,0 +1,62 @@
+; Symbolic differentiation with constant folding and optional numeric evaluation.
+(define! fail (lambda! (value) (raise (error (quote! derivative-expression) value))))
+(define! binary
+  (lambda! (operator left right)
+    (conditional!
+      ((and!? (integer? left) (integer? right))
+        ((lookup (record (quote! (add subtract multiply power)) (list add subtract multiply power)) operator #inert) left right))
+      ((and!? (same? operator (quote! add)) (same? left 0)) right)
+      ((and!? (same? operator (quote! add)) (same? right 0)) left)
+      ((and!? (same? operator (quote! subtract)) (same? right 0)) left)
+      ((and!? (same? operator (quote! multiply)) (or!? (same? left 0) (same? right 0))) 0)
+      ((and!? (same? operator (quote! multiply)) (same? left 1)) right)
+      ((and!? (same? operator (quote! multiply)) (same? right 1)) left)
+      ((and!? (same? operator (quote! power)) (same? right 0)) 1)
+      ((and!? (same? operator (quote! power)) (same? right 1)) left)
+      (#true (list operator left right)))))
+(define! derivative
+  (lambda! (expression variable)
+    (conditional!
+      ((integer? expression) 0)
+      ((symbol? expression) (if! (same? expression variable) 1 0))
+      ((pair? expression)
+        (define! operator (first expression))
+        (define! a (second expression))
+        (define! da (derivative a variable))
+        (conditional!
+          ((same? operator (quote! sine)) (binary (quote! multiply) (list (quote! cosine) a) da))
+          ((same? operator (quote! cosine)) (binary (quote! multiply) -1 (binary (quote! multiply) (list (quote! sine) a) da)))
+          (#true
+            (define! b (third expression))
+            (define! db (derivative b variable))
+            (conditional!
+              ((member? operator (quote! (add subtract))) (binary operator da db))
+              ((same? operator (quote! multiply))
+                (binary (quote! add) (binary (quote! multiply) da b) (binary (quote! multiply) a db)))
+              ((and!? (same? operator (quote! power)) (integer? b))
+                (binary (quote! multiply) (binary (quote! multiply) b (binary (quote! power) a (subtract b 1))) da))
+              (#true (fail expression))))))
+      (#true (fail expression)))))
+(define! numeric
+  (lambda! (expression variable point)
+    (conditional!
+      ((integer? expression) (integer-to-float expression))
+      ((same? expression variable) point)
+      ((pair? expression)
+        (define! operator (first expression))
+        (define! a (numeric (second expression) variable point))
+        (conditional!
+          ((same? operator (quote! sine)) (sine a))
+          ((same? operator (quote! cosine)) (cosine a))
+          (#true
+            ((lookup (record (quote! (add subtract multiply power)) (list add subtract multiply power)) operator #inert)
+              a (numeric (third expression) variable point)))))
+      (#true (fail expression)))))
+(catch!
+  (let! ((expression (first (read-form (first command-line-arguments) 0)))
+         (variable (string-to-symbol (second command-line-arguments)))
+         (result (derivative expression variable)))
+    (display (if! (greater-than? (length command-line-arguments) 2)
+      (float-to-string (numeric result variable (string-to-float (third command-line-arguments))))
+      (value-to-string result)) "\n"))
+  failure (display "error:" (evaluate-in! kind failure) "\n"))

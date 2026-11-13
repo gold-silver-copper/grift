@@ -1,0 +1,149 @@
+; Persistent AVL map with deletion, rank/select and a retained undo history.
+(define! field (lambda! (tree key) (lookup tree key #inert)))
+(define! height (lambda! (tree) (if! (empty-list? tree) 0 (field tree (quote! height)))))
+(define! size (lambda! (tree) (if! (empty-list? tree) 0 (field tree (quote! size)))))
+(define! node
+  (lambda! (key value left right)
+    (record (quote! (key value left right height size))
+      (list key value left right
+        (add 1 (maximum (height left) (height right)))
+        (add 1 (add (size left) (size right)))))))
+(define! balance-factor
+  (lambda! (tree)
+    (subtract (height (field tree (quote! left))) (height (field tree (quote! right))))))
+(define! rotate-right
+  (lambda! (tree)
+    (define! pivot (field tree (quote! left)))
+    (node (field pivot (quote! key)) (field pivot (quote! value))
+      (field pivot (quote! left))
+      (node (field tree (quote! key)) (field tree (quote! value))
+        (field pivot (quote! right)) (field tree (quote! right))))))
+(define! rotate-left
+  (lambda! (tree)
+    (define! pivot (field tree (quote! right)))
+    (node (field pivot (quote! key)) (field pivot (quote! value))
+      (node (field tree (quote! key)) (field tree (quote! value))
+        (field tree (quote! left)) (field pivot (quote! left)))
+      (field pivot (quote! right)))))
+(define! rebalance
+  (lambda! (tree)
+    (define! difference (balance-factor tree))
+    (conditional!
+      ((greater-than? difference 1)
+        (define! left (field tree (quote! left)))
+        (rotate-right
+          (if! (less-than? (balance-factor left) 0)
+            (node (field tree (quote! key)) (field tree (quote! value))
+              (rotate-left left) (field tree (quote! right)))
+            tree)))
+      ((less-than? difference -1)
+        (define! right (field tree (quote! right)))
+        (rotate-left
+          (if! (greater-than? (balance-factor right) 0)
+            (node (field tree (quote! key)) (field tree (quote! value))
+              (field tree (quote! left)) (rotate-right right))
+            tree)))
+      (#true tree))))
+(define! insert
+  (lambda! (tree key value)
+    (if! (empty-list? tree)
+      (node key value () ())
+      (let! ((old (field tree (quote! key)))
+             (left (field tree (quote! left)))
+             (right (field tree (quote! right))))
+        (rebalance
+          (conditional!
+            ((less-than? key old) (node old (field tree (quote! value)) (insert left key value) right))
+            ((greater-than? key old) (node old (field tree (quote! value)) left (insert right key value)))
+            (#true (node key value left right))))))))
+(define! minimum-node
+  (lambda! (tree)
+    (if! (empty-list? (field tree (quote! left))) tree
+      (minimum-node (field tree (quote! left))))))
+(define! delete
+  (lambda! (tree key)
+    (if! (empty-list? tree)
+      ()
+      (let! ((old (field tree (quote! key)))
+             (left (field tree (quote! left)))
+             (right (field tree (quote! right))))
+        (conditional!
+          ((less-than? key old)
+            (rebalance (node old (field tree (quote! value)) (delete left key) right)))
+          ((greater-than? key old)
+            (rebalance (node old (field tree (quote! value)) left (delete right key))))
+          ((empty-list? left) right)
+          ((empty-list? right) left)
+          (#true
+            (define! successor (minimum-node right))
+            (rebalance
+              (node (field successor (quote! key)) (field successor (quote! value))
+                left (delete right (field successor (quote! key)))))))))))
+(define! entries
+  (lambda! (tree)
+    (if! (empty-list? tree) ()
+      (append (entries (field tree (quote! left)))
+        (list (list (field tree (quote! key)) (field tree (quote! value))))
+        (entries (field tree (quote! right)))))))
+(define! rank
+  (lambda! (tree key)
+    (if! (empty-list? tree) 0
+      (if! (less-than-or-equal? key (field tree (quote! key)))
+        (rank (field tree (quote! left)) key)
+        (add 1 (add (size (field tree (quote! left)))
+          (rank (field tree (quote! right)) key)))))))
+(define! select-entry
+  (lambda! (tree index)
+    (when! (or!? (less-than? index 0) (greater-than-or-equal? index (size tree)))
+      (raise (error (quote! tree-index) index)))
+    (define! left-size (size (field tree (quote! left))))
+    (conditional!
+      ((less-than? index left-size) (select-entry (field tree (quote! left)) index))
+      ((same? index left-size) (list (field tree (quote! key)) (field tree (quote! value))))
+      (#true (select-entry (field tree (quote! right)) (subtract index (add left-size 1)))))))
+(define! validate
+  (lambda! (tree lower upper)
+    (when! (pair? (entries tree))
+      (define! key (field tree (quote! key)))
+      (when! (or!? (and!? (integer? lower) (less-than-or-equal? key lower))
+          (and!? (integer? upper) (greater-than-or-equal? key upper))
+          (greater-than? (absolute-value (balance-factor tree)) 1)
+          (not? (same? (size tree) (length (entries tree)))))
+        (raise (error (quote! tree-invariant) key)))
+      (validate (field tree (quote! left)) lower key)
+      (validate (field tree (quote! right)) key upper))
+    #true))
+(define! state (record (quote! (root history queries)) (list () () ())))
+(define! execute
+  (lambda! (operation)
+    (define! root (evaluate-in! root state))
+    (define! verb (first operation))
+    (conditional!
+      ((member? verb (quote! (insert delete)))
+        (bind state (quote! history) (pair root (evaluate-in! history state)))
+        (bind state (quote! root)
+          (if! (same? verb (quote! insert))
+            (insert root (second operation) (third operation))
+            (delete root (second operation)))))
+      ((same? verb (quote! undo))
+        (define! history (evaluate-in! history state))
+        (when! (empty-list? history) (raise (error (quote! tree-no-undo))))
+        (bind state (quote! root) (first history))
+        (bind state (quote! history) (rest history)))
+      (#true
+        (define! answer
+          (if! (same? verb (quote! rank))
+            (integer-to-string (rank root (second operation)))
+            (value-to-string (select-entry root (second operation)))))
+        (bind state (quote! queries) (pair answer (evaluate-in! queries state)))))
+    (validate (evaluate-in! root state) #inert #inert)))
+(catch!
+  (sequence!
+    (for-each execute (first (read-form (first command-line-arguments) 0)))
+    (display
+      (string-join
+        (map (lambda! (entry) (join (integer-to-string (first entry)) ":" (second entry)))
+          (entries (evaluate-in! root state))) ",")
+      ";queries=" (string-join (reverse (evaluate-in! queries state)) ",") "\n"))
+  failure
+  (display "error:" (evaluate-in! kind failure) "\n"))

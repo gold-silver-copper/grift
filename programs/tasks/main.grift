@@ -1,0 +1,54 @@
+; A small task language whose task! operative keeps a body and its lexical caller.
+(define! tasks (context ()))
+(define! completed (context ()))
+(define! active (context ()))
+(define! output (record (quote! (lines)) (list ())))
+(define! say
+  (lambda! (text)
+    (bind output (quote! lines) (pair text (evaluate-in! lines output)))))
+(define! task!
+  (vau! (name dependencies . body) caller
+    (when! (not? (symbol? name)) (raise (error (quote! build-name) name)))
+    (when! (binds? tasks name) (raise (error (quote! build-duplicate) name)))
+    (for-each
+      (lambda! (dependency)
+        (when! (not? (symbol? dependency)) (raise (error (quote! build-dependency) dependency))))
+      dependencies)
+    (bind tasks name
+      (record (quote! (dependencies body caller)) (list dependencies body caller)))))
+(define! build
+  (lambda! (name)
+    (when! (binds? active name) (raise (error (quote! build-cycle) name)))
+    (when! (not? (binds? tasks name)) (raise (error (quote! build-missing) name)))
+    (when! (not? (binds? completed name))
+      (define! task (lookup tasks name #inert))
+      (bind active name #true)
+      (finally!
+        (sequence!
+          (for-each build (evaluate-in! dependencies task))
+          (evaluate (pair sequence! (evaluate-in! body task)) (evaluate-in! caller task))
+          (bind completed name #true))
+        (unbind active name)))))
+(define! language (standard-context))
+(bind language (quote! task!) task!)
+(bind language (quote! say) say)
+(define! load-program
+  (lambda! (text offset)
+    (define! parsed (read-form text offset))
+    (when! (pair? parsed)
+      (evaluate (first parsed) language)
+      (load-program text (third parsed)))))
+(define! ensure-clean
+  (lambda! ()
+    (when! (not? (empty-list? (names active)))
+      (raise (error (quote! build-active-leak) (names active))))
+    #true))
+(catch!
+  (finally!
+    (sequence!
+      (load-program (first command-line-arguments) 0)
+      (build (string-to-symbol (second command-line-arguments)))
+      (display (string-join (reverse (evaluate-in! lines output)) ",")
+        ";done=" (length (names completed)) "\n"))
+    (ensure-clean))
+  failure (display "error:" (evaluate-in! kind failure) "\n"))
