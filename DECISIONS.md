@@ -2191,7 +2191,7 @@ A test run wrote 60 grift programs; three (a byte regex, a Markdown renderer, a 
 UTF-8 boundary code, and two Markdown cases first failed when a helper sliced inside "é". The owner approved a
 library function giving a string's characters, shape `("n" "é")`; strings stay byte-addressed (G-27).
 
-- **G-213. `string-to-characters`: a string's Unicode scalar values as one-character strings, in grift.**
+- **G-214. `string-to-characters`: a string's Unicode scalar values as one-character strings, in grift.**
   - **Name.** A conversion spells out `to` (G-38), as `string-to-bytes` and `string-to-lowercase`; "characters"
     because each element is a whole character, though grift still has no character type (G-27).
   - **Shape: one-character strings, no offsets.** What the three needed: the codec wanted each scalar with its byte
