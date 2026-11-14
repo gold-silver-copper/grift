@@ -173,6 +173,25 @@ fn a_start_refused_memory_says_out_of_memory() {
     }
 }
 
+/// A path or an argument with a zero byte in it is the error it always was, however long: the
+/// system's limit on length doesn't come before it.
+#[test]
+fn a_zero_byte_is_the_same_error_long_or_short() {
+    let dir = scratch("zero-byte");
+    let program = "(define! a (read-file (first command-line-arguments)))
+        (define! said (lambda! (e) (rest (evaluate-in! values e))))
+        (display (catch! (open-file a) e (said e)) (catch! (run-process \"true\" a) e (said e)))";
+    let said = |name: &str, more: usize| {
+        let mut text = vec![b'a'; more];
+        text.extend_from_slice(b"x\0y");
+        std::fs::write(dir.join(name), text).unwrap();
+        script(&dir, program, &[name], "")
+    };
+    let (short, long) = (said("short", 0), said("long", 7 << 20));
+    assert_eq!(short.0, Some(0), "{}", short.2);
+    assert_eq!(short, long);
+}
+
 #[test]
 fn exit_ends_the_run_with_its_status() {
     let dir = scratch("exit");

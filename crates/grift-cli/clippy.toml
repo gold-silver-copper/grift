@@ -11,7 +11,8 @@ disallowed-macros = [
 # Allocation that aborts when memory is refused, the list the library's own lint file has. The
 # runner gives the limit `out-of-memory` instead: reserve first (`try_reserve`), or use `copied` and
 # `pushed`, and mark what follows a reserve with `#[expect(clippy::disallowed_methods, reason = "…")]`.
-# What Rust's library copies inside its own functions no lint sees: `room_for` is for those.
+# What Rust's library copies inside its own functions no lint sees: the system's limits come first
+# there (`system` and `too_long` in `main.rs`), and G-215 lists the copies that remain.
 disallowed-methods = [
   { path = "std::vec::Vec::push", reason = "aborts when memory is refused: reserve first" },
   { path = "std::vec::Vec::insert", reason = "aborts when memory is refused: reserve first" },

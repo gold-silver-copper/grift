@@ -2257,7 +2257,14 @@ the owner may overrule any.
     system's own error number and so its own message (`File name too long`, `Argument list too long`), before
     the library sees them. The numbers are the system's, from its headers, in `system` in `main.rs`: Linux
     4,096 and 6 MiB (three quarters of `_STK_LIM`, the most `execve` takes at any stack limit), macOS 1,024
-    and 1 MiB. A system not listed there has none, and nothing is refused first. Rejected: a longest path or
+    and 1 MiB. A system not listed there has none, and nothing is refused first; nor has Linux on an
+    architecture that numbers its errors otherwise than the generic list (MIPS, SPARC, Alpha, PA-RISC).
+    Each word of a program and its arguments counts its bytes, its zero byte and, on Linux, the pointer
+    the system counts for it, so a great many short arguments are refused too: 700,000 of one byte, whose
+    bytes alone pass, aborted in the library at 6 of 16 limits around 1 GB before that and at none after.
+    The program is counted once, as the system does, though the library copies it twice. A path or a
+    word with a zero byte in it never reaches the system, so its error stays the library's own, long or
+    not: the runner asks the library for it with a string of that byte alone. Rejected: a longest path or
     argument of the runner's own (G-5: no limit of grift's own); asking the running system (`sysconf`,
     `getrlimit`), `unsafe` or a dependency to call it with a buffer of our own (the workspace denies `unsafe`
     and has no dependencies).
@@ -2299,7 +2306,8 @@ the owner may overrule any.
     `a_start_refused_memory_says_out_of_memory` (the runner under `ulimit -v`: its own process and the
     system's refusal are what is tested, so no generator, twin or guard can say it),
     `a_new_interpreter_refused_memory_says_so` and `run_process_starts_no_thread`; all four fail on
-    34911d89. Each of seven operations given 30 MB aborted at three to five of seven limits before and at
+    34911d89. `a_zero_byte_is_the_same_error_long_or_short` and
+    `many_short_arguments_are_more_than_the_system_runs` state the two rules above. Each of seven operations given 30 MB aborted at three to five of seven limits before and at
     none after. Under 1,176 limits from 4,300 to 9,000 KiB, `(run-process "true")` ran at 357 before and 962
     after, with no abort in a thread's start.
   - **Historic bug 14 is no longer gated.** It put stderr's catchable `encoding-error` before stdout's
