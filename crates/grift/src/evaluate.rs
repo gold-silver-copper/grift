@@ -1816,21 +1816,8 @@ impl<T> Grift<T> {
     }
 
     /// The binding of `s` in `context` or the nearest parent that has one.
-    pub(crate) fn find(
-        &self,
-        mut context: Ref<Context>,
-        s: Symbol,
-    ) -> Result<Option<Value>, Error> {
-        loop {
-            let (parent, bindings) = self.heap.read(context)?;
-            if let Some(&v) = bindings.get(&s) {
-                return Ok(Some(v));
-            }
-            let Some(parent) = parent else {
-                return Ok(None);
-            };
-            context = *parent;
-        }
+    pub(crate) fn find(&self, context: Ref<Context>, s: Symbol) -> Result<Option<Value>, Error> {
+        self.heap.find(context, s)
     }
 
     /// The symbols bound in `context` itself, sorted by name.

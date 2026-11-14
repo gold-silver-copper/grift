@@ -540,6 +540,30 @@ impl Heap {
         }
     }
 
+    /// The binding of `s` in `context` or the nearest parent that has one. The walk holds the
+    /// list of chunks once, where a read at each context would load it again.
+    #[inline]
+    pub fn find(&self, mut context: Ref<kind::Context>, s: Symbol) -> Result<Option<Value>, Error> {
+        let chunks = &*self.chunks;
+        loop {
+            let (parent, bindings) = match slot(chunks, context.idx) {
+                Some(Slot {
+                    generation,
+                    obj: Object::Context(holds),
+                    ..
+                }) if *generation == context.generation => holds,
+                _ => return Err(Error::stale()),
+            };
+            if let Some(&v) = bindings.get(&s) {
+                return Ok(Some(v));
+            }
+            let Some(parent) = parent else {
+                return Ok(None);
+            };
+            context = *parent;
+        }
+    }
+
     /// A host's reference as one to an object of kind `T`, if it still names one.
     pub fn kind<T: Kind>(&self, r: Ref) -> Result<Ref<T>, Error> {
         self.get(r.cast::<T>()).map(|_| r.cast())
