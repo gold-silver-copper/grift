@@ -1,0 +1,11 @@
+--- a/crates/grift-cli/src/main.rs
++++ b/crates/grift-cli/src/main.rs
+@@ -278,7 +278,7 @@ fn failed(g: &mut H, kind: &str, what: &str, e: &io::Error) -> Error {
+ /// library's, which is asked for it with a path of that byte alone.
+ fn one_path(g: &mut H, args: &[Value]) -> Result<String, Error> {
+     let path = one_string(g, args)?;
+-    let Some(e) = too_long(system::PATH, path.len().saturating_add(1)) else {
++    let Some(e) = too_long(None, path.len().saturating_add(1)) else {
+         return Ok(path);
+     };
+     let e = match path.contains('\0') {

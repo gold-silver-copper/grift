@@ -24,10 +24,10 @@
 (define! standard-output (writer "standard-output" 2))
 (define! open-file (lambda! (path) (reader path (open-host path))))
 (define! create-file (lambda! (path) (writer path (create-host path))))
-; The record of a finished process: its status, output and error output.
+; The record of a finished process: its status and output. Its error output went to the runner's.
 (define! run-process
   (lambda! (program . arguments)
-    (record (quote! (status output error-output))
+    (record (quote! (status output))
                 (apply run-host (pair program arguments)))))
 ; load: the forms of a file, all read first, so nothing runs if one doesn't, then evaluated in turn
 ; in the caller's context, as Kernel's load does; each load reads the file again. Each combination

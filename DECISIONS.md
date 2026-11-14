@@ -2226,3 +2226,103 @@ result, were chosen in this change. Strings stay byte-addressed (G-27).
     one run each), so a native isn't wanted. No invalid string can exist (`bytes-to-string` refuses one, `slice`
     refuses an offset inside a character), so there is no such case to handle; a bytes value, which `byte-at`
     and `slice` would take, is a `type-error`.
+
+## The runner refuses memory out loud, 2026-11-12
+
+A tester ran grift under `ulimit -v` and under allocators that refuse (findings F100 to F108 of
+`notes/projects/fux/soak-fixes-2026-11-12`). The runner aborted where a program chose the size: a long
+line read, and a long path, name, program or argument, which Rust's library copies in memory that can't be
+refused. `run-process` aborted when the thread that read the program's stderr could not start. `Grift::new`
+made its control block last, so it aborted whenever the heap had left no room for it. A first version asked
+for room and gave it back before each of those copies; six reviewers and a design round took that out, and
+the owner chose what `run-process` does with stderr (2026-11-13). The rest was made alone in this change;
+the owner may overrule any.
+
+- **G-215. The runner gives Rust's library nothing the system would refuse, asks for no spare room, and
+  starts no thread** (completes G-32 and G-175 for the runner; keeps G-178's one abort and its rejection of
+  a probe; replaces G-70's `error-output` and G-175's read of both pipes).
+  - **One way to refuse.** `refused` makes the limit; `copied` and `pushed` reserve before they copy or push;
+    `gathered` reads a line, the rest of a file or a count of bytes into a buffer that grows fallibly, in place
+    of `BufRead::read_line`, whose buffer aborts. `read-line`, `read-all` and `read-bytes` are that one loop.
+  - **No probe.** G-178 rejected "a probe allocation first (it only moves the abort)". The first version of
+    this change used two all the same: it asked for the room of each copy Rust's library was about to make
+    and gave it back (`room_for`), and did so for the control block. Review showed why G-178 was right:
+    anything that allocates in between takes the room (opening a file grew the list of open files there),
+    and an allocator need not give again what it has just taken back. Both are gone, and nothing in this
+    change asks for room it does not keep.
+  - **The system's limits come first.** `File::open`, `File::create`, `fs::read_to_string` and `Command`
+    copy a path, a program and each argument with a zero byte after it, and no stable function makes that
+    copy refusable. The system refuses a path of more than `PATH_MAX` bytes and a program with arguments
+    past what `execve` takes, whatever memory there is, so the runner refuses those itself, with the
+    system's own error number and so its own message (`File name too long`, `Argument list too long`), before
+    the library sees them. The numbers are the system's, from its headers, in `system` in `main.rs`: Linux
+    4,096 and 6 MiB (three quarters of `_STK_LIM`, the most `execve` takes at any stack limit), macOS 1,024
+    and 1 MiB. A system not listed there has none, and nothing is refused first; nor has Linux on an
+    architecture that numbers its errors otherwise than the generic list (MIPS, SPARC, Alpha, PA-RISC).
+    Each word of a program and its arguments counts its bytes, its zero byte and, on Linux, the pointer
+    the system counts for it, so a great many short arguments are refused too: 700,000 of one byte, whose
+    bytes alone pass, aborted in the library at 6 of 16 limits around 1 GB before that and at none after.
+    The program is counted once, as the system does, though the library copies it twice. A path or a
+    word with a zero byte in it never reaches the system, so its error stays the library's own, long or
+    not: the runner asks the library for it with a string of that byte alone. Rejected: a longest path or
+    argument of the runner's own (G-5: no limit of grift's own); asking the running system (`sysconf`,
+    `getrlimit`), `unsafe` or a dependency to call it with a buffer of our own (the workspace denies `unsafe`
+    and has no dependencies).
+  - **What still aborts, and why.** The length checks remove no copy of a value the system would take;
+    they only bound it. Left in Rust's library, each a `CString` that can't be refused, sizes on Linux:
+    (1) the path of `open-file`, `create-file`, `read-file` and `load`, when it is 384 bytes or more (a
+    shorter one is kept on the stack today), at most 4,096 bytes; (2) in `run-process`, the program
+    twice and each argument once, together at most 6 MiB, with two tables of three pointers a word that
+    grow by doubling; (3) the name given to `environment-variable`, when it is 384 bytes or more, at most
+    6 MiB, and the variable's value, whose size the system gave the runner. 6 MiB is more than the system
+    really takes at the usual stack limit (a quarter of it, 2 MiB at 8 MiB), which only `getrlimit` can
+    say. A program and 50 arguments of 100 KiB under 481 limits from 6,000 to 30,000 KiB aborted at 98
+    before and 98 after. Ending these means giving the system a string of our own that ends in a zero
+    byte, which needs `unsafe` or a dependency: the owner's to decide, not done here.
+  - **`environment-variable` gives the library no name the environment can't hold.** The runner never
+    sets a variable, so its environment is what the system started it with, and a name past what `execve`
+    takes is `unset-variable` without a lookup. Any other name goes to `env::var` uncopied by the runner.
+    Rejected: looking through `env::vars_os` (it copies the whole environment at every lookup, in memory
+    that can't be refused), and refusing every name the library would copy to the heap (384 bytes is the
+    library's own number, not the system's, and a variable with such a name can be set: G-5).
+  - **`run-process` starts no thread, and the program's stderr is the runner's** (the owner's choice,
+    2026-11-13, over reading two pipes with `poll`, which needs `unsafe` or a dependency, and over a file
+    for stderr). One pipe is read on the one thread, so no thread's start is there to be refused: the
+    thread's own setup aborted inside Rust's library and the C library at 9 of 1,176 limits, and a request
+    for 192 KiB before it did not help. The record binds `status` and `output`; `error-output` is gone, and
+    a program that wants that text runs a shell with `2>&1`. Error output now shows as it is written, before
+    the output a program prints afterwards. `programs/build` loses its line that printed it again.
+  - **The lint.** The runner's `clippy.toml` gets the library's list of aborting allocations (G-179), so a new
+    `push` or `to_owned` there must say what made its room. It found `position`'s copy of a source name and
+    the list of open files, which grew with every file a program opened. Kept, each marked with its reason:
+    the three standard streams, a file's buffer and handle (fixed sizes), the command line's words.
+  - **`Grift::new` makes its control block first**, before the heap. It is still an `Arc::new`, and still
+    aborts if refused (G-178): that is now the only allocation of `new` that can, as its rustdoc always
+    said. Before, the block was made after the heap's 95 allocations and even when one of them had been
+    refused, so a start with room for part of the heap aborted too.
+  - **The start's message.** `grift: out-of-memory while starting`, in place of `the library failed to load
+    (0 values)`; with no interpreter to describe the error, the runner spells the kind itself.
+  - **Evidence.** `memory_refused_for_a_long_line_or_name_is_a_limit` and
+    `a_start_refused_memory_says_out_of_memory` (the runner under `ulimit -v`: its own process and the
+    system's refusal are what is tested, so no generator, twin or guard can say it),
+    `a_new_interpreter_refused_memory_says_so` and `run_process_starts_no_thread`; all four fail on
+    34911d89. `a_zero_byte_is_the_same_error_long_or_short` and
+    `many_short_arguments_are_more_than_the_system_runs` state the two rules above. Each of seven operations given 30 MB aborted at three to five of seven limits before and at
+    none after. Under 1,176 limits from 4,300 to 9,000 KiB, `(run-process "true")` ran at 357 before and 962
+    after, with no abort in a thread's start.
+  - **Historic bug 14 is no longer gated.** It put stderr's catchable `encoding-error` before stdout's
+    refused memory; with no stderr read there is no such order to get wrong, and no patch can put it back.
+  - **Not done.** (1) A start with no memory for the control block aborts, as G-178 says: under the same
+    1,176 limits `(display 1)` aborted there at 164 before and 155 after. Ending it needs `Arc::try_new`, or
+    a control block that isn't an `Arc`. Rust's runtime also aborts before `main` when it can't make the
+    main thread's signal stack, and the standard streams' buffers are fixed sizes that abort (10 of 1,176
+    between them). (2) F102 and F108, a small program refused on a later run under a budget it fitted once:
+    allocation never collects (G-12), a refusal ends the run and only the next one collects (G-155, G-170),
+    and the heap grows by doubling, so whether a program fits depends on where its doublings fall; F108's
+    heap does give its room back (107,456 slots to 6,716) and then doubles from 6,716 where the first run
+    doubled from 4,096, past the budget. No change here: collecting and trying again on a refusal is a
+    change to G-12. (3) F103: after a refusal with under 64 KiB left, the heap can't give back its unused
+    room, because shrinking copies into new storage that is itself refused (`heap::shrink`), and each later
+    run takes the 64 KiB spare (G-176) and is left with nothing. A real stuck state, for its own change:
+    shrinking in place (`Vec::shrink_to`) aborts if an allocator refuses to shrink, so it trades one rule
+    for another.

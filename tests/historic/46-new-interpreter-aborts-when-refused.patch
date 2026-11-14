@@ -1,0 +1,16 @@
+--- a/crates/grift/src/lib.rs
++++ b/crates/grift/src/lib.rs
+@@ -424,12 +424,12 @@ impl<T> Grift<T> {
+     pub fn new() -> Result<Grift<T>, Error> {
+         // First, before the heap, so that this is the only allocation of `new` that can abort:
+         // made last, it aborted whenever the heap had left no room, and after a refusal too.
++        let (heap, made) = Heap::new();
+         #[expect(
+             clippy::disallowed_methods,
+             reason = "Arc::try_new is unstable: the one abort `new` documents"
+         )]
+         let control = Arc::new(Control::default());
+-        let (heap, made) = Heap::new();
+         let mut g = Grift {
+             heap,
+             hosts: Vec::new(),
