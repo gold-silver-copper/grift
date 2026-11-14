@@ -422,6 +422,24 @@ impl Machine {
         crate::heap::tidy(waiting);
         crate::heap::tidy(work);
     }
+
+    /// The bytes its stacks hold, with the machine itself, for the memory limit's count.
+    pub(crate) fn bytes(&self) -> usize {
+        let Machine {
+            frames,
+            arguments,
+            waiting,
+            work,
+            here: _,
+            request: _,
+            handed: _,
+        } = self;
+        size_of::<Machine>()
+            + frames.capacity() * size_of::<Frame>()
+            + arguments.capacity() * size_of::<Value>()
+            + waiting.capacity() * size_of::<Result<Value, Error>>()
+            + work.capacity() * size_of::<(Value, Value)>()
+    }
 }
 
 impl Default for Machine {
@@ -580,7 +598,7 @@ impl<T> Grift<T> {
     }
 
     fn frame(&mut self, what: What, context: Ref<Context>, at: Ref<Pair>) -> Result<(), Error> {
-        (self.heap).reserving(|| self.machine.frames.try_reserve(1))?;
+        self.heap.room(&mut self.machine.frames, 1)?;
         #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.machine.frames.push(Frame { what, context, at });
         Ok(())
@@ -588,7 +606,7 @@ impl<T> Grift<T> {
 
     /// Pushes an argument: like a frame, on room the heap's slack stands behind.
     fn argument(&mut self, v: Value) -> Result<(), Error> {
-        (self.heap).reserving(|| self.machine.arguments.try_reserve(1))?;
+        self.heap.room(&mut self.machine.arguments, 1)?;
         #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
         self.machine.arguments.push(v);
         Ok(())
@@ -871,14 +889,25 @@ impl<T> Grift<T> {
         current: impl Iterator<Item = Value>,
         held: impl IntoIterator<Item = Ref>,
     ) {
+        self.machine.tidy();
         // Names are heap objects: host functions' are roots too.
         let roots = (self.machine.roots().chain(current))
             .chain(self.kept.iter().flat_map(Entry::roots))
             .chain([Value::Context(self.built_in), Value::Context(self.top)])
             .chain(self.hosts.iter().map(|&(name, _)| Value::Symbol(name)));
-        self.heap.collect(roots, held.into_iter());
+        // What the limit counts outside the heap: the stacks of this machine and of each parked
+        // one, and the kept table and the host functions' at their capacity. The kept table is
+        // counted before it is tidied, so room it gives back counts until the next collection.
+        let parked = self.kept.iter().map(|entry| match entry {
+            Entry::Run(room) => room.iter().map(Machine::bytes).sum(),
+            _ => 0,
+        });
+        let outside = self.machine.bytes()
+            + parked.sum::<usize>()
+            + self.kept.capacity() * size_of::<Entry>()
+            + self.hosts.capacity() * size_of::<(Symbol, crate::HostFunction<T>)>();
+        self.heap.collect(roots, held.into_iter(), outside);
         self.tidy_kept();
-        self.machine.tidy();
     }
 
     /// Calls host function `h` with the arguments on the argument stack from `base`, popping
@@ -1365,8 +1394,8 @@ impl<T> Grift<T> {
                     // Under it go its `Finish` and that frame's entry, never one without the
                     // other: all the room comes first, and nothing after it can fail.
                     let (m, base) = (&mut self.machine, base.height());
-                    m.frames.try_reserve(2)?;
-                    m.waiting.try_reserve(1)?;
+                    self.heap.room(&mut m.frames, 2)?;
+                    self.heap.room(&mut m.waiting, 1)?;
                     let cleanup = What::Cleanup { cleanup: z, base };
                     let frames = [(What::Finish, Ref::NONE, Ref::NONE), (cleanup, c, at)];
                     #[expect(clippy::disallowed_methods, reason = "reserved all three above")]
@@ -1497,11 +1526,14 @@ impl<T> Grift<T> {
                 };
                 match x {
                     Value::String(_) => {
-                        let part = boxed(self.text(x)?.get(a..b).ok_or_else(bad)?)?;
+                        let part = self.text(x)?.get(a..b).ok_or_else(bad)?;
+                        self.heap.fits(part.len())?;
+                        let part = boxed(part)?;
                         Value::String(self.heap.make(part)?)
                     }
                     _ => {
                         let part = self.bytes_of(x)?.get(a..b).ok_or_else(bad)?;
+                        self.heap.fits(part.len())?;
                         let part = collected(part.iter().copied())?;
                         self.bytes_local(part)?
                     }
@@ -1526,6 +1558,7 @@ impl<T> Grift<T> {
                 // Exactly the length, so boxing a string never reallocates.
                 if bytes {
                     let mut joined = Vec::new();
+                    self.heap.fits(len)?;
                     joined.try_reserve_exact(len)?;
                     for &v in given {
                         #[expect(
@@ -1537,6 +1570,7 @@ impl<T> Grift<T> {
                     self.bytes_local(joined)?
                 } else {
                     let mut joined = String::new();
+                    self.heap.fits(len)?;
                     joined.try_reserve_exact(len)?;
                     for &v in given {
                         #[expect(
@@ -1576,6 +1610,7 @@ impl<T> Grift<T> {
                     let at = integer(e.valid_up_to());
                     Error::new(K::EncodingError, &[x, at])
                 })?;
+                self.heap.fits(text.len())?;
                 let text = boxed(text)?;
                 Value::String(self.heap.make(text)?)
             }
@@ -1736,6 +1771,7 @@ impl<T> Grift<T> {
     }
 
     pub(crate) fn string_local(&mut self, s: &str) -> Result<Value, Error> {
+        self.heap.fits(s.len())?;
         let s = boxed(s)?;
         Ok(Value::String(self.heap.make(s)?))
     }
