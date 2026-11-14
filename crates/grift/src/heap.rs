@@ -1,9 +1,9 @@
-//! The heap: a growable vector of slots, reused through a free list, reclaimed by mark and sweep
-//! and given back from the top. A new slot first reserves its entry on the mark stack, so a
-//! collection needs no memory of its own.
+//! The heap: slots in chunks of a fixed size, reused through a free list and reclaimed by mark and
+//! sweep. It grows a chunk at a time and gives a free chunk back by dropping it, so it never
+//! copies itself. A slot holds its own link of the mark stack, so a collection needs no memory.
 
 use crate::evaluate::Native;
-use crate::local::{Error, K_NAMES, Symbol, Value, boxed, push};
+use crate::local::{Error, K_NAMES, Symbol, Value, boxed};
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
@@ -149,10 +149,35 @@ impl Hasher for IdHasher {
 
 struct Slot {
     generation: u32,
-    /// Set as a collection first reaches the slot, so it goes on the mark stack once at most.
-    marked: Cell<bool>,
+    /// [`UNMARKED`] until a collection first reaches the slot, then the slot under it on the mark
+    /// stack, or [`END`]: so it goes on once at most, and the stack is the slots' own.
+    gray: Cell<u32>,
     obj: Object,
 }
+
+/// How many slots a chunk holds: 64 KiB.
+const CHUNK: usize = 1024;
+
+/// Slots that live and die together. A slot's number is its chunk's place in the heap's list
+/// times [`CHUNK`], plus its place in the chunk.
+type Chunk = Box<[Slot; CHUNK]>;
+
+/// A slot no collection has reached, and the bottom of the mark stack: neither is a slot's number.
+const UNMARKED: u32 = NONE;
+const END: u32 = NONE - 1;
+
+/// Room held back for when memory is refused, given up at the refusal: for the trace the
+/// unwinding builds, the program's combinations it passes, and after it for a report of the
+/// error, whose printer needs about 2 KiB whatever the error holds, beside the host's own text.
+/// It is no promise past that: a deep trace, or a host's text longer than what is left, can
+/// still find memory refused.
+const SPARE: usize = 64 * 1024;
+
+/// Room held back for the machine's own growth, a chunk's size: what tells the heap it is at the
+/// allocator's limit before anything is refused. When a chunk, a call's bindings or a machine
+/// stack is refused memory, this is given up and the same request made once more, so the step goes
+/// on, and the next safe point collects. Nothing is run again: only the request is repeated.
+const SLACK: usize = CHUNK * size_of::<Slot>();
 
 // A pair's origin fits in the room an operative already needs.
 const _: () = assert!(size_of::<Slot>() == 64);
@@ -176,14 +201,14 @@ const NONE: u32 = u32::MAX;
 /// waits for the largest of those three, the slots counted as half the free ones, so it walks at
 /// most four
 /// times what was allocated. The heap stays within about twice the larger of the live data and
-/// those roots. Free slots at the top, past the room the next collection waits for, are given back
-/// when they are a third of all. New objects take the lowest free slots, so the newest live ones,
-/// such as a running loop's, sit as high as what was allocated since the last collection, and keep
-/// the slots below them, as a run's source read then does. So after a dropped peak, when the free
-/// slots are what the next collection would wait for, the next run to begin collects first, once:
-/// what the runs before made is garbage by then, so it gives back the rest, and the two walk at
-/// most eight times what was allocated. Objects never move, so one long-lived object made high
-/// keeps the slots below it, never more than the peak. A retired slot counts as live. A string,
+/// those roots. A chunk with every slot free is given back once the free slots below it are the
+/// room the next collection waits for. New objects take the lowest free slots, so the newest live
+/// ones, such as a running loop's, sit as high as what was allocated since the last collection,
+/// and each keeps its chunk. So after a dropped peak, when the free slots are what the next
+/// collection would wait for, the next run to begin collects first, once: what the runs before
+/// made is garbage by then, so it gives back the rest, and the two walk at most eight times what
+/// was allocated. Objects never move, so one long-lived object keeps its chunk, never more than
+/// the peak. A retired slot counts as live, and keeps its chunk too. A string,
 /// bytes value or name counts as many objects as its storage would fill slots, and a context as
 /// many as its bindings' storage would fill, at least one, counted as they grow, so large chunks
 /// dropped one after another bring the next collection nearer as their size, not their number,
@@ -202,7 +227,11 @@ fn weight(obj: &Object) -> usize {
 }
 
 pub(crate) struct Heap {
-    slots: Vec<Slot>,
+    /// The chunks, each at the place its slots' numbers say, and `None` where one was given back:
+    /// the list is never closed up, so a number means one slot for as long as its chunk is there.
+    chunks: Vec<Option<Chunk>>,
+    /// How many places in the list have no chunk.
+    holes: usize,
     free: u32,
     /// Every live name's spelling to its slot: an entry goes in as [`Heap::intern`] makes the
     /// name's slot and out as the sweep frees it, so no other code can make the two disagree.
@@ -210,17 +239,24 @@ pub(crate) struct Heap {
     /// How much may be allocated before the next collection: collection sets it, allocation
     /// spends it, and a refusal empties it.
     until_gc: Cell<usize>,
-    /// The mark stack, empty between collections: every slot reserved its entry here when it was
-    /// made, so a collection never grows it.
-    marks: Vec<u32>,
     /// The generation a new slot starts at: past every generation of a slot given back, so no
     /// reference to one that was there matches the slot made in its place.
     fresh: u32,
+    /// How many slots ran out of generations: each counts as live.
+    retired: usize,
+    /// The [`SPARE`] room, or none after a refusal until the next run begins.
+    spare: Cell<Vec<u8>>,
+    /// The [`SLACK`] room, or none from when the machine's growth needed it until a collection
+    /// can take it again.
+    slack: Cell<Vec<u8>>,
     /// Whether the next run to begin collects first, once: the last paced collection left most
     /// slots free.
     early: bool,
     /// Whether the next collection was asked for, not paced: it brings no early one.
     asked: Cell<bool>,
+    /// Whether memory was refused since a run last asked: a run that ends so collects as it ends,
+    /// whatever collections its cleanups had on the way.
+    refused: Cell<bool>,
     #[cfg(test)]
     pub probe: probe::Probe,
 }
@@ -259,21 +295,108 @@ impl Heap {
     /// memory for them all, the heap is only good for reporting that, and the refusal says so.
     pub fn new() -> (Heap, Result<(), Error>) {
         let mut heap = Heap {
-            slots: Vec::new(),
+            chunks: Vec::new(),
+            holes: 0,
             free: NONE,
             names: HashMap::new(),
             until_gc: Cell::new(GC_MIN),
-            marks: Vec::new(),
             fresh: 0,
+            retired: 0,
+            spare: Cell::new(Vec::new()),
+            slack: Cell::new(Vec::new()),
             early: false,
             asked: Cell::new(false),
+            refused: Cell::new(false),
             #[cfg(test)]
             probe: probe::Probe::default(),
         };
+        heap.hold_spare();
+        heap.hold_slack();
         let made = K_NAMES
             .iter()
             .try_for_each(|name| heap.intern(name).map(|_| ()));
         (heap, made)
+    }
+
+    /// Takes the spare room if it isn't held: as the heap is made, and as a run begins, after the
+    /// collection a refusal asked for. Refused, the heap goes without: an `out-of-memory` trace
+    /// can then miss places.
+    pub fn hold_spare(&mut self) {
+        let spare = self.spare.get_mut();
+        if spare.capacity() == 0 {
+            let _ = spare.try_reserve_exact(SPARE);
+        }
+    }
+
+    /// Takes the slack room if it isn't held: whether it is held now.
+    fn hold_slack(&mut self) -> bool {
+        let slack = self.slack.get_mut();
+        slack.capacity() > 0 || slack.try_reserve_exact(SLACK).is_ok()
+    }
+
+    /// Makes `attempt`, a request for memory the machine's growth needs, and if it is refused
+    /// gives up the slack room and makes it once more.
+    #[inline]
+    pub fn reserving<E>(&self, mut attempt: impl FnMut() -> Result<(), E>) -> Result<(), E> {
+        match attempt() {
+            Ok(()) => Ok(()),
+            Err(refused) if give_slack(&self.slack, &self.asked, &self.until_gc) => {
+                drop(refused);
+                attempt()
+            }
+            Err(refused) => Err(refused),
+        }
+    }
+
+    /// Makes a chunk of free slots, at the first place in the list without one, each linked to
+    /// the next: its first slot, or `None` if memory was refused. Its storage is made the size it
+    /// stays, so nothing is ever copied to grow, and its slots start past the generations of any
+    /// that were there before.
+    fn add_chunk(&mut self) -> Option<u32> {
+        #[cfg(test)]
+        if (self.probe.slot_limit).is_some_and(|limit| self.len() + CHUNK > limit) {
+            return None;
+        }
+        let holes = if self.holes > 0 { &*self.chunks } else { &[] };
+        let at = (holes.iter().position(Option::is_none)).unwrap_or(self.chunks.len());
+        // Every slot's number is below `END`.
+        let first = (at.checked_mul(CHUNK).and_then(|n| u32::try_from(n).ok()))
+            .filter(|n| END - n >= CHUNK as u32)?;
+        let mut slots = Vec::new();
+        slots.try_reserve_exact(CHUNK).ok()?;
+        if at == self.chunks.len() {
+            self.chunks.try_reserve(1).ok()?;
+        }
+        let (generation, last) = (self.fresh, first + (CHUNK as u32 - 1));
+        #[expect(clippy::disallowed_methods, reason = "reserved CHUNK above")]
+        slots.extend((first..=last).map(|idx| Slot {
+            generation,
+            gray: Cell::new(UNMARKED),
+            obj: Object::Free(if idx == last { NONE } else { idx + 1 }),
+        }));
+        // As long as it was reserved, so the box is the vector's own storage.
+        let chunk = Chunk::try_from(slots.into_boxed_slice()).ok()?;
+        match self.chunks.get_mut(at) {
+            Some(hole) => {
+                *hole = Some(chunk);
+                self.holes = self.holes.saturating_sub(1);
+            }
+            #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
+            None => self.chunks.push(Some(chunk)),
+        }
+        Some(first)
+    }
+
+    /// The free list ran out: adds a chunk, and says whether memory allowed.
+    #[cold]
+    fn grow(&mut self) -> bool {
+        let first = self.add_chunk().or_else(|| {
+            give_slack(&self.slack, &self.asked, &self.until_gc)
+                .then(|| self.add_chunk())
+                .flatten()
+        });
+        self.free = first.unwrap_or(NONE);
+        first.is_some()
     }
 
     /// A new slot for `obj`, which is of kind `T`: the makers below say so, each for its kind.
@@ -296,41 +419,22 @@ impl Heap {
                 None => {}
             }
         }
+        if self.free == NONE && !self.grow() {
+            return Err(self.refused());
+        }
         let idx = self.free;
-        if let Some(slot) = self.slots.get_mut(idx as usize)
+        if let Some(slot) = slot_mut(&mut self.chunks, idx)
             && let Object::Free(next) = slot.obj
         {
-            self.free = next;
             slot.obj = obj;
+            self.free = next;
             return Ok(Ref {
                 idx,
                 generation: slot.generation,
                 kind: PhantomData,
             });
         }
-        #[cfg(test)]
-        if (self.probe.slot_limit).is_some_and(|limit| self.slots.len() >= limit) {
-            return Err(self.refused());
-        }
-        let idx = u32::try_from(self.slots.len())
-            .ok()
-            .filter(|&i| i != NONE)
-            .ok_or_else(|| self.refused())?;
-        self.marks
-            .try_reserve(self.slots.len() + 1)
-            .map_err(|_| self.refused())?;
-        let generation = self.fresh;
-        let slot = Slot {
-            generation,
-            marked: Cell::new(false),
-            obj,
-        };
-        push(&mut self.slots, slot).map_err(|_| self.refused())?;
-        Ok(Ref {
-            idx,
-            generation,
-            kind: PhantomData,
-        })
+        Err(self.refused())
     }
 
     /// A new object of kind `T`.
@@ -374,9 +478,14 @@ impl Heap {
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
     fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
-        let (_, bindings) = live_mut(&mut self.slots, r)?;
+        let (_, bindings) = live_mut(&mut self.chunks, r)?;
         let before = bindings_weight(bindings);
-        bindings.try_reserve(more)?;
+        if bindings.try_reserve(more).is_err() {
+            if !give_slack(&self.slack, &self.asked, &self.until_gc) {
+                return Err(Error::oom());
+            }
+            bindings.try_reserve(more)?;
+        }
         let grown = bindings_weight(bindings).saturating_sub(before);
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(grown);
@@ -406,15 +515,52 @@ impl Heap {
         Error::oom()
     }
 
+    /// Memory was refused, to the heap or to anything else: the next safe point collects, and the
+    /// spare room is given up for what reports the refusal.
+    pub fn refusal(&self) {
+        self.request_collection();
+        self.spare.take();
+        self.refused.set(true);
+    }
+
+    /// Whether memory was refused since this was last asked.
+    pub fn take_refused(&self) -> bool {
+        self.refused.take()
+    }
+
     /// What the object `r` names holds, if its slot still holds one of its kind.
     #[inline]
     fn get<T: Kind>(&self, r: Ref<T>) -> Result<&T::Holds, Error> {
-        match self.slots.get(r.idx as usize) {
-            Some(s) if s.generation == r.generation => match T::of(&s.obj) {
-                Some(holds) => Ok(holds),
-                None => Err(Error::stale()),
-            },
-            _ => Err(Error::stale()),
+        if let Some(s) = slot(&self.chunks, r.idx)
+            && s.generation == r.generation
+            && let Some(holds) = T::of(&s.obj)
+        {
+            return Ok(holds);
+        }
+        Err(Error::stale())
+    }
+
+    /// The binding of `s` in `context` or the nearest parent that has one. The walk holds the
+    /// list of chunks once, where a read at each context would load it again.
+    #[inline]
+    pub fn find(&self, mut context: Ref<kind::Context>, s: Symbol) -> Result<Option<Value>, Error> {
+        let chunks = &*self.chunks;
+        loop {
+            let (parent, bindings) = match slot(chunks, context.idx) {
+                Some(Slot {
+                    generation,
+                    obj: Object::Context(holds),
+                    ..
+                }) if *generation == context.generation => holds,
+                _ => return Err(Error::stale()),
+            };
+            if let Some(&v) = bindings.get(&s) {
+                return Ok(Some(v));
+            }
+            let Some(parent) = parent else {
+                return Ok(None);
+            };
+            context = *parent;
         }
     }
 
@@ -442,14 +588,14 @@ impl Heap {
         r: Ref<kind::Operative>,
         native: Option<Native>,
     ) -> Result<(), Error> {
-        live_mut(&mut self.slots, r)?.native = native;
+        live_mut(&mut self.chunks, r)?.native = native;
         Ok(())
     }
 
     /// The name in symbol slot `id` and its generation, if the slot holds a name.
     #[inline]
     pub fn symbol(&self, id: u32) -> Option<(&str, u32)> {
-        match self.slots.get(id as usize) {
+        match slot(&self.chunks, id) {
             Some(Slot {
                 obj: Object::Symbol(name),
                 generation,
@@ -483,37 +629,38 @@ impl Heap {
 
     /// Marks everything reachable from `roots`, the known names and the host's `held`, and frees
     /// the rest, with no memory of its own: a slot goes on the mark stack only as it is first
-    /// marked, so once at most, and every slot reserved its entry as it was made. Each root, known
+    /// marked, so once at most, and the stack's links are the slots' own. Each root, known
     /// name and held reference is a step of the walk outside the heap, counted as it is marked, so
     /// what pacing pays for is what was walked. The free list is made again from the bottom up, so
-    /// the lowest slots are reused first and the top empties, to be given back.
+    /// the lowest slots are reused first and the chunks above empty, to be given back: dropping
+    /// one needs no memory and can't be refused.
     pub fn collect(&mut self, roots: impl Iterator<Item = Value>, held: impl Iterator<Item = Ref>) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
-        let slots = &self.slots;
-        let marks = &mut self.marks;
-        #[cfg(test)]
-        let room = marks.capacity();
+        let mut marking = Marking {
+            chunks: &self.chunks,
+            top: END,
+            live: 0,
+        };
         let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
-        let walked = (roots.chain(known)).map(|v| mark(slots, marks, v)).count()
-            + held.map(|r| hold(slots, marks, r)).count();
-        while let Some(idx) = marks.pop() {
-            if let Some(s) = slots.get(idx as usize) {
-                children(&s.obj, |v| mark(slots, marks, v));
-            }
+        let walked = (roots.chain(known)).map(|v| marking.mark(v)).count()
+            + held.map(|r| marking.hold(r)).count();
+        while let Some(s) = marking.pop() {
+            children(&s.obj, |v| marking.mark(v));
         }
+        let live = marking.live.saturating_add(self.retired);
         #[cfg(test)]
         {
-            assert_eq!(marks.capacity(), room, "marking grew the mark stack");
             self.probe.collections += 1;
             // Marking walks each context's bindings too.
-            let bindings: usize = (self.slots.iter())
+            let bindings: usize = (self.chunks.iter().flatten())
+                .flat_map(|chunk| chunk.iter())
                 .map(|s| match &s.obj {
                     Object::Context((_, b)) => bindings_weight(b),
                     _ => 0,
                 })
                 .sum();
-            let walks = self.slots.len() + walked + bindings;
+            let walks = self.len() + walked + bindings;
             self.probe.work.1 += walks;
             // A collection that came when pacing said walks a constant factor of what was
             // allocated since the last one; an early one, with the one before it, of what was
@@ -539,35 +686,74 @@ impl Heap {
             }
             self.probe.paced = ([*last, self.probe.work.0], walks);
         }
-        let (mut live, mut free, mut top) = (0usize, 0usize, None);
+        let paced = live.max(walked).max(GC_MIN);
         // Each free slot is linked to from the one below it, so the list runs from the bottom up.
+        let mut free = 0usize;
         let mut tail = &mut self.free;
         let names = &mut self.names;
-        for (idx, s) in (0..NONE).zip(self.slots.iter_mut()) {
-            if s.marked.take() {
-                live = live.saturating_add(weight(&s.obj));
-                top = Some(idx);
-                continue;
-            }
-            if !matches!(s.obj, Object::Free(_)) {
-                // A slot whose generations run out is retired, never reused: its last one, which
-                // no reference has, means free for good.
-                s.generation = s.generation.saturating_add(1);
-                if let Object::Symbol(name) = std::mem::replace(&mut s.obj, Object::Free(NONE)) {
-                    names.remove(&name);
+        for (first, chunk) in (0..).step_by(CHUNK).zip(self.chunks.iter_mut()) {
+            // The chunk's free slots are linked among themselves first: `lowest` is the first of
+            // them, `highest` the place of the last, and `count` how many.
+            let (mut lowest, mut highest, mut count) = (NONE, 0, 0usize);
+            // The highest generation among them, and whether a slot in the chunk is in use.
+            let (mut past, mut used) = (0, false);
+            let mut link = &mut lowest;
+            for (at, s) in chunk
+                .iter_mut()
+                .flat_map(|slots| slots.iter_mut().enumerate())
+            {
+                if s.gray.replace(UNMARKED) != UNMARKED {
+                    used = true;
+                    continue;
+                }
+                if !matches!(s.obj, Object::Free(_)) {
+                    // A slot whose generations run out is retired, never reused: its last one,
+                    // which no reference has, means free for good.
+                    s.generation = s.generation.saturating_add(1);
+                    if s.generation == u32::MAX {
+                        self.retired = self.retired.saturating_add(1);
+                    }
+                    if let Object::Symbol(name) = std::mem::replace(&mut s.obj, Object::Free(NONE))
+                    {
+                        names.remove(&name);
+                    }
+                }
+                if s.generation == u32::MAX {
+                    used = true;
+                } else if let Object::Free(next) = &mut s.obj {
+                    *link = first + at as u32;
+                    link = next;
+                    (highest, count, past) = (at, count + 1, past.max(s.generation));
                 }
             }
-            if s.generation == u32::MAX {
-                // Swept every time and never reused, it counts as live.
-                top = Some(idx);
-                live = live.saturating_add(1);
-            } else if let Object::Free(next) = &mut s.obj {
-                *tail = idx;
+            if count == 0 {
+                continue;
+            }
+            // An empty chunk is given back once the free slots below it are the room the next
+            // collection waits for, which given back the heap would only grow into again. A
+            // chunk made in its place starts past its generations. New slots all start past
+            // those, so one slot reused billions of times would make every new one retire soon:
+            // past half their generations, the chunk stays.
+            if !used && free >= paced && past < u32::MAX / 2 {
+                self.fresh = self.fresh.max(past);
+                *chunk = None;
+                self.holes += 1;
+            } else if let Some(Slot {
+                obj: Object::Free(next),
+                ..
+            }) = chunk.as_mut().and_then(|slots| slots.get_mut(highest))
+            {
+                *tail = lowest;
                 tail = next;
-                free += 1;
+                free += count;
             }
         }
         *tail = NONE;
+        // The list ends at its last chunk.
+        while let Some(None) = self.chunks.last() {
+            self.chunks.pop();
+            self.holes = self.holes.saturating_sub(1);
+        }
         // The index gives back its storage once under a quarter used, if memory allows.
         if names.capacity() / 4 > names.len() {
             let mut smaller = HashMap::new();
@@ -577,13 +763,17 @@ impl Heap {
                 *names = smaller;
             }
         }
-        let used = top.map_or(0, |i| i as usize + 1);
-        let paced = live.max(walked).max(GC_MIN);
-        // What is allocated before the next collection fills the free slots below `used` first.
-        let below = free.saturating_sub(self.slots.len() - used);
-        free -= self.give_back(used, paced.saturating_sub(below)).min(free);
         self.early = free / 2 > paced && !early && !asked;
         *self.until_gc.get_mut() = paced.max(free / 2);
+        // The slack given up since the last collection is taken again, now that the chunks this
+        // one emptied are given back. While it can't be, the heap is at the allocator's limit and
+        // collects sooner: after an eighth of what it would wait for, at least half a chunk's
+        // worth. So what is refused then, a collection could have made little room for, and a
+        // large heap is still walked in proportion to what is allocated.
+        if !self.hold_slack() {
+            self.asked.set(true);
+            *self.until_gc.get_mut() = (paced / 8).max(CHUNK / 2);
+        }
         #[cfg(test)]
         {
             self.probe.live = live.saturating_add(walked);
@@ -591,55 +781,35 @@ impl Heap {
             self.early &= !self.probe.stress;
         }
     }
+}
 
-    /// When the free slots above `used` are at least a third of all, gives back those past the
-    /// first `room` of them, and says how many it gave: `room` is what the next collection waits
-    /// for, which given back the heap would only grow into again. The free list runs from the
-    /// bottom up, so they are its end. A slot made in their place starts past their generations,
-    /// unless those ran so far that it couldn't.
-    fn give_back(&mut self, used: usize, room: usize) -> usize {
-        let above = self.slots.len().saturating_sub(used);
-        if above < GC_MIN || above < self.slots.len() / 3 || above <= room {
-            return 0;
-        }
-        let from = used.saturating_add(room);
-        let top = self.slots.get(from..).unwrap_or_default();
-        // New slots all start past this, so one slot reused billions of times would make every
-        // new one retire soon: past half their generations, nothing is given back.
-        let past = top.iter().map(|s| s.generation).max().unwrap_or(0);
-        if past >= u32::MAX / 2 {
-            return 0;
-        }
-        let given = top.len();
-        self.fresh = self.fresh.max(past);
-        self.slots.truncate(from);
-        // The last free slot below now ends the list, or the list is empty.
-        if self.free as usize >= from {
-            self.free = NONE;
-        }
-        if let Some(Slot {
-            obj: Object::Free(next),
-            ..
-        }) = self.slots.iter_mut().rev().find(|s| match s.obj {
-            Object::Free(next) => next != NONE && next as usize >= from,
-            _ => false,
-        }) {
-            *next = NONE;
-        }
-        shrink(&mut self.slots, 0);
-        // The mark stack is empty between collections, and needs room for every slot.
-        let mut marks = Vec::new();
-        if marks.try_reserve_exact(from + 1).is_ok() {
-            self.marks = marks;
-        }
-        given
+/// Gives up the slack room, if it is held, and asks for a collection at the next safe point:
+/// whether there was any to give. It takes the fields alone, so a caller may hold a slot.
+#[cold]
+fn give_slack(slack: &Cell<Vec<u8>>, asked: &Cell<bool>, until_gc: &Cell<usize>) -> bool {
+    let held = slack.take().capacity() > 0;
+    if held {
+        asked.set(true);
+        until_gc.set(0);
     }
+    held
+}
+
+/// The slot numbered `idx`, if its chunk is there.
+#[inline]
+fn slot(chunks: &[Option<Chunk>], idx: u32) -> Option<&Slot> {
+    (chunks.get(idx as usize / CHUNK)?.as_ref()?).get(idx as usize % CHUNK)
+}
+
+#[inline]
+fn slot_mut(chunks: &mut [Option<Chunk>], idx: u32) -> Option<&mut Slot> {
+    (chunks.get_mut(idx as usize / CHUNK)?.as_mut()?).get_mut(idx as usize % CHUNK)
 }
 
 /// What the object `r` names holds, to change, if its slot still holds one of its kind. It takes
-/// the slots alone, so the heap's pacing stays free beside what it gives.
-fn live_mut<T: Kind>(slots: &mut [Slot], r: Ref<T>) -> Result<&mut T::Holds, Error> {
-    match slots.get_mut(r.idx as usize) {
+/// the chunks alone, so the heap's pacing stays free beside what it gives.
+fn live_mut<T: Kind>(chunks: &mut [Option<Chunk>], r: Ref<T>) -> Result<&mut T::Holds, Error> {
+    match slot_mut(chunks, r.idx) {
         Some(s) if s.generation == r.generation => T::of_mut(&mut s.obj).ok_or_else(Error::stale),
         _ => Err(Error::stale()),
     }
@@ -656,67 +826,77 @@ fn bindings_weight(b: &Bindings) -> usize {
 
 /// Gives back `v`'s room once it holds under a quarter of it and that is more than [`GC_MIN`]
 /// entries, keeping twice its length and at least that: a deep stack or table costs nothing after.
+/// It moves into smaller storage if memory allows, else stays as it is.
 pub(crate) fn tidy<X>(v: &mut Vec<X>) {
-    if v.capacity() / 4 > v.len().max(GC_MIN) {
-        shrink(v, v.len().saturating_mul(2).max(GC_MIN));
-    }
-}
-
-/// Moves `v` into storage for `room` entries, at least its length, if that is less than it has and
-/// memory allows; else leaves it as it is.
-fn shrink<X>(v: &mut Vec<X>, room: usize) {
-    let room = room.max(v.len());
+    let room = v.len().saturating_mul(2).max(GC_MIN);
     let mut smaller = Vec::new();
-    if v.capacity() > room && smaller.try_reserve_exact(room).is_ok() {
+    if v.capacity() / 4 > v.len().max(GC_MIN) && smaller.try_reserve_exact(room).is_ok() {
         #[expect(clippy::disallowed_methods, reason = "reserved at least v.len() above")]
         smaller.append(v);
         *v = smaller;
     }
 }
 
-/// Puts `v`'s object on the mark stack, unless a collection already reached it.
-fn mark(slots: &[Slot], marks: &mut Vec<u32>, v: Value) {
-    let r = match v {
-        // A name refers to nothing, so it is marked where it is.
-        Value::Symbol(id) => {
-            if let Some(s) = slots.get(id.0 as usize)
-                && matches!(s.obj, Object::Symbol(_))
-            {
-                s.marked.set(true);
-            }
-            return;
-        }
-        Value::Pair(r) => r.untyped(),
-        Value::String(r) => r.untyped(),
-        Value::Bytes(r) => r.untyped(),
-        Value::Context(r) => r.untyped(),
-        Value::Operative(r) => r.untyped(),
-        Value::Applicative(r) => r.untyped(),
-        // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
-        Value::EmptyList
-        | Value::Boolean(_)
-        | Value::Inert
-        | Value::Ignore
-        | Value::Integer(_)
-        | Value::Float(_)
-        | Value::Primitive(_)
-        | Value::Host(_) => return,
-    };
-    hold(slots, marks, r);
+/// A collection's marking: the mark stack, which runs through the slots on it, and what it has
+/// reached so far, by weight.
+struct Marking<'a> {
+    chunks: &'a [Option<Chunk>],
+    top: u32,
+    live: usize,
 }
 
-/// Puts the object `r` names on the mark stack, unless a collection already reached it: a value's,
-/// or one a host holds, whose kind marking needn't know.
-fn hold(slots: &[Slot], marks: &mut Vec<u32>, r: Ref) {
-    if let Some(s) = slots.get(r.idx as usize)
-        && s.generation == r.generation
-        && !s.marked.replace(true)
-    {
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "alloc keeps one mark-stack entry per slot"
-        )]
-        marks.push(r.idx);
+impl<'a> Marking<'a> {
+    /// Puts `v`'s object on the mark stack, unless the collection already reached it.
+    fn mark(&mut self, v: Value) {
+        let r = match v {
+            // A name refers to nothing, so it is marked where it is.
+            Value::Symbol(id) => {
+                if let Some(s) = slot(self.chunks, id.0)
+                    && matches!(s.obj, Object::Symbol(_))
+                    && s.gray.get() == UNMARKED
+                {
+                    s.gray.set(END);
+                    self.live = self.live.saturating_add(weight(&s.obj));
+                }
+                return;
+            }
+            Value::Pair(r) => r.untyped(),
+            Value::String(r) => r.untyped(),
+            Value::Bytes(r) => r.untyped(),
+            Value::Context(r) => r.untyped(),
+            Value::Operative(r) => r.untyped(),
+            Value::Applicative(r) => r.untyped(),
+            // Listed, not a catch-all: a new kind of value is classed here or doesn't compile.
+            Value::EmptyList
+            | Value::Boolean(_)
+            | Value::Inert
+            | Value::Ignore
+            | Value::Integer(_)
+            | Value::Float(_)
+            | Value::Primitive(_)
+            | Value::Host(_) => return,
+        };
+        self.hold(r);
+    }
+
+    /// Puts the object `r` names on the mark stack, unless the collection already reached it: a
+    /// value's, or one a host holds, whose kind marking needn't know.
+    fn hold(&mut self, r: Ref) {
+        if let Some(s) = slot(self.chunks, r.idx)
+            && s.generation == r.generation
+            && s.gray.get() == UNMARKED
+        {
+            s.gray.set(self.top);
+            self.top = r.idx;
+            self.live = self.live.saturating_add(weight(&s.obj));
+        }
+    }
+
+    /// Takes the top slot off the mark stack. It stays marked: its link is never [`UNMARKED`].
+    fn pop(&mut self) -> Option<&'a Slot> {
+        let s = slot(self.chunks, self.top)?;
+        self.top = s.gray.get();
+        Some(s)
     }
 }
 
@@ -761,9 +941,9 @@ impl<T> crate::Grift<T> {
         r: Ref<kind::String>,
         f: impl FnOnce(&mut Self, &str) -> R,
     ) -> Result<R, Error> {
-        let text = std::mem::take(live_mut(&mut self.heap.slots, r)?);
+        let text = std::mem::take(live_mut(&mut self.heap.chunks, r)?);
         let done = f(self, &text);
-        *live_mut(&mut self.heap.slots, r)? = text;
+        *live_mut(&mut self.heap.chunks, r)? = text;
         Ok(done)
     }
 }
@@ -777,7 +957,7 @@ mod probe {
     pub(crate) struct Probe {
         /// What the last collection found alive, by weight, for tests of what a run keeps.
         pub live: usize,
-        /// Refuse new slots past this length, to test recovery without replacing the allocator.
+        /// Refuse new chunks past this many slots, to test recovery without replacing the allocator.
         pub slot_limit: Option<usize>,
         /// Collect at every safe point, to test what a collection could lose.
         pub stress: bool,
@@ -808,7 +988,7 @@ mod probe {
         }
 
         pub fn len(&self) -> usize {
-            self.slots.len()
+            (self.chunks.len() - self.holes) * CHUNK
         }
 
         /// The index of live names.

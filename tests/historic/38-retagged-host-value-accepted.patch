@@ -1,13 +1,13 @@
 diff --git i/crates/grift/src/heap.rs w/crates/grift/src/heap.rs
-index a9749f01..df7949a0 100644
+index d76840bd..dba64720 100644
 --- i/crates/grift/src/heap.rs
 +++ w/crates/grift/src/heap.rs
-@@ -420,7 +420,10 @@ impl Heap {
+@@ -532,7 +532,10 @@ impl Heap {
  
      /// A host's reference as one to an object of kind `T`, if it still names one.
      pub fn kind<T: Kind>(&self, r: Ref) -> Result<Ref<T>, Error> {
 -        self.get(r.cast::<T>()).map(|_| r.cast())
-+        match self.slots.get(r.idx as usize) {
++        match slot(&self.chunks, r.idx) {
 +            Some(s) if s.generation == r.generation => Ok(r.cast()),
 +            _ => Err(Error::stale()),
 +        }

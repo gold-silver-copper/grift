@@ -2326,3 +2326,69 @@ the owner may overrule any.
     run takes the 64 KiB spare (G-176) and is left with nothing. A real stuck state, for its own change:
     shrinking in place (`Vec::shrink_to`) aborts if an allocator refuses to shrink, so it trades one rule
     for another.
+
+## The heap in chunks, 2026-11-13
+
+A soak test found three ways an interpreter under a memory limit refused a program that fits (the tail of
+G-215 describes them): refused every second run, refused on every run after the first, and stuck for good
+after its host was refused. The plan for them was the owner's (`notes/projects/fux/soak-fixes-2026-11-12`,
+property P6): slots in chunks, the spare room taken in `Grift::new`, only the program read tried again. The
+rest was decided alone in this change; the owner may overrule any.
+
+- **G-216. Slots live in chunks of 1,024, and the heap never copies itself** (replaces G-2's growable vector,
+  G-180's give-back by copying, and G-177's mark stack with an entry reserved per slot).
+  - **What.** A chunk is 64 KiB, reserved with `try_reserve_exact` and boxed at that size; growing adds one
+    and may be refused, and a collection gives back a chunk with every slot free by dropping it, which needs
+    no memory. A slot's number is its chunk's place times 1,024 plus its place in the chunk; the list of
+    chunks keeps a hole where one was dropped and is never closed up; a chunk made in a hole starts past the
+    generations of the one that was there, by G-180's rules. The mark stack is a link in each slot, so
+    marking needs no storage either.
+  - **Why.** The vector doubled, so growing needed the old and the new storage at once and failed where the
+    doubling fell; giving room back copied into smaller storage, and that copy was refused exactly when the
+    room was wanted. Rejected: one vector grown in fixed steps and shrunk in place, the plan's fallback. The
+    only shrink in place is `Vec::shrink_to`, which aborts if the allocator refuses (G-215's note), and
+    whether a step copies is the allocator's choice.
+- **G-217. At the allocator's limit the heap collects before anything is refused** (amends G-12 and G-170:
+  allocation still never collects).
+  - **What.** The heap holds back 64 KiB of slack. When a chunk, a call's bindings, or a frame or argument
+    stack's growth is refused, the slack is given up, the same request is made once more, and the next safe
+    point collects. Nothing is run again; only the request is repeated. The collection gives back its empty
+    chunks and takes the slack again. While it can't, the heap is within 64 KiB of the limit and collects
+    after an eighth of the allocation it would otherwise wait for, at least 512 objects' worth: what is
+    refused then, a collection could have made little room for (an eighth of the live data at most), and
+    a large heap is still walked in proportion to what is allocated, about eight times as often.
+  - **Why not collect before every chunk** (the plan's wording). Measured: a program that builds 150,000
+    pairs and then runs `fib 29` took 0.96 s against master's 0.62 s, because every chunk of growth walks
+    all the live data; trying to grow first took 0.68 s. The heap can't tell garbage from growth without
+    collecting, so it asks the allocator first and collects when the answer is no.
+  - **What it doesn't cover.** A request the slack can't satisfy (a stack doubling past 64 KiB, a large
+    string) and memory a host or a primitive's own buffer asks for are refused as before.
+- **G-218. The spare room is the heap's from `Grift::new`, and a run refused memory is collected as it ends**
+  (amends G-176's "the next run takes it again" and G-155's list of safe points).
+  - Every acted-on refusal gives the 64 KiB spare up, a refused read and a host's refused value included
+    (the read used to skip it); a run takes it again as it begins, after its collection.
+  - The program read is tried once more after a collection: it changes nothing but the heap, and its text
+    is the host's. No primitive or host function is tried again.
+  - A run that ends refused collects before its error goes to the host, with the error's kind, values and
+    places as roots, whether or not a cleanup's safe point already collected on the way. Why: the heap now uses a limit to its last chunk, so the copy of a 2,000-place trace for the
+    host had no room, and the whole trace was dropped; master had megabytes left there only because its
+    next doubling didn't fit.
+- **G-219. The speed band: met on the measuring machine, not shown met on the laptop it was set for**
+  (CLAUDE.md's rule for a target). Target: fib and life within +5% of master.
+  - **First measured** (laptop, release, three interleaved turns, user seconds, medians): `fib 30` 0.851 to
+    0.880 s (+3.4%); `life` 100x100 wrapped for 30 generations 0.913 to 1.018 s (+11.5%); 150,000 live
+    pairs then `fib 29` 0.689 to 0.731 s (+6%). Cause: every heap read loads its chunk's address before the
+    slot, and a variable found several contexts up pays that at each one. Chunk sizes tried before the
+    slack existed: 1,024 slots fib +8%, life +11%; 4,096 +6%, +10%; 16,384 +2.5%, +7%; 65,536 +1%, -1%, but
+    only because a heap that fits one chunk with most of it free collects a sixth as often, and the same
+    build was +6% once the live data passed one chunk. So the chunk's size doesn't decide it.
+  - **Then two changes to the reads** (one attempt, 45 minutes, asked for by the owner): the walk up a
+    variable's contexts is the heap's, holding the list of chunks once (`Heap::find`), and a slot's read
+    has one way out for a reference that names nothing. Measured on desk (x86-64, idle, same method), since
+    the laptop was too busy by then to time anything: before them fib 1.028 to 1.104 s (+7.4%), life 1.135
+    to 1.220 s (+7.5%), the 150,000-pair program 0.831 to 0.879 s (+5.8%); after them fib 1.031 to 1.060 s
+    (+2.8%), life 1.143 to 1.183 s (+3.5%), the pair program 0.835 to 0.861 s (+3.1%).
+  - **Where that leaves the band.** Inside it on desk. On the laptop the first change alone moved life
+    about 1.5 points in the two quiet turns there were, so life there is probably still above +5%; not
+    measured with both. The plan says missing the band at every chunk size goes back to one vector; G-216
+    says why this change didn't.

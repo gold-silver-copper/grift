@@ -1,13 +1,13 @@
-diff --git a/crates/grift/src/evaluate.rs b/crates/grift/src/evaluate.rs
-index 62a67c0..a8d400d 100644
---- a/crates/grift/src/evaluate.rs
-+++ b/crates/grift/src/evaluate.rs
-@@ -709,7 +709,7 @@ impl<T> Grift<T> {
+diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
+index 8af99bdd..8897ffd2 100644
+--- i/crates/grift/src/evaluate.rs
++++ w/crates/grift/src/evaluate.rs
+@@ -747,7 +747,7 @@ impl<T> Grift<T> {
      /// An error that began as refused memory: the next safe point collects, and the spare room is
      /// given up for what reports it. Once: whoever acts on it clears the mark.
      fn acting_on_refusal(&mut self, e: &mut Error) {
 -        if e.take_refusal() {
 +        if e.kind == K::OutOfMemory.into() {
-             self.heap.request_collection();
-             self.spare = Vec::new();
+             self.heap.refusal();
          }
+     }
