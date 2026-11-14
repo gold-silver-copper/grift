@@ -332,14 +332,16 @@ impl Heap {
 
     /// Makes `attempt`, a request for memory the machine's growth needs, and if it is refused
     /// gives up the slack room and makes it once more.
+    #[inline]
     pub fn reserving<E>(&self, mut attempt: impl FnMut() -> Result<(), E>) -> Result<(), E> {
-        attempt().or_else(|refused| {
-            if give_slack(&self.slack, &self.asked, &self.until_gc) {
+        match attempt() {
+            Ok(()) => Ok(()),
+            Err(refused) if give_slack(&self.slack, &self.asked, &self.until_gc) => {
+                drop(refused);
                 attempt()
-            } else {
-                Err(refused)
             }
-        })
+            Err(refused) => Err(refused),
+        }
     }
 
     /// Makes a chunk of free slots, at the first place in the list without one, each linked to
@@ -753,6 +755,7 @@ impl Heap {
 
 /// Gives up the slack room, if it is held, and asks for a collection at the next safe point:
 /// whether there was any to give. It takes the fields alone, so a caller may hold a slot.
+#[cold]
 fn give_slack(slack: &Cell<Vec<u8>>, asked: &Cell<bool>, until_gc: &Cell<usize>) -> bool {
     let held = slack.take().capacity() > 0;
     if held {
