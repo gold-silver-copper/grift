@@ -15,7 +15,9 @@ language with a Unix runner.
 The core crate has no dependencies and no `unsafe` code; it does no I/O, starts no threads and
 keeps no global state: the host owns all of that. It uses the memory the allocator gives it and
 sets no limits of its own; when the allocator refuses, evaluation returns an `out-of-memory`
-error instead of aborting. There is one exception: `Grift::new`'s first allocation, the
+error instead of aborting. A host may set a limit in bytes on what an interpreter holds
+(`set_memory_limit`), and what would pass it is refused the same way, without waiting for an
+allocator that, on a system that overcommits, kills the process instead of refusing. There is one exception: `Grift::new`'s first allocation, the
 interpreter's shared control block, is an `Arc::new`, which aborts if refused, until Rust's
 `Arc::try_new` is stable; every later refusal is `out-of-memory`. It reaches the outside world only through functions the host
 registers, and every error goes to the host with its kind, its values and where it happened.
@@ -101,6 +103,11 @@ and the session goes on. A pipe closing ends it with 141; otherwise it ends 0 un
 it with 1. C-c ends it as it ends any program, its definitions with it: the runner handles no
 signal. It has no line editor: `rlwrap grift` gives
 one. Limits belong to the OS: `timeout 10 grift script` for time, `prlimit --as=…` for memory.
+`GRIFT_MEMORY_LIMIT=67108864 grift script` sets the interpreter's own limit, in bytes: a program
+that would hold more ends with `out-of-memory` and status 1, also where the system would have
+given the memory and killed the process later. It counts what the interpreter holds, its library
+included (about 420 KiB), not the runner's own buffers while it reads a file or a process's
+output. A value that isn't a number of bytes is refused before anything runs.
 
 For scripting, the program gets a small fixed set of operations, and the core does none of this:
 
@@ -232,6 +239,19 @@ fn main() -> Result<(), Error> {
   grift code such as a prelude: its code, and the code it builds or reads with `read-form` as it
   runs, count as library code, as grift's own: traces skip it. Code a program reads or builds is the
   program's, and so is code a host function builds, whatever called it.
+- **A memory limit:** `set_memory_limit(Some(bytes))`, `memory_limit()` and `memory_held()`; none
+  to begin with, and `set_memory_limit(None)` clears it. What would take the interpreter past the
+  limit is refused as `out-of-memory`, by the rules for the allocator's own refusal under The
+  implementation: the heap collects first where it can, the run's cleanups run, and the
+  interpreter runs the next program. `memory_held` is what the limit counts: the heap's chunks,
+  garbage included until a collection gives a chunk back; the text of strings, bytes values and
+  names and the bindings of contexts; the machine's stacks and a parked run's; the kept table; the
+  128 KiB the heap holds back. Not the allocator's bookkeeping, an error's values and trace on
+  their way out, or anything the host holds. A new interpreter holds its library, so set a limit
+  as so much more than `memory_held()` says. One request for more than 64 KiB that would pass the
+  limit is refused even when a collection could have made room for it, as at the allocator's
+  limit: leave a program room for its garbage, which the heap keeps under about the size of its
+  live data.
 - **Values:** `string`, `bytes(&[u8])`, `pair`, `list(&[Value])`, `symbol`; read with `as_str`,
   `as_bytes`, `as_pair`, `list_items`, `symbol_name`, each `Result<Option<_>, Error>` or
   `Result<_, Error>`, so a reclaimed value is `stale-value`, never a wrong answer; `write(&v, out)` and `describe(&e, out, bytes)`,
@@ -546,6 +566,10 @@ chunk, a call's bindings or a machine stack is refused memory, the slack is give
 is made once more and the next safe point collects, so a program that fits a memory limit isn't
 refused for the garbage before it. While a collection can't take the slack back, the heap is at the
 allocator's limit and collects about eight times as often, still in proportion to what is allocated.
+A host's memory limit is refused by the same steps: the heap counts the bytes it and the machine
+hold, the slack and the spare room among them, and a chunk, a stack's or a table's growth, or a
+string's text that would take the count past the limit is treated as refused by the allocator
+before it is asked. A collection counts again from what is left, so the count can't drift.
 An object the heap has no room for even so makes a collection
 due, before the next run needs room to read its input or build its call context, as does any memory
 refused that unwinds a run, and a run that ends refused collects as it ends. Reads and constructors

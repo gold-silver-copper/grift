@@ -22,7 +22,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - One path per kind of form: speed comes from simpler code and better representations, never a fast
   path beside the real one, except native primitives and twins ([G-33], [G-110]).
 - grift sets no limit of its own (no step, depth, time or memory limit) and doesn't sandbox what it
-  runs: limits and isolation are the host's ([G-5], [G-74]). What it does is bounded by the work
+  runs: limits and isolation are the host's ([G-5], [G-74]). A host may set a limit in bytes on
+  what an interpreter holds; there is none until it does ([G-220]). What it does is bounded by the work
   asked of it, and what it can't do it refuses with an error, with one exception under Memory
   ([G-178]).
 - The core is a Rust library on `std` with no dependencies, I/O, threads or global state beyond the
@@ -229,6 +230,15 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   limit and collects after an eighth of what it would wait for, at least 512 objects' worth: about
   eight times as often, still in proportion to what is allocated. Nothing is run again but the
   program read, once, after a collection ([G-217], [G-218]).
+- A host's memory limit counts what the interpreter holds: the chunks, garbage included; the text
+  of strings, bytes values and names and the bindings of contexts; the machine's stacks, a parked
+  run's too; the kept table; the slack and the spare room. Not the allocator's bookkeeping, an
+  error's values and trace, or what the host holds. The count is taken again at every collection
+  and added to in between ([G-220]). What would pass the limit is refused before the allocator is
+  asked, by the rules for the allocator's refusal: slack, collection, spare room, cleanups, and
+  the interpreter runs the next program. A string's or bytes value's room is checked before it is
+  asked for; every object is checked as it enters the heap ([G-221]). The runner takes its limit
+  from `GRIFT_MEMORY_LIMIT`, in bytes ([G-222]).
 - A run refused memory gives up a spare 64 KiB, the heap's from `Grift::new`, so its report can say
   where, and its garbage is collected as it ends, before its error goes to the host ([G-176], [G-218]).
   A collection needs no memory of its own: the mark stack is a link in each slot ([G-216]).
@@ -399,3 +409,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-216]: DECISIONS.md#the-heap-in-chunks-2026-11-13
 [G-217]: DECISIONS.md#the-heap-in-chunks-2026-11-13
 [G-218]: DECISIONS.md#the-heap-in-chunks-2026-11-13
+[G-220]: DECISIONS.md#a-memory-limit-the-host-sets-2026-11-13
+[G-221]: DECISIONS.md#a-memory-limit-the-host-sets-2026-11-13
+[G-222]: DECISIONS.md#a-memory-limit-the-host-sets-2026-11-13

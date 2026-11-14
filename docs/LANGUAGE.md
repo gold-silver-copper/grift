@@ -267,7 +267,7 @@ retain their own boundaries too.
 
 **What can be caught.** What a program raises always can: the primitives' errors, the library's, a
 host function's, and the program's own, whatever kind they are called. A **limit** can't: an error
-the host or the machine began, a real stop (`interrupted`), the allocator refusing (`out-of-memory`),
+the host or the machine began, a real stop (`interrupted`), memory refused by the allocator or by the host's limit (`out-of-memory`),
 or an error a host function or a host's answer made a limit. It goes on through every `catch!` to the
 host, so a `catch!` in a loop can't swallow C-g, and it stays a limit through a host function. Who began
 an unwinding decides this, and no name does: a program that raises its own `interrupted` raises an
@@ -302,7 +302,7 @@ its cleanups do.
 | `range-error` | a string offset off a character boundary or out of range; a bytes offset out of range; an integer outside 0–255 given `list-to-bytes`; a code point that isn't one; an empty separator given `string-split`; a list index out of range; a negative exponent; a fill that isn't one byte | the operands; for `list-to-bytes`, the integer and its position |
 | `encoding-error` | bytes given `bytes-to-string` that aren't UTF-8 | the bytes, and the offset where the first sequence that isn't UTF-8 starts (Rust's `valid_up_to`) |
 | `parse-error` | text that doesn't read: a program or `read-form`'s text, or a string given `string-to-integer` or `string-to-float` | why, then the line and the column, which counts characters from 1, then the source's name if the text was read under one; or the string |
-| `out-of-memory` | the allocator refused | none |
+| `out-of-memory` | the allocator refused, or the host's memory limit would be passed | none |
 | `stale-value` | the host used a value the collector reclaimed | none |
 | `foreign-value` | the host gave one interpreter a value, a symbol or a host function of another | none |
 | `interrupted` | the host stopped the run; stops waiting together count as one, and a later stop stops the cleanups too, even one that would have ended | none |
