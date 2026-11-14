@@ -17,6 +17,8 @@ use std::cell::Cell;
 thread_local! {
     static LIVE: Cell<usize> = const { Cell::new(0) };
     static LIMIT: Cell<usize> = const { Cell::new(usize::MAX) };
+    /// The most this thread has held since a test last set it.
+    static PEAK: Cell<usize> = const { Cell::new(0) };
 }
 
 struct Budgeted;
@@ -26,6 +28,7 @@ fn allowed(after: usize) -> bool {
     let ok = after <= LIMIT.get();
     if ok {
         LIVE.set(after);
+        PEAK.set(PEAK.get().max(after));
     }
     ok
 }
@@ -232,5 +235,44 @@ fn a_new_interpreter_refused_memory_says_so() {
         LIMIT.set(usize::MAX);
         let kind = made.err().and_then(|e| e.grift_kind());
         assert_eq!(kind, Some(Kind::OutOfMemory), "with {budget} bytes");
+    }
+}
+
+/// Under a memory limit the interpreter asks the allocator for little more than the limit, also
+/// where a small value makes a large text or a short text large buffers: a list of 1,000
+/// references to one megabyte string prints as a gigabyte, 4 MiB of `(` need the reader 50 bytes
+/// each, and a `join` of the list is a gigabyte in one request. The allocator here refuses
+/// nothing and only counts: the peak it saw is what a system that overcommits would have given.
+#[test]
+fn under_a_memory_limit_the_allocator_is_asked_for_little_more() {
+    const ROOM: usize = 8 << 20;
+    let doubled = "(define! doubled (lambda! (s n) (if! (less-than? n 1) s (doubled (join s s) (subtract n 1)))))";
+    for (setup, program) in [
+        (
+            "(define! refs (map (lambda! (i) (quote! s)) (range 0 1000))) (define! s (doubled \"x\" 20))
+             (define! refs (map (lambda! (i) s) refs))",
+            "(value-to-string refs)",
+        ),
+        ("(define! s (doubled \"(\" 22))", "(read-form s 0)"),
+        (
+            "(define! s (doubled \"x\" 20)) (define! refs (map (lambda! (i) s) (range 0 1000)))",
+            "(apply join refs)",
+        ),
+    ] {
+        let mut g: Grift = Grift::new().unwrap();
+        g.evaluate(&mut (), doubled).unwrap();
+        g.evaluate(&mut (), setup).unwrap();
+        // Setting a limit asks for a collection as the next run begins, so the room is past
+        // what is live.
+        g.set_memory_limit(None);
+        g.evaluate(&mut (), "1").unwrap();
+        g.set_memory_limit(Some(g.memory_held() + ROOM));
+        let before = LIVE.get();
+        PEAK.set(before);
+        let e = g.evaluate(&mut (), program).unwrap_err();
+        let asked = PEAK.get() - before;
+        assert_eq!(e.grift_kind(), Some(Kind::OutOfMemory), "{program}");
+        assert!(asked <= ROOM + (1 << 20), "{program} asked for {asked} bytes");
+        assert_eq!(g.evaluate(&mut (), "(add 1 2)"), Ok(grift::Value::Integer(3)));
     }
 }

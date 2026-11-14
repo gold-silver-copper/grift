@@ -218,12 +218,34 @@ const GC_MIN: usize = 4096;
 /// How many objects `obj` counts as, for when to collect.
 #[inline]
 fn weight(obj: &Object) -> usize {
+    sizes(obj).0
+}
+
+/// An object's [`weight`] and its [`payload`], from one look at it.
+#[inline]
+fn sizes(obj: &Object) -> (usize, usize) {
+    let slots = |bytes: usize| bytes.div_ceil(size_of::<Slot>());
     match obj {
-        Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
-        Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
-        Object::Context((_, b)) => 1 + bindings_weight(b),
-        _ => 1,
+        Object::String(s) => (1 + slots(s.len()), s.len()),
+        Object::Symbol(s) => (
+            1 + slots(s.len()),
+            2 * s.len() + size_of::<(Box<str>, u32)>(),
+        ),
+        Object::Bytes(b) => (1 + slots(b.capacity()), b.capacity()),
+        Object::Context((_, b)) => {
+            let bytes = b.capacity() * size_of::<(Symbol, Value)>();
+            (1 + slots(bytes).saturating_sub(1), bytes)
+        }
+        _ => (1, 0),
     }
+}
+
+/// The bytes `obj` holds outside its slot, as the memory limit counts them: a string's or bytes
+/// value's storage, a name's spelling twice and its entry in the index of names, and a context's
+/// bindings at their capacity. Not the allocator's own bookkeeping, nor a table's control bytes.
+#[inline]
+fn payload(obj: &Object) -> usize {
+    sizes(obj).1
 }
 
 pub(crate) struct Heap {
@@ -257,6 +279,15 @@ pub(crate) struct Heap {
     /// Whether memory was refused since a run last asked: a run that ends so collects as it ends,
     /// whatever collections its cleanups had on the way.
     refused: Cell<bool>,
+    /// The most bytes [`Heap::held`] may reach, the host's to set, and whether it set one: with
+    /// none this is `usize::MAX`, which nothing passes.
+    limit: usize,
+    limited: bool,
+    /// The bytes the interpreter holds, as the limit counts them: what the last collection found
+    /// (the chunks, the live objects' [`payload`], the spare and slack room, and the machine
+    /// stacks and tables outside the heap) and what was taken since. Garbage is held until a
+    /// collection frees it, so it counts until then.
+    held: Cell<usize>,
     #[cfg(test)]
     pub probe: probe::Probe,
 }
@@ -307,6 +338,9 @@ impl Heap {
             early: false,
             asked: Cell::new(false),
             refused: Cell::new(false),
+            limit: usize::MAX,
+            limited: false,
+            held: Cell::new(0),
             #[cfg(test)]
             probe: probe::Probe::default(),
         };
@@ -322,16 +356,90 @@ impl Heap {
     /// collection a refusal asked for. Refused, the heap goes without: an `out-of-memory` trace
     /// can then miss places.
     pub fn hold_spare(&mut self) {
-        let spare = self.spare.get_mut();
-        if spare.capacity() == 0 {
-            let _ = spare.try_reserve_exact(SPARE);
-        }
+        held_back(self.spare.get_mut(), SPARE, self.limit, &self.held);
     }
 
     /// Takes the slack room if it isn't held: whether it is held now.
     fn hold_slack(&mut self) -> bool {
-        let slack = self.slack.get_mut();
-        slack.capacity() > 0 || slack.try_reserve_exact(SLACK).is_ok()
+        held_back(self.slack.get_mut(), SLACK, self.limit, &self.held)
+    }
+
+    /// The memory limit, if the host set one.
+    pub fn limit(&self) -> Option<usize> {
+        self.limited.then_some(self.limit)
+    }
+
+    /// Sets the memory limit, or none. The next run collects before it begins, so the count it
+    /// is held to is of what is live; what is held past a lower limit stays held, and nothing
+    /// more is given until a collection has brought the count under it.
+    pub fn set_limit(&mut self, limit: Option<usize>) {
+        (self.limit, self.limited) = (limit.unwrap_or(usize::MAX), limit.is_some());
+        self.request_collection();
+    }
+
+    /// The bytes the limit counts.
+    pub fn held(&self) -> usize {
+        self.held.get()
+    }
+
+    /// Whether the limit allows `bytes` more. If only the slack room is in the way it is given
+    /// up, as when the allocator refuses, and the next safe point collects.
+    #[inline]
+    fn allows(&self, bytes: usize) -> bool {
+        let over = || self.held.get().saturating_add(bytes) > self.limit;
+        !over() || (give_slack(&self.slack, &self.asked, &self.until_gc, &self.held) && !over())
+    }
+
+    /// Room under the limit for `bytes` about to be asked of the allocator, for a value whose
+    /// size a program chooses: asked first, the allocator is never given a request the limit
+    /// would refuse. The bytes are counted when the value becomes an object.
+    pub fn fits(&self, bytes: usize) -> Result<(), Error> {
+        if self.allows(bytes) {
+            Ok(())
+        } else {
+            Err(self.refused())
+        }
+    }
+
+    /// Room for `more` in `storage`, a vector or a string the interpreter grows as a program
+    /// asks: one of a machine's stacks, a table, the reader's or the printer's buffer. The one
+    /// way such storage grows: to twice its size or to what is asked, whichever is more, asked
+    /// of the allocator as exactly that, so what the limit is checked for is what is taken; the
+    /// slack room stands behind it as it does behind a chunk; and what it grows by is counted.
+    /// Storage dropped before the next collection is given back with [`Heap::returned`].
+    #[inline]
+    pub fn room<G: Grows>(&self, storage: &mut G, more: usize) -> Result<(), Error> {
+        if storage.capacity() - storage.len() >= more {
+            return Ok(());
+        }
+        self.grown(storage, more)
+    }
+
+    #[cold]
+    fn grown<G: Grows>(&self, storage: &mut G, more: usize) -> Result<(), Error> {
+        let (len, before) = (storage.len(), storage.capacity());
+        let needed = len.checked_add(more).ok_or_else(|| self.refused())?;
+        let target = needed.max(before.saturating_mul(2));
+        self.fits((target - before).saturating_mul(G::UNIT))?;
+        self.reserving(|| storage.exactly(target - len))?;
+        let grown = (storage.capacity() - before).saturating_mul(G::UNIT);
+        self.held.set(self.held.get().saturating_add(grown));
+        Ok(())
+    }
+
+    /// Pushes onto a vector grown by [`Heap::room`].
+    #[inline]
+    pub fn push<X>(&self, v: &mut Vec<X>, x: X) -> Result<(), Error> {
+        self.room(v, 1)?;
+        #[expect(clippy::disallowed_methods, reason = "room for 1 above")]
+        v.push(x);
+        Ok(())
+    }
+
+    /// Storage grown by [`Heap::room`] is dropped: its bytes are no longer held.
+    pub fn returned(&self, storage: &impl Grows) {
+        let bytes = storage.capacity().saturating_mul(storage.unit());
+        self.held.set(self.held.get().saturating_sub(bytes));
     }
 
     /// Makes `attempt`, a request for memory the machine's growth needs, and if it is refused
@@ -340,7 +448,7 @@ impl Heap {
     pub fn reserving<E>(&self, mut attempt: impl FnMut() -> Result<(), E>) -> Result<(), E> {
         match attempt() {
             Ok(()) => Ok(()),
-            Err(refused) if give_slack(&self.slack, &self.asked, &self.until_gc) => {
+            Err(refused) if give_slack(&self.slack, &self.asked, &self.until_gc, &self.held) => {
                 drop(refused);
                 attempt()
             }
@@ -355,6 +463,9 @@ impl Heap {
     fn add_chunk(&mut self) -> Option<u32> {
         #[cfg(test)]
         if (self.probe.slot_limit).is_some_and(|limit| self.len() + CHUNK > limit) {
+            return None;
+        }
+        if self.held.get().saturating_add(SLACK) > self.limit {
             return None;
         }
         let holes = if self.holes > 0 { &*self.chunks } else { &[] };
@@ -384,6 +495,7 @@ impl Heap {
             #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
             None => self.chunks.push(Some(chunk)),
         }
+        *self.held.get_mut() += SLACK;
         Some(first)
     }
 
@@ -391,7 +503,7 @@ impl Heap {
     #[cold]
     fn grow(&mut self) -> bool {
         let first = self.add_chunk().or_else(|| {
-            give_slack(&self.slack, &self.asked, &self.until_gc)
+            give_slack(&self.slack, &self.asked, &self.until_gc, &self.held)
                 .then(|| self.add_chunk())
                 .flatten()
         });
@@ -419,7 +531,17 @@ impl Heap {
                 None => {}
             }
         }
+        // What an object holds outside its slot is counted as it comes in, and refused past the
+        // limit: the one place every string, bytes value, name and context passes.
+        // It is counted before a chunk is asked for, so the two together stay under the limit,
+        // and uncounted again if there is no slot for it after all.
+        let outside = payload(&obj);
+        if outside > 0 && !self.allows(outside) {
+            return Err(self.refused());
+        }
+        *self.held.get_mut() += outside;
         if self.free == NONE && !self.grow() {
+            *self.held.get_mut() -= outside;
             return Err(self.refused());
         }
         let idx = self.free;
@@ -434,6 +556,7 @@ impl Heap {
                 kind: PhantomData,
             });
         }
+        *self.held.get_mut() -= outside;
         Err(self.refused())
     }
 
@@ -478,14 +601,24 @@ impl Heap {
     /// Context `r`'s bindings, with room for `more` new ones. Storage they grow by brings the
     /// next collection nearer, as a new object's weight does.
     fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
+        let (_, bindings) = self.get(r)?;
+        let (before, held) = (bindings_weight(bindings), bindings.capacity());
+        // A table that must grow is checked for the capacity it will have: under the limit, or
+        // it doesn't grow at all.
+        if held - bindings.len() < more {
+            let needed = bindings.len().saturating_add(more);
+            let grown = table_capacity(needed, held).saturating_sub(held);
+            self.fits(grown.saturating_mul(size_of::<(Symbol, Value)>()))?;
+        }
         let (_, bindings) = live_mut(&mut self.chunks, r)?;
-        let before = bindings_weight(bindings);
         if bindings.try_reserve(more).is_err() {
-            if !give_slack(&self.slack, &self.asked, &self.until_gc) {
+            if !give_slack(&self.slack, &self.asked, &self.until_gc, &self.held) {
                 return Err(Error::oom());
             }
             bindings.try_reserve(more)?;
         }
+        let taken = (bindings.capacity() - held).saturating_mul(size_of::<(Symbol, Value)>());
+        *self.held.get_mut() += taken;
         let grown = bindings_weight(bindings).saturating_sub(before);
         let until_gc = self.until_gc.get_mut();
         *until_gc = until_gc.saturating_sub(grown);
@@ -519,7 +652,8 @@ impl Heap {
     /// spare room is given up for what reports the refusal.
     pub fn refusal(&self) {
         self.request_collection();
-        self.spare.take();
+        let spare = self.spare.take().capacity();
+        self.held.set(self.held.get().saturating_sub(spare));
         self.refused.set(true);
     }
 
@@ -634,13 +768,22 @@ impl Heap {
     /// what pacing pays for is what was walked. The free list is made again from the bottom up, so
     /// the lowest slots are reused first and the chunks above empty, to be given back: dropping
     /// one needs no memory and can't be refused.
-    pub fn collect(&mut self, roots: impl Iterator<Item = Value>, held: impl Iterator<Item = Ref>) {
+    ///
+    /// The bytes the limit counts are counted again here, from what is left: `outside` is what
+    /// the interpreter holds outside the heap, its machine stacks and tables.
+    pub fn collect(
+        &mut self,
+        roots: impl Iterator<Item = Value>,
+        held: impl Iterator<Item = Ref>,
+        outside: usize,
+    ) {
         let asked = self.asked.take();
         let early = self.early && !asked && self.until_gc.get() > 0;
         let mut marking = Marking {
             chunks: &self.chunks,
             top: END,
             live: 0,
+            bytes: 0,
         };
         let known = (0..).zip(K_NAMES).map(|(id, _)| Value::Symbol(Symbol(id)));
         let walked = (roots.chain(known)).map(|v| marking.mark(v)).count()
@@ -649,6 +792,7 @@ impl Heap {
             children(&s.obj, |v| marking.mark(v));
         }
         let live = marking.live.saturating_add(self.retired);
+        let payloads = marking.bytes;
         #[cfg(test)]
         {
             self.probe.collections += 1;
@@ -765,6 +909,13 @@ impl Heap {
         }
         self.early = free / 2 > paced && !early && !asked;
         *self.until_gc.get_mut() = paced.max(free / 2);
+        // What is held now: the chunks left, what the live objects hold outside them, what the
+        // interpreter holds outside the heap, and the spare and slack room if they are held.
+        let chunks = (self.chunks.len() - self.holes).saturating_mul(SLACK);
+        let back = self.spare.get_mut().capacity() + self.slack.get_mut().capacity();
+        *self.held.get_mut() = (chunks.saturating_add(payloads))
+            .saturating_add(outside)
+            .saturating_add(back);
         // The slack given up since the last collection is taken again, now that the chunks this
         // one emptied are given back. While it can't be, the heap is at the allocator's limit and
         // collects sooner: after an eighth of what it would wait for, at least half a chunk's
@@ -786,13 +937,31 @@ impl Heap {
 /// Gives up the slack room, if it is held, and asks for a collection at the next safe point:
 /// whether there was any to give. It takes the fields alone, so a caller may hold a slot.
 #[cold]
-fn give_slack(slack: &Cell<Vec<u8>>, asked: &Cell<bool>, until_gc: &Cell<usize>) -> bool {
-    let held = slack.take().capacity() > 0;
-    if held {
+fn give_slack(
+    slack: &Cell<Vec<u8>>,
+    asked: &Cell<bool>,
+    until_gc: &Cell<usize>,
+    counted: &Cell<usize>,
+) -> bool {
+    let given = slack.take().capacity();
+    if given > 0 {
         asked.set(true);
         until_gc.set(0);
+        counted.set(counted.get().saturating_sub(given));
     }
-    held
+    given > 0
+}
+
+/// Takes `bytes` of room to hold back in `room`, if it isn't held and the limit allows it:
+/// whether it is held now. Counted as it is taken.
+fn held_back(room: &mut Vec<u8>, bytes: usize, limit: usize, counted: &Cell<usize>) -> bool {
+    if room.capacity() == 0
+        && counted.get().saturating_add(bytes) <= limit
+        && room.try_reserve_exact(bytes).is_ok()
+    {
+        counted.set(counted.get().saturating_add(room.capacity()));
+    }
+    room.capacity() > 0
 }
 
 /// The slot numbered `idx`, if its chunk is there.
@@ -824,6 +993,62 @@ fn bindings_weight(b: &Bindings) -> usize {
         .saturating_sub(1)
 }
 
+/// Storage [`Heap::room`] grows: a vector or a string.
+pub(crate) trait Grows {
+    /// The bytes one place takes.
+    const UNIT: usize;
+    fn len(&self) -> usize;
+    fn capacity(&self) -> usize;
+    /// Room for exactly `more` places past its length, if memory allows.
+    fn exactly(&mut self, more: usize) -> Result<(), std::collections::TryReserveError>;
+    fn unit(&self) -> usize {
+        Self::UNIT
+    }
+}
+
+impl<X> Grows for Vec<X> {
+    const UNIT: usize = size_of::<X>();
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn exactly(&mut self, more: usize) -> Result<(), std::collections::TryReserveError> {
+        self.try_reserve_exact(more)
+    }
+}
+
+impl Grows for String {
+    const UNIT: usize = 1;
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn exactly(&mut self, more: usize) -> Result<(), std::collections::TryReserveError> {
+        self.try_reserve_exact(more)
+    }
+}
+
+/// The capacity the standard library's hash table has once it has grown to hold `needed`
+/// entries from a capacity of `held`: it grows to the larger of what is needed and one more
+/// than it could hold, in a power of two of buckets of which seven eighths are used (three of
+/// four, seven of eight). The library's own rule, which no stable call asks it for; a test holds
+/// this to what a table really does, and what a table really took is what is counted.
+pub(crate) fn table_capacity(needed: usize, held: usize) -> usize {
+    let of = |entries: usize| match entries {
+        0..4 => 3,
+        4..8 => 7,
+        _ => (entries.saturating_mul(8) / 7).next_power_of_two() / 8 * 7,
+    };
+    // What it could hold is a whole table's capacity, of which `held` may be short by entries
+    // removed.
+    let full = if held == 0 { 0 } else { of(held) };
+    of(needed.max(full.saturating_add(1)))
+}
+
 /// Gives back `v`'s room once it holds under a quarter of it and that is more than [`GC_MIN`]
 /// entries, keeping twice its length and at least that: a deep stack or table costs nothing after.
 /// It moves into smaller storage if memory allows, else stays as it is.
@@ -843,6 +1068,8 @@ struct Marking<'a> {
     chunks: &'a [Option<Chunk>],
     top: u32,
     live: usize,
+    /// What the objects reached hold outside their slots.
+    bytes: usize,
 }
 
 impl<'a> Marking<'a> {
@@ -856,7 +1083,9 @@ impl<'a> Marking<'a> {
                     && s.gray.get() == UNMARKED
                 {
                     s.gray.set(END);
-                    self.live = self.live.saturating_add(weight(&s.obj));
+                    let (weight, bytes) = sizes(&s.obj);
+                    self.live = self.live.saturating_add(weight);
+                    self.bytes += bytes;
                 }
                 return;
             }
@@ -888,7 +1117,9 @@ impl<'a> Marking<'a> {
         {
             s.gray.set(self.top);
             self.top = r.idx;
-            self.live = self.live.saturating_add(weight(&s.obj));
+            let (weight, bytes) = sizes(&s.obj);
+            self.live = self.live.saturating_add(weight);
+            self.bytes += bytes;
         }
     }
 

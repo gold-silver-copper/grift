@@ -10,6 +10,11 @@
 //! the run as `exit` does, by a limit of kind `broken-pipe`, quietly and with 141, the status a
 //! shell gives a program that SIGPIPE ended.
 //!
+//! `GRIFT_MEMORY_LIMIT`, a number of bytes, limits what the interpreter holds: a program that
+//! would pass it ends with the limit `out-of-memory`, status 1, whatever the system would have
+//! given. The runner's own buffers, a file's or a process's output while it is read, are not the
+//! interpreter's and are not counted until they become a value.
+//!
 //! For scripting, the program gets a small fixed set of operations, which `runner.grift` binds and
 //! the README lists.
 
@@ -24,6 +29,12 @@ use std::time::{Duration, Instant, SystemTime};
 
 const USAGE: &str = "usage: grift [SCRIPT [ARGUMENT...]]\n  with no SCRIPT, reads the program \
                      from stdin (use `rlwrap grift` for line editing)";
+
+/// The environment variable that sets the interpreter's memory limit, in bytes
+/// (`Grift::set_memory_limit`). A variable, not an option: every word after `grift` is the
+/// script's or the script itself, and a process the program runs inherits the limit as it would
+/// one of the system's.
+const MEMORY_LIMIT: &str = "GRIFT_MEMORY_LIMIT";
 
 /// The setup of the operations on files, called with the host functions below.
 const RUNNER: &str = include_str!("runner.grift");
@@ -769,6 +780,20 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // The limit is on everything the interpreter holds from here on, the library it has just
+    // loaded included. A value that isn't a number of bytes is refused: no limit is guessed.
+    if let Some(limit) = std::env::var_os(MEMORY_LIMIT) {
+        match limit.to_str().and_then(|bytes| bytes.parse().ok()) {
+            Some(bytes) => g.set_memory_limit(Some(bytes)),
+            None => {
+                say(format_args!(
+                    "grift: {MEMORY_LIMIT} is not a number of bytes: {}\n",
+                    limit.to_string_lossy().escape_debug()
+                ));
+                return ExitCode::FAILURE;
+            }
+        }
+    }
     let mut words = Vec::new();
     for word in std::env::args_os().skip(1) {
         match word.into_string() {

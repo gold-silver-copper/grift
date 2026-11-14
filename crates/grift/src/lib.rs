@@ -18,7 +18,7 @@ mod tests;
 
 use heap::{Bindings, Heap, Ref, kind};
 use interrupt::Control;
-use local::{K, push};
+use local::K;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -567,7 +567,7 @@ impl<T> Grift<T> {
         let made = self.heap.intern(name).and_then(|s| {
             let id = u32::try_from(self.hosts.len()).map_err(|_| local::Error::oom())?;
             // The registration's room comes first and its entry last, when nothing can fail.
-            self.hosts.try_reserve(1)?;
+            self.heap.room(&mut self.hosts, 1)?;
             let host = self.heap.make(local::Value::Host(local::Host(id)))?;
             #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
             self.hosts.push((s, f));
@@ -724,7 +724,9 @@ impl<T> Grift<T> {
 
     /// A new bytes value holding a copy of `b`.
     pub fn bytes(&mut self, b: &[u8]) -> Result<Value, Error> {
-        let made = collected(b.iter().copied()).and_then(|b| self.bytes_local(b));
+        let made = (self.heap.fits(b.len()))
+            .and_then(|()| collected(b.iter().copied()))
+            .and_then(|b| self.bytes_local(b));
         self.exported(made)
     }
 
@@ -917,6 +919,49 @@ impl<T> Grift<T> {
         Some((self.name(source), line))
     }
 
+    /// Sets the most memory this interpreter may hold, in bytes, or `None` for no limit, which is
+    /// how it starts. What would take it past the limit is refused as the allocator's own refusal
+    /// is: the heap collects first where it can, the run ends with the limit `out-of-memory`
+    /// through its cleanups, and the interpreter is as usable after as before. It doesn't wait for
+    /// the allocator to refuse, which under an overcommitting system it rarely does.
+    ///
+    /// Counted, as [`Grift::memory_held`] reports: the heap's chunks of slots, garbage included
+    /// until a collection gives a chunk back; the text of strings, bytes values and names and the
+    /// bindings of contexts; the machine's stacks, a parked run's too; the table of kept values;
+    /// and the 128 KiB the heap holds back for a refusal. A new interpreter holds its library, so
+    /// a limit is best set as so much more than `memory_held` says then. Not counted: the
+    /// allocator's own bookkeeping, an error's values and trace on their way to the host, and
+    /// anything the host holds, a [`TextBuffer`] or a host function's own buffers among them.
+    ///
+    /// A limit below what is held gives nothing back by itself: every request for more is
+    /// refused until a collection has brought the count under it.
+    ///
+    /// ```
+    /// let mut g: grift::Grift = grift::Grift::new()?;
+    /// g.set_memory_limit(Some(g.memory_held() + (4 << 20)));
+    /// let hog = "(define! hog (lambda! (xs n) (hog (pair n xs) (add n 1)))) (hog () 0)";
+    /// let e = g.evaluate(&mut (), hog).unwrap_err();
+    /// assert!(e.grift_kind() == Some(grift::Kind::OutOfMemory) && e.limit);
+    /// assert_eq!(g.evaluate(&mut (), "(length (range 0 1000))")?, grift::Value::Integer(1000));
+    /// assert_eq!(g.memory_limit().map(|limit| limit >= g.memory_held()), Some(true));
+    /// g.set_memory_limit(None);
+    /// # Ok::<(), grift::Error>(())
+    /// ```
+    pub fn set_memory_limit(&mut self, bytes: Option<usize>) {
+        self.heap.set_limit(bytes);
+    }
+
+    /// The limit [`Grift::set_memory_limit`] set, if any.
+    pub fn memory_limit(&self) -> Option<usize> {
+        self.heap.limit()
+    }
+
+    /// The bytes this interpreter holds, as the memory limit counts them: exact after a
+    /// collection, and between two, that and everything taken since.
+    pub fn memory_held(&self) -> usize {
+        self.heap.held()
+    }
+
     /// A handle that stops one run of this interpreter from another thread: the run in progress,
     /// or, if none is, the next to begin. It never reaches another.
     pub fn interrupter(&self) -> Interrupter {
@@ -944,7 +989,7 @@ impl<T> Grift<T> {
             return Ok(name);
         }
         let name = u32::try_from(self.kept.len()).map_err(|_| local::Error::oom())?;
-        push(&mut self.kept, Entry::Free(None))?;
+        self.heap.push(&mut self.kept, Entry::Free(None))?;
         // Every collection walks the kept table, so a new entry brings the next one nearer.
         self.heap.charge(1);
         self.kept_free = Some(name);
