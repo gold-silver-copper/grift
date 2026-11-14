@@ -232,12 +232,16 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   program read, once, after a collection ([G-217], [G-218]).
 - A host's memory limit counts what the interpreter holds: the chunks, garbage included; the text
   of strings, bytes values and names and the bindings of contexts; the machine's stacks, a parked
-  run's too; the kept table; the slack and the spare room. Not the allocator's bookkeeping, an
-  error's values and trace, or what the host holds. The count is taken again at every collection
+  run's too; the kept and host-function tables; the reader's stacks and the text a program prints
+  to a string, while they are there; the slack and the spare room. Not the allocator's
+  bookkeeping, an error's values and trace, a copy no larger than what it copies, or what the
+  host holds. The count is taken again at every collection
   and added to in between ([G-220]). What would pass the limit is refused before the allocator is
   asked, by the rules for the allocator's refusal: slack, collection, spare room, cleanups, and
   the interpreter runs the next program. A string's or bytes value's room is checked before it is
-  asked for; every object is checked as it enters the heap ([G-221]). The runner takes its limit
+  asked for; every object is checked as it enters the heap, with the chunk its slot needs; a
+  vector or string that grows as a program asks grows only through `Heap::room`, checked for the
+  capacity it takes ([G-221]). The runner takes its limit
   from `GRIFT_MEMORY_LIMIT`, in bytes ([G-222]).
 - A run refused memory gives up a spare 64 KiB, the heap's from `Grift::new`, so its report can say
   where, and its garbage is collected as it ends, before its error goes to the host ([G-176], [G-218]).

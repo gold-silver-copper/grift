@@ -245,9 +245,10 @@ fn main() -> Result<(), Error> {
   implementation: the heap collects first where it can, the run's cleanups run, and the
   interpreter runs the next program. `memory_held` is what the limit counts: the heap's chunks,
   garbage included until a collection gives a chunk back; the text of strings, bytes values and
-  names and the bindings of contexts; the machine's stacks and a parked run's; the kept table; the
-  128 KiB the heap holds back. Not the allocator's bookkeeping, an error's values and trace on
-  their way out, or anything the host holds. A new interpreter holds its library, so set a limit
+  names and the bindings of contexts; the machine's stacks and a parked run's; the kept table and
+  the host functions'; the reader's stacks and the text `value-to-string` builds, while they are
+  there; the 128 KiB the heap holds back. Not the allocator's bookkeeping, an error's values and
+  trace on their way out, a copy no larger than the value it copies, or anything the host holds. A new interpreter holds its library, so set a limit
   as so much more than `memory_held()` says. One request for more than 64 KiB that would pass the
   limit is refused even when a collection could have made room for it, as at the allocator's
   limit: leave a program room for its garbage, which the heap keeps under about the size of its
@@ -569,7 +570,9 @@ allocator's limit and collects about eight times as often, still in proportion t
 A host's memory limit is refused by the same steps: the heap counts the bytes it and the machine
 hold, the slack and the spare room among them, and a chunk, a stack's or a table's growth, or a
 string's text that would take the count past the limit is treated as refused by the allocator
-before it is asked. A collection counts again from what is left, so the count can't drift.
+before it is asked. Every vector or string the interpreter grows as a program asks grows through
+one function (`Heap::room`), which checks the limit for the capacity it then takes, exactly. A
+collection counts again from what is left, so the count can't drift.
 An object the heap has no room for even so makes a collection
 due, before the next run needs room to read its input or build its call context, as does any memory
 refused that unwinds a run, and a run that ends refused collects as it ends. Reads and constructors

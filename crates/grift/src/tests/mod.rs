@@ -1872,3 +1872,93 @@ fn a_stop_ends_the_pairs_of_a_list_being_read() {
     define(&mut g, "reads", reads);
     let _ = g.evaluate(&mut (), "(reads)");
 }
+
+/// Storage the heap grows takes exactly what the limit was checked for and what is counted: a
+/// vector pushed to until it is refused holds its capacity's bytes at every step, and the count
+/// never passes the limit.
+#[test]
+fn storage_grows_by_what_the_limit_was_checked_for() {
+    let mut g: Grift = Grift::new().unwrap();
+    let before = g.heap.held();
+    g.heap.set_limit(Some(before + 100_000));
+    let mut v: Vec<Value> = Vec::new();
+    while g.heap.push(&mut v, Value::Inert).is_ok() {
+        // The slack room, given up on the way, is the other thing the count changes by.
+        let grown = v.capacity() * size_of::<Value>();
+        let held = g.heap.held();
+        assert!(held == before + grown || held + (64 << 10) == before + grown);
+        assert!(held <= before + 100_000, "{} places", v.len());
+    }
+    assert!(v.len() >= 4096, "{} places fitted", v.len());
+    g.heap.returned(&v);
+    assert!(g.heap.held() <= before);
+}
+
+/// The capacity a context's table is checked for before it grows is the capacity the standard
+/// library gives it: one entry at a time, and all at once.
+#[test]
+fn a_table_grows_to_the_capacity_the_limit_was_checked_for() {
+    use crate::heap::{Bindings, table_capacity};
+    let mut table = Bindings::default();
+    for n in 0..5000u32 {
+        let (len, held) = (table.len(), table.capacity());
+        if held == len {
+            table.try_reserve(1).unwrap();
+            assert_eq!(table.capacity(), table_capacity(len + 1, held), "at {n}");
+        }
+        table.insert(crate::local::Symbol(n), crate::local::Value::Inert);
+        let mut whole = Bindings::default();
+        whole.try_reserve(n as usize + 1).unwrap();
+        assert_eq!(
+            whole.capacity(),
+            table_capacity(n as usize + 1, 0),
+            "for {n}"
+        );
+    }
+}
+
+/// What is counted as it is taken is never less than what a collection then finds held: a host
+/// function's table entry, a parked run's machine, and the stack a deep parameter tree is
+/// matched on are each counted when they are made, not only at the next collection.
+#[test]
+fn a_collection_finds_no_more_held_than_was_counted() {
+    fn wait(_: &mut HostCall<()>, _: &mut (), _: &[Value]) -> Result<Answer, Error> {
+        Ok(Answer::Later(Value::Inert))
+    }
+    let collected = |g: &mut Grift| {
+        g.heap.request_collection();
+        g.prepare(std::iter::empty(), []);
+        g.heap.held()
+    };
+    type Act = fn(&mut Grift);
+    let acts: [(&str, Act); 3] = [
+        ("host functions", |g| {
+            for _ in 0..1000 {
+                g.host_function("wait", wait).unwrap();
+            }
+        }),
+        ("a parked run", |g| {
+            define(g, "wait", wait);
+            let top = g.top_level();
+            let ran = g.start_in(&mut (), &top, "script.grift", "(wait)");
+            assert!(matches!(ran, Ok(crate::Ran::Parked(_))));
+        }),
+        ("a deep parameter tree", |g| {
+            let (mut tree, mut value) = (Value::Symbol(g.symbol("x").unwrap()), Value::Inert);
+            for _ in 0..20_000 {
+                tree = g.pair(tree, Value::EmptyList).unwrap();
+                value = g.pair(value, Value::EmptyList).unwrap();
+            }
+            let record = g.context(None).unwrap();
+            g.bind(&record, &tree, value).unwrap();
+        }),
+    ];
+    for (what, act) in acts {
+        let mut g: Grift = Grift::new().unwrap();
+        collected(&mut g);
+        act(&mut g);
+        let counted = g.heap.held();
+        let found = collected(&mut g);
+        assert!(found <= counted, "{what}: counted {counted}, found {found}");
+    }
+}

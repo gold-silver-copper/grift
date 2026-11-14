@@ -4,6 +4,7 @@
 //! too deep for its stack as `...`.
 
 use crate::Grift;
+use crate::heap::Heap;
 use crate::interrupt::Control;
 use crate::local::{Error, K, Value, push};
 use std::fmt::{self, Write};
@@ -32,19 +33,44 @@ enum Item {
     Tail(Value, &'static str),
 }
 
+/// The text of a value a program prints to a string, which can be many times the size of the
+/// value (a shared piece prints once for each reference to it): the memory limit counts it and
+/// is checked as it grows.
+struct Counted<'a> {
+    text: String,
+    heap: &'a Heap,
+}
+
+impl Write for Counted<'_> {
+    fn write_str(&mut self, text: &str) -> fmt::Result {
+        (self.heap.room(&mut self.text, text.len())).map_err(|_| fmt::Error)?;
+        #[expect(clippy::disallowed_methods, reason = "room for text.len() above")]
+        self.text.push_str(text);
+        Ok(())
+    }
+}
+
 impl<T> Grift<T> {
     /// A new string of the text [`Grift::write`] writes for `v`.
     pub(crate) fn printed(&mut self, v: Value) -> Result<Value, Error> {
-        let mut s = TextBuffer::new();
+        let mut out = Counted {
+            text: String::new(),
+            heap: &self.heap,
+        };
+        let printed = self.print(v, &mut out);
+        let text = out.text;
         // All this output can refuse for is memory to grow.
-        self.print(v, &mut s).map_err(|e| {
-            if e.kind == K::OutputError.into() {
-                Error::oom()
-            } else {
-                e
-            }
-        })?;
-        self.string_local(s.as_str())
+        let made = printed
+            .map_err(|e| {
+                if e.kind == K::OutputError.into() {
+                    Error::oom()
+                } else {
+                    e
+                }
+            })
+            .and_then(|()| self.string_local(&text));
+        self.heap.returned(&text);
+        made
     }
 
     /// What [`Grift::write`] writes. A value from the heap is live: nothing stale gets in. Each

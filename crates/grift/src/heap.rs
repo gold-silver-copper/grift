@@ -279,8 +279,10 @@ pub(crate) struct Heap {
     /// Whether memory was refused since a run last asked: a run that ends so collects as it ends,
     /// whatever collections its cleanups had on the way.
     refused: Cell<bool>,
-    /// The most bytes [`Heap::held`] may reach, or `usize::MAX` for no limit: the host's to set.
+    /// The most bytes [`Heap::held`] may reach, the host's to set, and whether it set one: with
+    /// none this is `usize::MAX`, which nothing passes.
     limit: usize,
+    limited: bool,
     /// The bytes the interpreter holds, as the limit counts them: what the last collection found
     /// (the chunks, the live objects' [`payload`], the spare and slack room, and the machine
     /// stacks and tables outside the heap) and what was taken since. Garbage is held until a
@@ -337,6 +339,7 @@ impl Heap {
             asked: Cell::new(false),
             refused: Cell::new(false),
             limit: usize::MAX,
+            limited: false,
             held: Cell::new(0),
             #[cfg(test)]
             probe: probe::Probe::default(),
@@ -363,14 +366,14 @@ impl Heap {
 
     /// The memory limit, if the host set one.
     pub fn limit(&self) -> Option<usize> {
-        Some(self.limit).filter(|&limit| limit != usize::MAX)
+        self.limited.then_some(self.limit)
     }
 
     /// Sets the memory limit, or none. The next run collects before it begins, so the count it
     /// is held to is of what is live; what is held past a lower limit stays held, and nothing
     /// more is given until a collection has brought the count under it.
     pub fn set_limit(&mut self, limit: Option<usize>) {
-        self.limit = limit.unwrap_or(usize::MAX);
+        (self.limit, self.limited) = (limit.unwrap_or(usize::MAX), limit.is_some());
         self.request_collection();
     }
 
@@ -398,25 +401,45 @@ impl Heap {
         }
     }
 
-    /// Room for `more` on `stack`, one of a machine's: under the limit, and the slack room stands
-    /// behind it as it does behind a chunk. What it grows by is counted.
+    /// Room for `more` in `storage`, a vector or a string the interpreter grows as a program
+    /// asks: one of a machine's stacks, a table, the reader's or the printer's buffer. The one
+    /// way such storage grows: to twice its size or to what is asked, whichever is more, asked
+    /// of the allocator as exactly that, so what the limit is checked for is what is taken; the
+    /// slack room stands behind it as it does behind a chunk; and what it grows by is counted.
+    /// Storage dropped before the next collection is given back with [`Heap::returned`].
     #[inline]
-    pub fn room<X>(&self, stack: &mut Vec<X>, more: usize) -> Result<(), Error> {
-        if stack.capacity() - stack.len() >= more {
+    pub fn room<G: Grows>(&self, storage: &mut G, more: usize) -> Result<(), Error> {
+        if storage.capacity() - storage.len() >= more {
             return Ok(());
         }
-        self.grown(stack, more)
+        self.grown(storage, more)
     }
 
     #[cold]
-    fn grown<X>(&self, stack: &mut Vec<X>, more: usize) -> Result<(), Error> {
-        let before = stack.capacity();
-        // A vector grows to twice its size at least.
-        self.fits(before.max(more).saturating_mul(size_of::<X>()))?;
-        self.reserving(|| stack.try_reserve(more))?;
-        let grown = (stack.capacity() - before).saturating_mul(size_of::<X>());
+    fn grown<G: Grows>(&self, storage: &mut G, more: usize) -> Result<(), Error> {
+        let (len, before) = (storage.len(), storage.capacity());
+        let needed = len.checked_add(more).ok_or_else(|| self.refused())?;
+        let target = needed.max(before.saturating_mul(2));
+        self.fits((target - before).saturating_mul(G::UNIT))?;
+        self.reserving(|| storage.exactly(target - len))?;
+        let grown = (storage.capacity() - before).saturating_mul(G::UNIT);
         self.held.set(self.held.get().saturating_add(grown));
         Ok(())
+    }
+
+    /// Pushes onto a vector grown by [`Heap::room`].
+    #[inline]
+    pub fn push<X>(&self, v: &mut Vec<X>, x: X) -> Result<(), Error> {
+        self.room(v, 1)?;
+        #[expect(clippy::disallowed_methods, reason = "room for 1 above")]
+        v.push(x);
+        Ok(())
+    }
+
+    /// Storage grown by [`Heap::room`] is dropped: its bytes are no longer held.
+    pub fn returned(&self, storage: &impl Grows) {
+        let bytes = storage.capacity().saturating_mul(storage.unit());
+        self.held.set(self.held.get().saturating_sub(bytes));
     }
 
     /// Makes `attempt`, a request for memory the machine's growth needs, and if it is refused
@@ -510,11 +533,15 @@ impl Heap {
         }
         // What an object holds outside its slot is counted as it comes in, and refused past the
         // limit: the one place every string, bytes value, name and context passes.
+        // It is counted before a chunk is asked for, so the two together stay under the limit,
+        // and uncounted again if there is no slot for it after all.
         let outside = payload(&obj);
         if outside > 0 && !self.allows(outside) {
             return Err(self.refused());
         }
+        *self.held.get_mut() += outside;
         if self.free == NONE && !self.grow() {
+            *self.held.get_mut() -= outside;
             return Err(self.refused());
         }
         let idx = self.free;
@@ -523,13 +550,13 @@ impl Heap {
         {
             slot.obj = obj;
             self.free = next;
-            *self.held.get_mut() += outside;
             return Ok(Ref {
                 idx,
                 generation: slot.generation,
                 kind: PhantomData,
             });
         }
+        *self.held.get_mut() -= outside;
         Err(self.refused())
     }
 
@@ -576,9 +603,12 @@ impl Heap {
     fn room_in(&mut self, r: Ref<kind::Context>, more: usize) -> Result<&mut Bindings, Error> {
         let (_, bindings) = self.get(r)?;
         let (before, held) = (bindings_weight(bindings), bindings.capacity());
-        // A table that must grow grows to twice its size at least: under the limit, or not at all.
+        // A table that must grow is checked for the capacity it will have: under the limit, or
+        // it doesn't grow at all.
         if held - bindings.len() < more {
-            self.fits(held.max(more).saturating_mul(size_of::<(Symbol, Value)>()))?;
+            let needed = bindings.len().saturating_add(more);
+            let grown = table_capacity(needed, held).saturating_sub(held);
+            self.fits(grown.saturating_mul(size_of::<(Symbol, Value)>()))?;
         }
         let (_, bindings) = live_mut(&mut self.chunks, r)?;
         if bindings.try_reserve(more).is_err() {
@@ -961,6 +991,62 @@ fn bindings_weight(b: &Bindings) -> usize {
     (b.capacity() * size_of::<(Symbol, Value)>())
         .div_ceil(size_of::<Slot>())
         .saturating_sub(1)
+}
+
+/// Storage [`Heap::room`] grows: a vector or a string.
+pub(crate) trait Grows {
+    /// The bytes one place takes.
+    const UNIT: usize;
+    fn len(&self) -> usize;
+    fn capacity(&self) -> usize;
+    /// Room for exactly `more` places past its length, if memory allows.
+    fn exactly(&mut self, more: usize) -> Result<(), std::collections::TryReserveError>;
+    fn unit(&self) -> usize {
+        Self::UNIT
+    }
+}
+
+impl<X> Grows for Vec<X> {
+    const UNIT: usize = size_of::<X>();
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn exactly(&mut self, more: usize) -> Result<(), std::collections::TryReserveError> {
+        self.try_reserve_exact(more)
+    }
+}
+
+impl Grows for String {
+    const UNIT: usize = 1;
+    fn len(&self) -> usize {
+        self.len()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity()
+    }
+    fn exactly(&mut self, more: usize) -> Result<(), std::collections::TryReserveError> {
+        self.try_reserve_exact(more)
+    }
+}
+
+/// The capacity the standard library's hash table has once it has grown to hold `needed`
+/// entries from a capacity of `held`: it grows to the larger of what is needed and one more
+/// than it could hold, in a power of two of buckets of which seven eighths are used (three of
+/// four, seven of eight). The library's own rule, which no stable call asks it for; a test holds
+/// this to what a table really does, and what a table really took is what is counted.
+pub(crate) fn table_capacity(needed: usize, held: usize) -> usize {
+    let of = |entries: usize| match entries {
+        0..4 => 3,
+        4..8 => 7,
+        _ => (entries.saturating_mul(8) / 7).next_power_of_two() / 8 * 7,
+    };
+    // What it could hold is a whole table's capacity, of which `held` may be short by entries
+    // removed.
+    let full = if held == 0 { 0 } else { of(held) };
+    of(needed.max(full.saturating_add(1)))
 }
 
 /// Gives back `v`'s room once it holds under a quarter of it and that is more than [`GC_MIN`]

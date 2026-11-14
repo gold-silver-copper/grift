@@ -2407,10 +2407,15 @@ may overrule any.
     each, garbage included until a collection drops a chunk); what an object holds outside its slot (a
     string's text, a bytes value's capacity, a name's spelling twice with its index entry, a context's
     bindings at capacity times 24 bytes); the four stacks of the running machine and of each parked one;
-    the kept table and the host functions' table; the 64 KiB slack and the 64 KiB spare while held.
+    the kept table and the host functions' table; a parked run's machine; the reader's stacks of open
+    lists and items and the text `value-to-string` builds, while they exist; the 64 KiB slack and the
+    64 KiB spare while held.
   - **Not counted.** The allocator's own bookkeeping and a hash table's control bytes (about a fifth more
     for a table); the list of chunks (8 bytes per 64 KiB); an error's values and trace on their way to the
     host and the printer's stack (the spare room, which is counted, is what they use after a refusal);
+    a short-lived copy no larger than the value it is made from (a list's items in a vector, a
+    context's names to sort, a call's arguments for a host function, the bindings matched before
+    `bind` adds them, a `#bytes(` literal's bytes); the queue of forgotten runs;
     whatever the host holds: its `TextBuffer`, a host function's buffers, the runner's reads.
   - **Why this count.** A limit is for the process's memory, and garbage and empty capacity are memory:
     live payload would let a heap of garbage pass any limit, and cumulative allocation would refuse a loop
@@ -2420,7 +2425,10 @@ may overrule any.
     from what exists (chunks left, payloads of the objects marked, the stacks' capacity), and between two
     it is that plus what was taken. Nothing subtracts on a free, so no path can leak the count upward for
     good. What is freed outside a collection (a stack tidied, a parked run dropped, the kept table
-    shrunk) counts until the next one.
+    shrunk) counts until the next one. One exception, added in review: a buffer made and dropped inside
+    one primitive (the reader's stacks, the printer's text) is uncounted as it is dropped
+    (`Heap::returned`), in the function that made it, or a loop of prints would be refused for buffers
+    long gone.
   - **Cost with no limit.** The count is kept either way, so `memory_held` works without a limit: one
     addition for an object with storage outside its slot (none for a pair), one comparison with
     `usize::MAX`, and a sum over marked objects at a collection. Stacks check only when they grow.
@@ -2435,19 +2443,31 @@ may overrule any.
     them would pass the limit, at the place the allocator's answer is read, so the same steps follow:
     the slack is given up (the count drops by it), the request is made once more, the next safe point
     collects, a run that ends refused gives up the spare, runs its cleanups and collects as it ends.
-  - Every object is checked as it enters the heap, the one place all of them pass. A string or bytes
-    value whose size a program chooses (`join`, `slice`, `bytes-to-string`, a host's `string` and `bytes`)
-    is checked before its room is asked for too, so `(join s s …)` can't ask the allocator for many
-    times the limit first. A value built in a buffer first (a string literal as it is read,
-    `list-to-bytes`) is checked when it becomes an object: it is no larger than the text or list it is
-    made from, which the limit already allowed.
+  - Every object is checked as it enters the heap, the one place all of them pass, and its bytes are
+    counted before the chunk its slot may need is asked for, so the two together stay under the limit.
+    A string or bytes value whose size a program chooses (`join`, `slice`, `bytes-to-string`, a host's
+    `string` and `bytes`) is checked before its room is asked for too, so `(join s s …)` can't ask the
+    allocator for many times the limit first.
+  - **One owner for storage that grows** (review round 1, which found six places that grew unchecked
+    or were checked for less than they took). A vector or string the interpreter grows as a program
+    asks grows only through `Heap::room`: the machine's four stacks, the kept and host-function
+    tables, a parked run's room, the reader's stacks, the text `value-to-string` builds. It asks the
+    allocator for exactly the capacity it checked (twice the old, or what is needed), where
+    `Vec::try_reserve` chooses its own, and counts what the storage then has. A context's table can't
+    be asked for an exact capacity, so the heap computes the one the standard library will give
+    (`table_capacity`), a test holds that to what a table really does, and what the table took is what
+    is counted. `value-to-string` was the worst: 1,000 references to one megabyte string asked the
+    allocator for a gigabyte under an 8 MiB limit; now 8 MiB and a little.
+  - A value built in a small buffer first (a string literal as it is read, `list-to-bytes`) is checked
+    when it becomes an object: it is no larger than the text or list it is made from, which the limit
+    already allowed.
   - **What it doesn't cover**, as G-217 says of the allocator: one request for more than the 64 KiB
     slack that would pass the limit is refused though a collection could have made room. Tried and
     removed: bringing the next collection forward to when the room under the limit is used up. It
     triggers exactly when the limit is reached, which the slack already handles, and no test could tell
     the two apart.
   - A limit set below what is held gives nothing back by itself; setting or clearing one asks for a
-    collection as the next run begins.
+    collection as the next run begins. `Some(usize::MAX)` is a limit, read back as one, not none.
 - **G-222. The runner's limit is the environment variable `GRIFT_MEMORY_LIMIT`, in bytes.** The runner has
   no options: every word after `grift` is the script or the script's. A variable leaves that alone, and a
   grift a program starts with `run-process` inherits it, as it would `ulimit`. Plain bytes, no suffixes;

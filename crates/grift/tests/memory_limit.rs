@@ -93,6 +93,9 @@ fn the_limit_is_off_until_set_and_off_again_when_cleared() {
     g.set_memory_limit(None);
     assert_eq!(g.memory_limit(), None);
     assert!(g.string(&megabyte).is_ok());
+    // The largest limit is a limit all the same, not none.
+    g.set_memory_limit(Some(usize::MAX));
+    assert_eq!(g.memory_limit(), Some(usize::MAX));
 }
 
 /// What `make` holds is counted, and so refused under a limit with less room than it needs, while
@@ -166,17 +169,76 @@ fn the_limit_counts_the_kept_table() {
     });
 }
 
+/// The limit counts the table of host functions: 16 bytes an entry, besides the slot each
+/// function's value takes.
+#[test]
+fn the_limit_counts_the_host_functions_table() {
+    counted("host functions", (64 + 16) * 100_000, |g| {
+        (0..100_000).all(|_| {
+            g.host_function("f", |_, _, _| Ok(Answer::Now(Value::Inert)))
+                .is_ok()
+        })
+    });
+}
+
+/// Whatever a host makes, however large, the count never passes the limit: an object's bytes
+/// outside its slot and the chunk its slot needs are checked together, and a table or a stack
+/// is checked for the room it really takes as it grows.
+#[test]
+fn nothing_made_takes_the_count_past_the_limit() {
+    let filled = |what: &str, make: &dyn Fn(&mut Grift, usize) -> bool| {
+        let mut g: Grift = Grift::new().unwrap();
+        let limit = g.memory_held() + 3 * MIB;
+        g.set_memory_limit(Some(limit));
+        let made = (0..10_000_000).take_while(|&i| {
+            let made = make(&mut g, i);
+            assert!(g.memory_held() <= limit, "{what} {i} passed the limit");
+            made
+        });
+        assert!(made.count() < 10_000_000, "{what} was never refused");
+    };
+    for size in [1, 1000, 60_000, 65_536, 70_000, 200_000] {
+        let text = "x".repeat(size);
+        filled("a string", &|g, _| g.string(&text).is_ok());
+    }
+    // A string made when no slot is free needs a chunk as well as its text: pairs until a chunk
+    // of 1,024 slots is added, the 1,023 left in it, and then a limit with room for either the
+    // text or the chunk, not both.
+    let mut g: Grift = Grift::new().unwrap();
+    let held = g.memory_held();
+    while g.memory_held() == held {
+        g.pair(Value::Inert, Value::Inert).unwrap();
+    }
+    for _ in 0..1023 {
+        g.pair(Value::Inert, Value::Inert).unwrap();
+    }
+    let limit = g.memory_held() + (64 << 10) + 30_000;
+    g.set_memory_limit(Some(limit));
+    let _ = g.string(&"x".repeat(60_000));
+    assert!(g.memory_held() <= limit, "a string and its chunk");
+    filled("a kept value", &|g, i| {
+        g.keep(Value::Integer(i as i64)).is_ok()
+    });
+    filled("a pair", &|g, _| g.pair(Value::Inert, Value::Inert).is_ok());
+    filled("a host function", &|g, _| {
+        g.host_function("f", |_, _, _| Ok(Answer::Now(Value::Inert)))
+            .is_ok()
+    });
+    filled("a binding", &|g, i| {
+        let name = g.symbol(&format!("n{i}")).map(Value::Symbol);
+        let top = g.top_level();
+        name.is_ok_and(|name| g.bind(&top, &name, Value::Inert).is_ok())
+    });
+}
+
 /// The limit counts the machine's stacks. A sum nested 50,000 deep makes no object as it is
 /// evaluated, only frames and waiting arguments, so what is held at its innermost place, past
-/// what was held once the program was read, is the stacks': 56 bytes a frame at least.
+/// what was held as it began, is the stacks': 56 bytes a frame at least. It is read before the
+/// limit is set, as the body of `deep`, so the limit's room is for evaluating it alone.
 #[test]
 fn the_limit_counts_the_machine_s_stacks() {
     const DEPTH: usize = 50_000;
-    let program = format!(
-        "(held) {}(held){}",
-        "(add 1 ".repeat(DEPTH),
-        ")".repeat(DEPTH)
-    );
+    let nested = format!("{}(held){}", "(add 1 ".repeat(DEPTH), ")".repeat(DEPTH));
     let run = |room: Option<usize>| {
         let mut g: Grift<Vec<usize>> = Grift::new().unwrap();
         let held = g.host_function("held", |g, seen: &mut Vec<usize>, _| {
@@ -184,12 +246,15 @@ fn the_limit_counts_the_machine_s_stacks() {
             Ok(Answer::Now(Value::Integer(0)))
         });
         g.define("held", held.unwrap()).unwrap();
-        // The program's text, read, is the same with and without a limit: the limit leaves room
-        // for it and `room` more.
-        let read = 3 * 64 * (DEPTH + 2) + 2 * MIB;
-        g.set_memory_limit(room.map(|room| g.memory_held() + read + room));
         let mut seen = Vec::new();
-        let done = g.evaluate(&mut seen, &program);
+        let deep = format!("(define! deep (lambda! () {nested}))");
+        g.evaluate(&mut seen, &deep).unwrap();
+        // Setting a limit asks for a collection as the next run begins: the room is past what
+        // is live after it.
+        g.set_memory_limit(None);
+        g.evaluate(&mut seen, "1").unwrap();
+        g.set_memory_limit(room.map(|room| g.memory_held() + room));
+        let done = g.evaluate(&mut seen, "(held) (deep)");
         (done.map_err(|e| e.grift_kind()), seen)
     };
     let (done, seen) = run(None);

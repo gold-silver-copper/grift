@@ -423,7 +423,7 @@ impl Machine {
         crate::heap::tidy(work);
     }
 
-    /// The bytes its stacks hold, with the machine itself, for the memory limit's count.
+    /// The bytes its stacks hold, for the memory limit's count.
     pub(crate) fn bytes(&self) -> usize {
         let Machine {
             frames,
@@ -434,8 +434,7 @@ impl Machine {
             request: _,
             handed: _,
         } = self;
-        size_of::<Machine>()
-            + frames.capacity() * size_of::<Frame>()
+        frames.capacity() * size_of::<Frame>()
             + arguments.capacity() * size_of::<Value>()
             + waiting.capacity() * size_of::<Result<Value, Error>>()
             + work.capacity() * size_of::<(Value, Value)>()
@@ -580,12 +579,22 @@ impl<T> Grift<T> {
             return Err(Error::new(K::CannotPark, &[]));
         }
         let mut room = Vec::new();
-        room.try_reserve_exact(1)?;
-        let name = self.free_name()?;
-        self.room_to_forget()?;
-        if !self.control.parks() {
-            return Err(Error::interrupted());
-        }
+        self.heap.room(&mut room, 1)?;
+        let ready = self.free_name().and_then(|name| {
+            self.room_to_forget()?;
+            if self.control.parks() {
+                Ok(name)
+            } else {
+                Err(Error::interrupted())
+            }
+        });
+        let name = match ready {
+            Ok(name) => name,
+            Err(e) => {
+                self.heap.returned(&room);
+                return Err(e);
+            }
+        };
         self.machine.request = request;
         #[expect(
             clippy::disallowed_methods,
@@ -899,7 +908,10 @@ impl<T> Grift<T> {
         // one, and the kept table and the host functions' at their capacity. The kept table is
         // counted before it is tidied, so room it gives back counts until the next collection.
         let parked = self.kept.iter().map(|entry| match entry {
-            Entry::Run(room) => room.iter().map(Machine::bytes).sum(),
+            Entry::Run(room) => {
+                room.capacity() * size_of::<Machine>()
+                    + room.iter().map(Machine::bytes).sum::<usize>()
+            }
             _ => 0,
         });
         let outside = self.machine.bytes()
@@ -1808,7 +1820,7 @@ impl<T> Grift<T> {
     ) -> Result<(), Error> {
         let mut work = std::mem::take(&mut self.machine.work);
         work.clear();
-        let mut result = push(&mut work, (tree, value));
+        let mut result = self.heap.push(&mut work, (tree, value));
         let mut walked = 0;
         while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
             result = self.control.walk(&mut walked).and_then(|()| match (t, v) {
@@ -1822,8 +1834,8 @@ impl<T> Grift<T> {
                 #[expect(clippy::disallowed_methods, reason = "a tree walk charged above")]
                 (Value::Pair(t), Value::Pair(v)) => self.heap.pair_at(t).and_then(|(ta, tb, _)| {
                     let (va, vb, _) = self.heap.pair_at(v)?;
-                    push(&mut work, (tb, vb))?;
-                    push(&mut work, (ta, va))
+                    self.heap.push(&mut work, (tb, vb))?;
+                    self.heap.push(&mut work, (ta, va))
                 }),
                 (Value::Pair(_) | Value::EmptyList, _) => Err(Error::new(K::ArityError, &[value])),
                 _ => Err(Error::new(K::ParameterError, &[tree])),

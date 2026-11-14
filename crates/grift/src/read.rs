@@ -152,22 +152,30 @@ impl<T> Grift<T> {
         source: Option<Symbol>,
         library: bool,
     ) -> Result<Value, Error> {
+        // The reader's buffers grow with the text, by more bytes than it has, so the memory
+        // limit counts them while they are there.
         let mut forms = Vec::new();
+        let read = self.read_forms(&mut forms, src, source, library);
+        self.heap.returned(&forms);
+        read
+    }
+
+    fn read_forms(
+        &mut self,
+        forms: &mut Vec<Value>,
+        src: &str,
+        source: Option<Symbol>,
+        library: bool,
+    ) -> Result<Value, Error> {
         let (mut at, mut line, mut walked) = (0, 1, 0);
         while let Some((form, place, after)) =
             self.read_form(src, at, line, source, &mut walked, library)?
         {
-            push(&mut forms, form)?;
+            self.heap.push(forms, form)?;
             (at, line) = (place.end, after);
         }
-        self.close(
-            &mut forms,
-            &List::new(0, 0, 1),
-            None,
-            false,
-            library,
-            &mut walked,
-        )
+        let all = List::new(0, 0, 1);
+        self.close(forms, &all, None, false, library, &mut walked)
     }
 
     /// Reads the form after byte offset `from` of `src`, a character boundary on line `line`: the
@@ -176,6 +184,28 @@ impl<T> Grift<T> {
     /// code if `library`, else the program's.
     pub(crate) fn read_form(
         &mut self,
+        src: &str,
+        from: usize,
+        line: u32,
+        source: Option<Symbol>,
+        walked: &mut usize,
+        library: bool,
+    ) -> Result<Option<(Value, Range<usize>, u32)>, Error> {
+        let (mut open, mut items) = (Vec::new(), Vec::new());
+        let read = self.read_form_with(
+            &mut open, &mut items, src, from, line, source, walked, library,
+        );
+        self.heap.returned(&open);
+        self.heap.returned(&items);
+        read
+    }
+
+    /// [`Grift::read_form`], on its stacks of open lists and of their items.
+    #[expect(clippy::too_many_arguments, reason = "read_form's, and its two stacks")]
+    fn read_form_with(
+        &mut self,
+        open: &mut Vec<List>,
+        items: &mut Vec<Value>,
         src: &str,
         from: usize,
         line: u32,
@@ -193,7 +223,6 @@ impl<T> Grift<T> {
         };
         cur.skip_space()?;
         let start = cur.at;
-        let (mut open, mut items): (Vec<List>, _) = (Vec::new(), Vec::new());
         loop {
             cur.skip_space()?;
             let begin = cur.at;
@@ -206,7 +235,8 @@ impl<T> Grift<T> {
             };
             let datum = match c {
                 '(' => {
-                    push(&mut open, List::new(items.len(), begin, cur.line))?;
+                    self.heap
+                        .push(open, List::new(items.len(), begin, cur.line))?;
                     continue;
                 }
                 ')' => match open.pop() {
@@ -216,7 +246,7 @@ impl<T> Grift<T> {
                     Some(list) if list.dot != Dot::Tail => {
                         let place = source.map(|s| (s, list.line));
                         let outer = open.is_empty();
-                        self.close(&mut items, &list, place, outer, library, cur.walked)?
+                        self.close(items, &list, place, outer, library, cur.walked)?
                     }
                     Some(_) => return Err(fail(K::MisplacedDot)),
                     None => return Err(fail(K::UnmatchedParenthesis)),
@@ -241,7 +271,7 @@ impl<T> Grift<T> {
                             bytes: Some(Vec::new()),
                             ..List::new(items.len(), cur.at, cur.line)
                         };
-                        push(&mut open, list)?;
+                        self.heap.push(open, list)?;
                         cur.next()?;
                         continue;
                     }
@@ -263,7 +293,7 @@ impl<T> Grift<T> {
                     push(bytes, byte.ok_or_else(|| fail(K::BadByte))?)?;
                 }
                 None if list.dot == Dot::Tail => (list.tail, list.dot) = (datum, Dot::Done),
-                None => push(&mut items, datum)?,
+                None => self.heap.push(items, datum)?,
             }
         }
     }
