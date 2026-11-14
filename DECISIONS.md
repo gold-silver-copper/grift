@@ -2432,11 +2432,14 @@ may overrule any.
   - **Cost with no limit.** The count is kept either way, so `memory_held` works without a limit: one
     addition for an object with storage outside its slot (none for a pair), one comparison with
     `usize::MAX`, and a sum over marked objects at a collection. Stacks check only when they grow.
-    Measured once on desk (x86-64, idle, release, five interleaved turns, user seconds, medians), master
-    to this change, no limit set: `fib 30` 1.066 to 1.067 s (+0.1%), `life` 100x100 wrapped for 30
-    generations 1.187 to 1.159 s (-2.4%), 150,000 live pairs then `fib 29` 0.769 to 0.766 s (-0.4%).
-    The first version looked at each marked object twice, once for its weight and once for its bytes,
-    and cost fib +3.6% and the pair program +4.3%; one look for both (`sizes`) cost nothing.
+    Measured on desk (x86-64, idle, release, five interleaved turns, user seconds, medians), master to
+    this change, no limit set: `fib 30` 1.069 to 1.081 s (+1.1%), `life` 100x100 wrapped for 30
+    generations 1.182 to 1.168 s (-1.2%), 150,000 live pairs then `fib 29` 0.768 to 0.777 s (+1.2%).
+    Before the review's changes, which touch only paths taken when storage grows, the same three were
+    +0.1%, -2.4% and -0.4%; turns differ by about half a percent, so a percent either way is where the
+    measurement ends, and its cause was not looked for. The first version looked at each marked object
+    twice, once for its weight and once for its bytes, and cost fib +3.6% and the pair program +4.3%;
+    one look for both (`sizes`) removed that.
 - **G-221. What would pass the limit is refused as the allocator's refusal is, before the allocator is
   asked** (extends G-217 and G-218 to the limit; G-12 stands, allocation never collects).
   - A chunk, a stack's or a context's growth, the slack and the spare are refused when the count with
