@@ -19,24 +19,6 @@ fn allowed(after: usize) -> bool {
     let ok = after <= LIMIT.get();
     if ok {
         LIVE.set(after);
-    } else if TRACE.get() > 0 {
-        TRACE.set(TRACE.get() - 1);
-        let s = LIMIT.replace(usize::MAX);
-        let l = LIVE.get();
-        let bt = format!("{}", std::backtrace::Backtrace::force_capture());
-        let lines: Vec<&str> = bt
-            .lines()
-            .filter(|l| l.contains("grift") && !l.contains("out_of_memory"))
-            .take(8)
-            .collect();
-        eprintln!(
-            "REFUSED live-room={} want={}\n{}",
-            s - l,
-            after - l,
-            lines.join("\n")
-        );
-        LIVE.set(l);
-        LIMIT.set(s);
     }
     ok
 }
