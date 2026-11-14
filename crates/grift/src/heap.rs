@@ -218,11 +218,25 @@ const GC_MIN: usize = 4096;
 /// How many objects `obj` counts as, for when to collect.
 #[inline]
 fn weight(obj: &Object) -> usize {
+    sizes(obj).0
+}
+
+/// An object's [`weight`] and its [`payload`], from one look at it.
+#[inline]
+fn sizes(obj: &Object) -> (usize, usize) {
+    let slots = |bytes: usize| bytes.div_ceil(size_of::<Slot>());
     match obj {
-        Object::String(s) | Object::Symbol(s) => 1 + s.len().div_ceil(size_of::<Slot>()),
-        Object::Bytes(b) => 1 + b.capacity().div_ceil(size_of::<Slot>()),
-        Object::Context((_, b)) => 1 + bindings_weight(b),
-        _ => 1,
+        Object::String(s) => (1 + slots(s.len()), s.len()),
+        Object::Symbol(s) => (
+            1 + slots(s.len()),
+            2 * s.len() + size_of::<(Box<str>, u32)>(),
+        ),
+        Object::Bytes(b) => (1 + slots(b.capacity()), b.capacity()),
+        Object::Context((_, b)) => {
+            let bytes = b.capacity() * size_of::<(Symbol, Value)>();
+            (1 + slots(bytes).saturating_sub(1), bytes)
+        }
+        _ => (1, 0),
     }
 }
 
@@ -231,13 +245,7 @@ fn weight(obj: &Object) -> usize {
 /// bindings at their capacity. Not the allocator's own bookkeeping, nor a table's control bytes.
 #[inline]
 fn payload(obj: &Object) -> usize {
-    match obj {
-        Object::String(s) => s.len(),
-        Object::Symbol(s) => 2 * s.len() + size_of::<(Box<str>, u32)>(),
-        Object::Bytes(b) => b.capacity(),
-        Object::Context((_, b)) => b.capacity() * size_of::<(Symbol, Value)>(),
-        _ => 0,
-    }
+    sizes(obj).1
 }
 
 pub(crate) struct Heap {
@@ -989,8 +997,9 @@ impl<'a> Marking<'a> {
                     && s.gray.get() == UNMARKED
                 {
                     s.gray.set(END);
-                    self.live = self.live.saturating_add(weight(&s.obj));
-                    self.bytes = self.bytes.saturating_add(payload(&s.obj));
+                    let (weight, bytes) = sizes(&s.obj);
+                    self.live = self.live.saturating_add(weight);
+                    self.bytes += bytes;
                 }
                 return;
             }
@@ -1022,8 +1031,9 @@ impl<'a> Marking<'a> {
         {
             s.gray.set(self.top);
             self.top = r.idx;
-            self.live = self.live.saturating_add(weight(&s.obj));
-            self.bytes = self.bytes.saturating_add(payload(&s.obj));
+            let (weight, bytes) = sizes(&s.obj);
+            self.live = self.live.saturating_add(weight);
+            self.bytes += bytes;
         }
     }
 
