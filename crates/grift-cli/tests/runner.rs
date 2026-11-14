@@ -173,6 +173,53 @@ fn a_start_refused_memory_says_out_of_memory() {
     }
 }
 
+/// `GRIFT_MEMORY_LIMIT` is the interpreter's limit in bytes: a program that would hold more ends
+/// with `out-of-memory` and status 1, long before the system would refuse it anything, one that
+/// fits runs, and a value that is no number of bytes is refused before anything runs. The
+/// runner's process and its environment are what is tested, so no generator, twin or guard can
+/// say it.
+#[test]
+fn the_runner_s_memory_limit_is_an_environment_variable() {
+    let dir = scratch("memory-limit");
+    let hog = "(display 1) (define! hog (lambda! (xs n) (hog (pair n xs) (add n 1)))) (hog () 0)";
+    for (limit, program, status, out, err) in [
+        ("33554432", hog, 1, "1", "out-of-memory"),
+        (
+            "33554432",
+            "(display (length (range 0 1000)))",
+            0,
+            "1000",
+            "",
+        ),
+        (
+            "32m",
+            "(display 1)",
+            1,
+            "",
+            "GRIFT_MEMORY_LIMIT is not a number of bytes: 32m",
+        ),
+    ] {
+        let path = dir.join("script.grift");
+        std::fs::write(&path, program).unwrap();
+        let ran = Command::new(env!("CARGO_BIN_EXE_grift"))
+            .arg(&path)
+            .env("GRIFT_MEMORY_LIMIT", limit)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let (said, failed) = (
+            String::from_utf8(ran.stdout).unwrap(),
+            String::from_utf8(ran.stderr).unwrap(),
+        );
+        assert_eq!(
+            (ran.status.code(), said.as_str()),
+            (Some(status), out),
+            "{limit}: {failed}"
+        );
+        assert!(failed.contains(err), "{limit}: {failed}");
+    }
+}
+
 /// A path or an argument with a zero byte in it is the error it always was, however long: the
 /// system's limit on length doesn't come before it.
 #[test]

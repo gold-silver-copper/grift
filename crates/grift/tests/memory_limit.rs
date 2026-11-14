@@ -48,8 +48,8 @@ fn a_program_over_the_limit_is_refused_and_the_next_one_runs() {
 
 /// A program that fits the limit is refused nothing, on every run: what a run leaves is garbage,
 /// collected before the limit refuses anything for it. `range` is 30,000 calls deep, so its
-/// frames and contexts are most of what it needs; the strings are a megabyte each, far more than
-/// the heap's slack, and garbage as soon as the next is made.
+/// frames and contexts are most of what it needs; the strings double to a megabyte, each garbage
+/// as soon as the next is made.
 #[test]
 fn a_program_under_the_limit_runs_as_with_none() {
     let small = "(length (list (add 1 2) (join \"a\" \"b\") (length (range 0 100))))";
@@ -63,6 +63,10 @@ fn a_program_under_the_limit_runs_as_with_none() {
     ] {
         let mut g: Grift = Grift::new().unwrap();
         let unlimited = g.evaluate(&mut (), program).unwrap();
+        // Setting a limit asks for a collection as the next run begins: what is held after it
+        // is what the interpreter keeps between runs.
+        g.set_memory_limit(None);
+        g.evaluate(&mut (), "1").unwrap();
         g.set_memory_limit(Some(g.memory_held() + room));
         for run in 0..50 {
             let limited = g.evaluate(&mut (), program);
@@ -92,7 +96,8 @@ fn the_limit_is_off_until_set_and_off_again_when_cleared() {
 }
 
 /// What `make` holds is counted, and so refused under a limit with less room than it needs, while
-/// the same under a limit with room is made.
+/// the same under a limit with room is made. The host makes it outside a run, and a program runs
+/// after either way.
 fn counted(what: &str, bytes: usize, make: impl Fn(&mut Grift) -> bool) {
     let mut g: Grift = Grift::new().unwrap();
     let before = g.memory_held();
@@ -103,6 +108,9 @@ fn counted(what: &str, bytes: usize, make: impl Fn(&mut Grift) -> bool) {
         let mut g: Grift = Grift::new().unwrap();
         g.set_memory_limit(Some(g.memory_held() + room));
         assert_eq!(make(&mut g), fits, "{what} with {room} bytes of room");
+        // Refused or not, outside a run: the interpreter runs a program after.
+        let ran = g.evaluate(&mut (), "(length (range 0 100))");
+        assert_eq!(ran, Ok(Value::Integer(100)), "after {what}");
     }
 }
 

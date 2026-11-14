@@ -358,9 +358,9 @@ impl Heap {
         Some(self.limit).filter(|&limit| limit != usize::MAX)
     }
 
-    /// Sets the memory limit, or none. The next run collects before it begins, so the heap paces
-    /// itself by the new limit from there; what is held past a lower limit stays held, and
-    /// nothing more is given until a collection has brought the count under it.
+    /// Sets the memory limit, or none. The next run collects before it begins, so the count it
+    /// is held to is of what is live; what is held past a lower limit stays held, and nothing
+    /// more is given until a collection has brought the count under it.
     pub fn set_limit(&mut self, limit: Option<usize>) {
         self.limit = limit.unwrap_or(usize::MAX);
         self.request_collection();
@@ -883,19 +883,9 @@ impl Heap {
         // collects sooner: after an eighth of what it would wait for, at least half a chunk's
         // worth. So what is refused then, a collection could have made little room for, and a
         // large heap is still walked in proportion to what is allocated.
-        let sooner = (paced / 8).max(CHUNK / 2);
         if !self.hold_slack() {
             self.asked.set(true);
-            *self.until_gc.get_mut() = sooner;
-        } else if self.limit.saturating_sub(self.held.get()) / size_of::<Slot>()
-            < self.until_gc.get()
-        {
-            // Under a limit the next collection comes before what is allocated could reach it,
-            // though no sooner than at the limit itself: so garbage is collected before a
-            // request larger than the slack is refused for it.
-            let room = self.limit.saturating_sub(self.held.get()) / size_of::<Slot>();
-            self.asked.set(true);
-            *self.until_gc.get_mut() = room.max(sooner);
+            *self.until_gc.get_mut() = (paced / 8).max(CHUNK / 2);
         }
         #[cfg(test)]
         {
