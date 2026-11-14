@@ -59,7 +59,8 @@ fn memory_refused_outside_the_heap_asks_for_a_collection() {
 }
 
 /// A refusal asks for one collection, not one for each cleanup it goes through: each marks all the
-/// levels left, so that would take time in the square of the depth. Only a new refusal asks again.
+/// levels left, so that would take time in the square of the depth. Only a new refusal asks again,
+/// and a heap at its limit, each time the cleanups use up its free slots: far fewer than they are.
 #[test]
 fn memory_refused_collects_once_however_many_cleanups_it_passes() {
     let mut g: Grift<Vec<usize>> = Grift::new().unwrap();
@@ -82,10 +83,47 @@ fn memory_refused_collects_once_however_many_cleanups_it_passes() {
     assert!(collections.len() > 500, "{} cleanups", collections.len());
     let made = collections[collections.len() - 1] - collections[0];
     assert!(
-        made < 10,
+        made < collections.len() / 50,
         "{made} collections, {} cleanups",
         collections.len()
     );
+}
+
+/// A heap that can't grow collects before it refuses: a program that leaves only garbage runs
+/// again and again in the chunks the heap has, where growing past its garbage refused it. And a
+/// program whose live data doesn't fit is still refused, not collected for without end.
+#[test]
+fn a_heap_at_its_limit_collects_before_it_refuses() {
+    let (mut g, _) = host();
+    let small = "(list (add 1 2) (join \"a\" \"b\") (length (range 0 100)))";
+    g.evaluate(&mut g.interrupter(), small).unwrap();
+    g.heap.probe.slot_limit = Some(g.heap.len());
+    let refused = (0..200)
+        .filter(|_| g.evaluate(&mut g.interrupter(), small).is_err())
+        .count();
+    assert_eq!(refused, 0, "of 200 runs that leave only garbage");
+    let e = g
+        .evaluate(&mut g.interrupter(), "(length (range 0 100000))")
+        .unwrap_err();
+    assert_eq!(kind(&g, &e), "out-of-memory");
+    assert!(g.evaluate(&mut g.interrupter(), small).is_ok());
+}
+
+/// One step that needs more slots than a chunk holds, and more than are free, gets them while
+/// memory allows: a list a host makes, a program's text as it is read, and a `range`'s frames.
+#[test]
+fn one_step_that_needs_more_than_a_chunk_grows_the_heap() {
+    let (mut g, _) = host();
+    let many = 2 * g.heap.len();
+    let zeros = vec![Value::Integer(0); many];
+    let list = g.list(&zeros).unwrap();
+    assert_eq!(g.list_items(&list).unwrap().len(), many);
+    assert!(g.heap.len() > many, "{} slots", g.heap.len());
+    let text = format!("(length (quote! ({})))", "0 ".repeat(2 * many));
+    let read = g.evaluate(&mut g.interrupter(), &text).unwrap();
+    assert_eq!(read, Value::Integer(2 * many as i64));
+    let ranged = g.evaluate(&mut g.interrupter(), &format!("(length (range 0 {many}))"));
+    assert_eq!(ranged.unwrap(), Value::Integer(many as i64));
 }
 
 /// A handle reaches the one run it was taken for: the run in progress, or, taken between runs,

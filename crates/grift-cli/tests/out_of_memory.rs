@@ -19,6 +19,24 @@ fn allowed(after: usize) -> bool {
     let ok = after <= LIMIT.get();
     if ok {
         LIVE.set(after);
+    } else if TRACE.get() > 0 {
+        TRACE.set(TRACE.get() - 1);
+        let s = LIMIT.replace(usize::MAX);
+        let l = LIVE.get();
+        let bt = format!("{}", std::backtrace::Backtrace::force_capture());
+        let lines: Vec<&str> = bt
+            .lines()
+            .filter(|l| l.contains("grift") && !l.contains("out_of_memory"))
+            .take(8)
+            .collect();
+        eprintln!(
+            "REFUSED live-room={} want={}\n{}",
+            s - l,
+            after - l,
+            lines.join("\n")
+        );
+        LIVE.set(l);
+        LIMIT.set(s);
     }
     ok
 }
@@ -167,4 +185,47 @@ fn a_call_collects_before_copying_its_arguments() {
     let called = g.call(&mut (), &f, &[grift::Value::Integer(3)]);
     LIMIT.set(usize::MAX);
     assert_eq!(called, Ok(grift::Value::Integer(3)));
+}
+
+/// A program that fits a budget fits it on every run: what a run leaves is garbage, which the heap
+/// collects and gives back when the allocator has no more, before anything is refused. `range` is
+/// 30,000 calls deep, so its frames and contexts are most of what it needs; the small one needs a
+/// few kilobytes.
+#[test]
+fn a_program_that_fits_a_budget_fits_it_on_every_run() {
+    let small = "(list (add 1 2) (join \"a\" \"b\") (length (range 0 100)))";
+    for (program, budget) in [(small, 100_000), ("(length (range 0 30000))", 18_000_000)] {
+        let mut g: Grift = Grift::new().unwrap();
+        g.evaluate(&mut (), "(add 1 2)").unwrap();
+        LIMIT.set(LIVE.get() + budget);
+        let refused = (0..200)
+            .filter(|_| g.evaluate(&mut (), program).is_err())
+            .count();
+        LIMIT.set(usize::MAX);
+        assert_eq!(refused, 0, "of 200 runs of {program} in {budget} bytes");
+    }
+}
+
+/// An interpreter whose host was refused memory, for a list and then for values to keep, runs a
+/// small program under the same limit after: the list is garbage, and its room comes back.
+#[test]
+fn an_interpreter_runs_again_after_its_host_was_refused() {
+    let small = "(list (add 1 2) (join \"a\" \"b\") (length (range 0 100)))";
+    for headroom in [1_500_000, 3_000_000] {
+        let mut g: Grift = Grift::new().unwrap();
+        g.evaluate(&mut (), small).unwrap();
+        let big: Vec<grift::Value> = (0..200_000).map(grift::Value::Integer).collect();
+        let mut kept = Vec::with_capacity(big.len());
+        LIMIT.set(LIVE.get() + headroom);
+        let list = g.list(&big).is_err();
+        let keeps = big
+            .iter()
+            .any(|&v| g.keep(v).map(|k| kept.push(k)).is_err());
+        let ran = (0..20)
+            .filter(|_| g.evaluate(&mut (), small).is_ok())
+            .count();
+        LIMIT.set(usize::MAX);
+        assert!(list && keeps, "the limit refused the list and a keep");
+        assert_eq!(ran, 20, "of 20 runs with {headroom} bytes of headroom");
+    }
 }

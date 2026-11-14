@@ -519,9 +519,20 @@ mod whole {
                     answer.map(Mode::Return).or_else(|e| self.unwind(e))
                 }
             };
-            let result = mode.and_then(|mode| self.run(state, mode));
+            let mut result = mode.and_then(|mode| self.run(state, mode));
             // A machine that parked or was given up has nothing to go back to.
             self.machine.clear();
+            // A run refused memory ends with its frames gone, so what it made is garbage:
+            // collected here, with the error's own values and places live, it is room for the
+            // error's way to the host, its trace too.
+            if let Err(e) = &mut result {
+                self.acting_on_refusal(e);
+                if self.heap.asked() {
+                    let (shared, added) = e.trace.parts();
+                    let places = added.iter().chain(&e.values).copied();
+                    self.collect(places.chain([shared]), []);
+                }
+            }
             drop(run);
             result
         }
@@ -565,7 +576,18 @@ impl<T> Grift<T> {
     }
 
     fn frame(&mut self, what: What, context: Ref<Context>, at: Ref<Pair>) -> Result<(), Error> {
-        push(&mut self.machine.frames, Frame { what, context, at })
+        (self.heap).reserving(|| self.machine.frames.try_reserve(1))?;
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
+        self.machine.frames.push(Frame { what, context, at });
+        Ok(())
+    }
+
+    /// Pushes an argument: like a frame, on room the heap's slack stands behind.
+    fn argument(&mut self, v: Value) -> Result<(), Error> {
+        (self.heap).reserving(|| self.machine.arguments.try_reserve(1))?;
+        #[expect(clippy::disallowed_methods, reason = "reserved 1 above")]
+        self.machine.arguments.push(v);
+        Ok(())
     }
 
     fn run(&mut self, mut state: Option<&mut T>, mut mode: Mode) -> Result<Value, Error> {
@@ -662,7 +684,7 @@ impl<T> Grift<T> {
                         base,
                     } => {
                         self.machine.here = at;
-                        push(&mut self.machine.arguments, v)?;
+                        self.argument(v)?;
                         self.next_argument(combiner, context, rest, base)?
                     }
                     What::Cleanup { cleanup, .. } => {
@@ -916,7 +938,7 @@ impl<T> Grift<T> {
             let context = self.heap.make((None, Bindings::default()))?;
             let base = Base::new(self.machine.arguments.len(), false);
             for v in saved {
-                push(&mut self.machine.arguments, v)?;
+                self.argument(v)?;
             }
             let rest = Value::EmptyList;
             self.frame(
@@ -960,7 +982,7 @@ impl<T> Grift<T> {
                 let base = Base::new(self.machine.arguments.len(), library);
                 let mut items = Items::new(operands);
                 while let Some(x) = items.next(self)? {
-                    push(&mut self.machine.arguments, x)?;
+                    self.argument(x)?;
                 }
                 if items.rest() != Value::EmptyList {
                     return Err(Error::new(K::TypeError, &[f, operands]));
@@ -1039,7 +1061,7 @@ impl<T> Grift<T> {
         }
         // The bindings are made first, with room for all of them, then the context.
         let mut bindings = Bindings::default();
-        bindings.try_reserve(op.size as usize)?;
+        (self.heap).reserving(|| bindings.try_reserve(op.size as usize))?;
         self.match_tree(&mut bindings, op.parameters, operands)?;
         if let Some(s) = op.context_parameter {
             #[expect(
@@ -1825,7 +1847,7 @@ impl<T> Grift<T> {
     ) -> Result<Mode, Error> {
         let base = Base::new(self.machine.arguments.len(), false);
         for &a in args {
-            push(&mut self.machine.arguments, a)?;
+            self.argument(a)?;
         }
         self.apply(Value::Primitive(p), context, base)
     }
