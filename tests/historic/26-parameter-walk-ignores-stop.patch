@@ -1,9 +1,9 @@
 diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
-index 1271bdc5..0bd4b7fb 100644
+index e8525c8f..3cbc6ec5 100644
 --- i/crates/grift/src/evaluate.rs
 +++ w/crates/grift/src/evaluate.rs
-@@ -1737,7 +1737,7 @@ impl<T> Grift<T> {
-         let mut result = push(&mut work, (tree, value));
+@@ -1823,7 +1823,7 @@ impl<T> Grift<T> {
+         let mut result = self.heap.push(&mut work, (tree, value));
          let mut walked = 0;
          while let (Ok(()), Some((t, v))) = (&result, work.pop()) {
 -            result = self.control.walk(&mut walked).and_then(|()| match (t, v) {
