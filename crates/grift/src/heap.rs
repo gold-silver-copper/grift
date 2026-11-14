@@ -531,13 +531,13 @@ impl Heap {
     /// What the object `r` names holds, if its slot still holds one of its kind.
     #[inline]
     fn get<T: Kind>(&self, r: Ref<T>) -> Result<&T::Holds, Error> {
-        match slot(&self.chunks, r.idx) {
-            Some(s) if s.generation == r.generation => match T::of(&s.obj) {
-                Some(holds) => Ok(holds),
-                None => Err(Error::stale()),
-            },
-            _ => Err(Error::stale()),
+        if let Some(s) = slot(&self.chunks, r.idx)
+            && s.generation == r.generation
+            && let Some(holds) = T::of(&s.obj)
+        {
+            return Ok(holds);
         }
+        Err(Error::stale())
     }
 
     /// The binding of `s` in `context` or the nearest parent that has one. The walk holds the
