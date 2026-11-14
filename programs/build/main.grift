@@ -273,7 +273,6 @@
                                    (second (evaluate-in! values e)))))
              (status (evaluate-in! status p)))
         (display (evaluate-in! output p))
-        (display-error (evaluate-in! error-output p))
         (when! (not? (same? status 0))
           (if! (same? #inert status)
             (fail "the command for " target " was killed by a signal")

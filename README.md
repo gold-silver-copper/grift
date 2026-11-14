@@ -108,7 +108,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 |---|---|
 | `(display v ...)` | Writes to stdout: strings without quotes, everything else as it prints. |
 | `(display-error v ...)` | The same, to stderr: `(display-error "wc: " name ": " n "\n")`. |
-| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end (Rust's `BufRead::read_line`); `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. A line or rest that isn't UTF-8 is `encoding-error` and is read all the same: the next read starts after it, so text that may not be UTF-8 is read with `read-bytes`. |
+| `standard-input` | A context of operations, as `open-file`'s, with `path` `"standard-input"`: `(read-line)`, the next line with its newline, `""` at the end; `(read-all)`, the rest; `(read-bytes count)`, the next `count` bytes, fewer at the end, as a bytes value, `#bytes()` at the end; it waits only for those, so it reads a pipe that stays open. A program read from stdin has read it to its end, so reads give `""` and `#bytes()`. A line or rest that isn't UTF-8 is `encoding-error` and is read all the same: the next read starts after it, so text that may not be UTF-8 is read with `read-bytes`. |
 | `standard-output`, `standard-error` | Contexts of operations, as `create-file`'s: `(write data)`, a string or a bytes value, to stdout or stderr, and `path` and `close`. After `close`, `display` or `display-error` is the error `closed` too; the descriptor stays open, and the runner's own report of an error still prints. |
 | `(open-file path)` | A context of operations on the file, opened for reading: `read-line`, `read-all`, `read-bytes`, `close`, and `path`. |
 | `(create-file path)` | A context of operations on the file, created or emptied for writing: `(write data)`, a string's or a bytes value's bytes as they are, `close`, and `path`. |
@@ -121,7 +121,7 @@ For scripting, the program gets a small fixed set of operations, and the core do
 | `(wall-clock-nanoseconds)`, `(elapsed-nanoseconds)` | Integers: the nanoseconds since 1970-01-01 00:00 UTC by the system's clock, which can be set back (a date; a seed); the nanoseconds since the run started, by a clock that never goes back (timing). |
 | `(environment-variable name)` | Its value, a string; `unset-variable` when it has none. |
 | `(exit status)` | Ends the run with `status`, 0 to 255, by a limit of kind `exit`: no `catch!` can keep it going. A `finally!` whose body it leaves runs its cleanup forms; a cleanup that calls `exit` ends there, its later forms cut, and the last `exit` says the status. |
-| `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it), `output` and `error-output` (what it wrote, as strings). |
+| `(run-process program argument ...)` | Runs the program to its end, with no input, and gives a context binding `status` (its exit code, or `#inert` if a signal ended it) and `output` (what it wrote to stdout, a string). What it writes to stderr goes to the runner's stderr as it is written; a program that wants it runs a shell with `2>&1`: `(run-process "sh" "-c" "make 2>&1")`. |
 
 Call an operation a context holds by looking it up there: `((evaluate-in! write f) "text")`. The
 operations call host functions that are bound only in a context no program can reach, so a
@@ -134,7 +134,13 @@ ends the run as `exit` does, by a limit of kind `broken-pipe`: no `catch!` can k
 `finally!` runs its cleanup forms, and the run ends quietly with status 141, as a shell says of a
 program SIGPIPE ended: `grift script | head` is quiet, and a run that ended this way never reports
 success. A program's own error of that name is only that, and uncaught is status 1. Memory refused while reading, a process's output included, is the limit `out-of-memory`;
-`run-process` still reads both of the process's pipes to their ends and waits for it to end.
+`run-process` still reads the process's output to its end and waits for it to end, and starts no
+thread. A path longer than the system's longest, or a program and arguments longer than it runs, is
+the `file-error` or `process-error` the system gives, before Rust's library sees it. Rust's library
+copies a path, a variable's name, a program and its arguments in memory that can't be refused, so one
+the system would take, at most 4 KiB of path or 6 MiB of name or arguments on Linux, still aborts the
+process if there is no memory for that copy, as does the runner's start when there is none for its first allocations. A
+start refused memory after those says `grift: out-of-memory while starting`.
 
 ```lisp
 #!/usr/bin/env grift

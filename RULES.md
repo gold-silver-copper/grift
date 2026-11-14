@@ -198,8 +198,10 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - The heap is a growable vector with mark-and-sweep collection and no limit of its own ([G-2]). In
   the core, collections grow fallibly and memory refused is `out-of-memory`, not an abort ([G-32]);
   clippy's `disallowed_methods` refuses aborting allocations ([G-179]). The exception is
-  `Grift::new`'s shared control block, an `Arc::new` ([G-178]). The runner's own lint file refuses
-  `print!` and `eprint!`, which panic on a closed stream ([G-212]).
+  `Grift::new`'s shared control block, an `Arc::new` ([G-178]), made first so that it is the only
+  one ([G-215]). The runner's own lint file refuses
+  `print!` and `eprint!`, which panic on a closed stream ([G-212]), and the same aborting
+  allocations ([G-215]).
 - Tail calls run in constant space: a compound operative's body, `evaluate` and a `catch!`'s
   handler are tail calls, and a trace records nothing per call ([G-29],
   [`docs/LANGUAGE.md`](docs/LANGUAGE.md#evaluation)). Evaluation and every primitive's walk use the
@@ -244,6 +246,15 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   [G-172]).
 - Standard streams are files like any other, with `path` and `close`; `write` takes a string or
   bytes ([G-172]). Memory refused for a process's output is the `out-of-memory` limit ([G-175]).
+- Memory refused to the runner's own copies and reads is the `out-of-memory` limit: it reserves
+  before it copies and reads lines itself. Rust's library copies a path, a program and its arguments
+  in memory that can't be refused, so the runner gives it none the system would refuse for its
+  length: those are the system's `file-error` or `process-error` first, by the system's own numbers
+  (`system` in `main.rs`), and no probe asks whether there is room. Still aborting: the library's
+  copy of a path, a variable's name or arguments the system would take, and what Rust's library and
+  the system allocate to start the process ([G-215]).
+- `run-process` starts no thread and reads one pipe: the program's stderr is the runner's own
+  ([G-215]).
 - `(load path)` evaluates a file in the caller's context, a relative path resolved against the
   working directory ([G-98], [G-173]). `script-path` is always bound, `""` on stdin ([G-172]).
 - `runner.grift` runs in a private context as library code, so programs can't intercept it and
@@ -375,3 +386,4 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-210]: DECISIONS.md#small-ones-each-with-one-owner-2026-11-12
 [G-212]: DECISIONS.md#a-more-solid-foundation-with-fewer-lines-2026-11-12
 [G-214]: DECISIONS.md#a-string-walked-by-character-2026-11-12
+[G-215]: DECISIONS.md#the-runner-refuses-memory-out-loud-2026-11-12

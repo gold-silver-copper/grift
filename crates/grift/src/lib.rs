@@ -412,11 +412,14 @@ impl<T> Grift<T> {
     /// shared control block, which its interrupters point to, is an `Arc::new`, and so
     /// aborts the process if refused. It becomes `Arc::try_new` once that is stable.
     pub fn new() -> Result<Grift<T>, Error> {
-        let (heap, made) = Heap::new();
+        // First, before the heap, so that this is the only allocation of `new` that can abort:
+        // made last, it aborted whenever the heap had left no room, and after a refusal too.
         #[expect(
             clippy::disallowed_methods,
             reason = "Arc::try_new is unstable: the one abort `new` documents"
         )]
+        let control = Arc::new(Control::default());
+        let (heap, made) = Heap::new();
         let mut g = Grift {
             heap,
             hosts: Vec::new(),
@@ -426,7 +429,7 @@ impl<T> Grift<T> {
             kept_free: None,
             parked_as: None,
             machine: evaluate::Machine::default(),
-            control: Arc::new(Control::default()),
+            control,
             owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
         };
         let loaded = made.and_then(|()| g.load());

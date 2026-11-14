@@ -5,4 +5,44 @@ disallowed-macros = [
   { path = "std::println", reason = "panics when stdout is closed: write through a Sink" },
   { path = "std::eprint", reason = "panics when stderr is closed: use say" },
   { path = "std::eprintln", reason = "panics when stderr is closed: use say" },
+  { path = "std::format", reason = "aborts when memory is refused: write into a reserved buffer" },
+  { path = "std::vec", reason = "aborts when memory is refused: use try_reserve" },
+]
+# Allocation that aborts when memory is refused, the list the library's own lint file has. The
+# runner gives the limit `out-of-memory` instead: reserve first (`try_reserve`), or use `copied` and
+# `pushed`, and mark what follows a reserve with `#[expect(clippy::disallowed_methods, reason = "…")]`.
+# What Rust's library copies inside its own functions no lint sees: the system's limits come first
+# there (`system` and `too_long` in `main.rs`), and G-215 lists the copies that remain.
+disallowed-methods = [
+  { path = "std::vec::Vec::push", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::with_capacity", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::vec::Vec::extend_from_slice", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::resize", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::append", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::vec::Vec::reserve", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::vec::Vec::reserve_exact", reason = "aborts when memory is refused: use try_reserve_exact" },
+  { path = "std::string::String::reserve", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "slice::sort", reason = "allocates, aborting when memory is refused: sort_unstable allocates nothing" },
+  { path = "slice::sort_by", reason = "allocates, aborting when memory is refused: sort_unstable_by allocates nothing" },
+  { path = "slice::sort_by_key", reason = "allocates, aborting when memory is refused: sort_unstable_by_key allocates nothing" },
+  { path = "slice::repeat", reason = "aborts when memory is refused: reserve first" },
+  { path = "slice::concat", reason = "aborts when memory is refused: reserve first" },
+  { path = "slice::join", reason = "aborts when memory is refused: reserve first" },
+  { path = "str::repeat", reason = "aborts when memory is refused: reserve first" },
+  { path = "slice::to_vec", reason = "aborts when memory is refused: reserve first" },
+  { path = "core::iter::traits::collect::Extend::extend", reason = "aborts when memory is refused: reserve first" },
+  { path = "core::iter::traits::iterator::Iterator::collect", reason = "aborts when memory is refused: reserve and push" },
+  { path = "std::string::String::push", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::string::String::push_str", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::string::String::with_capacity", reason = "aborts when memory is refused: use try_reserve" },
+  { path = "std::boxed::Box::new", reason = "aborts when memory is refused" },
+  { path = "std::rc::Rc::new", reason = "aborts when memory is refused" },
+  { path = "std::sync::Arc::new", reason = "aborts when memory is refused" },
+  { path = "std::collections::HashMap::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::HashSet::insert", reason = "aborts when memory is refused: reserve first" },
+  { path = "std::collections::BTreeMap::insert", reason = "aborts when memory is refused" },
+  { path = "std::collections::VecDeque::push_back", reason = "aborts when memory is refused: reserve first" },
+  { path = "alloc::borrow::ToOwned::to_owned", reason = "aborts when memory is refused: use copied" },
+  { path = "alloc::string::ToString::to_string", reason = "aborts when memory is refused: use copied" },
 ]
