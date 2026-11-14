@@ -195,7 +195,8 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 
 ## Memory
 
-- The heap is a growable vector with mark-and-sweep collection and no limit of its own ([G-2]). In
+- The heap is chunks of 1,024 slots with mark-and-sweep collection and no limit of its own: it grows a
+  chunk at a time and never copies itself ([G-2], [G-216]). In
   the core, collections grow fallibly and memory refused is `out-of-memory`, not an abort ([G-32]);
   clippy's `disallowed_methods` refuses aborting allocations ([G-179]). The exception is
   `Grift::new`'s shared control block, an `Arc::new` ([G-178]), made first so that it is the only
@@ -221,12 +222,18 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
   any value to the host fallible) ([G-210]).
 - A value returned to the host lives until the next run; to keep one, bind it or `keep` it. A `Kept`
   is neither `Copy` nor `Clone` ([G-21], [G-108], [G-172]).
-- Only memory really refused asks for a collection ([G-170]). A run refused memory gives up a spare
-  64 KiB so its report can say where ([G-176]). A collection needs no memory of its own: each slot
-  reserves its mark-stack entry when made ([G-177]).
+- Only memory really refused asks for a collection ([G-170]). The heap holds back 64 KiB of slack: when
+  a chunk, a call's bindings or a machine stack is refused memory, the slack is given up, that request is
+  made once more and the next safe point collects, so a program that fits a limit isn't refused for the
+  garbage before it. Nothing is run again but the program read, once, after a collection ([G-217],
+  [G-218]).
+- A run refused memory gives up a spare 64 KiB, the heap's from `Grift::new`, so its report can say
+  where, and its garbage is collected as it ends, before its error goes to the host ([G-176], [G-218]).
+  A collection needs no memory of its own: the mark stack is a link in each slot ([G-216]).
 - A collection waits for as much allocation as the largest part of what it last walked (what
   survived, the roots, half the free slots; at least 4,096 slots), so collecting costs a constant
-  factor of what a program allocates; free slots at the top of the heap are given back ([G-180]).
+  factor of what a program allocates; a chunk with every slot free is given back, which needs no memory
+  ([G-180], [G-216]).
   Strings and bytes count their storage ([G-143], [G-172]).
 
 ## The runner
@@ -387,3 +394,6 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 [G-212]: DECISIONS.md#a-more-solid-foundation-with-fewer-lines-2026-11-12
 [G-214]: DECISIONS.md#a-string-walked-by-character-2026-11-12
 [G-215]: DECISIONS.md#the-runner-refuses-memory-out-loud-2026-11-12
+[G-216]: DECISIONS.md#the-heap-in-chunks-2026-11-13
+[G-217]: DECISIONS.md#the-heap-in-chunks-2026-11-13
+[G-218]: DECISIONS.md#the-heap-in-chunks-2026-11-13

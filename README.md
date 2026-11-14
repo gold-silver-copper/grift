@@ -523,28 +523,31 @@ as values), `json` (strings and escapes), `message` (bytes and bitwise operation
 
 ## Inside
 
-The `grift` crate holds values and a heap that is a growable `Vec` of slots
-(`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
+The `grift` crate holds values and a heap of slots in chunks of 1,024, which grows a chunk at a
+time and never copies itself (`heap.rs`), contexts that are hash maps from symbols to values, a mark-and-sweep collector, a
 reader and a printer (`read.rs`, `print.rs`), and the evaluator (`evaluate.rs`): an explicit
 machine loop over a frame stack, so no Rust recursion grows with a program's nesting, and
 `evaluate` in tail position is a proper tail call. The collector runs at the top of the machine
 loop and before a host's evaluation or call needs its first heap slot, once as much was allocated
 since the last as the largest of what that one walked: what survived (a context with its bindings),
 the stacks and kept values, and half the free slots. So collecting costs a constant factor of what
-a program allocates, whatever it held before. A collection gives back the free slots past the room
-the next one waits for, once they are a top third of all, and the running machine's stacks and the
+a program allocates, whatever it held before. A collection gives back each chunk whose slots are all
+free, past the room the next one waits for, by dropping it, and the running machine's stacks and the
 kept table give back room they no longer use (a parked run keeps its stacks' room until it ends).
-Objects never move, so the newest live ones keep the slots below them: once a collection after a
+Objects never move, so a live one keeps its chunk: once a collection after a
 dropped peak finds most slots free, the next run collects first, when what the runs before made is
 garbage, and gives the rest back to the allocator. That first collection comes once as much was
 allocated as the peak left alive. Allocation never collects,
-and a collection needs no memory: every new heap slot first reserves its entry on the mark stack,
-or is refused, so a heap full of garbage with nothing left to allocate is reclaimed all the same. A run then needs only what its own
+and a collection needs no memory: the mark stack is a link in each slot, so a heap full of garbage
+with nothing left to allocate is reclaimed all the same. A run then needs only what its own
 work needs: heap slots, which that frees, and a little besides (a new name, a host function's
-copy of its arguments). An object the heap has no room for makes a collection due, before
-the next run needs room to read its input or build its call context, as does any memory refused
-that unwinds a run. Reads and constructors do not collect: more reads may be refused until an
-evaluation or call provides that recovery point.
+copy of its arguments). The heap holds back 64 KiB of slack for the machine's own growth: when a
+chunk, a call's bindings or a machine stack is refused memory, the slack is given up, that request
+is made once more and the next safe point collects, so a program that fits a memory limit isn't
+refused for the garbage before it. An object the heap has no room for even so makes a collection
+due, before the next run needs room to read its input or build its call context, as does any memory
+refused that unwinds a run, and a run that ends refused collects as it ends. Reads and constructors
+do not collect: more reads may be refused until an evaluation or call provides that recovery point.
 The same point checks for a stop. Values cross to the host as the public `Value` (`lib.rs`),
 which carries the interpreter's identity; the machine keeps its own compact copy (`local.rs`).
 `if!` and `sequence!` are library code with a native twin: the library's own
