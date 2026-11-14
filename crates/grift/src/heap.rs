@@ -254,6 +254,9 @@ pub(crate) struct Heap {
     early: bool,
     /// Whether the next collection was asked for, not paced: it brings no early one.
     asked: Cell<bool>,
+    /// Whether memory was refused since a run last asked: a run that ends so collects as it ends,
+    /// whatever collections its cleanups had on the way.
+    refused: Cell<bool>,
     #[cfg(test)]
     pub probe: probe::Probe,
 }
@@ -303,6 +306,7 @@ impl Heap {
             slack: Cell::new(Vec::new()),
             early: false,
             asked: Cell::new(false),
+            refused: Cell::new(false),
             #[cfg(test)]
             probe: probe::Probe::default(),
         };
@@ -516,6 +520,12 @@ impl Heap {
     pub fn refusal(&self) {
         self.request_collection();
         self.spare.take();
+        self.refused.set(true);
+    }
+
+    /// Whether memory was refused since this was last asked.
+    pub fn take_refused(&self) -> bool {
+        self.refused.take()
     }
 
     /// What the object `r` names holds, if its slot still holds one of its kind.
@@ -585,11 +595,6 @@ impl Heap {
     #[inline]
     pub fn due_before_run(&self) -> bool {
         self.early || self.due()
-    }
-
-    /// Whether a collection was asked for and hasn't come yet.
-    pub fn asked(&self) -> bool {
-        self.asked.get()
     }
 
     /// The next safe point collects.
@@ -738,11 +743,12 @@ impl Heap {
         *self.until_gc.get_mut() = paced.max(free / 2);
         // The slack given up since the last collection is taken again, now that the chunks this
         // one emptied are given back. While it can't be, the heap is at the allocator's limit and
-        // collects every half chunk's worth: so what is refused then, no collection could have
-        // made the room for.
+        // collects sooner: after an eighth of what it would wait for, at least half a chunk's
+        // worth. So what is refused then, a collection could have made little room for, and a
+        // large heap is still walked in proportion to what is allocated.
         if !self.hold_slack() {
             self.asked.set(true);
-            *self.until_gc.get_mut() = CHUNK / 2;
+            *self.until_gc.get_mut() = (paced / 8).max(CHUNK / 2);
         }
         #[cfg(test)]
         {

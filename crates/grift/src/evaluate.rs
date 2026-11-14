@@ -487,6 +487,8 @@ mod whole {
             first: First,
         ) -> Result<Value, Error> {
             self.machine.clear();
+            // Only this run's refusals make it collect as it ends.
+            self.heap.take_refused();
             let run = Control::begin(&self.control, OnMachine(ready), parks);
             let mode = match first {
                 First::Text {
@@ -528,7 +530,8 @@ mod whole {
             // the error's way to the host, its trace too.
             if let Err(e) = &mut result {
                 self.acting_on_refusal(e);
-                if self.heap.asked() {
+                if self.heap.take_refused() {
+                    self.heap.request_collection();
                     let (shared, added) = e.trace.parts();
                     let places = added.iter().chain(&e.values).copied();
                     self.collect(places.chain([shared, Value::Symbol(e.kind)]), []);

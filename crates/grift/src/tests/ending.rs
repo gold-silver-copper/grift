@@ -88,6 +88,30 @@ fn memory_refused_collects_once_however_many_cleanups_it_passes() {
     );
 }
 
+/// A run that ends refused memory collects as it ends, though a cleanup's safe point already had
+/// the collection the refusal asked for: what the cleanups made is garbage too, and the host's
+/// next request shouldn't be refused for it.
+#[test]
+fn a_refused_run_collects_as_it_ends_whatever_its_cleanups_collected() {
+    let mut g: Grift<Vec<usize>> = Grift::new().unwrap();
+    let mut seen = Vec::new();
+    let f = g
+        .host_function("seen", |g, seen: &mut Vec<usize>, _| {
+            seen.push(g.heap.probe.collections);
+            Ok(Answer::Now(Value::Inert))
+        })
+        .unwrap();
+    g.define("seen", f).unwrap();
+    let hog = "(define! hog (lambda! (xs n) (hog (pair n xs) (add n 1))))";
+    g.evaluate(&mut seen, hog).unwrap();
+    g.heap.probe.slot_limit = Some(g.heap.len() + 20_000);
+    let e = (g.evaluate(&mut seen, "(finally! (hog () 0) (seen))")).unwrap_err();
+    assert_eq!(kind(&g, &e), "out-of-memory");
+    // The cleanup ran after the refusal's collection, and the run's end collected again.
+    assert_eq!(seen.len(), 1, "the cleanup ran once");
+    assert!(g.heap.probe.collections > seen[0], "{seen:?}");
+}
+
 /// One step that needs more slots than a chunk holds, and more than are free, gets them while
 /// memory allows: a list a host makes, a program's text as it is read, and a `range`'s frames.
 #[test]

@@ -225,8 +225,10 @@ Every primitive is in [`docs/LANGUAGE.md`](docs/LANGUAGE.md), and the guide is
 - Only memory really refused asks for a collection ([G-170]). The heap holds back 64 KiB of slack: when
   a chunk, a call's bindings or a machine stack is refused memory, the slack is given up, that request is
   made once more and the next safe point collects, so a program that fits a limit isn't refused for the
-  garbage before it. Nothing is run again but the program read, once, after a collection ([G-217],
-  [G-218]).
+  garbage before it. While a collection can't take the slack again, the heap is at the allocator's
+  limit and collects after an eighth of what it would wait for, at least 512 objects' worth: about
+  eight times as often, still in proportion to what is allocated. Nothing is run again but the
+  program read, once, after a collection ([G-217], [G-218]).
 - A run refused memory gives up a spare 64 KiB, the heap's from `Grift::new`, so its report can say
   where, and its garbage is collected as it ends, before its error goes to the host ([G-176], [G-218]).
   A collection needs no memory of its own: the mark stack is a link in each slot ([G-216]).

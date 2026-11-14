@@ -171,6 +171,8 @@ fn a_call_collects_before_copying_its_arguments() {
     let _garbage = g.string(&"x".repeat(1 << 20)).unwrap();
     LIMIT.set(LIVE.get());
     assert!(g.string("refused").is_err());
+    // The refusal gave up the heap's spare room: the call has none of that either.
+    LIMIT.set(LIVE.get());
     let called = g.call(&mut (), &f, &[grift::Value::Integer(3)]);
     LIMIT.set(usize::MAX);
     assert_eq!(called, Ok(grift::Value::Integer(3)));

@@ -2354,7 +2354,9 @@ rest was decided alone in this change; the owner may overrule any.
     stack's growth is refused, the slack is given up, the same request is made once more, and the next safe
     point collects. Nothing is run again; only the request is repeated. The collection gives back its empty
     chunks and takes the slack again. While it can't, the heap is within 64 KiB of the limit and collects
-    every 512 objects' worth, so what is refused then, no collection could have made room for.
+    after an eighth of the allocation it would otherwise wait for, at least 512 objects' worth: what is
+    refused then, a collection could have made little room for (an eighth of the live data at most), and
+    a large heap is still walked in proportion to what is allocated, about eight times as often.
   - **Why not collect before every chunk** (the plan's wording). Measured: a program that builds 150,000
     pairs and then runs `fib 29` took 0.96 s against master's 0.62 s, because every chunk of growth walks
     all the live data; trying to grow first took 0.68 s. The heap can't tell garbage from growth without
@@ -2367,8 +2369,8 @@ rest was decided alone in this change; the owner may overrule any.
     (the read used to skip it); a run takes it again as it begins, after its collection.
   - The program read is tried once more after a collection: it changes nothing but the heap, and its text
     is the host's. No primitive or host function is tried again.
-  - A run that ends refused collects before its error goes to the host, with the error's values and places
-    as roots. Why: the heap now uses a limit to its last chunk, so the copy of a 2,000-place trace for the
+  - A run that ends refused collects before its error goes to the host, with the error's kind, values and
+    places as roots, whether or not a cleanup's safe point already collected on the way. Why: the heap now uses a limit to its last chunk, so the copy of a 2,000-place trace for the
     host had no room, and the whole trace was dropped; master had megabytes left there only because its
     next doubling didn't fit.
 - **G-219. A band revised: fib inside +5%, life not** (CLAUDE.md's rule for a target that can't be met).

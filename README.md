@@ -544,7 +544,9 @@ work needs: heap slots, which that frees, and a little besides (a new name, a ho
 copy of its arguments). The heap holds back 64 KiB of slack for the machine's own growth: when a
 chunk, a call's bindings or a machine stack is refused memory, the slack is given up, that request
 is made once more and the next safe point collects, so a program that fits a memory limit isn't
-refused for the garbage before it. An object the heap has no room for even so makes a collection
+refused for the garbage before it. While a collection can't take the slack back, the heap is at the
+allocator's limit and collects about eight times as often, still in proportion to what is allocated.
+An object the heap has no room for even so makes a collection
 due, before the next run needs room to read its input or build its call context, as does any memory
 refused that unwinds a run, and a run that ends refused collects as it ends. Reads and constructors
 do not collect: more reads may be refused until an evaluation or call provides that recovery point.
