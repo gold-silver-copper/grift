@@ -1,8 +1,8 @@
-diff --git a/crates/grift/src/heap.rs b/crates/grift/src/heap.rs
-index 15bccb9..0ecfe09 100644
---- a/crates/grift/src/heap.rs
-+++ b/crates/grift/src/heap.rs
-@@ -269,7 +269,6 @@ impl Heap {
+diff --git i/crates/grift/src/heap.rs w/crates/grift/src/heap.rs
+index d76840bd..cf26a092 100644
+--- i/crates/grift/src/heap.rs
++++ w/crates/grift/src/heap.rs
+@@ -507,7 +507,6 @@ impl Heap {
      /// host's next run begins.
      #[cold]
      fn refused(&self) -> Error {
@@ -10,17 +10,17 @@ index 15bccb9..0ecfe09 100644
          Error::oom()
      }
  
-diff --git a/crates/grift/src/lib.rs b/crates/grift/src/lib.rs
-index a7248ff..0b4eaad 100644
---- a/crates/grift/src/lib.rs
-+++ b/crates/grift/src/lib.rs
-@@ -1218,10 +1218,7 @@ impl<T> Grift<T> {
+diff --git i/crates/grift/src/lib.rs w/crates/grift/src/lib.rs
+index 8ecf01b4..b10fef83 100644
+--- i/crates/grift/src/lib.rs
++++ w/crates/grift/src/lib.rs
+@@ -1173,10 +1173,7 @@ impl<T> Grift<T> {
  
      /// An error as the host's. Memory refused here, not on its way through a run, asks for its
      /// collection now: the host's next try has that, as a run's cleanups do.
 -    pub(crate) fn export_error(&self, mut e: local::Error) -> Error {
 -        if e.take_refusal() {
--            self.heap.request_collection();
+-            self.heap.refusal();
 -        }
 +    pub(crate) fn export_error(&self, e: local::Error) -> Error {
          let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));

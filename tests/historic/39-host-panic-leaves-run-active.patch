@@ -1,20 +1,20 @@
 diff --git i/crates/grift/src/evaluate.rs w/crates/grift/src/evaluate.rs
-index 5f9c4585..7cff7834 100644
+index 8af99bdd..f4b8c6bb 100644
 --- i/crates/grift/src/evaluate.rs
 +++ w/crates/grift/src/evaluate.rs
-@@ -494,7 +494,7 @@ mod whole {
-             // Refused, this run goes without: an `out-of-memory` trace can miss places.
-             let _ = self.spare.try_reserve_exact(crate::SPARE);
+@@ -487,7 +487,7 @@ mod whole {
+             first: First,
+         ) -> Result<Value, Error> {
              self.machine.clear();
 -            let run = Control::begin(&self.control, OnMachine(ready), parks);
 +            let run = std::mem::ManuallyDrop::new(Control::begin(&self.control, OnMachine(ready), parks));
              let mode = match first {
                  First::Text {
                      context,
-@@ -515,7 +515,7 @@ mod whole {
-             let result = mode.and_then(|mode| self.run(state, mode));
-             // A machine that parked or was given up has nothing to go back to.
-             self.machine.clear();
+@@ -533,7 +533,7 @@ mod whole {
+                     self.collect(places.chain([shared]), []);
+                 }
+             }
 -            drop(run);
 +            drop(std::mem::ManuallyDrop::into_inner(run));
              result
