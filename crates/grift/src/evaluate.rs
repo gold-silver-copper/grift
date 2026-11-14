@@ -505,6 +505,7 @@ mod whole {
                         self.heap.refusal();
                         let roots = [Value::Context(context)].into_iter();
                         self.collect(roots.chain(source.map(Value::Symbol)), []);
+                        self.heap.hold_spare();
                         forms = self.read_local(src, source, library);
                     }
                     forms.and_then(|forms| {
@@ -523,14 +524,14 @@ mod whole {
             // A machine that parked or was given up has nothing to go back to.
             self.machine.clear();
             // A run refused memory ends with its frames gone, so what it made is garbage:
-            // collected here, with the error's own values and places live, it is room for the
-            // error's way to the host, its trace too.
+            // collected here, with the error's own kind, values and places live, it is room for
+            // the error's way to the host, its trace too.
             if let Err(e) = &mut result {
                 self.acting_on_refusal(e);
                 if self.heap.asked() {
                     let (shared, added) = e.trace.parts();
                     let places = added.iter().chain(&e.values).copied();
-                    self.collect(places.chain([shared]), []);
+                    self.collect(places.chain([shared, Value::Symbol(e.kind)]), []);
                 }
             }
             drop(run);
