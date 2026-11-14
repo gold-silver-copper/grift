@@ -385,13 +385,6 @@ impl Entry {
     }
 }
 
-/// Room held back for when memory is refused, given up as the refusal unwinds: for the trace the
-/// unwinding builds, the program's combinations it passes, and after it for a report of the
-/// error, whose printer needs about 2 KiB whatever the error holds, beside the host's own text.
-/// It is no promise past that: a deep trace, or a host's text longer than what is left, can
-/// still find memory refused.
-const SPARE: usize = 64 * 1024;
-
 /// An interpreter: a heap, the built-in context holding the primitives and the library, and the
 /// top-level context, a child of the built-in one, where programs define things. `T` is the
 /// host's state, which the host lends to each [`Grift::evaluate`] and [`Grift::call`] and which
@@ -407,9 +400,6 @@ pub struct Grift<T = ()> {
     /// The kept name of the run that has just parked, for [`Grift::started`] alone to read.
     parked_as: Option<u32>,
     machine: evaluate::Machine,
-    /// Room held back for an `out-of-memory` to name where it happened: given up as a refusal
-    /// unwinds, when small allocations may have only scraps left, and taken again by the next run.
-    spare: Vec<u8>,
     /// Shared with the interrupters and parked runs' handles.
     control: Arc<Control>,
     /// This interpreter's identity, which every value handed out holds.
@@ -436,7 +426,6 @@ impl<T> Grift<T> {
             kept_free: None,
             parked_as: None,
             machine: evaluate::Machine::default(),
-            spare: Vec::new(),
             control: Arc::new(Control::default()),
             owner: Owner(OWNERS.fetch_add(1, Ordering::Relaxed)),
         };
@@ -1186,7 +1175,7 @@ impl<T> Grift<T> {
     /// collection now: the host's next try has that, as a run's cleanups do.
     pub(crate) fn export_error(&self, mut e: local::Error) -> Error {
         if e.take_refusal() {
-            self.heap.request_collection();
+            self.heap.refusal();
         }
         let exported = |vs: &[local::Value]| collected(vs.iter().map(|&v| self.export(v)));
         // The host's trace is innermost first: the shared list's places reversed, then the rest.

@@ -486,8 +486,6 @@ mod whole {
             state: Option<&mut T>,
             first: First,
         ) -> Result<Value, Error> {
-            // Refused, this run goes without: an `out-of-memory` trace can miss places.
-            let _ = self.spare.try_reserve_exact(crate::SPARE);
             self.machine.clear();
             let run = Control::begin(&self.control, OnMachine(ready), parks);
             let mode = match first {
@@ -496,10 +494,24 @@ mod whole {
                     source,
                     src,
                     library,
-                } => self.read_local(src, source, library).and_then(|forms| {
-                    self.frame(What::Forms { rest: forms }, context, Ref::NONE)?;
-                    Ok(Mode::Return(Value::Inert))
-                }),
+                } => {
+                    let mut forms = self.read_local(src, source, library);
+                    // Reading changes nothing but the heap, and the text is the host's: refused
+                    // memory, it reads once more after a collection, which what it made so far
+                    // doesn't survive. No primitive or host function is tried again.
+                    if let Err(e) = &mut forms
+                        && e.take_refusal()
+                    {
+                        self.heap.refusal();
+                        let roots = [Value::Context(context)].into_iter();
+                        self.collect(roots.chain(source.map(Value::Symbol)), []);
+                        forms = self.read_local(src, source, library);
+                    }
+                    forms.and_then(|forms| {
+                        self.frame(What::Forms { rest: forms }, context, Ref::NONE)?;
+                        Ok(Mode::Return(Value::Inert))
+                    })
+                }
                 First::Call { f, arguments } => self.call_on_machine(f, arguments, None),
                 First::Resume { machine, answer } => {
                     self.machine = machine;
@@ -714,8 +726,7 @@ impl<T> Grift<T> {
     /// given up for what reports it. Once: whoever acts on it clears the mark.
     fn acting_on_refusal(&mut self, e: &mut Error) {
         if e.take_refusal() {
-            self.heap.request_collection();
-            self.spare = Vec::new();
+            self.heap.refusal();
         }
     }
 
@@ -823,6 +834,7 @@ impl<T> Grift<T> {
         if self.heap.due_before_run() {
             self.collect(current, held);
         }
+        self.heap.hold_spare();
         Prepared(())
     }
 
