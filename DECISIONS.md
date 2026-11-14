@@ -2373,13 +2373,22 @@ rest was decided alone in this change; the owner may overrule any.
     places as roots, whether or not a cleanup's safe point already collected on the way. Why: the heap now uses a limit to its last chunk, so the copy of a 2,000-place trace for the
     host had no room, and the whole trace was dropped; master had megabytes left there only because its
     next doubling didn't fit.
-- **G-219. A band revised: fib inside +5%, life not** (CLAUDE.md's rule for a target that can't be met).
-  Original target: fib and life within +5% of master. Measured (release, this laptop, three interleaved
-  turns, user seconds, medians): `fib 30` 0.851 to 0.880 s (+3.4%); `life` 100x100 wrapped for 30
-  generations 0.913 to 1.018 s (+11.5%); 150,000 live pairs then `fib 29` 0.689 to 0.731 s (+6%). Cause:
-  every heap read loads its chunk's address before the slot, and a variable found several contexts up
-  pays that at each one. Chunk sizes tried before the slack existed: 1,024 slots fib +8%, life +11%; 4,096
-  +6%, +10%; 16,384 +2.5%, +7%; 65,536 +1%, -1%, but only because a heap that fits one chunk with most of
-  it free collects a sixth as often, and the same build was +6% once the live data passed one chunk. So no
-  chunk size meets the band. The plan says missing it at every size goes back to one vector; G-216 says why
-  this change didn't. Cost accepted here: life +11.5%.
+- **G-219. The speed band: met on the measuring machine, not shown met on the laptop it was set for**
+  (CLAUDE.md's rule for a target). Target: fib and life within +5% of master.
+  - **First measured** (laptop, release, three interleaved turns, user seconds, medians): `fib 30` 0.851 to
+    0.880 s (+3.4%); `life` 100x100 wrapped for 30 generations 0.913 to 1.018 s (+11.5%); 150,000 live
+    pairs then `fib 29` 0.689 to 0.731 s (+6%). Cause: every heap read loads its chunk's address before the
+    slot, and a variable found several contexts up pays that at each one. Chunk sizes tried before the
+    slack existed: 1,024 slots fib +8%, life +11%; 4,096 +6%, +10%; 16,384 +2.5%, +7%; 65,536 +1%, -1%, but
+    only because a heap that fits one chunk with most of it free collects a sixth as often, and the same
+    build was +6% once the live data passed one chunk. So the chunk's size doesn't decide it.
+  - **Then two changes to the reads** (one attempt, 45 minutes, asked for by the owner): the walk up a
+    variable's contexts is the heap's, holding the list of chunks once (`Heap::find`), and a slot's read
+    has one way out for a reference that names nothing. Measured on desk (x86-64, idle, same method), since
+    the laptop was too busy by then to time anything: before them fib 1.028 to 1.104 s (+7.4%), life 1.135
+    to 1.220 s (+7.5%), the 150,000-pair program 0.831 to 0.879 s (+5.8%); after them fib 1.031 to 1.060 s
+    (+2.8%), life 1.143 to 1.183 s (+3.5%), the pair program 0.835 to 0.861 s (+3.1%).
+  - **Where that leaves the band.** Inside it on desk. On the laptop the first change alone moved life
+    about 1.5 points in the two quiet turns there were, so life there is probably still above +5%; not
+    measured with both. The plan says missing the band at every chunk size goes back to one vector; G-216
+    says why this change didn't.
